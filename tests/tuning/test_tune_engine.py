@@ -58,6 +58,7 @@ class TestDoneParsing(unittest.TestCase):
 class TestReadyAndPP(unittest.TestCase):
     def test_ready_carries_the_context(self):
         self.assertEqual(te.parse_ready("READY 32768 stop"), 32768)
+        self.assertEqual(te.parse_ready("READY 32768 stop lists"), 32768)   # an engine that lists its sessions
 
     def test_a_ready_without_a_context_is_an_error(self):
         with self.assertRaises(te.MeasurementError):

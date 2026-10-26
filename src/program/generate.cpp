@@ -24,6 +24,7 @@
 #include "strata/core/dma_batch.hpp"
 #include "strata/core/device.hpp"
 #include "strata/core/remote_expert_opt.hpp"
+#include "strata/core/token_listing.hpp"
 #include "strata/core/expert_cache.hpp"
 #include "strata/core/conversation_snapshot.hpp"
 #include "strata/core/conversation_file.hpp"
@@ -11201,7 +11202,8 @@ int main(int argc, char** argv) {
         }
         strata::core::pin_sim_report("at READY");
         strata::core::pin_reserve_release_hard();   // the load is over: nothing else needs the headroom
-        std::printf("READY %lld stop\n", (long long) o.max_context);   // "stop": this engine honours STOP
+        // "stop": this engine honours STOP; "lists": it answers LIST_SESSION_TOKENS and LIST_PARKED_CONVERSATIONS
+        std::printf("READY %lld stop lists\n", (long long) o.max_context);
         std::fflush(stdout);
         std::string line;
         int64_t rounds = 0;
@@ -12023,6 +12025,30 @@ int main(int argc, char** argv) {
                 if (batch_on()) verr = "VRAM: not while batch slots are decoding";
                 else vram_command(line, verr);
                 if (!verr.empty()) std::printf("ERR %s\n", verr.c_str());
+                std::fflush(stdout);
+                continue;
+            }
+            // what the sessions and the parked conversations hold, for the server's API monitor (token_listing.hpp):
+            // between requests and between batch windows, changing nothing
+            if (line == "LIST_SESSION_TOKENS") {
+                const bool held = live_ok && !live.empty();
+                strata::core::print_session_tokens("main", held ? "holding" : "empty", live.data(), held ? live.size() : 0);
+                for (size_t b = 0; b < bs.size(); ++b) {
+                    const BSlot& sl = bs[b];
+                    const char* st = sl.active ? "decoding" : sl.partial ? "reading" : sl.cached ? "holding" : "empty";
+                    const bool known = sl.active || sl.partial || sl.cached;
+                    strata::core::print_session_tokens("slot" + std::to_string(b), st, sl.ids.data(),
+                                                       known ? sl.ids.size() : 0);
+                }
+                std::printf("END_SESSION_TOKENS\n");
+                std::fflush(stdout);
+                continue;
+            }
+            if (line == "LIST_PARKED_CONVERSATIONS") {
+                conversations.for_each([](uint64_t serial, const strata::core::SavedConversation& c) {
+                    strata::core::print_parked_conversation(serial, false, c.bytes(), c.live.ids.data(), c.live.ids.size());
+                });
+                std::printf("END_PARKED_CONVERSATIONS\n");
                 std::fflush(stdout);
                 continue;
             }

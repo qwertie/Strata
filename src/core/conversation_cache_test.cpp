@@ -558,5 +558,20 @@ int main() {
         check(tiny.put(std::move(p2)), "a pinned one fits an empty cache");
         check(!tiny.put(image({7,8,9})) && tiny.size() == 1, "nothing else fits beside it: parking is refused, the pin stays");
     }
+    {
+        // for_each (the engine's LIST_PARKED_CONVERSATIONS): every parked conversation, the next to be evicted first
+        ConversationCache cache(image({1}).bytes() * 16, 2);
+        check(cache.put(image({1,2,3})) && cache.put(image({4,5})) && cache.put(image({6})), "three park in two slots");
+        std::vector<std::vector<int32_t>> seen;
+        std::vector<uint64_t> serials;
+        cache.for_each([&](uint64_t serial, const SavedConversation& c) {
+            serials.push_back(serial);
+            seen.push_back(c.live.ids);
+        });
+        check(seen == std::vector<std::vector<int32_t>>{{4,5},{6}},
+              "for_each lists the parked conversations, the oldest (the next to be evicted) first");
+        check(serials.size() == 2 && serials[0] < serials[1] && cache.find(serials[0]) != nullptr,
+              "each with the serial find() takes");
+    }
     std::printf("conversation_cache_test: %d checks passed\n", checks);
 }
