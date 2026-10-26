@@ -685,39 +685,53 @@ first-token and decode timings. `GET /api/requests` returns summaries and `GET /
 monitor keeps the newest 100 requests in memory until restart, 262,144 characters per field, with visible truncation flags.
 Headers are not recorded. Treat the history as sensitive when Strata is reachable from a network, and set an API key.
 
-Its **Context in VRAM** panel shows the tokens the engine keeps for the next request: the last prompt and the answer to
-it. The last token of the answer is not in the cache, because the engine never feeds it back. With `"parallel"`
-(`--batch`) there is a list for the solo session, where a request runs while it is the only one, and one for each slot;
-the panel opens on the one a request used last. **Plain text** shows the tokens as text. **Colored tokens** gives each
-token its own background. The colour comes from the token's id, so the same token always has the same colour. Hover a
-token to see its position and id. It shows 8,000 tokens at a time, starting with the newest; **Earlier** and **Later**
-move between pages. The colours come from a fixed palette of 4,096 per theme, sampled evenly over every colour that
-keeps a contrast of at least 7:1 with the text (OKLab lightness 0.68-0.93 in the light theme, 0.25-0.47 in the dark
-one), so muted colours, which take up less of that space, come up less often. **Save .txt** saves the text. Tick **with
-token ids** next to it, and the ids follow the text as 32-bit little-endian numbers: a line gives their count N, and
-they are the file's last 4 × N bytes.
+Its **Context in VRAM** panel shows what the engine holds, as the engine lists it when **Refresh** is pressed: the tokens
+of each session in VRAM, and of each conversation it has parked. Pick one in the list next to the views; the panel opens
+on the session a request used last.
 
-The list is what the server sent to the engine and read back from it. It is not a copy of the GPU's memory. Where the
-two can differ:
+- **Session** (or **Solo session** with `"parallel"`, `--batch`): the engine's own session. A request that is alone
+  runs there, and with `--batch` every request is read there before it is copied into its slot.
+- **Slot N**: a batch slot's session, idle or decoding. Qwen3.6-35B-A3B's engine has no session of its own: a request
+  that is alone runs in one of the slots' sessions.
+- **Parked conversation N of M**: a conversation the engine set aside in RAM (DeepSeek V4.1: in RAM or in its folder on
+  disk) when another one took its session, so that its next request does not read it again. The first one listed is the
+  next to be evicted. The list shows its size.
 
-- With draft tokens (MTP, lookup), an answer that ends inside a run of accepted drafts leaves a few more tokens in the
-  cache than the list shows.
-- After a disk session is restored, or a request is stopped while its prompt is read, the list is not known until the
-  next request.
-- A `--batch` slot that is in use shows its list when its request ends.
-- With `--batch`, Qwen3.8-Flash-Next's engine keeps a session of its own next to the slots, so `--batch 2` holds three,
-  each allocated for the whole context. The engine's log gives 2.88 GiB per slot session at a 204,800-token context with
-  `--kv int8` (on a Radeon 8060S, Strix Halo); its own session is allocated the same way and is not in that figure. A
-  request that is alone runs in that session, and every request is read there before it is copied into its slot.
-  Qwen3.6-35B-A3B's engine has no session of its own: a request that is alone runs in one of the slots' sessions, so the
-  list of that slot may already have been replaced by it.
-- Conversations the engine has parked in RAM are not shown.
+**Plain text** shows the tokens as text. **Colored tokens** gives each token its own background. The colour comes from
+the token's id, so the same token always has the same colour. Hover a token to see its position and id. It shows 8,000
+tokens at a time, starting with the newest; **Earlier** and **Later** move between pages. The colours come from a fixed
+palette of 4,096 per theme, sampled evenly over every colour that keeps a contrast of at least 7:1 with the text (OKLab
+lightness 0.68-0.93 in the light theme, 0.25-0.47 in the dark one), so muted colours, which take up less of that space,
+come up less often. **Save .txt** saves the text. Tick **with token ids** next to it, and the ids follow the text as
+32-bit little-endian numbers: a line gives their count N, and they are the file's last 4 × N bytes.
 
-`GET /api/context` returns `{"available", "loaded", "max_context", "slots": [{"name", "slot", "state", "tokens",
-"pieces", "unknown", "used"}]}`. `slot` is `null` for the session outside the batch slots, and `used` is when a request
-last ended on it (Unix time). `pieces` is each token's text; joined, they give the whole text. When `tokens` is `null`,
-`unknown` says why: `busy`, `stopped`, `restored`, `dropped` (non-finite logits) or `ended`. When the monitor is on, the
-main page's Sampling panel and Monitor tab link to `/api-monitor`.
+The engine answers between requests, and with `--batch` also between the windows of slots that decode. While a request
+has the engine to itself (without `--batch`, or a request alone on the solo path) the panel waits up to a few seconds, then shows
+the list it read last, with the time it was read. It needs an engine that lists what it holds (its `READY` line ends in
+`lists`); with an older engine the panel says so.
+
+With `--batch`, Qwen3.8-Flash-Next's engine keeps its own session next to the slots, so `--batch 2` holds three sessions,
+each allocated for the whole context. The engine's log gives 2.88 GiB per slot session at a 204,800-token context with
+`--kv int8` (on a Radeon 8060S, Strix Halo); its own session is allocated the same way and is not in that figure.
+
+`GET /api/context` returns `{"available", "loaded", "max_context", "busy", "error", "list", "at", "entries": [{"kind",
+"name", "slot", "state", "count", "used", "where", "bytes"}]}`: `kind` is `session` or `parked`; `state` is `holding`,
+`decoding`, `reading` (a prompt read that gave way to a shorter one and goes on later), `empty` or `parked`; `used` is
+when a request last used a slot (Unix time); `where` (`ram` or `disk`) and `bytes` are a parked conversation's. `list`
+numbers the list and `at` is when it was read; `busy` says a request had the engine's turn, so the list is the one read
+last. `available` is `false` with `"reason": "engine"` for an engine without the commands. `GET
+/api/context?list=<list>&entry=<i>` returns entry `i` of that list with its `tokens` and `pieces` (each token's text;
+joined, they give the whole text), or 404 once a newer list was read. When the monitor is on, the main page's Sampling
+panel and Monitor tab link to `/api-monitor`.
+
+The engine's commands, one line each on its stdin (include/strata/core/token_listing.hpp):
+
+- `LIST_SESSION_TOKENS` answers `SESSION_TOKENS <name> <state> <n> <id,id,...>` for each session (`main`, `slot0`,
+  ...), then `END_SESSION_TOKENS`.
+- `LIST_PARKED_CONVERSATIONS` answers `PARKED_CONVERSATION <id> <ram|disk> <bytes> <n> <id,id,...>` for each parked
+  conversation, the next to be evicted first, then `END_PARKED_CONVERSATIONS`.
+
+The ids are left out when `n` is 0. Neither command changes anything.
 
 ---
 

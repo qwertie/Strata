@@ -46,7 +46,9 @@ print("INFO engine=0.1.39" + (f" batch_slots={fit}" if fit >= 2 else "") +
 if "--fake-stage-plan" in args:
     print("strata serve: layer split: layers 0-11 (CUDA0), 12-23 (CUDA1), 24-35 (CUDA2), "
           "36-47 (CUDA3), one hand-off per window", file=sys.stderr, flush=True)
-print("READY 4096 stop", flush=True)
+LISTS = "--lists" in args   # READY ... lists: it answers LIST_SESSION_TOKENS and LIST_PARKED_CONVERSATIONS
+print("READY 4096 stop" + (" lists" if LISTS else ""), flush=True)
+main_held, slot_held, parked = [], {}, []   # (--lists) what the sessions hold, the conversations parked
 LONG = list(b"LONGREPLY")
 def continued(ids):        # (the whole reply, how much of it the prompt already ends with: a request continued)
     ids = [int(x) for x in ids]
@@ -77,6 +79,8 @@ def window():        # one batch window: every active slot one token
         t = left.pop(0) if left else 257
         produced += 1
         print(f"BT {b} {t}", flush=True)
+        if t != 257 and produced < max_new:
+            slot_held[b].append(t)            # fed in the next window (the last token is not)
         if t == 257 or produced >= max_new:
             fin = 'stop' if t == 257 else 'cancel' if b in stopped else 'length'
             stopped.discard(b)
@@ -138,6 +142,9 @@ while True:
         if slot is not None and b"NFSLOT" in pb:
             nf_slots.add(slot)
         toks = reply(ids)
+        prompt = [int(x) for x in ids]
+        if main_held and prompt[:len(main_held)] != main_held:   # another conversation takes the session
+            parked.append(main_held)
         stop.clear()
         # the prompt read: CH tokens a chunk, a PP line each; a BYIELD <s> gives way at a chunk boundary
         given = None
@@ -185,6 +192,9 @@ while True:
             out += 1
             time.sleep(STEP)
         fin = "stop" if out and toks[out - 1] == 257 else ("cancel" if stop.is_set() else "length")
+        main_held = prompt + toks[:max(out - 1, 0)]
+        if slot is not None:
+            slot_held[slot] = prompt + toks[:1]
         print(f"DONE {out} {len(ids)} 5.0 {out * STEP * 1000:.1f} {fin} 0 0 {reused(ids)}" +
               (f" 0 0 0 0 0.0 {len(ids) - reused(ids)}" if READF else ""), flush=True)
         if slot is not None:
@@ -192,6 +202,20 @@ while True:
             if cont:
                 active[slot] = [toks[1:], max_new, 1]
             print(f"BADM {slot} {1 if cont else 0}", flush=True)
+        continue
+    if LISTS and line == "LIST_SESSION_TOKENS":
+        def say(name, state, t):
+            print(f"SESSION_TOKENS {name} {state} {len(t)}" + (" " + ",".join(map(str, t)) if t else ""), flush=True)
+        say("main", "holding" if main_held else "empty", main_held)
+        for b in range(fit):
+            t = slot_held.get(b, [])
+            say(f"slot{b}", "decoding" if b in active else "holding" if t else "empty", t)
+        print("END_SESSION_TOKENS", flush=True)
+        continue
+    if LISTS and line == "LIST_PARKED_CONVERSATIONS":
+        for k, t in enumerate(parked):
+            print(f"PARKED_CONVERSATION {k + 1} ram {100 * len(t)} {len(t)} " + ",".join(map(str, t)), flush=True)
+        print("END_PARKED_CONVERSATIONS", flush=True)
         continue
     if line:
         print("ERR unknown " + line[:20], flush=True)
@@ -405,38 +429,57 @@ class FakeEngineCase(unittest.TestCase):
 
 
 class ContextView(FakeEngineCase):
-    """The API monitor's Context view with --batch: a request alone runs on the engine's single-stream session (the
-    solo path), so that session is listed with the slots - before it was missing, and the view showed empty slots."""
-
-    REPLY = list(b"ok, done.")                        # the fake engine's reply; its end token (257) is never fed
+    """The API monitor's Context view with --batch: the engine's own session (where a request alone runs), each slot
+    and each parked conversation, as the engine lists them - also while slots decode."""
 
     def view(self):
-        return {e["name"]: e for e in self.svc.context_view()["slots"]}
+        body = self.svc.context_view()
+        return body, {e["name"]: (i, e) for i, e in enumerate(body["entries"])}
 
-    def test_a_request_alone_is_in_the_solo_session(self):
-        self.start(2)
+    def text(self, body, index):
+        return "".join(self.svc.context_entry(body["list"], index)["pieces"])
+
+    def test_sessions_and_a_parked_conversation(self):
+        self.start(2, more=["--lists"])
         self.assertEqual(self.chat("hello")["choices"][0]["message"]["content"], "ok, done.")
-        v = self.view()
-        self.assertEqual(list(v), ["Solo session", "Slot 0", "Slot 1"])
-        solo = v["Solo session"]
-        self.assertEqual((solo["state"], solo["unknown"]), ("idle", None))
-        self.assertEqual(solo["tokens"][-len(self.REPLY):], self.REPLY)
-        self.assertTrue("".join(solo["pieces"]).endswith("ok, done."))
-        self.assertGreater(solo["used"], v["Slot 0"]["used"])
-        self.assertEqual((v["Slot 0"]["tokens"], v["Slot 1"]["tokens"]), ([], []))
+        self.assertEqual(self.chat("another conversation")["choices"][0]["message"]["content"], "ok, done.")
+        body, v = self.view()
+        self.assertEqual(list(v), ["Solo session", "Slot 0", "Slot 1", "Parked conversation 1 of 1"])
+        i, solo = v["Solo session"]
+        self.assertEqual(solo["state"], "holding")
+        self.assertIn("another conversation", self.text(body, i))
+        self.assertTrue(self.text(body, i).endswith("ok, done."))   # (its end token is never fed)
+        i, parked = v["Parked conversation 1 of 1"]
+        self.assertEqual((parked["kind"], parked["where"]), ("parked", "ram"))
+        self.assertIn("hello", self.text(body, i))
 
-    def test_requests_at_once_are_in_the_slots(self):
-        self.start(2)
-        out = self._two_at_once("second one")
+    def test_slots_are_listed_while_they_decode(self):
+        self.start(2, more=["--lists"])
+        out, seen = {}, []
+
+        def watch():
+            while not out:
+                body, v = self.view()
+                seen.extend(e["state"] for name, (_, e) in v.items() if name.startswith("Slot"))
+                time.sleep(0.02)
+        t = threading.Thread(target=watch)
+        t.start()
+        try:
+            out.update(self._two_at_once("second one"))
+        finally:
+            out.setdefault("done", True)
+            t.join()
         self.assertEqual((out["a"][0], out["b"][0]), ("ok", "ok"), out)
+        self.assertIn("decoding", seen)
         time.sleep(0.3)                                 # (a slot is freed at its BDONE, in the background)
-        v = self.view()
-        held = [e["tokens"] for name, e in v.items() if name.startswith("Slot")]
-        self.assertTrue(any(t and t[-len(self.REPLY):] == self.REPLY for t in held), held)
-        # every admission is read in the engine's own session first, then copied into its slot: that session holds the
-        # last admitted prompt, the start of what its slot holds now
-        solo = v["Solo session"]["tokens"]
-        self.assertTrue(solo and any(t[:len(solo)] == solo and len(t) > len(solo) for t in held), (solo, held))
+        body, v = self.view()
+        held = [self.text(body, i) for name, (i, e) in v.items() if name.startswith("Slot") and e["count"]]
+        self.assertTrue(any(h.endswith("ok, done.") for h in held), held)
+
+    def test_an_engine_without_the_commands(self):
+        self.start(2)
+        self.chat("hello")
+        self.assertEqual(self.svc.context_view()["reason"], "engine")
 
 
 class ParallelService(FakeEngineCase):

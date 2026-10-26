@@ -109,13 +109,13 @@ document.querySelectorAll("[data-pane]").forEach(button => { button.onclick = ()
 $("copy").onclick = async () => { try { await navigator.clipboard.writeText($("content").textContent); text("copy", "Copied"); setTimeout(() => text("copy", "Copy"), 1500); } catch (_) { notice("Clipboard unavailable; select the text to copy it."); } };
 async function poll() { await refresh(); setTimeout(poll, 2000); }
 poll();
-// Context in VRAM: the tokens each engine cache keeps, read on request (it can be 100K+ tokens, so it is not polled)
-let ctx = null, ctxView = "plain", ctxPage = -1, ctxPicked = false;   // ctxPage -1: the last page (the newest tokens)
-const UNKNOWN = {busy: "In use: its tokens are shown when its request ends.",
-  stopped: "Not known: the last request was stopped while its prompt was read.",
-  restored: "Not known: the cache was restored from a disk session. The next request shows it again.",
-  dropped: "Empty: the engine dropped its cache after non-finite logits.",
-  ended: "Not known: the engine did not finish the last request."};
+// Context in VRAM: what the engine holds - its sessions in VRAM and the conversations it parked - read on request (a
+// list, then the tokens of the entry shown: they can be 100K+, so nothing is polled)
+let ctx = null, entry = null, ctxView = "plain", ctxPage = -1, ctxPicked = false;   // ctxPage -1: the last page
+const STATES = {holding: "idle", decoding: "decoding, still growing", reading: "its prompt is part read and goes on later",
+  empty: "empty", parked: "parked"};
+const NOTES = {session: "The tokens this session holds in VRAM, as the engine reports them: the prompt and the answer it has fed so far.",
+  parked: "A conversation the engine set aside when another one took its session. Its next request takes it back instead of reading it again. The first one listed is the next to be evicted."};
 // The colour comes from the id, so the same token always has the same colour: a hash of the id picks one of a fixed
 // palette per theme.  The palette samples every allowed colour uniformly by volume in OKLab (roughly perceptual), so
 // muted and very light or dark colours, which are a smaller part of that space, get fewer entries.  Allowed: inside
@@ -152,20 +152,29 @@ function makePalette({text, L: [lo, hi]}) {
 let palettes = null;                                  // made when the colored view is first shown
 const tokenColour = id => (Math.imul(id, 2654435761) >>> 0) >>> 20;   // the hash's top 12 bits: an entry of 4096
 const PAGE = 8000;                                    // tokens per page of the colored view: the page stays light
-function ctxSlot() { return ctx?.slots?.[Number($("ctx-slot").value) || 0] || null; }
+function ctxEntry() { return ctx?.entries?.[Number($("ctx-slot").value) || 0] || null; }
+const gb = bytes => `${(bytes / 1073741824).toFixed(2)} GB`;
+function entryLabel(e) {
+  return `${e.name} · ${e.count.toLocaleString()} tokens` + (e.kind === "parked" ? ` · ${e.where === "disk" ? "on disk" : "RAM"}, ${gb(e.bytes)}` : e.state === "holding" ? "" : ` · ${STATES[e.state] || e.state}`);
+}
 function showContext() {
-  const view = $("ctx-view"), slot = ctxSlot();
-  $("ctx-save").disabled = !slot?.tokens?.length; $("ctx-pager").hidden = true;
+  const view = $("ctx-view"), e = ctxEntry(), got = entry && e && entry.name === e.name ? entry : null;
+  $("ctx-save").disabled = !got?.tokens?.length; $("ctx-pager").hidden = true;
   if (!ctx) return;
   view.replaceChildren(); text("ctx-note", "");
-  if (!ctx.available) { text("ctx-sum", ctx.loaded ? "This engine does not report its cache." : "The model is not loaded."); return; }
-  if (!slot) { text("ctx-sum", "No cache."); return; }
-  if (slot.tokens === null) { text("ctx-sum", `${slot.name} · ${UNKNOWN[slot.unknown] || "Not known."}`); return; }
-  const n = slot.tokens.length;
-  text("ctx-sum", `${n.toLocaleString()} of ${ctx.max_context.toLocaleString()} tokens · ${slot.name} · ${slot.state === "idle" ? "idle" : "in use, still growing"}`);
-  text("ctx-note", (ctxView === "colored" ? "Each token's colour comes from its id, so the same token always has the same colour. Hover a token for its position and id. " : "") +
-    "The last prompt and the answer to it, as the server sent and read them. The last token of the answer is not in the cache; with draft tokens (MTP) a few more can be.");
-  if (ctxView === "plain") { view.textContent = slot.pieces.join(""); return; }
+  if (!ctx.available) {
+    text("ctx-sum", ctx.reason === "engine" ? "This engine cannot list what it holds: it predates the LIST_SESSION_TOKENS command. Update the engine to see it." : "The model is not loaded.");
+    return;
+  }
+  const when = ctx.at ? new Date(ctx.at * 1000).toLocaleTimeString() : "";
+  if (!ctx.list) { text("ctx-sum", ctx.error || "A request has the engine's turn: press Refresh when it has finished."); return; }
+  if (!e) { text("ctx-sum", "Nothing held."); return; }
+  const stale = ctx.busy ? ` · a request has the engine's turn: as read at ${when}` : ctx.error ? ` · ${ctx.error}: as read at ${when}` : "";
+  const n = e.count;
+  text("ctx-sum", `${n.toLocaleString()} of ${ctx.max_context.toLocaleString()} tokens · ${e.name} · ${e.kind === "parked" ? `${e.where === "disk" ? "on disk" : "in RAM"}, ${gb(e.bytes)}` : STATES[e.state] || e.state}${stale}`);
+  if (!got) { if (n) text("ctx-note", entry?.error || "Reading…"); return; }
+  text("ctx-note", (ctxView === "colored" ? "Each token's colour comes from its id, so the same token always has the same colour. Hover a token for its position and id. " : "") + NOTES[e.kind]);
+  if (ctxView === "plain") { view.textContent = got.pieces.join(""); return; }
   const pages = Math.max(1, Math.ceil(n / PAGE));
   ctxPage = Math.min(Math.max(ctxPage < 0 ? pages - 1 : ctxPage, 0), pages - 1);
   const start = ctxPage * PAGE, end = Math.min(n, start + PAGE);
@@ -174,41 +183,55 @@ function showContext() {
   palettes ??= {light: makePalette(THEMES.light), dark: makePalette(THEMES.dark)};
   const frag = document.createDocumentFragment();     // one append: one layout
   for (let i = start; i < end; i++) {
-    const id = slot.tokens[i], k = tokenColour(id), span = document.createElement("span"); span.className = "tok";
+    const id = got.tokens[i], k = tokenColour(id), span = document.createElement("span"); span.className = "tok";
     span.style.setProperty("--bl", palettes.light[k]); span.style.setProperty("--bd", palettes.dark[k]);   // both themes
-    span.textContent = slot.pieces[i]; span.title = `token #${i} · id ${id}`;
+    span.textContent = got.pieces[i]; span.title = `token #${i} · id ${id}`;
     frag.append(span);
   }
   view.append(frag);
 }
+// the tokens of the entry picked, from the list its name came from
+async function loadEntry() {
+  const i = Number($("ctx-slot").value) || 0, e = ctx?.entries?.[i];
+  entry = null; ctxPage = -1; showContext();
+  if (!e) return;
+  if (!e.count) { entry = {name: e.name, tokens: [], pieces: []}; showContext(); return; }
+  try { entry = await api(`/api/context?list=${ctx.list}&entry=${i}`); }
+  catch (error) { entry = {name: e.name, error: error.message}; }
+  if (ctx.entries[Number($("ctx-slot").value) || 0] === e) showContext();   // (unless another one was picked meanwhile)
+}
 async function loadContext() {
   $("ctx-refresh").disabled = true; text("ctx-sum", "Reading…");
   try {
+    const keep = ctxEntry()?.name;
     ctx = await api("/api/context");
-    const select = $("ctx-slot"), keep = select.value;
-    select.replaceChildren(...ctx.slots.map((s, i) => { const o = document.createElement("option"); o.value = String(i); o.textContent = `${s.name} · ${s.tokens ? `${s.tokens.length.toLocaleString()} tokens` : s.state}`; return o; }));
-    // the cache a request used last (with --batch a request alone runs on the solo session, others in slots)
-    const latest = ctx.slots.reduce((best, s, i) => (s.used || 0) > (ctx.slots[best].used || 0) ? i : best, 0);
-    select.value = ctxPicked && Number(keep) < ctx.slots.length ? keep : String(latest);
-    select.hidden = ctx.slots.length < 2;
-    ctxPage = -1; showContext();
+    const entries = ctx.entries || [], select = $("ctx-slot");
+    select.replaceChildren(...entries.map((e, i) => { const o = document.createElement("option"); o.value = String(i); o.textContent = entryLabel(e); return o; }));
+    // the session a request used last: the engine's own one when it holds anything (with --batch a request alone
+    // runs there and every admission is read there first), else the slot used last
+    const main = entries.findIndex(e => e.kind === "session" && e.slot === null && e.count);
+    const latest = main >= 0 ? main : entries.reduce((best, e, i) => (e.used || 0) > (entries[best].used || 0) ? i : best, 0);
+    const kept = entries.findIndex(e => e.name === keep);
+    select.value = String(ctxPicked && kept >= 0 ? kept : latest);
+    select.hidden = entries.length < 2;
+    await loadEntry();
   } catch (error) { text("ctx-sum", error.message); }
   finally { $("ctx-refresh").disabled = false; }
 }
 function saveContext() {
-  const slot = ctxSlot(); if (!slot?.tokens) return;
-  const binary = $("ctx-binary").checked, parts = [slot.pieces.join("")];
+  const e = ctxEntry(); if (!entry?.tokens || !e) return;
+  const binary = $("ctx-binary").checked, parts = [entry.pieces.join("")];
   if (binary) {                                       // the ids are the file's last 4 x N bytes
-    const ids = new DataView(new ArrayBuffer(slot.tokens.length * 4));
-    slot.tokens.forEach((id, i) => ids.setUint32(i * 4, id, true));
-    parts.push(`\n\n----- ${slot.tokens.length} token ids, uint32 little-endian, to the end of the file -----\n`, ids.buffer);
+    const ids = new DataView(new ArrayBuffer(entry.tokens.length * 4));
+    entry.tokens.forEach((id, i) => ids.setUint32(i * 4, id, true));
+    parts.push(`\n\n----- ${entry.tokens.length} token ids, uint32 little-endian, to the end of the file -----\n`, ids.buffer);
   }
-  const a = document.createElement("a");
+  const a = document.createElement("a"), which = e.kind === "parked" ? `parked${ctx.entries.filter(x => x.kind === "parked").indexOf(e) + 1}` : e.slot === null ? "session" : `slot${e.slot}`;
   a.href = URL.createObjectURL(new Blob(parts, {type: binary ? "application/octet-stream" : "text/plain;charset=utf-8"}));
-  a.download = `strata-context-${slot.slot === null ? "session" : `slot${slot.slot}`}-${new Date().toISOString().replace(/[:.]/g, "-")}.txt`;
+  a.download = `strata-context-${which}-${new Date().toISOString().replace(/[:.]/g, "-")}.txt`;
   a.click(); setTimeout(() => URL.revokeObjectURL(a.href), 1000);
 }
 $("ctx-refresh").onclick = loadContext; $("ctx-save").onclick = saveContext;
-$("ctx-slot").onchange = () => { ctxPicked = true; ctxPage = -1; showContext(); };
+$("ctx-slot").onchange = () => { ctxPicked = true; loadEntry(); };
 $("ctx-prev").onclick = () => { ctxPage--; showContext(); }; $("ctx-next").onclick = () => { ctxPage++; showContext(); };
 document.querySelectorAll("[data-view]").forEach(button => { button.onclick = () => { ctxView = button.dataset.view; document.querySelectorAll("[data-view]").forEach(b => b.setAttribute("aria-selected", String(b === button))); showContext(); }; });
