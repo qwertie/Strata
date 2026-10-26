@@ -67,14 +67,19 @@ Source setup does not make an unsupported model or backend compatible. Strata's 
 
 ## Working on the code
 
+- This fork is being reorganized into layers so that code is shared instead of copied. Read
+  [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) before adding code: it says where new code goes and which old
+  practices not to copy. The steps are in [docs/REFACTOR_PLAN.md](docs/REFACTOR_PLAN.md); how to carry an upstream
+  change over is in [docs/UPSTREAM_PORTING.md](docs/UPSTREAM_PORTING.md).
 - How the engine works, every measured number, the API and all settings: [docs/DETAILS.md](docs/DETAILS.md) and
   the [paper](docs/paper/Strata-Paper.pdf).
 - The Terminal: [docs/TERMINAL.md](docs/TERMINAL.md) and [docs/TERMINAL_LAUNCH.md](docs/TERMINAL_LAUNCH.md). The app,
   the packages and the update feed: [packaging/README.md](packaging/README.md) and [packaging/UPDATES.md](packaging/UPDATES.md).
 - AMD (HIP) build and validation: [docs/AMD_HIP.md](docs/AMD_HIP.md); multi-GPU: [docs/MULTI_GPU.md](docs/MULTI_GPU.md);
   Mac (Metal): [docs/MAC.md](docs/MAC.md).
-- Tests: the Terminal and Control tests are in `tests/terminal` (`python -m pytest tests/terminal`). The app's UI
-  tests run with `npm test` in `apps/host`. Setup's own tests run without a GPU or downloads:
+- Tests: the Terminal and Control tests are in `tests/terminal` (`python -m pytest tests/terminal`); the layering
+  rules are checked by `python -m pytest tests/architecture`. The app's UI tests run with `npm test` in `apps/host`.
+  Setup's own tests run without a GPU or downloads:
   `python tools/test_setup_<name>.py` (for example `tools/test_setup_amd.py`, `tools/test_setup_choices.py`).
 - Keep the docs' style: plain words, short sentences, written for non-technical users first. Give measured numbers
   with what they were measured on. Make no claim without a measurement.

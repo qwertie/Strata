@@ -33,11 +33,11 @@ session on an NVIDIA machine. Changes nobody can test come last.
 | Step | Work | Est. | Status |
 |---|---|---:|---|
 | A0 | `tools/loc_report.py`, the baseline, this plan | — | done |
-| A1 | Skeleton: the new folders with a README each, [ARCHITECTURE.md](ARCHITECTURE.md), [UPSTREAM_PORTING.md](UPSTREAM_PORTING.md), the layering test | — | |
+| A1 | Skeleton: the new folders with a README each, [ARCHITECTURE.md](ARCHITECTURE.md), [UPSTREAM_PORTING.md](UPSTREAM_PORTING.md), the layering test | — | done |
 | A2 | Python: `strata_base/`, `strata_common/`; `serve/` becomes `strata_server/`; remove the import cycles between `serve/`, `strata_control/` and `strata_cli/`; one copy of the helpers repeated in `setup.py` and `tools/` | 2–5K | |
-| A3 | Move the C++ folders whose files do not change: `src/platform`, `src/artifact`, `src/spec`, `src/dsv41`, `src/qwen35`, `src/ngram`, `src/plan`, and the matching folders in `sycl/` | 0 | |
+| A3 | Move every whole file whose new place is already clear, without changing it: the folders `src/platform`, `src/artifact`, `src/spec`, `src/dsv41`, `src/qwen35`, `src/ngram`, `src/plan`; from `src/core/`, the runtime files to `src/base/gpu`, the conversation files to `src/common/state` and the Qwen3.8-only files to `src/models/qwen38`; the matching files in `sycl/`. Files that must be split wait for their step. | 0 | |
 | A4 | DeepSeek's own copies of host code: `ds4_os.hpp`, `ds4_pool.hpp`, `include/strata/dsv41/sampler.hpp` | ~1K | |
-| A5 | `src/common/state`, then `src/common/serve`, then `src/common/spec`, then the one-GPU parts of `src/common/experts`. These are also the base for the planned paged-KV engine. | 3–7K | |
+| A5 | The `src/base/gpu` runtime interface (the shared code must not call the CUDA runtime directly), then `src/common/state`, `src/common/serve`, `src/common/spec` and the one-GPU parts of `src/common/experts`. These are also the base for the planned paged-KV engine. | 3–7K | |
 | A6 | SYCL: the 7 files that are 95% or more the same as their `src/` original become shared | ~2.4K | |
 
 ### Phase B: changes NVIDIA-only code; one batched test session on an NVIDIA machine
@@ -62,7 +62,7 @@ Do Phase C only if someone with an Intel Arc card can test it.
 
 | Check | Where | How |
 |---|---|---|
-| Python tests | this PC | `python -m pytest tests/terminal tests/architecture` and the server's tests (`serve/test_*.py`, later `strata_server/`) |
+| Python tests | this PC | `.venv/Scripts/python -m pytest tests/terminal tests/architecture` and the server's tests (`serve/test_*.py`, later `strata_server/`); pytest is installed in the repo's `.venv` |
 | HIP build and GPU tests | this PC | `build-hip-win` (gfx1151, tests on): build the targets the step touches, run their `*_parity` and `*_test` programs |
 | CUDA compile | Docker on this PC | the command below; about 3 minutes after the first build |
 | SYCL compile | Docker on this PC | the command below; about 4 minutes |
@@ -105,3 +105,4 @@ Metal is checked only by the `metal-build` GitHub workflow, because it needs a M
 | Step | Commit | Lines after | Change from baseline | Notes |
 |---|---|---:|---:|---|
 | baseline | `06fcbe98` | 493,148 | — | |
+| A0 | `e56c4aed` | 493,264 | +116 | the line counter itself |
