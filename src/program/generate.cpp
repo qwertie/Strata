@@ -5221,6 +5221,9 @@ int main(int argc, char** argv) {
     // stage that runs [lb, le) carves only those layers' GDN rows and QSA pools - before the carve every stage
     // held all 48 layers' state whatever layers it ran, which is the same disease the chunked-QSA-prefill PR
     // fixed in llama.cpp: allocation sized by the whole model instead of the device's own work.
+    // the layer ranges a session is carved in, one per stage (every session - the engine's own and each --batch slot's -
+    // is carved alike): LIST_CONVERSATIONS gives a session's size from them (session_bytes)
+    std::vector<std::pair<int64_t, int64_t>> session_layers;
     {
         const strata::core::OnDevice on0(primary_device);   // STRATA_PRIMARY_DEVICE (upstream: a literal 0)
         const int64_t hi0 = multi_gpu ? split_at[0] : -1;
@@ -5243,6 +5246,7 @@ int main(int argc, char** argv) {
             strata::core::qsa_set_kv_elastic(on, iv != nullptr && std::atoll(iv) > 0 ? std::atoll(iv) : 16384);
             strata::core::ExpertCache::set_vmm(on);
         }
+        session_layers.emplace_back(0, hi0);
         if (cudaMalloc(&sbuf, strata::core::session_bytes(g, o.max_context, K, 0, hi0)) != cudaSuccess) {
             std::fprintf(stderr, "strata generate: session state allocation failed\n");
             return 1;
@@ -5279,6 +5283,7 @@ int main(int argc, char** argv) {
         GpuStage& st = *stages[i];
         const strata::core::OnDevice on(st.dev);
         void* sbuf_s = nullptr;
+        session_layers.emplace_back(st.lb, st.le);
         if (cudaMalloc(&sbuf_s, strata::core::session_bytes(g, o.max_context, K, st.lb, st.le)) != cudaSuccess ||
             strata::core::session_init(g, o.max_context, K, sbuf_s, st.ss, st.lb, st.le) == 0) {
             std::fprintf(stderr, "strata generate: layer split, CUDA%d: the session state failed\n", st.dev);
@@ -11227,8 +11232,8 @@ int main(int argc, char** argv) {
         }
         strata::core::pin_sim_report("at READY");
         strata::core::pin_reserve_release_hard();   // the load is over: nothing else needs the headroom
-        // "stop": this engine honours STOP; "lists": it answers LIST_SESSION_TOKENS and LIST_PARKED_CONVERSATIONS
-        std::printf("READY %lld stop lists\n", (long long) o.max_context);
+        // "stop": this engine honours STOP; "conversations": it answers LIST_CONVERSATIONS and GET_CONTEXT_WINDOWS
+        std::printf("READY %lld stop conversations\n", (long long) o.max_context);
         std::fflush(stdout);
         std::string line;
         int64_t rounds = 0;
@@ -12053,28 +12058,35 @@ int main(int argc, char** argv) {
                 std::fflush(stdout);
                 continue;
             }
-            // what the sessions and the parked conversations hold, for the server's API monitor (token_listing.hpp):
+            // the conversations the sessions hold and the parked ones, for the server's API monitor (token_listing.hpp):
             // between requests and between batch windows, changing nothing
-            if (line == "LIST_SESSION_TOKENS") {
-                const bool held = live_ok && !live.empty();
-                strata::core::print_session_tokens("main", held ? "holding" : "empty", live.data(), held ? live.size() : 0);
+            if (strata::core::is_conversation_command(line)) {
+                // a session's size for `cells` tokens: at --max-context the bytes it takes, at what it holds the bytes
+                // a session sized for just those would take (its state and buffers, and their K/V)
+                auto session_size = [&](int64_t cells) {
+                    uint64_t n = 0;
+                    for (const auto& [lo, hi] : session_layers)
+                        n += strata::core::session_bytes(g, std::max<int64_t>(cells, 1), K, lo, hi);
+                    return n;
+                };
+                const uint64_t session_cap = session_size(o.max_context);
+                std::vector<strata::core::HeldConversation> held;
+                const bool main_held = live_ok && !live.empty();
+                const size_t main_n = main_held ? live.size() : 0;
+                held.push_back({"main", "vram", main_held ? "holding" : "empty", live.data(), main_n,
+                                (uint64_t) o.max_context, session_cap, main_n ? session_size((int64_t) main_n) : 0});
                 for (size_t b = 0; b < bs.size(); ++b) {
                     const BSlot& sl = bs[b];
-                    const char* st = sl.active ? "decoding" : sl.partial ? "reading" : sl.cached ? "holding" : "empty";
-                    const bool known = sl.active || sl.partial || sl.cached;
-                    strata::core::print_session_tokens("slot" + std::to_string(b), st, sl.ids.data(),
-                                                       known ? sl.ids.size() : 0);
+                    const size_t n = sl.active || sl.partial || sl.cached ? sl.ids.size() : 0;
+                    held.push_back({"slot" + std::to_string(b), "vram",
+                                    sl.active ? "decoding" : sl.partial ? "reading" : sl.cached ? "holding" : "empty",
+                                    sl.ids.data(), n, (uint64_t) o.max_context, session_cap, n ? session_size((int64_t) n) : 0});
                 }
-                std::printf("END_SESSION_TOKENS\n");
-                std::fflush(stdout);
-                continue;
-            }
-            if (line == "LIST_PARKED_CONVERSATIONS") {
-                conversations.for_each([](uint64_t serial, const strata::core::SavedConversation& c) {
-                    strata::core::print_parked_conversation(serial, false, c.bytes(), c.live.ids.data(), c.live.ids.size());
+                conversations.for_each([&](uint64_t serial, const strata::core::SavedConversation& c) {
+                    held.push_back({"parked" + std::to_string(serial), "ram", "parked", c.live.ids.data(),
+                                    c.live.ids.size(), c.live.ids.size(), c.bytes(), c.bytes()});
                 });
-                std::printf("END_PARKED_CONVERSATIONS\n");
-                std::fflush(stdout);
+                strata::core::answer_conversation_command(line, held);
                 continue;
             }
             // a command may touch the expert cache (a request lends slots, a K/V growth moves them, a session restore

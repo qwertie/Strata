@@ -695,9 +695,12 @@ first-token and decode timings. `GET /api/requests` returns summaries and `GET /
 monitor keeps the newest 100 requests in memory until restart, 262,144 characters per field, with visible truncation flags.
 Headers are not recorded. Treat the history as sensitive when Strata is reachable from a network, and set an API key.
 
-Its **Context in VRAM** panel shows what the engine holds, as the engine lists it when **Refresh** is pressed: the tokens
-of each session in VRAM, and of each conversation it has parked. Pick one in the list next to the views; the panel opens
-on the session a request used last.
+Its **Context in VRAM** panel shows the conversations the engine holds, as the engine lists them when **Refresh** is
+pressed. The list next to the views names each one and says where it is (VRAM, or RAM or disk for a parked one), its
+size and how its first user message begins. A session's size is the tokens it holds of the most it can hold
+(`--max-context`), and the memory those tokens take of what the session is allocated; a parked conversation's is its
+tokens and its snapshot in RAM or on disk. Pick one, and its tokens are read from the engine then. The
+panel opens on the session a request used last.
 
 - **Session** (or **Solo session** with `"parallel"`, `--batch`): the engine's own session. A request that is alone
   runs there, and with `--batch` every request is read there before it is copied into its slot.
@@ -716,32 +719,39 @@ come up less often. **Save .txt** saves the text. Tick **with token ids** next t
 32-bit little-endian numbers: a line gives their count N, and they are the file's last 4 × N bytes.
 
 The engine answers between requests, and with `--batch` also between the windows of slots that decode. While a request
-has the engine to itself (without `--batch`, or a request alone on the solo path) the panel waits up to a few seconds, then shows
-the list it read last, with the time it was read. It needs an engine that lists what it holds (its `READY` line ends in
-`lists`); with an older engine the panel says so.
+has the engine to itself (without `--batch`, or a request alone on the solo path) the panel waits up to a few seconds,
+then shows the list it read last, and the tokens it read last if they are the same conversation's, with the time they
+were read. It needs an engine that lists its conversations (its `READY` line ends in `conversations`); with an older
+engine the panel says so.
 
 With `--batch`, Qwen3.8-Flash-Next's engine keeps its own session next to the slots, so `--batch 2` holds three sessions,
 each allocated for the whole context. The engine's log gives 2.88 GiB per slot session at a 204,800-token context with
 `--kv int8` (on a Radeon 8060S, Strix Halo); its own session is allocated the same way and is not in that figure.
 
-`GET /api/context` returns `{"available", "loaded", "max_context", "busy", "error", "list", "at", "entries": [{"kind",
-"name", "slot", "state", "count", "used", "where", "bytes"}]}`: `kind` is `session` or `parked`; `state` is `holding`,
-`decoding`, `reading` (a prompt read that gave way to a shorter one and goes on later), `empty` or `parked`; `used` is
-when a request last used a slot (Unix time); `where` (`ram` or `disk`) and `bytes` are a parked conversation's. `list`
-numbers the list and `at` is when it was read; `busy` says a request had the engine's turn, so the list is the one read
-last. `available` is `false` with `"reason": "engine"` for an engine without the commands. `GET
-/api/context?list=<list>&entry=<i>` returns entry `i` of that list with its `tokens` and `pieces` (each token's text;
-joined, they give the whole text), or 404 once a newer list was read. When the monitor is on, the main page's Sampling
-panel and Monitor tab link to `/api-monitor`.
+`GET /api/context` returns `{"available", "loaded", "max_context", "busy", "error", "at", "entries": [{"id", "name",
+"kind", "slot", "where", "state", "count", "capacity", "bytes", "used", "preview"}]}`: `id` is the engine's (`main`,
+`slot<b>`, `parked<serial>`); `kind` is `session` or `parked`; `where` is `vram`, `ram` or `disk`; `state` is `holding`,
+`decoding`, `reading` (a prompt read that gave way to a shorter one and goes on later), `empty` or `parked`; `count` and
+`capacity` are the tokens held and the most it can hold; `bytes` is its physical size and `used` what its tokens take of
+it (for a session, the size a session sized for just those tokens would have; both 0 where the engine does not know
+them, as for DeepSeek V4.1's session); `preview` is the start of the first user message (empty when there is none);
+`last_used` is when a request last used a slot (Unix time). `at` is when the list was read; `busy` says a request had the engine's turn, so the list is the
+one read last. `available` is `false` with `"reason": "engine"` for an engine without the commands. `GET
+/api/context?id=<id>` returns that conversation's `tokens` and `pieces` (each token's text; joined, they give the whole
+text), 404 when the engine no longer holds it, and 503 while a request has the engine's turn and they were not read
+before. When the monitor is on, the main page's Sampling panel and Monitor tab link to `/api-monitor`.
 
 The engine's commands, one line each on its stdin (include/strata/core/token_listing.hpp):
 
-- `LIST_SESSION_TOKENS` answers `SESSION_TOKENS <name> <state> <n> <id,id,...>` for each session (`main`, `slot0`,
-  ...), then `END_SESSION_TOKENS`.
-- `LIST_PARKED_CONVERSATIONS` answers `PARKED_CONVERSATION <id> <ram|disk> <bytes> <n> <id,id,...>` for each parked
-  conversation, the next to be evicted first, then `END_PARKED_CONVERSATIONS`.
+- `LIST_CONVERSATIONS [<marker> <n>]` answers `CONVERSATION <id> <place> <state> <tokens> <capacity> <bytes> <used>
+  [<preview>]` for each conversation it holds (place `vram`, `ram` or `disk`), then `END_CONVERSATIONS`. With a
+  marker (comma-separated token ids) and a count, the preview is the first n tokens after the first place the
+  conversation holds the marker; the server passes the chat template's user-turn header (`<|im_start|>user` and a newline,
+  or `<｜User｜>` for DeepSeek V4.1). Without them there are no previews.
+- `GET_CONTEXT_WINDOWS <id> [<id> ...]` answers `CONTEXT_WINDOW <id> <n> <id,id,...>` for each id, or `CONTEXT_WINDOW
+  <id> gone` when the engine no longer holds it, then `END_CONTEXT_WINDOWS`.
 
-The ids are left out when `n` is 0. Neither command changes anything.
+Token ids are left out when there are none. Neither command changes anything.
 
 ---
 

@@ -1207,6 +1207,8 @@ struct Engine {
     };
     std::vector<Sess> sess;
     int n_sess = 1, cur = 0;
+    // a session's size: its recurrent state, and its K/V per cell of context (LIST_CONVERSATIONS reports both)
+    uint64_t sess_fixed_bytes = 0, sess_cell_bytes = 0;
     uint64_t use_clock = 0;
     // device tables for batch rows: per state index (layer, then the MTP block) the session pointers
     float **d_conv_tab = nullptr, **d_S_tab = nullptr, **d_kc_tab = nullptr, **d_vc_tab = nullptr;
@@ -1454,8 +1456,9 @@ struct Engine {
             // the MTP block, and its recurrent state)
             size_t n_attn = m->has_mtp ? 1 : 0, n_gdn = 0;
             for (const Layer& L : m->layers) (L.attn ? n_attn : n_gdn) += 1;
-            const size_t per = (size_t) (g.n_head_kv * g.head_dim * 2 * 4) * (size_t) ctx * n_attn +
-                               (size_t) g.ssm_v_heads * g.ssm_state_size * g.ssm_state_size * 4 * n_gdn;
+            sess_cell_bytes = (uint64_t) (g.n_head_kv * g.head_dim * 2 * 4) * n_attn;
+            sess_fixed_bytes = (uint64_t) g.ssm_v_heads * g.ssm_state_size * g.ssm_state_size * 4 * n_gdn;
+            const size_t per = (size_t) (sess_cell_bytes * (uint64_t) ctx + sess_fixed_bytes);
             size_t fr0 = 0, tot0 = 0;
             CK(cudaMemGetInfo(&fr0, &tot0));
             if (n_sess > 1)
@@ -3678,9 +3681,9 @@ struct Serve {
 
     int run() {
         if (E.n_sess > 1) std::printf("INFO batch_slots=%d slot_cache=1\n", E.n_sess);
-        // "stop": STOP ends the request on the control lines; "lists": LIST_SESSION_TOKENS and
-        // LIST_PARKED_CONVERSATIONS
-        std::printf("READY %d stop lists\n", E.ctx);
+        // "stop": STOP ends the request on the control lines; "conversations": LIST_CONVERSATIONS and
+        // GET_CONTEXT_WINDOWS
+        std::printf("READY %d stop conversations\n", E.ctx);
         std::fflush(stdout);
         std::thread reader([&] {
             std::string l;
@@ -3717,18 +3720,18 @@ struct Serve {
                 if (b >= 0 && b < (int) slots.size()) slots[(size_t) b].stop = true;
             } else if (line.rfind("BYIELD", 0) == 0) {
                 // (a read that has ended)
-            } else if (line == "LIST_SESSION_TOKENS") {   // what each session holds (token_listing.hpp)
+            } else if (strata::core::is_conversation_command(line)) {   // what each session holds (token_listing.hpp);
+                std::vector<strata::core::HeldConversation> held;      // this path parks none: its sessions are its cache
+                const uint64_t cap = (uint64_t) E.ctx;
                 for (int i = 0; i < E.n_sess; ++i) {
                     const Engine::Sess& ss = E.sess[(size_t) i];
-                    strata::core::print_session_tokens(E.n_sess > 1 ? "slot" + std::to_string(i) : std::string("main"),
-                                                       ss.active ? "decoding" : ss.live.empty() ? "empty" : "holding",
-                                                       ss.live.data(), ss.live.size());
+                    const uint64_t n = ss.live.size();
+                    held.push_back({E.n_sess > 1 ? "slot" + std::to_string(i) : std::string("main"), "vram",
+                                    ss.active ? "decoding" : ss.live.empty() ? "empty" : "holding", ss.live.data(), n, cap,
+                                    E.sess_fixed_bytes + E.sess_cell_bytes * cap,
+                                    n ? E.sess_fixed_bytes + E.sess_cell_bytes * n : 0});
                 }
-                std::printf("END_SESSION_TOKENS\n");
-                std::fflush(stdout);
-            } else if (line == "LIST_PARKED_CONVERSATIONS") {   // this path parks none: its sessions are its cache
-                std::printf("END_PARKED_CONVERSATIONS\n");
-                std::fflush(stdout);
+                strata::core::answer_conversation_command(line, held);
             } else if (line.rfind("GEN", 0) == 0 || line.rfind("BGEN", 0) == 0) {
                 request(line);
             } else {

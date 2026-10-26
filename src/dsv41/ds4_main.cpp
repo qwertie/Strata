@@ -319,10 +319,10 @@ bool parse_gen(const std::string& line, Req& r, bool geni) {
 int serve(strata::ds4::Model& m, const std::string& eos_list, bool spec, float conf_min, const std::string& pack) {
     std::vector<int> eos = parse_ids(eos_list);
     for (const std::string& l : m.info_lines()) std::printf("%s\n", l.c_str());
-    // "stop": STOP ends a request; "lists": LIST_SESSION_TOKENS and LIST_PARKED_CONVERSATIONS
-    std::printf("READY %lld stop lists\n", (long long) m.max_context());
+    // "stop": STOP ends a request; "conversations": LIST_CONVERSATIONS and GET_CONTEXT_WINDOWS
+    std::printf("READY %lld stop conversations\n", (long long) m.max_context());
     std::fflush(stdout);
-    std::fprintf(stderr, "maya ds4 serve: GEN <max_new> [keys] <ids>; GENI <max_new> [keys] <pictures> <ids>; STOP, QUIT, LIST_SESSION_TOKENS, LIST_PARKED_CONVERSATIONS\n");
+    std::fprintf(stderr, "maya ds4 serve: GEN <max_new> [keys] <ids>; GENI <max_new> [keys] <pictures> <ids>; STOP, QUIT, LIST_CONVERSATIONS, GET_CONTEXT_WINDOWS\n");
     Lines in;
     in.start();
     std::string line;
@@ -361,9 +361,10 @@ int serve(strata::ds4::Model& m, const std::string& eos_list, bool spec, float c
         uint64_t bytes = 0, used = 0;
         std::shared_ptr<std::vector<uint8_t>> data;   // the RAM slot's bytes (null: a file slot)
         std::vector<int64_t> cks;                     // the positions short of its end it can be taken back at
+        uint64_t serial = 0;                          // its name in LIST_CONVERSATIONS (`used` changes when it is taken back)
     };
     std::vector<Slot> slots;
-    uint64_t slot_clock = 0, slot_seq = 0;
+    uint64_t slot_clock = 0, slot_seq = 0, slot_serial = 0;
     const std::string slot_identity = m.slot_identity();
     const auto note = [&](const std::string& msg) {
         std::fprintf(stderr, "ds4 slots: %s\n", msg.c_str());
@@ -496,6 +497,7 @@ int serve(strata::ds4::Model& m, const std::string& eos_list, bool spec, float c
                 slot_drop(i);
         slots.push_back({t, "", bytes, ++slot_clock, nullptr, m.check_positions()});
         slots.back().data = buf;
+        slots.back().serial = ++slot_serial;
         while (true) {   // past the cap: the least recently used conversation in RAM to the folder, or gone
             int ram = 0, disk = 0;
             slot_count(ram, disk);
@@ -627,6 +629,7 @@ int serve(strata::ds4::Model& m, const std::string& eos_list, bool spec, float c
             for (auto& fd : found) {
                 total += fd.bytes;
                 slots.push_back({std::move(fd.toks), fd.bin, fd.bytes, ++slot_clock, nullptr, std::move(fd.cks)});
+                slots.back().serial = ++slot_serial;
             }
             std::string msg = "folder " + slot_dir.string() + ": " + std::to_string(slots.size()) +
                               " conversation(s) kept from earlier runs (" + gb(total) + ")";
@@ -647,28 +650,27 @@ int serve(strata::ds4::Model& m, const std::string& eos_list, bool spec, float c
     }
     while (in.next(line)) {
         if (line == "QUIT") break;
-        // what the model holds and the conversations set aside hold (token_listing.hpp), between requests
-        if (line == "LIST_SESSION_TOKENS") {
+        // the conversation the model holds and the ones set aside (token_listing.hpp), between requests: the least
+        // recently used of those (the next to go) first
+        if (strata::core::is_conversation_command(line)) {
+            std::vector<strata::core::HeldConversation> held;
             const std::vector<int32_t>& t = m.tokens();
-            strata::core::print_session_tokens("main", t.empty() ? "empty" : "holding", t.data(), t.size());
-            std::printf("END_SESSION_TOKENS\n");
-            std::fflush(stdout);
-            continue;
-        }
-        if (line == "LIST_PARKED_CONVERSATIONS") {   // the least recently used (the next to go) first
+            // (its state's size is not known on this path: 0 bytes)
+            held.push_back({"main", "vram", t.empty() ? "empty" : "holding", t.data(), t.size(),
+                            (uint64_t) m.max_context(), 0, 0});
             std::vector<size_t> order(slots.size());
             std::iota(order.begin(), order.end(), size_t{0});
             std::sort(order.begin(), order.end(), [&](size_t a, size_t b) { return slots[a].used < slots[b].used; });
             for (const size_t i : order)
-                strata::core::print_parked_conversation(slots[i].used, slots[i].data == nullptr, slots[i].bytes,
-                                                        slots[i].tokens.data(), slots[i].tokens.size());
-            std::printf("END_PARKED_CONVERSATIONS\n");
-            std::fflush(stdout);
+                held.push_back({"parked" + std::to_string(slots[i].serial), slots[i].data ? "ram" : "disk", "parked",
+                                slots[i].tokens.data(), slots[i].tokens.size(), slots[i].tokens.size(), slots[i].bytes,
+                                slots[i].bytes});
+            strata::core::answer_conversation_command(line, held);
             continue;
         }
         const bool geni = line.rfind("GENI ", 0) == 0;
         if (!geni && line.rfind("GEN ", 0) != 0) {
-            std::printf("ERR unsupported command '%s' (GEN, GENI, STOP, QUIT, LIST_SESSION_TOKENS and LIST_PARKED_CONVERSATIONS)\n", line.substr(0, line.find(' ')).c_str());
+            std::printf("ERR unsupported command '%s' (GEN, GENI, STOP, QUIT, LIST_CONVERSATIONS and GET_CONTEXT_WINDOWS)\n", line.substr(0, line.find(' ')).c_str());
             std::fflush(stdout);
             continue;
         }

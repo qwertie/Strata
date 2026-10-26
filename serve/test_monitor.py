@@ -193,50 +193,73 @@ class Monitor(unittest.TestCase):
     def test_context_of_an_engine_that_cannot_list_it(self):
         code, body = self.request("/api/context")
         self.assertEqual(code, 200)
-        self.assertEqual((body["available"], body["reason"]), (False, "engine"))   # an engine before "lists"
+        self.assertEqual((body["available"], body["reason"]), (False, "engine"))   # an engine before "conversations"
+        self.assertEqual(self.request("/api/context?id=main")[0], 404)
         self.assertTrue(self.request("/health")[1]["api_monitor"])
 
-    def lists(self, held):
-        """The engine answers LIST_SESSION_TOKENS / LIST_PARKED_CONVERSATIONS with `held` (StrataEngine.list_held)."""
+    def holds(self, held):
+        """The engine answers LIST_CONVERSATIONS / GET_CONTEXT_WINDOWS from `held` ({id: (place, state, tokens,
+        bytes)}; a session holds up to 4096 tokens, 100 bytes each), and remembers what it was asked."""
+        self.asked = []
         self.engine.can_list = True
-        self.engine.list_held = lambda: {k: [{**e, "tokens": array("i", e["tokens"])} for e in v]
-                                         for k, v in held.items()}
 
-    def test_context_lists_then_gives_an_entry_with_its_text(self):
+        def listing(marker=(), preview=0):
+            self.asked.append(("list", list(marker), preview))
+            out = []
+            for cid, (place, state, ids, size) in held.items():
+                at = next((i + len(marker) for i in range(len(ids)) if marker and ids[i:i + len(marker)] == list(marker)), None)
+                cap = 4096 if place == "vram" else len(ids)
+                out.append({"id": cid, "place": place, "state": state, "count": len(ids), "capacity": cap, "bytes": size,
+                            "used": 100 * len(ids) if place == "vram" else size,
+                            "preview": ids[at:at + preview] if at is not None and preview else []})
+            return out
+        self.engine.list_conversations = listing
+        self.engine.context_windows = lambda ids: self.asked.append(("get", list(ids))) or \
+            {i: array("i", held[i][2]) if i in held else None for i in ids}
+
+    def test_context_lists_by_name_and_place_then_reads_one(self):
         # "é" is two bytes, one token each: the first token's piece is empty, the second completes it
-        ids = [256, *"hi é".encode(), 257]
-        self.lists({"sessions": [{"name": "main", "state": "holding", "tokens": ids}],
-                    "parked": [{"where": "ram", "bytes": 1536, "tokens": [1, 2]}]})
+        ids = [256, *b"system\nbe brief", 257, 256, *"user\nhi é".encode(), 257]
+        self.holds({"main": ("vram", "holding", ids, 409600), "parked4": ("ram", "parked", [1, 2], 1536)})
         code, body = self.request("/api/context")
         self.assertEqual(code, 200)
         self.assertEqual((body["available"], body["busy"], body["max_context"]), (True, False, self.svc.reported_ctx()))
+        # the user-turn header asks for the start of the first user message
+        self.assertEqual(self.asked, [("list", [256, *b"user\n"], self.svc.PREVIEW_TOKENS)])
         session, parked = body["entries"]
-        self.assertEqual((session["name"], session["state"], session["count"]), ("Session", "holding", len(ids)))
-        self.assertNotIn("tokens", session)              # the list carries no tokens: an entry is read on its own
-        self.assertEqual({k: parked[k] for k in ("name", "kind", "where", "bytes", "count")},
-                         {"name": "Parked conversation 1 of 1", "kind": "parked", "where": "ram", "bytes": 1536,
-                          "count": 2})
-        code, got = self.request(f"/api/context?list={body['list']}&entry=0")
-        self.assertEqual(code, 200)
+        self.assertEqual({k: session[k] for k in ("id", "name", "kind", "where", "state", "preview")},
+                         {"id": "main", "name": "Session", "kind": "session", "where": "vram", "state": "holding",
+                          "preview": "hi é"})
+        self.assertEqual({k: session[k] for k in ("count", "capacity", "bytes", "used")},
+                         {"count": len(ids), "capacity": 4096, "bytes": 409600, "used": 100 * len(ids)})
+        self.assertEqual({k: parked[k] for k in ("id", "name", "kind", "where", "count", "capacity", "bytes", "used",
+                                                 "preview")},
+                         {"id": "parked4", "name": "Parked conversation 1 of 1", "kind": "parked", "where": "ram",
+                          "count": 2, "capacity": 2, "bytes": 1536, "used": 1536, "preview": ""})
+        self.assertNotIn("tokens", session)              # the list carries no context windows
+        code, got = self.request("/api/context?id=main")
+        self.assertEqual((code, got["busy"]), (200, False))
+        self.assertEqual(self.asked[-1], ("get", ["main"]))
         self.assertEqual(got["tokens"], ids)
-        self.assertEqual(got["pieces"], ["<|im_start|>", "h", "i", " ", "", "é", "<|im_end|>"])
-        self.assertEqual(self.request(f"/api/context?list={body['list']}&entry=1")[1]["tokens"], [1, 2])
-        # an entry of a list that is no longer the last one read, or not in it: the page reads the list again
-        self.request("/api/context")
-        for query in (f"list={body['list']}&entry=0", f"list={body['list'] + 1}&entry=2", "list=x&entry=0"):
-            self.assertEqual(self.request("/api/context?" + query)[0], 404, query)
+        self.assertEqual(got["pieces"][-4:], [" ", "", "é", "<|im_end|>"])
+        self.assertEqual(self.request("/api/context?id=parked9")[0], 404)   # no longer held
+        self.assertEqual(self.request("/api/context?id=x%20y")[0], 400)
 
     def test_context_while_a_request_has_the_engine(self):
-        self.lists({"sessions": [{"name": "main", "state": "holding", "tokens": [5, 6]}], "parked": []})
+        self.holds({"main": ("vram", "holding", [5, 6], 0), "slot0": ("vram", "holding", [7], 0)})
         self.svc.CONTEXT_WAIT_S = 0.05
         with self.svc.fifo:                              # a request is running: nothing read yet
             body = self.request("/api/context")[1]
-        self.assertEqual((body["busy"], body["list"], body["entries"]), (True, None, []))
+        self.assertEqual((body["busy"], body["at"], body["entries"]), (True, None, []))
         first = self.request("/api/context")[1]
-        with self.svc.fifo:                              # ... then the list read last, marked busy
+        self.assertEqual(self.request("/api/context?id=main")[1]["tokens"], [5, 6])
+        with self.svc.fifo:                              # ... then the list and the context window read last
             body = self.request("/api/context")[1]
-        self.assertEqual((body["busy"], body["list"], body["at"]), (True, first["list"], first["at"]))
-        self.assertEqual(body["entries"], first["entries"])
+            again = self.request("/api/context?id=main")
+            other = self.request("/api/context?id=slot0")
+        self.assertEqual((body["busy"], body["at"], body["entries"]), (True, first["at"], first["entries"]))
+        self.assertEqual((again[0], again[1]["busy"], again[1]["tokens"]), (200, True, [5, 6]))
+        self.assertEqual(other[0], 503)                  # not read before: it waits for the engine's turn
 
     def test_context_needs_the_key(self):
         self.svc.api_key = "k"
@@ -266,8 +289,8 @@ class Monitor(unittest.TestCase):
         self.assertEqual(self.request("/web/../server.py")[0], 404)
 
 
-class ListHeld(unittest.TestCase):
-    """StrataEngine.list_held: the engine's LIST_SESSION_TOKENS and LIST_PARKED_CONVERSATIONS answers."""
+class EngineConversations(unittest.TestCase):
+    """StrataEngine.list_conversations and context_windows: the engine's LIST_CONVERSATIONS and GET_CONTEXT_WINDOWS."""
 
     @staticmethod
     def bare(lines):
@@ -283,26 +306,39 @@ class ListHeld(unittest.TestCase):
             engine.lines.put(line + "\n")
         return engine
 
-    def test_sessions_and_parked_conversations(self):
-        engine = self.bare(["SESSION_TOKENS main holding 3 248045,0,7", "NOTE sessions: something else",
-                            "SESSION_TOKENS slot0 decoding 1 9", "SESSION_TOKENS slot1 empty 0", "END_SESSION_TOKENS",
-                            "PARKED_CONVERSATION 4 ram 1535867580 2 1,2", "PARKED_CONVERSATION 9 disk 17 0",
-                            "END_PARKED_CONVERSATIONS"])
-        got = engine.list_held()
-        self.assertEqual(engine.proc.stdin.getvalue(), "LIST_SESSION_TOKENS\nLIST_PARKED_CONVERSATIONS\n")
-        self.assertEqual([(s["name"], s["state"], s["tokens"].tolist()) for s in got["sessions"]],
-                         [("main", "holding", [248045, 0, 7]), ("slot0", "decoding", [9]), ("slot1", "empty", [])])
-        self.assertEqual([(p["where"], p["bytes"], p["tokens"].tolist()) for p in got["parked"]],
-                         [("ram", 1535867580, [1, 2]), ("disk", 17, [])])
+    def test_the_list_and_its_previews(self):
+        engine = self.bare(["CONVERSATION main vram holding 3 204800 3092376453 1048576 40,41",
+                            "NOTE sessions: something else", "CONVERSATION slot0 vram decoding 1 204800 3092376453 65536",
+                            "CONVERSATION parked4 disk parked 2 2 1535867580 1535867580", "END_CONVERSATIONS"])
+        got = engine.list_conversations([256, 117], 2)
+        self.assertEqual(engine.proc.stdin.getvalue(), "LIST_CONVERSATIONS 256,117 2\n")
+        self.assertEqual(got, [
+            {"id": "main", "place": "vram", "state": "holding", "count": 3, "capacity": 204800, "bytes": 3092376453,
+             "used": 1048576, "preview": [40, 41]},
+            {"id": "slot0", "place": "vram", "state": "decoding", "count": 1, "capacity": 204800, "bytes": 3092376453,
+             "used": 65536, "preview": []},
+            {"id": "parked4", "place": "disk", "state": "parked", "count": 2, "capacity": 2, "bytes": 1535867580,
+             "used": 1535867580, "preview": []}])
+        engine = self.bare(["END_CONVERSATIONS"])
+        engine.list_conversations()                       # no marker: no previews asked for
+        self.assertEqual(engine.proc.stdin.getvalue(), "LIST_CONVERSATIONS\n")
+
+    def test_context_windows(self):
+        engine = self.bare(["CONTEXT_WINDOW parked4 2 1,2", "CONTEXT_WINDOW slot1 0", "CONTEXT_WINDOW parked3 gone",
+                            "END_CONTEXT_WINDOWS"])
+        got = engine.context_windows(["parked4", "slot1", "parked3"])
+        self.assertEqual(engine.proc.stdin.getvalue(), "GET_CONTEXT_WINDOWS parked4 slot1 parked3\n")
+        self.assertEqual({k: v if v is None else v.tolist() for k, v in got.items()},
+                         {"parked4": [1, 2], "slot1": [], "parked3": None})
 
     def test_an_engine_that_refuses_or_ends(self):
         from serve.server import EngineDied
         with self.assertRaises(EngineDied):
-            self.bare(["ERR unknown command"]).list_held()
-        engine = self.bare(["SESSION_TOKENS main empty 0"])
+            self.bare(["ERR unknown command"]).list_conversations()
+        engine = self.bare(["CONVERSATION main vram empty 0 4096 409600 0"])
         engine.lines.put(None)                            # its output closed
         with self.assertRaises(EngineDied):
-            engine.list_held()
+            engine.list_conversations()
 
 
 class ConversationCacheCard(unittest.TestCase):

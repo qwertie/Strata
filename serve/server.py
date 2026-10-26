@@ -993,7 +993,7 @@ class StrataEngine:
         self.ended, self.unloaded = True, True
         self.max_context = int(args[args.index("--max-context") + 1]) if "--max-context" in args else 4096
         self.can_stop = False            # the engine honours a STOP line mid-request (READY <ctx> stop)
-        self.can_list = False            # it answers LIST_SESSION_TOKENS and LIST_PARKED_CONVERSATIONS (... lists)
+        self.can_list = False            # it answers LIST_CONVERSATIONS and GET_CONTEXT_WINDOWS (... conversations)
         self.last = {}
         self.info = {}                   # INFO key=value facts (engine 0.1.8+): kv, expert slots, ... (Monitor tab)
         self.terminal_stages: list[dict] = []  # final layer ranges from this engine start's bounded stderr log
@@ -1076,7 +1076,7 @@ class StrataEngine:
                 f = line.split()
                 self.max_context = int(f[1])
                 self.can_stop = "stop" in f[2:]
-                self.can_list = "lists" in f[2:]
+                self.can_list = "conversations" in f[2:]
                 break
         loading.set()
         if self.max_context <= 0:
@@ -1388,40 +1388,50 @@ class StrataEngine:
             if time.time() > deadline:
                 raise EngineDied("the engine did not answer the VRAM command")
 
-    def list_held(self, timeout: float = 30.0) -> dict:
-        """The API monitor's Context view: `LIST_SESSION_TOKENS` and `LIST_PARKED_CONVERSATIONS` (an engine whose READY
-        says "lists"; include/strata/core/token_listing.hpp), between requests - the caller holds the service's FIFO
-        and, with --batch, the control lines; the slots may decode meanwhile (the engine answers between their
-        windows).  -> {"sessions": [{"name", "state", "tokens"}], "parked": [{"where", "bytes", "tokens"}]}, the
-        parked conversations the next to be evicted first, the tokens as array("i"); raises EngineDied when the
-        engine ended or did not answer."""
+    def _ask(self, command: str, kind: str, timeout: float = 30.0) -> list[list[str]]:
+        """Send `command` and return the fields of each `kind` line of its answer, up to its END_ line (other lines on
+        the way - a NOTE, BSTAT - are passed over).  Raises EngineDied when the engine ended, refused or said nothing."""
         if not self.alive():
             raise EngineDied("the engine is not running")
-        out = {"sessions": [], "parked": []}
-        for command, kind, key in (("LIST_SESSION_TOKENS", "SESSION_TOKENS", "sessions"),
-                                   ("LIST_PARKED_CONVERSATIONS", "PARKED_CONVERSATION", "parked")):
-            self._send(command)
-            deadline = time.time() + timeout
-            while True:
-                try:
-                    line = self.lines.get(timeout=max(0.1, deadline - time.time()))
-                except queue.Empty:
-                    raise EngineDied(f"the engine did not answer {command}") from None
-                if line is None:
-                    raise EngineDied("the engine ended")
-                f = line.split()
-                if f[:1] == ["END_" + command[5:]]:
-                    break
-                if f[:1] == ["ERR"]:
-                    raise EngineDied(f"the engine refused {command}: {line[4:].strip()}")
-                if f[:1] != [kind]:
-                    continue                            # (another line on the way: a NOTE, BSTAT)
-                if kind == "SESSION_TOKENS":            # SESSION_TOKENS <name> <state> <n> [<ids>]
-                    ids = array("i", map(int, f[4].split(","))) if len(f) > 4 else array("i")
-                    out[key].append({"name": f[1], "state": f[2], "tokens": ids})
-                else:                                   # PARKED_CONVERSATION <id> <ram|disk> <bytes> <n> [<ids>]
-                    ids = array("i", map(int, f[5].split(","))) if len(f) > 5 else array("i")
-                    out[key].append({"where": f[2], "bytes": int(f[3]), "tokens": ids})
+        self._send(command)
+        name, end, out = command.split()[0], "END_" + kind + "S", []
+        deadline = time.time() + timeout
+        while True:
+            try:
+                line = self.lines.get(timeout=max(0.1, deadline - time.time()))
+            except queue.Empty:
+                raise EngineDied(f"the engine did not answer {name}") from None
+            if line is None:
+                raise EngineDied("the engine ended")
+            f = line.split()
+            if f[:1] == [end]:
+                return out
+            if f[:1] == ["ERR"]:
+                raise EngineDied(f"the engine refused {name}: {line[4:].strip()}")
+            if f[:1] == [kind]:
+                out.append(f)
+
+    def list_conversations(self, marker=(), preview: int = 0) -> list[dict]:
+        """The API monitor's Context view: `LIST_CONVERSATIONS` (an engine whose READY says "conversations";
+        include/strata/core/token_listing.hpp) - each conversation the engine holds, in a session in VRAM or parked,
+        without its tokens: [{"id", "place", "state", "count", "capacity", "bytes", "used", "preview"}] (count and
+        capacity in tokens: what it holds and the most it can; bytes its physical size and used what its tokens take).  `marker` and `preview` ask for the
+        first `preview` tokens after the first place a conversation holds `marker` (the user-turn header).  Between
+        requests: the caller holds the service's FIFO and, with --batch, the control lines; the slots may decode
+        meanwhile (the engine answers between their windows)."""
+        command = "LIST_CONVERSATIONS" + (f" {','.join(map(str, marker))} {int(preview)}" if marker and preview else "")
+        # CONVERSATION <id> <place> <state> <tokens> <capacity> <bytes> <used> [<preview>]
+        return [{"id": f[1], "place": f[2], "state": f[3], "count": int(f[4]), "capacity": int(f[5]), "bytes": int(f[6]),
+                 "used": int(f[7]), "preview": [int(x) for x in f[8].split(",")] if len(f) > 8 else []}
+                for f in self._ask(command, "CONVERSATION")]
+
+    def context_windows(self, ids) -> dict:
+        """`GET_CONTEXT_WINDOWS`: the tokens of the conversations `ids` names (as list_conversations gives them), as
+        array("i"); None for one the engine no longer holds.  The same turn rules as list_conversations."""
+        out = {}
+        for f in self._ask("GET_CONTEXT_WINDOWS " + " ".join(ids), "CONTEXT_WINDOW"):
+            # CONTEXT_WINDOW <id> <n> [<ids>]  or  CONTEXT_WINDOW <id> gone
+            out[f[1]] = None if f[2] == "gone" else array("i", map(int, f[3].split(","))) if len(f) > 3 else array("i")
         return out
 
     @staticmethod
@@ -3936,8 +3946,8 @@ class Service:
         # #332: the API request monitor (/api-monitor) keeps the last 100 requests' prompts and answers in memory,
         # so it is off unless the config's "api_monitor" (or --api-monitor) turns it on
         self.api_monitor = False
-        self.context_list = None                        # the Context view's last list (context_view), its entries' tokens
-        self.context_lists = 0                          # ... and how many were read: the list's number
+        self.context_list = None                        # the Context view's last list (context_view)
+        self.context_shown = None                       # ... and the context window it read last (context_window)
         self.api_requests = collections.deque(maxlen=100)  # bounded I/O in memory; no headers or API keys
         self.request_trace = threading.local()
         self.history = collections.deque(maxlen=500)    # the last finished requests, newest last (GET /metrics)
@@ -4642,73 +4652,107 @@ class Service:
         self.request_trace.record = record
         return record
 
-    CONTEXT_WAIT_S = 2.0      # how long GET /api/context waits for the engine's turn before it shows the last list
+    CONTEXT_WAIT_S = 2.0      # how long GET /api/context waits for the engine's turn before it answers with what it has
+    PREVIEW_TOKENS = 24       # the start of each conversation's first user message in the list
+
+    @contextlib.contextmanager
+    def _engine_turn(self):
+        """The engine's turn for a command between requests: True once this holds the FIFO and, with --batch, the
+        control lines (parallel requests do not hold the FIFO; a request alone or an admission holds the lines - the
+        slots may go on decoding); False when a request kept them CONTEXT_WAIT_S."""
+        if not self.fifo.acquire(timeout=self.CONTEXT_WAIT_S):
+            yield False
+            return
+        ctl = getattr(self.engine, "ctl", None) if getattr(self.engine, "batch", 0) else None
+        try:
+            if ctl is not None and not ctl.acquire(timeout=self.CONTEXT_WAIT_S):
+                yield False
+                return
+            try:
+                yield True
+            finally:
+                if ctl is not None:
+                    ctl.release()
+        finally:
+            self.fifo.release()
+
+    def _user_marker(self) -> list[int]:
+        """The tokens that open a user turn in this model's chat template: the preview starts after them."""
+        try:
+            return list(self.tok.encode("<｜User｜>" if self.family == "deepseek41" else "<|im_start|>user\n",
+                                        parse_special=True))
+        except Exception:                               # noqa: BLE001 - a tokenizer without specials: no preview
+            return []
+
+    def _preview_text(self, ids) -> str:
+        text = "".join(token_pieces(self.tok, ids)).split(IM_END)[0]
+        return " ".join(text.split())
 
     def context_view(self) -> dict:
-        """GET /api/context (API monitor): what the engine holds - each session in VRAM, then each parked conversation,
-        the next to be evicted first (StrataEngine.list_held) - without the tokens (context_entry gives an entry's).
-        Read between requests: while a request has the engine's turn (one without --batch, or one alone on the solo
-        path) it waits CONTEXT_WAIT_S, then shows the last list, marked busy.  The list is kept, so an entry is read
-        from the list its name came from."""
+        """GET /api/context (API monitor): each conversation the engine holds - its own session, the batch slots', then
+        the parked ones, the next to be evicted first (StrataEngine.list_conversations) - with the start of its first
+        user message, but not its tokens (context_window).  While a request has the engine's turn (one without --batch,
+        or one alone on the solo path) it answers with the last list, marked busy."""
         eng, base = self.engine, {"loaded": self.loaded(), "max_context": self.reported_ctx()}
         if not self.loaded():
             return {"available": False, "reason": "unloaded", **base}
         if not getattr(eng, "can_list", False):
             return {"available": False, "reason": "engine", **base}
         busy, error = False, None
-        if not self.fifo.acquire(timeout=self.CONTEXT_WAIT_S):
-            busy = True
-        else:
-            # parallel requests do not hold the fifo: the engine's control lines (a request alone, an admission) too
-            ctl = getattr(eng, "ctl", None) if getattr(eng, "batch", 0) else None
-            try:
-                if ctl is not None and not ctl.acquire(timeout=self.CONTEXT_WAIT_S):
-                    busy = True
-                else:
-                    try:
-                        held = eng.list_held()
-                    finally:
-                        if ctl is not None:
-                            ctl.release()
-                    self.context_lists += 1
-                    self.context_list = {"list": self.context_lists, "at": time.time(),
-                                         "entries": self._context_entries(held)}
-            except EngineDied as e:
-                error = str(e)
-            finally:
-                self.fifo.release()
+        try:
+            with self._engine_turn() as turn:
+                busy = not turn
+                if turn:
+                    held = eng.list_conversations(self._user_marker(), self.PREVIEW_TOKENS)
+                    self.context_list = {"at": time.time(), "entries": self._context_entries(held)}
+        except EngineDied as e:
+            error = str(e)
         got = self.context_list
-        return {"available": True, **base, "busy": busy, "error": error,
-                "list": got and got["list"], "at": got and got["at"],
-                "entries": [{k: v for k, v in e.items() if k != "tokens"} | {"count": len(e["tokens"])}
-                            for e in (got["entries"] if got else [])]}
+        return {"available": True, **base, "busy": busy, "error": error, "at": got and got["at"],
+                "entries": got["entries"] if got else []}
 
-    def _context_entries(self, held: dict) -> list[dict]:
-        """The engine's lists as the Context view names them.  `main` is the engine's own session: with --batch, where a
+    def _context_entries(self, held: list[dict]) -> list[dict]:
+        """The engine's list as the Context view names it.  `main` is the engine's own session: with --batch, where a
         request alone runs and every admission is read first (src/program/generate.cpp); `slot<b>` a batch slot's (on
-        the Qwen3.6 path a request alone takes one of them)."""
-        eng, entries = self.engine, []
+        the Qwen3.6 path a request alone takes one of them); `parked<serial>` a parked conversation."""
+        eng = self.engine
         batch, used = getattr(eng, "batch", 0), getattr(eng, "slot_used", None) or []
-        for h in held["sessions"]:
-            slot = int(h["name"][4:]) if h["name"].startswith("slot") else None
-            entries.append({"kind": "session", "slot": slot, "state": h["state"], "tokens": h["tokens"],
-                            "name": f"Slot {slot}" if slot is not None else "Solo session" if batch else "Session",
-                            "used": used[slot] if slot is not None and slot < len(used) else None})
-        for k, h in enumerate(held["parked"]):
-            entries.append({"kind": "parked", "slot": None, "state": "parked", "tokens": h["tokens"],
-                            "name": f"Parked conversation {k + 1} of {len(held['parked'])}", "where": h["where"],
-                            "bytes": h["bytes"]})
+        parked = [h for h in held if h["id"].startswith("parked")]
+        entries = []
+        for h in held:
+            e = {k: h[k] for k in ("id", "state", "count", "capacity", "bytes", "used")} | \
+                {"where": h["place"], "preview": self._preview_text(h["preview"])}
+            if h["id"].startswith("parked"):
+                e |= {"kind": "parked", "slot": None,
+                      "name": f"Parked conversation {parked.index(h) + 1} of {len(parked)}"}
+            else:
+                slot = int(h["id"][4:]) if h["id"].startswith("slot") else None
+                e |= {"kind": "session", "slot": slot,
+                      "name": f"Slot {slot}" if slot is not None else "Solo session" if batch else "Session",
+                      "last_used": used[slot] if slot is not None and slot < len(used) else None}
+            entries.append(e)
         return entries
 
-    def context_entry(self, number: int, index: int) -> dict | None:
-        """GET /api/context?list=N&entry=I: entry I of list N, with its tokens and each token's text (None: that list
-        is not the last one read, or has no such entry)."""
-        got = self.context_list
-        if not got or got["list"] != number or not 0 <= index < len(got["entries"]):
-            return None
-        e = got["entries"][index]
-        return {"list": number, "entry": index, "name": e["name"], "tokens": e["tokens"].tolist(),
-                "pieces": token_pieces(self.tok, e["tokens"])}
+    def context_window(self, cid: str) -> tuple[int, dict]:
+        """GET /api/context?id=<id>: the tokens of the conversation the engine holds under that id
+        (StrataEngine.context_windows), with each token's text.  While a request has the engine's turn: the one read
+        last, when it is this conversation's (marked busy).  -> (HTTP status, body)."""
+        if not getattr(self.engine, "can_list", False) or not self.loaded():
+            return 404, {"error": {"message": "the engine does not list its conversations"}}
+        try:
+            with self._engine_turn() as turn:
+                got = self.engine.context_windows([cid]).get(cid) if turn else None
+        except EngineDied as e:
+            return 503, {"error": {"message": str(e)}}
+        if turn:
+            if got is None:
+                return 404, {"error": {"message": "the engine no longer holds this conversation; press Refresh"}}
+            self.context_shown = {"id": cid, "at": time.time(), "tokens": got}
+        shown = self.context_shown
+        if shown is None or shown["id"] != cid:
+            return 503, {"error": {"message": "a request has the engine's turn; try again when it has finished"}}
+        return 200, {"id": cid, "busy": not turn, "at": shown["at"], "tokens": shown["tokens"].tolist(),
+                     "pieces": token_pieces(self.tok, shown["tokens"])}
 
     def request_records(self, request_id=None):
         with self.status_lock:
@@ -6734,16 +6778,13 @@ def make_handler(svc: Service):
                 return
             if path == "/api/context" and svc.api_monitor:
                 if self._authorized():
-                    q = parse_qs(urlsplit(self.path).query)
-                    if "entry" not in q:
+                    cid = parse_qs(urlsplit(self.path).query).get("id", [None])[0]
+                    if cid is None:
                         self._json(200, svc.context_view())
-                        return
-                    try:
-                        got = svc.context_entry(int(q.get("list", ["0"])[0]), int(q["entry"][0]))
-                    except ValueError:
-                        got = None
-                    self._json(200 if got else 404, got or {"error": {"message": "this list is no longer kept; press "
-                                                                      "Refresh"}})
+                    elif not re.fullmatch(r"[a-z]+[0-9]*", cid):     # main, slot<b>, parked<serial>
+                        self._json(400, {"error": {"message": "invalid conversation id"}})
+                    else:
+                        self._json(*svc.context_window(cid))
                 return
             if path == "/api/requests" and svc.api_monitor:
                 if self._authorized():

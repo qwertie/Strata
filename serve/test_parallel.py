@@ -46,8 +46,8 @@ print("INFO engine=0.1.39" + (f" batch_slots={fit}" if fit >= 2 else "") +
 if "--fake-stage-plan" in args:
     print("strata serve: layer split: layers 0-11 (CUDA0), 12-23 (CUDA1), 24-35 (CUDA2), "
           "36-47 (CUDA3), one hand-off per window", file=sys.stderr, flush=True)
-LISTS = "--lists" in args   # READY ... lists: it answers LIST_SESSION_TOKENS and LIST_PARKED_CONVERSATIONS
-print("READY 4096 stop" + (" lists" if LISTS else ""), flush=True)
+LISTS = "--lists" in args   # READY ... conversations: it answers LIST_CONVERSATIONS and GET_CONTEXT_WINDOWS
+print("READY 4096 stop" + (" conversations" if LISTS else ""), flush=True)
 main_held, slot_held, parked = [], {}, []   # (--lists) what the sessions hold, the conversations parked
 LONG = list(b"LONGREPLY")
 def continued(ids):        # (the whole reply, how much of it the prompt already ends with: a request continued)
@@ -203,19 +203,26 @@ while True:
                 active[slot] = [toks[1:], max_new, 1]
             print(f"BADM {slot} {1 if cont else 0}", flush=True)
         continue
-    if LISTS and line == "LIST_SESSION_TOKENS":
-        def say(name, state, t):
-            print(f"SESSION_TOKENS {name} {state} {len(t)}" + (" " + ",".join(map(str, t)) if t else ""), flush=True)
-        say("main", "holding" if main_held else "empty", main_held)
-        for b in range(fit):
-            t = slot_held.get(b, [])
-            say(f"slot{b}", "decoding" if b in active else "holding" if t else "empty", t)
-        print("END_SESSION_TOKENS", flush=True)
-        continue
-    if LISTS and line == "LIST_PARKED_CONVERSATIONS":
-        for k, t in enumerate(parked):
-            print(f"PARKED_CONVERSATION {k + 1} ram {100 * len(t)} {len(t)} " + ",".join(map(str, t)), flush=True)
-        print("END_PARKED_CONVERSATIONS", flush=True)
+    if LISTS and line.startswith(("LIST_CONVERSATIONS", "GET_CONTEXT_WINDOWS")):
+        held = [("main", "vram", "holding" if main_held else "empty", main_held, 4096, 409600)]
+        held += [(f"slot{b}", "vram", "decoding" if b in active else "holding" if slot_held.get(b) else "empty",
+                  slot_held.get(b, []), 4096, 409600) for b in range(fit)]
+        held += [(f"parked{k + 1}", "ram", "parked", t, len(t), 100 * len(t)) for k, t in enumerate(parked)]
+        f = line.split()
+        ids = lambda t: (" " + ",".join(map(str, t))) if t else ""
+        if f[0] == "LIST_CONVERSATIONS":
+            marker, n = ([int(x) for x in f[1].split(",")], int(f[2])) if len(f) > 2 else ([], 0)
+            for cid, place, state, t, cap, size in held:     # (a session's tokens take 100 bytes each here)
+                at = next((i + len(marker) for i in range(len(t)) if marker and t[i:i + len(marker)] == marker), None)
+                used = size if place != "vram" else 100 * len(t)
+                print(f"CONVERSATION {cid} {place} {state} {len(t)} {cap} {size} {used}" +
+                      (ids(t[at:at + n]) if at is not None else ""), flush=True)
+            print("END_CONVERSATIONS", flush=True)
+        else:
+            known = {h[0]: h[3] for h in held}
+            for cid in f[1:]:
+                print(f"CONTEXT_WINDOW {cid} " + (f"{len(known[cid])}{ids(known[cid])}" if cid in known else "gone"), flush=True)
+            print("END_CONTEXT_WINDOWS", flush=True)
         continue
     if line:
         print("ERR unknown " + line[:20], flush=True)
@@ -433,25 +440,30 @@ class ContextView(FakeEngineCase):
     and each parked conversation, as the engine lists them - also while slots decode."""
 
     def view(self):
-        body = self.svc.context_view()
-        return body, {e["name"]: (i, e) for i, e in enumerate(body["entries"])}
+        return {e["name"]: e for e in self.svc.context_view()["entries"]}
 
-    def text(self, body, index):
-        return "".join(self.svc.context_entry(body["list"], index)["pieces"])
+    def text(self, cid):
+        code, body = self.svc.context_window(cid)
+        self.assertEqual(code, 200, body)
+        return "".join(body["pieces"])
 
-    def test_sessions_and_a_parked_conversation(self):
+    def test_conversations_by_name_and_place_then_one_context_window(self):
         self.start(2, more=["--lists"])
         self.assertEqual(self.chat("hello")["choices"][0]["message"]["content"], "ok, done.")
         self.assertEqual(self.chat("another conversation")["choices"][0]["message"]["content"], "ok, done.")
-        body, v = self.view()
+        v = self.view()
         self.assertEqual(list(v), ["Solo session", "Slot 0", "Slot 1", "Parked conversation 1 of 1"])
-        i, solo = v["Solo session"]
-        self.assertEqual(solo["state"], "holding")
-        self.assertIn("another conversation", self.text(body, i))
-        self.assertTrue(self.text(body, i).endswith("ok, done."))   # (its end token is never fed)
-        i, parked = v["Parked conversation 1 of 1"]
-        self.assertEqual((parked["kind"], parked["where"]), ("parked", "ram"))
-        self.assertIn("hello", self.text(body, i))
+        solo, parked = v["Solo session"], v["Parked conversation 1 of 1"]
+        self.assertEqual((solo["id"], solo["where"], solo["state"], solo["kind"]), ("main", "vram", "holding", "session"))
+        self.assertEqual((solo["capacity"], solo["bytes"], solo["used"]), (4096, 409600, 100 * solo["count"]))
+        self.assertEqual((parked["id"], parked["where"], parked["kind"]), ("parked1", "ram", "parked"))
+        self.assertEqual((parked["capacity"], parked["bytes"]), (parked["count"], 100 * parked["count"]))
+        self.assertTrue(solo["preview"].startswith("another conversation"), solo["preview"])   # the first user message
+        self.assertTrue(parked["preview"].startswith("hello"), parked["preview"])
+        self.assertNotIn("tokens", solo)                   # the list carries no context windows
+        self.assertTrue(self.text("main").endswith("ok, done."))   # (its end token is never fed)
+        self.assertIn("hello", self.text("parked1"))
+        self.assertEqual(self.svc.context_window("parked9")[0], 404)   # not held (any more)
 
     def test_slots_are_listed_while_they_decode(self):
         self.start(2, more=["--lists"])
@@ -459,8 +471,7 @@ class ContextView(FakeEngineCase):
 
         def watch():
             while not out:
-                body, v = self.view()
-                seen.extend(e["state"] for name, (_, e) in v.items() if name.startswith("Slot"))
+                seen.extend(e["state"] for name, e in self.view().items() if name.startswith("Slot"))
                 time.sleep(0.02)
         t = threading.Thread(target=watch)
         t.start()
@@ -472,8 +483,7 @@ class ContextView(FakeEngineCase):
         self.assertEqual((out["a"][0], out["b"][0]), ("ok", "ok"), out)
         self.assertIn("decoding", seen)
         time.sleep(0.3)                                 # (a slot is freed at its BDONE, in the background)
-        body, v = self.view()
-        held = [self.text(body, i) for name, (i, e) in v.items() if name.startswith("Slot") and e["count"]]
+        held = [self.text(e["id"]) for name, e in self.view().items() if name.startswith("Slot") and e["count"]]
         self.assertTrue(any(h.endswith("ok, done.") for h in held), held)
 
     def test_an_engine_without_the_commands(self):

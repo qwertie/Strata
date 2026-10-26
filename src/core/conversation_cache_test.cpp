@@ -559,7 +559,7 @@ int main() {
         check(!tiny.put(image({7,8,9})) && tiny.size() == 1, "nothing else fits beside it: parking is refused, the pin stays");
     }
     {
-        // for_each (the engine's LIST_PARKED_CONVERSATIONS): every parked conversation, the next to be evicted first
+        // for_each (the engine's LIST_CONVERSATIONS): every parked conversation, the next to be evicted first
         ConversationCache cache(image({1}).bytes() * 16, 2);
         check(cache.put(image({1,2,3})) && cache.put(image({4,5})) && cache.put(image({6})), "three park in two slots");
         std::vector<std::vector<int32_t>> seen;

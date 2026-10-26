@@ -152,32 +152,44 @@ function makePalette({text, L: [lo, hi]}) {
 let palettes = null;                                  // made when the colored view is first shown
 const tokenColour = id => (Math.imul(id, 2654435761) >>> 0) >>> 20;   // the hash's top 12 bits: an entry of 4096
 const PAGE = 8000;                                    // tokens per page of the colored view: the page stays light
-function ctxEntry() { return ctx?.entries?.[Number($("ctx-slot").value) || 0] || null; }
-const gb = bytes => `${(bytes / 1073741824).toFixed(2)} GB`;
+function ctxEntry() { return ctx?.entries?.find(e => e.id === $("ctx-slot").value) || null; }
+const gb = bytes => bytes >= 1073741824 ? `${(bytes / 1073741824).toFixed(2)} GB` : `${Math.round(bytes / 1048576)} MB`;
+const PLACES = {vram: "VRAM", ram: "RAM", disk: "disk"};
+// a session holds `count` of `capacity` tokens in `bytes` allocated, its tokens taking `used`; a parked conversation
+// is just its tokens.  Bytes are 0 where the engine does not know them.
+function sizeText(e) {
+  if (e.kind === "parked") return `${e.count.toLocaleString()} tokens, ${gb(e.bytes)}`;
+  const bytes = e.bytes ? `, ${e.used ? `${gb(e.used)} of ` : ""}${gb(e.bytes)}` : "";
+  return `${e.count.toLocaleString()} of ${e.capacity.toLocaleString()} tokens${bytes}`;
+}
+// where it is first: its name and VRAM / RAM / disk, then its size, then the start of its first user message
 function entryLabel(e) {
-  return `${e.name} · ${e.count.toLocaleString()} tokens` + (e.kind === "parked" ? ` · ${e.where === "disk" ? "on disk" : "RAM"}, ${gb(e.bytes)}` : e.state === "holding" ? "" : ` · ${STATES[e.state] || e.state}`);
+  const state = e.kind === "session" && e.state !== "holding" ? ` · ${STATES[e.state] || e.state}` : "";
+  return `${e.name} · ${PLACES[e.where] || e.where} · ${sizeText(e)}${state}` + (e.preview ? ` · “${e.preview.slice(0, 60)}”` : "");
 }
 function showContext() {
-  const view = $("ctx-view"), e = ctxEntry(), got = entry && e && entry.name === e.name ? entry : null;
+  const view = $("ctx-view"), e = ctxEntry(), got = entry && e && entry.id === e.id ? entry : null;
   $("ctx-save").disabled = !got?.tokens?.length; $("ctx-pager").hidden = true;
   if (!ctx) return;
   view.replaceChildren(); text("ctx-note", "");
   if (!ctx.available) {
-    text("ctx-sum", ctx.reason === "engine" ? "This engine cannot list what it holds: it predates the LIST_SESSION_TOKENS command. Update the engine to see it." : "The model is not loaded.");
+    text("ctx-sum", ctx.reason === "engine" ? "This engine cannot list what it holds: it predates the LIST_CONVERSATIONS command. Update the engine to see it." : "The model is not loaded.");
     return;
   }
   const when = ctx.at ? new Date(ctx.at * 1000).toLocaleTimeString() : "";
-  if (!ctx.list) { text("ctx-sum", ctx.error || "A request has the engine's turn: press Refresh when it has finished."); return; }
+  if (!ctx.at) { text("ctx-sum", ctx.error || "A request has the engine's turn: press Refresh when it has finished."); return; }
   if (!e) { text("ctx-sum", "Nothing held."); return; }
   const stale = ctx.busy ? ` · a request has the engine's turn: as read at ${when}` : ctx.error ? ` · ${ctx.error}: as read at ${when}` : "";
-  const n = e.count;
-  text("ctx-sum", `${n.toLocaleString()} of ${ctx.max_context.toLocaleString()} tokens · ${e.name} · ${e.kind === "parked" ? `${e.where === "disk" ? "on disk" : "in RAM"}, ${gb(e.bytes)}` : STATES[e.state] || e.state}${stale}`);
+  const n = got?.tokens ? got.tokens.length : e.count;
+  const size = got?.tokens && got.tokens.length !== e.count ? {...e, count: n} : e;   // (it may have grown since the list)
+  text("ctx-sum", `${e.name} · ${e.kind === "parked" ? `parked in ${PLACES[e.where] || e.where}` : `VRAM, ${STATES[e.state] || e.state}`} · ${sizeText(size)}${stale}`);
   if (!got) { if (n) text("ctx-note", entry?.error || "Reading…"); return; }
-  text("ctx-note", (ctxView === "colored" ? "Each token's colour comes from its id, so the same token always has the same colour. Hover a token for its position and id. " : "") + NOTES[e.kind]);
+  text("ctx-note", (got.busy ? `A request has the engine's turn: these are the tokens read at ${new Date(got.at * 1000).toLocaleTimeString()}. ` : "") +
+    (ctxView === "colored" ? "Each token's colour comes from its id, so the same token always has the same colour. Hover a token for its position and id. " : "") + NOTES[e.kind]);
   if (ctxView === "plain") { view.textContent = got.pieces.join(""); return; }
-  const pages = Math.max(1, Math.ceil(n / PAGE));
+  const m = got.tokens.length, pages = Math.max(1, Math.ceil(m / PAGE));
   ctxPage = Math.min(Math.max(ctxPage < 0 ? pages - 1 : ctxPage, 0), pages - 1);
-  const start = ctxPage * PAGE, end = Math.min(n, start + PAGE);
+  const start = ctxPage * PAGE, end = Math.min(m, start + PAGE);
   $("ctx-pager").hidden = pages < 2; $("ctx-prev").disabled = ctxPage === 0; $("ctx-next").disabled = ctxPage === pages - 1;
   text("ctx-range", `Tokens ${start.toLocaleString()}–${Math.max(start, end - 1).toLocaleString()} (page ${ctxPage + 1} of ${pages})`);
   palettes ??= {light: makePalette(THEMES.light), dark: makePalette(THEMES.dark)};
@@ -190,29 +202,28 @@ function showContext() {
   }
   view.append(frag);
 }
-// the tokens of the entry picked, from the list its name came from
+// the tokens of the conversation picked, read from the engine now (they may have grown since the list)
 async function loadEntry() {
-  const i = Number($("ctx-slot").value) || 0, e = ctx?.entries?.[i];
+  const e = ctxEntry();
   entry = null; ctxPage = -1; showContext();
   if (!e) return;
-  if (!e.count) { entry = {name: e.name, tokens: [], pieces: []}; showContext(); return; }
-  try { entry = await api(`/api/context?list=${ctx.list}&entry=${i}`); }
-  catch (error) { entry = {name: e.name, error: error.message}; }
-  if (ctx.entries[Number($("ctx-slot").value) || 0] === e) showContext();   // (unless another one was picked meanwhile)
+  if (!e.count) { entry = {id: e.id, tokens: [], pieces: []}; showContext(); return; }
+  try { entry = await api(`/api/context?id=${encodeURIComponent(e.id)}`); }
+  catch (error) { entry = {id: e.id, error: error.message}; }
+  if (ctxEntry() === e) showContext();                // (unless another one was picked meanwhile)
 }
 async function loadContext() {
   $("ctx-refresh").disabled = true; text("ctx-sum", "Reading…");
   try {
-    const keep = ctxEntry()?.name;
+    const keep = ctxEntry()?.id;
     ctx = await api("/api/context");
     const entries = ctx.entries || [], select = $("ctx-slot");
-    select.replaceChildren(...entries.map((e, i) => { const o = document.createElement("option"); o.value = String(i); o.textContent = entryLabel(e); return o; }));
+    select.replaceChildren(...entries.map(e => { const o = document.createElement("option"); o.value = e.id; o.textContent = entryLabel(e); return o; }));
     // the session a request used last: the engine's own one when it holds anything (with --batch a request alone
     // runs there and every admission is read there first), else the slot used last
-    const main = entries.findIndex(e => e.kind === "session" && e.slot === null && e.count);
-    const latest = main >= 0 ? main : entries.reduce((best, e, i) => (e.used || 0) > (entries[best].used || 0) ? i : best, 0);
-    const kept = entries.findIndex(e => e.name === keep);
-    select.value = String(ctxPicked && kept >= 0 ? kept : latest);
+    const main = entries.find(e => e.kind === "session" && e.slot === null && e.count);
+    const latest = main || entries.reduce((best, e) => (e.last_used || 0) > (best.last_used || 0) ? e : best, entries[0]);
+    select.value = ctxPicked && entries.some(e => e.id === keep) ? keep : latest?.id ?? "";
     select.hidden = entries.length < 2;
     await loadEntry();
   } catch (error) { text("ctx-sum", error.message); }
@@ -226,7 +237,7 @@ function saveContext() {
     entry.tokens.forEach((id, i) => ids.setUint32(i * 4, id, true));
     parts.push(`\n\n----- ${entry.tokens.length} token ids, uint32 little-endian, to the end of the file -----\n`, ids.buffer);
   }
-  const a = document.createElement("a"), which = e.kind === "parked" ? `parked${ctx.entries.filter(x => x.kind === "parked").indexOf(e) + 1}` : e.slot === null ? "session" : `slot${e.slot}`;
+  const a = document.createElement("a"), which = e.id;
   a.href = URL.createObjectURL(new Blob(parts, {type: binary ? "application/octet-stream" : "text/plain;charset=utf-8"}));
   a.download = `strata-context-${which}-${new Date().toISOString().replace(/[:.]/g, "-")}.txt`;
   a.click(); setTimeout(() => URL.revokeObjectURL(a.href), 1000);
