@@ -15,10 +15,10 @@
 // (a session's --max-context; a parked conversation's own tokens).  bytes: its physical size (a session's allocation,
 // a parked conversation's snapshot); used: what its tokens take of that (for a session the size a session sized for
 // just them would have: its state and buffers and their K/V; 0 when empty).  Both bytes are 0 where the engine path
-// does not know them (DeepSeek V4.1's session).  Token ids are comma-separated, as GEN
-// takes them, and left out when there are none.  <marker> (comma-separated ids) and <n> ask for a preview: the first n tokens after the first place the
-// conversation holds the marker - the server passes the chat template's user-turn header, so the preview is the start
-// of the first user message.  Neither command changes anything.
+// does not know them (DeepSeek V4.1's session).  Token ids are comma-separated, as GEN takes them, and left out when
+// there are none.  <marker> (comma-separated ids) and <n> ask for a preview: the first n tokens after the first place
+// the conversation holds the marker - the server passes the chat template's user-turn header, so the preview is the
+// start of the first user message.  Neither command changes anything.
 #pragma once
 
 #include <algorithm>
