@@ -98,7 +98,7 @@ class EngineMeasurement:
 
 # --------------------------------------------------------------------------- parsing
 
-_READY = re.compile(r"^READY\s+(\d+)\s+(\S+)\s*$")
+_READY = re.compile(r"^READY\s+(\d+)(?:\s+\S+)+\s*$")   # the context, then the flags ("stop", "lists")
 _PP = re.compile(r"^PP\s+(\d+)\s+(\d+)\s+([\d.]+)(?:\s+([\d.]+))?\s*$")
 _DONE = re.compile(r"^DONE\s+(.*)$")
 _TOKEN = re.compile(r"^T\s+(\d+)\s*$")

@@ -296,6 +296,11 @@ public:
             if (serials_[i] == serial) return i;
         return SIZE_MAX;
     }
+    /// Every parked conversation, least recently active (the next to be evicted) first: f(serial, entry).
+    template <class F>
+    void for_each(F&& f) const {
+        for (size_t i = 0; i < entries_.size(); ++i) f(serials_[i], entries_[i]);
+    }
     const SavedConversation* find(uint64_t serial) const {
         const size_t i = index_of(serial);
         return i == SIZE_MAX ? nullptr : &entries_[i];
