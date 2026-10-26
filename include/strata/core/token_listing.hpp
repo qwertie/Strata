@@ -1,46 +1,120 @@
-// --serve's LIST_SESSION_TOKENS and LIST_PARKED_CONVERSATIONS answers (serve/server.py's API monitor shows them):
-// what a session in VRAM or a parked conversation holds, one stdout line each, the token ids last and comma-separated
-// as GEN takes them.  Shared by the engine paths (generate.cpp, q36_engine.cu, ds4_main.cpp) so the lines are alike.
+// --serve's LIST_CONVERSATIONS and GET_CONTEXT_WINDOWS (serve/server.py's API monitor shows them): the conversations
+// the engine holds - in a session in VRAM, or parked in RAM or on disk - and the tokens of the ones asked for.  Each
+// engine path (generate.cpp, q36_engine.cu, ds4_main.cpp) describes what it holds as HeldConversation entries; the
+// commands are parsed and answered here, so the lines are the same on every path.
+//
+//   LIST_CONVERSATIONS [<marker> <n>]
+//     CONVERSATION <id> <place> <state> <tokens> <bytes> [<preview>]   one line each, then END_CONVERSATIONS
+//   GET_CONTEXT_WINDOWS <id> [<id> ...]
+//     CONTEXT_WINDOW <id> <n> [<ids>]   or   CONTEXT_WINDOW <id> gone   one line each, then END_CONTEXT_WINDOWS
+//
+// id: `main` (the engine's own session), `slot<b>` (a --batch slot's session) or `parked<serial>` (a parked
+// conversation; the serial is never reused).  place: vram, ram or disk.  state: holding, decoding, reading (a prompt
+// read that gave way and goes on later), empty or parked.  bytes: a parked conversation's size (0 for a session, whose
+// memory is allocated whatever it holds).  Token ids are comma-separated, as GEN takes them, and left out when there
+// are none.  <marker> (comma-separated ids) and <n> ask for a preview: the first n tokens after the first place the
+// conversation holds the marker - the server passes the chat template's user-turn header, so the preview is the start
+// of the first user message.  Neither command changes anything.
 #pragma once
 
+#include <algorithm>
 #include <charconv>
 #include <cstddef>
 #include <cstdint>
 #include <cstdio>
+#include <sstream>
 #include <string>
+#include <vector>
 
 namespace strata::core {
 
-// `<head> <n> <id,id,...>` (no ids after the count when n is 0), one write
-inline void print_token_line(const std::string& head, const int32_t* ids, size_t n) {
-    std::string s;
-    s.reserve(head.size() + 24 + n * 7);
-    s += head;
-    s += ' ';
-    s += std::to_string(n);
+struct HeldConversation {
+    std::string id;
+    const char* place = "vram";
+    const char* state = "holding";
+    const int32_t* ids = nullptr;
+    size_t n = 0;
+    uint64_t bytes = 0;
+};
+
+inline bool is_conversation_command(const std::string& line) {
+    return line.rfind("LIST_CONVERSATIONS", 0) == 0 || line.rfind("GET_CONTEXT_WINDOWS", 0) == 0;
+}
+
+namespace token_listing_detail {
+inline void append_ids(std::string& s, const int32_t* ids, size_t n) {
     char num[16];
     for (size_t i = 0; i < n; ++i) {
         s += i == 0 ? ' ' : ',';
         const auto r = std::to_chars(num, num + sizeof num, ids[i]);
         s.append(num, r.ptr);
     }
-    s += '\n';
-    std::fwrite(s.data(), 1, s.size(), stdout);
 }
-
-// LIST_SESSION_TOKENS: `SESSION_TOKENS <name> <state> <n> <ids>`.  name: `main` (the engine's own session) or
-// `slot<b>` (a --batch slot's); state: `holding` (idle, holding the tokens), `decoding`, `reading` (a prompt read
-// that gave way and goes on later) or `empty`.  END_SESSION_TOKENS follows the last session.
-inline void print_session_tokens(const std::string& name, const char* state, const int32_t* ids, size_t n) {
-    print_token_line("SESSION_TOKENS " + name + " " + state, ids, n);
+inline bool parse_ids(const std::string& field, std::vector<int32_t>& out) {
+    const char* p = field.data();
+    const char* end = p + field.size();
+    while (p < end) {
+        int32_t v = 0;
+        const auto r = std::from_chars(p, end, v);
+        if (r.ec != std::errc() || (r.ptr != end && *r.ptr != ',')) return false;
+        out.push_back(v);
+        p = r.ptr == end ? end : r.ptr + 1;
+    }
+    return !out.empty();
 }
+inline void put(const std::string& s) { std::fwrite(s.data(), 1, s.size(), stdout); }
+}  // namespace token_listing_detail
 
-// LIST_PARKED_CONVERSATIONS: `PARKED_CONVERSATION <id> <ram|disk> <bytes> <n> <ids>`, the next to be evicted first.
-// id tells the entries of one answer apart (it is not kept across answers: the DeepSeek path renumbers an entry it
-// takes back).  END_PARKED_CONVERSATIONS follows the last one.
-inline void print_parked_conversation(uint64_t id, bool on_disk, uint64_t bytes, const int32_t* ids, size_t n) {
-    print_token_line("PARKED_CONVERSATION " + std::to_string(id) + (on_disk ? " disk " : " ram ") +
-                     std::to_string(bytes), ids, n);
+/// Answers `line` (is_conversation_command) from `held`.  A malformed command answers `ERR <why>`.
+inline void answer_conversation_command(const std::string& line, const std::vector<HeldConversation>& held) {
+    namespace d = token_listing_detail;
+    std::istringstream in(line);
+    std::string command, field;
+    in >> command;
+    if (command == "LIST_CONVERSATIONS") {
+        std::vector<int32_t> marker;
+        size_t want = 0;
+        if (in >> field) {
+            std::string count;
+            if (!d::parse_ids(field, marker) || !(in >> count) ||
+                std::from_chars(count.data(), count.data() + count.size(), want).ec != std::errc()) {
+                d::put("ERR LIST_CONVERSATIONS [<marker ids> <preview tokens>]\n");
+                std::fflush(stdout);
+                return;
+            }
+        }
+        for (const HeldConversation& c : held) {
+            std::string s = "CONVERSATION " + c.id + " " + c.place + " " + c.state + " " + std::to_string(c.n) + " " +
+                            std::to_string(c.bytes);
+            if (!marker.empty() && want > 0) {
+                const int32_t* at = std::search(c.ids, c.ids + c.n, marker.begin(), marker.end());
+                if (at != c.ids + c.n) {
+                    at += marker.size();
+                    d::append_ids(s, at, std::min(want, (size_t) (c.ids + c.n - at)));
+                }
+            }
+            s += '\n';
+            d::put(s);
+        }
+        d::put("END_CONVERSATIONS\n");
+    } else if (command == "GET_CONTEXT_WINDOWS") {
+        while (in >> field) {
+            const auto c = std::find_if(held.begin(), held.end(), [&](const HeldConversation& h) { return h.id == field; });
+            std::string s = "CONTEXT_WINDOW " + field;
+            if (c == held.end()) {
+                s += " gone";
+            } else {
+                s += " " + std::to_string(c->n);
+                d::append_ids(s, c->ids, c->n);
+            }
+            s += '\n';
+            d::put(s);
+        }
+        d::put("END_CONTEXT_WINDOWS\n");
+    } else {
+        d::put("ERR unknown command\n");
+    }
+    std::fflush(stdout);
 }
 
 }  // namespace strata::core

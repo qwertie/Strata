@@ -3678,9 +3678,9 @@ struct Serve {
 
     int run() {
         if (E.n_sess > 1) std::printf("INFO batch_slots=%d slot_cache=1\n", E.n_sess);
-        // "stop": STOP ends the request on the control lines; "lists": LIST_SESSION_TOKENS and
-        // LIST_PARKED_CONVERSATIONS
-        std::printf("READY %d stop lists\n", E.ctx);
+        // "stop": STOP ends the request on the control lines; "conversations": LIST_CONVERSATIONS and
+        // GET_CONTEXT_WINDOWS
+        std::printf("READY %d stop conversations\n", E.ctx);
         std::fflush(stdout);
         std::thread reader([&] {
             std::string l;
@@ -3717,18 +3717,15 @@ struct Serve {
                 if (b >= 0 && b < (int) slots.size()) slots[(size_t) b].stop = true;
             } else if (line.rfind("BYIELD", 0) == 0) {
                 // (a read that has ended)
-            } else if (line == "LIST_SESSION_TOKENS") {   // what each session holds (token_listing.hpp)
+            } else if (strata::core::is_conversation_command(line)) {   // what each session holds (token_listing.hpp);
+                std::vector<strata::core::HeldConversation> held;      // this path parks none: its sessions are its cache
                 for (int i = 0; i < E.n_sess; ++i) {
                     const Engine::Sess& ss = E.sess[(size_t) i];
-                    strata::core::print_session_tokens(E.n_sess > 1 ? "slot" + std::to_string(i) : std::string("main"),
-                                                       ss.active ? "decoding" : ss.live.empty() ? "empty" : "holding",
-                                                       ss.live.data(), ss.live.size());
+                    held.push_back({E.n_sess > 1 ? "slot" + std::to_string(i) : std::string("main"), "vram",
+                                    ss.active ? "decoding" : ss.live.empty() ? "empty" : "holding", ss.live.data(),
+                                    ss.live.size(), 0});
                 }
-                std::printf("END_SESSION_TOKENS\n");
-                std::fflush(stdout);
-            } else if (line == "LIST_PARKED_CONVERSATIONS") {   // this path parks none: its sessions are its cache
-                std::printf("END_PARKED_CONVERSATIONS\n");
-                std::fflush(stdout);
+                strata::core::answer_conversation_command(line, held);
             } else if (line.rfind("GEN", 0) == 0 || line.rfind("BGEN", 0) == 0) {
                 request(line);
             } else {
