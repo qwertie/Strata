@@ -21,7 +21,6 @@ from typing import Callable
 
 PLACEHOLDER_KEY = "strata-local"      # the tested configs' placeholder when the server has no key (not a secret)
 OUTPUT_CAP = 4096                     # the output cap every tested config used
-OUTPUT_CAP_MAX = 32768                # the most a wider window gives a reply (see Target.output_cap)
 TESTED_CONTEXT = 32768                # the window every config below was tested on
 COMPACT_AT = 15000                    # and where those tested configs make the app compact its conversation
 
@@ -46,10 +45,10 @@ class Target:
     @property
     def output_cap(self) -> int:
         """The longest reply a config lets the app ask for: the tested 4,096 up to the tested window, then an eighth of
-        the window up to OUTPUT_CAP_MAX.  Thinking counts against it, so a flat 4,096 cut off long replies on a wide
+        the window (65,536 at 512K).  Thinking counts against it, so a flat 4,096 cut off long replies on a wide
         window (a whole file written in one tool call), and the app threw the reply away and asked again.  The server
         still fits each request's cap to the room its prompt leaves."""
-        return max(OUTPUT_CAP, min(OUTPUT_CAP_MAX, self.context // 8))
+        return max(OUTPUT_CAP, self.context // 8)
 
 
 def compact_at(t: Target) -> int:
