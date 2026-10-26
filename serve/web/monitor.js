@@ -116,11 +116,41 @@ const UNKNOWN = {busy: "In use: its tokens are shown when its request ends.",
   restored: "Not known: the cache was restored from a disk session. The next request shows it again.",
   dropped: "Empty: the engine dropped its cache after non-finite logits.",
   ended: "Not known: the engine did not finish the last request."};
-// the colour comes from the id, so the same token always has the same colour: a hue, and one of three shades for hues
-// that are close.  OKLCH lightness is perceptual, so with the shade within +-0.04 of the theme's base (light .84-.92,
-// dark .32-.40) one text colour keeps a contrast of 7:1 or more on every token
-const tokenHue = id => (Math.imul(id, 2654435761) >>> 0) % 360;
-const tokenShade = id => ((Math.imul(id, 40503) >>> 16) % 3) * 0.04 - 0.04;
+// The colour comes from the id, so the same token always has the same colour: a hash of the id picks one of a fixed
+// palette per theme.  The palette samples every allowed colour uniformly by volume in OKLab (roughly perceptual), so
+// muted and very light or dark colours, which are a smaller part of that space, get fewer entries.  Allowed: inside
+// sRGB, a WCAG contrast of 7:1 or more against the theme's text, and clear of the page background (the lightness
+// range).  A seeded generator makes the palette the same on every load.
+const PALETTE_SIZE = 4096;
+const THEMES = {light: {text: [0x11, 0x11, 0x11], L: [0.66, 0.93]}, dark: {text: [0xee, 0xf1, 0xf3], L: [0.25, 0.50]}};
+const toLinear = c => (c /= 255) <= 0.04045 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4;
+const toSrgb = c => Math.round(255 * (c <= 0.0031308 ? 12.92 * c : 1.055 * c ** (1 / 2.4) - 0.055));
+function oklabToLinear(L, a, b) {
+  const l = (L + 0.3963377774 * a + 0.2158037573 * b) ** 3, m = (L - 0.1055613458 * a - 0.0638541728 * b) ** 3,
+    s = (L - 0.0894841775 * a - 1.2914855480 * b) ** 3;
+  return [4.0767416621 * l - 3.3077115913 * m + 0.2309699292 * s, -1.2684380046 * l + 2.6097574011 * m - 0.3413193965 * s,
+    -0.0041960863 * l - 0.7034186147 * m + 1.7076147010 * s];
+}
+function makePalette({text, L: [lo, hi]}) {
+  const lum = ([r, g, b]) => 0.2126 * r + 0.7152 * g + 0.0722 * b, ink = lum(text.map(toLinear));
+  let seed = 1;
+  const random = () => {                              // mulberry32
+    let t = seed = (seed + 0x6D2B79F5) | 0;
+    t = Math.imul(t ^ t >>> 15, t | 1); t ^= t + Math.imul(t ^ t >>> 7, t | 61);
+    return ((t ^ t >>> 14) >>> 0) / 4294967296;
+  };
+  const palette = [];
+  while (palette.length < PALETTE_SIZE) {
+    const rgb = oklabToLinear(lo + (hi - lo) * random(), 0.5 * random() - 0.25, 0.5 * random() - 0.25);
+    if (rgb.some(c => c < 0 || c > 1)) continue;
+    const srgb = rgb.map(toSrgb), y = lum(srgb.map(toLinear));   // the contrast of the colour as it is drawn
+    if ((Math.max(y, ink) + 0.05) / (Math.min(y, ink) + 0.05) < 7) continue;
+    palette.push(`rgb(${srgb.join(" ")})`);
+  }
+  return palette;
+}
+let palettes = null;                                  // made when the colored view is first shown
+const tokenColour = id => (Math.imul(id, 2654435761) >>> 0) >>> 20;   // the hash's top 12 bits: an entry of 4096
 const PAGE = 8000;                                    // tokens per page of the colored view: the page stays light
 function ctxSlot() { return ctx?.slots?.[Number($("ctx-slot").value) || 0] || null; }
 function showContext() {
@@ -141,10 +171,11 @@ function showContext() {
   const start = ctxPage * PAGE, end = Math.min(n, start + PAGE);
   $("ctx-pager").hidden = pages < 2; $("ctx-prev").disabled = ctxPage === 0; $("ctx-next").disabled = ctxPage === pages - 1;
   text("ctx-range", `Tokens ${start.toLocaleString()}–${Math.max(start, end - 1).toLocaleString()} (page ${ctxPage + 1} of ${pages})`);
+  palettes ??= {light: makePalette(THEMES.light), dark: makePalette(THEMES.dark)};
   const frag = document.createDocumentFragment();     // one append: one layout
   for (let i = start; i < end; i++) {
-    const id = slot.tokens[i], span = document.createElement("span"); span.className = "tok";
-    span.style.setProperty("--h", tokenHue(id)); span.style.setProperty("--dl", String(tokenShade(id)));
+    const id = slot.tokens[i], k = tokenColour(id), span = document.createElement("span"); span.className = "tok";
+    span.style.setProperty("--bl", palettes.light[k]); span.style.setProperty("--bd", palettes.dark[k]);   // both themes
     span.textContent = slot.pieces[i]; span.title = `token #${i} · id ${id}`;
     frag.append(span);
   }

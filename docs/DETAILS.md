@@ -691,10 +691,11 @@ it. The last token of the answer is not in the cache, because the engine never f
 the panel opens on the one a request used last. **Plain text** shows the tokens as text. **Colored tokens** gives each
 token its own background. The colour comes from the token's id, so the same token always has the same colour. Hover a
 token to see its position and id. It shows 8,000 tokens at a time, starting with the newest; **Earlier** and **Later**
-move between pages. The lightness stays in a narrow band (OKLCH 0.84-0.92 in the light theme, 0.32-0.40 in the dark
-one), so the text has a contrast of at least 7:1 on every colour. **Save .txt** saves the text. Tick **with token ids**
-next to it, and the ids follow the text as 32-bit little-endian numbers: a line gives their count N, and they are the
-file's last 4 × N bytes.
+move between pages. The colours come from a fixed palette of 4,096 per theme, sampled evenly over every colour that
+keeps a contrast of at least 7:1 with the text (OKLab lightness 0.68-0.93 in the light theme, 0.25-0.47 in the dark
+one), so muted colours, which take up less of that space, come up less often. **Save .txt** saves the text. Tick **with
+token ids** next to it, and the ids follow the text as 32-bit little-endian numbers: a line gives their count N, and
+they are the file's last 4 × N bytes.
 
 The list is what the server sent to the engine and read back from it. It is not a copy of the GPU's memory. Where the
 two can differ:
