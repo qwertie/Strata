@@ -30,8 +30,8 @@ import sys
 
 import numpy as np
 
-sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
-from gguf_reader import GGUFFile  # noqa: E402
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))   # the repository: strata_common
+from strata_common.gguf_reader import GGUFFile  # noqa: E402
 
 REPO = pathlib.Path(__file__).resolve().parents[1]
 STRATA = REPO.parents[min(1, len(REPO.parents) - 1)]   # the dev layout's default shards (setup.py passes --gguf)

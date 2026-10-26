@@ -19,8 +19,8 @@ import re
 import sys
 import urllib.request
 
-sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
-import gguf_reader as G  # noqa: E402
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))   # the repository: strata_common
+from strata_common import gguf_reader as G  # noqa: E402
 
 ROLES = [
     ("routed gate", r"ffn_gate_exps"), ("routed up", r"ffn_up_exps"), ("routed down", r"ffn_down_exps"),

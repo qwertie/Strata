@@ -32,7 +32,7 @@ Shard 1 holds only metadata. Shard 2 holds only the output head (`output.weight`
 | `Qwen3.8-Flash-Next-UD-Q6_K_XL-00005-of-00006.gguf` | 49,419,317,344 | `9948e81ae8368144b135a7403d8c0f2cf9a6c2f9f692313865855b2832e696c9` |
 | `Qwen3.8-Flash-Next-UD-Q6_K_XL-00006-of-00006.gguf` | 14,838,313,984 | `e4ae255234f42b18012f6d6eec5bf615b57479b7e0a0233c47436a321ffeec3f` |
 
-Formats, read from the shard headers with `tools/gguf_reader.py`:
+Formats, read from the shard headers with `strata_common/gguf_reader.py`:
 
 - **Routed experts.** `ffn_gate_exps` and `ffn_up_exps` are Q6_K in 47 of 48 layers and Q8_0 in layer 2. `ffn_down_exps`
   is Q8_0 in every layer (891.3 MB per layer at 640x2560x512, against Q6_K's 688.1 MB for gate or up). The pack's

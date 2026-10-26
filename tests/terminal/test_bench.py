@@ -18,9 +18,9 @@ from unittest import mock
 from serve.frontend import ChatTemplate
 from serve.server import ByteTokenizer, IM_END, Service, serve
 from strata_common.engine_client import MockEngine
-from strata_cli import bench
+from strata_control import bench
 from strata_cli.cli import main
-from strata_cli.client import Endpoint
+from strata_common.client import Endpoint
 from strata_control import benchmarking, journal, management
 from strata_base.private_files import is_unshared
 from strata_common.profiles import ProfileError
@@ -479,9 +479,9 @@ class BenchTests(unittest.TestCase):
         def send(action, params):
             return management.dispatch({"schema_version": 1, "action": action,
                                         "profile": "local", "params": params})
-        with mock.patch("strata_control.benchmarking._source", return_value=(
+        with mock.patch("strata_control.launch_plan.read_source", return_value=(
                 source, {"id": "local"}, revision, {"model_name": "test", "gpu": "cpu"})), \
-                mock.patch("strata_control.benchmarking._launch_plan", return_value=(launch, [])), \
+                mock.patch("strata_control.launch_plan.make_launch_plan", return_value=(launch, [])), \
                 mock.patch("strata_control.runtime.status", side_effect=lambda _: {
                     **owner, "owner_id": owner_id[0]}), \
                 mock.patch("strata_control.runtime.plan_restart", return_value=restart), \

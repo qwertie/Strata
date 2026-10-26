@@ -8,8 +8,8 @@
 
 What lands in `control/`: the pinned CPython 3.12.15 (python-build-standalone, digest-checked), the hash-locked wheels
 (`packaging/locks/runtime-<target>-cp312.txt`, installed with --require-hashes at build time), strata_control,
-strata_cli, serve, tools/strata_tokenizer.py + gguf_reader.py, and BUNDLE.json (version, interpreter and lock digests,
-the digest of the archive it came from). It is the same bundle as the Terminal archive (packaging/package_terminal.py):
+strata_cli, strata_common, strata_base, serve, tools/strata_tokenizer.py and BUNDLE.json (version, interpreter and lock
+digests, the digest of the archive it came from). It is the same bundle as the Terminal archive (packaging/package_terminal.py):
 one Python runtime-core for both products. The app then never runs pip, npm, git or a compiler to start or serve.
 
 This script is a BUILD step. It may download the interpreter and the wheels (verified); the app never does.

@@ -9,7 +9,7 @@
 //   * compiled_geometry_mismatch: the first field where a geometry differs from the shapes this engine's kernels
 //     are built for (the expert count and top-k are run-time values and are not compared).
 //   * layer_tensors / global_tensors: the layout tables.  Names are GGUF names (blk.N.<suffix>), shapes are in
-//     GGUF order (dim 0 contiguous), as tools/gguf_reader.py prints them.
+//     GGUF order (dim 0 contiguous), as strata_common/gguf_reader.py prints them.
 //   * check_gguf_layout: every table entry present with its shape, inside its file, of a type with a known block
 //     size; and, for a family whose table is complete (qwen35moe), no blk.* tensor the table does not name.
 #pragma once

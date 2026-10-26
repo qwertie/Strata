@@ -32,7 +32,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from strata_cli import bench_facts as facts
-from strata_cli.bench import _private_mkdir, _write_new
+from strata_control.bench import _private_mkdir, _write_new
 from strata_common.profiles import ProfileError
 
 FORMAT = "strata-standard-benchmark"

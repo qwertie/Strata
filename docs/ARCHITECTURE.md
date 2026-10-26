@@ -53,9 +53,9 @@ Inside `src/common/`, the subfolders may use each other as long as they do not f
 | Layer | Package | What belongs here | May import |
 |---|---|---|---|
 | 0 | `strata_base/` | All-purpose code: processes, files, HTTP, hashing, downloads | nothing of Strata's |
-| 1 | `strata_common/` | Strata-wide code: GPU detection, installing and finding engines, the model family catalog, the GGUF reader, the engine protocol client | `strata_base` |
+| 1 | `strata_common/` | Strata-wide code: GPU detection, installing and finding engines, the model family catalog, the GGUF reader, the engine protocol client, the client of the server's status API | `strata_base` |
 | 2 | `strata_server/` | The API server (OpenAI and Anthropic compatible) and its web page | layers 0–1 |
-| 2 | `strata_control/` | The Terminal's library: launch, status, connect | layers 0–1 |
+| 2 | `strata_control/` | The Terminal's library: launch, status, connect, benchmarks | layers 0–1 |
 | 3 | `strata_cli/` | The `strata` command's interface | layers 0–2 |
 | 4 | `setup.py`, `tools/` | Setup from a source checkout, developer scripts | any |
 

@@ -7,7 +7,7 @@ import sys
 import time
 from typing import Any
 
-from strata_cli.client import ClientError, Endpoint
+from strata_common.client import ClientError, Endpoint
 from strata_cli.render import activity_label
 
 

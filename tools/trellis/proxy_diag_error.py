@@ -17,8 +17,9 @@ import numpy as np
 
 HERE = pathlib.Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE.parent))
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[2]))   # the repository: strata_common
 sys.path.insert(0, str(HERE))
-import gguf_reader  # noqa: E402
+from strata_common import gguf_reader  # noqa: E402
 import tqenc  # noqa: E402
 from build_swap import bf16, load_h  # noqa: E402
 

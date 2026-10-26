@@ -24,8 +24,9 @@ import numpy as np
 
 HERE = pathlib.Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE.parent))
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[2]))   # the repository: strata_common
 sys.path.insert(0, str(HERE))
-import gguf_reader  # noqa: E402
+from strata_common import gguf_reader  # noqa: E402
 import tqenc  # noqa: E402
 
 MXFP4_LUT = np.array([0, 1, 2, 3, 4, 6, 8, 12, 0, -1, -2, -3, -4, -6, -8, -12], dtype=np.float32)

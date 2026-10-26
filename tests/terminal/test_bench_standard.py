@@ -18,7 +18,8 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from unittest import mock
 
-from strata_cli import bench, bench_facts, bench_standard as bs
+from strata_control import bench
+from strata_cli import bench_facts, bench_standard as bs
 from strata_cli.cli import main
 from strata_common.profiles import ProfileError
 
@@ -870,8 +871,8 @@ class CommandLineTests(StandardBase):
                 return None                  # nothing answers before the engine is started
             return real_get(target, path, timeout)
         started = []
-        with mock.patch("strata_cli.cli._source", return_value=(Path("p.json"), None, None, cfg)), \
-                mock.patch("strata_cli.cli._launch_plan", return_value=(plan, [])), \
+        with mock.patch("strata_control.launch_plan.read_source", return_value=(Path("p.json"), None, None, cfg)), \
+                mock.patch("strata_control.launch_plan.make_launch_plan", return_value=(plan, [])), \
                 mock.patch.object(bs.Target, "get", get), \
                 mock.patch.object(bs, "start_engine", side_effect=lambda ref, target, log, say, wait: started.append(ref) or "proc") as start, \
                 mock.patch.object(bs, "stop_engine") as stop:
@@ -887,8 +888,8 @@ class CommandLineTests(StandardBase):
 
     def test_a_running_profile_is_used_and_left_running(self):
         plan = {"effective": {"host": "127.0.0.1", "port": int(self.server.url.rsplit(":", 1)[1])}, "engine_argv": []}
-        with mock.patch("strata_cli.cli._source", return_value=(Path("p.json"), None, None, {})), \
-                mock.patch("strata_cli.cli._launch_plan", return_value=(plan, [])), \
+        with mock.patch("strata_control.launch_plan.read_source", return_value=(Path("p.json"), None, None, {})), \
+                mock.patch("strata_control.launch_plan.make_launch_plan", return_value=(plan, [])), \
                 mock.patch.object(bs, "start_engine") as start, mock.patch.object(bs, "stop_engine") as stop:
             code, text, errors = self.invoke("--profile", "p.json", "--out", str(self.root / "run"))
         self.assertEqual(code, 0, errors)
@@ -900,8 +901,8 @@ class CommandLineTests(StandardBase):
     def test_no_start_refuses_to_launch(self):
         self.server.close()
         plan = {"effective": {"host": "127.0.0.1", "port": int(self.server.url.rsplit(":", 1)[1])}, "engine_argv": []}
-        with mock.patch("strata_cli.cli._source", return_value=(Path("p.json"), None, None, {})), \
-                mock.patch("strata_cli.cli._launch_plan", return_value=(plan, [])), \
+        with mock.patch("strata_control.launch_plan.read_source", return_value=(Path("p.json"), None, None, {})), \
+                mock.patch("strata_control.launch_plan.make_launch_plan", return_value=(plan, [])), \
                 mock.patch.object(bs, "start_engine") as start:
             code, text, _ = self.invoke("--profile", "p.json", "--out", str(self.root / "ns"), "--no-start", "--output", "json")
         self.assertEqual(code, 5)
@@ -1009,12 +1010,12 @@ class EngineProcessTests(unittest.TestCase):
         self.addCleanup(shutil.rmtree, out_dir, True)
         (out_dir / "results.json").write_text("{}", encoding="utf-8")
         (out_dir / "README.md").write_text("x", encoding="utf-8")
-        with mock.patch("strata_cli.cli._source", return_value=(Path("p.json"), None, None, {})), \
-                mock.patch("strata_cli.cli._launch_plan", return_value=(plan, [])), \
+        with mock.patch("strata_control.launch_plan.read_source", return_value=(Path("p.json"), None, None, {})), \
+                mock.patch("strata_control.launch_plan.make_launch_plan", return_value=(plan, [])), \
                 mock.patch.object(bs, "start_engine", return_value=object()), \
                 mock.patch.object(bs, "run", return_value=(fake_doc, out_dir)), \
                 mock.patch.object(bs, "stop_engine", return_value="process 9 is still running 30 s after it was told to stop"), \
-                mock.patch("strata_cli.client.server_url", side_effect=lambda u: u):
+                mock.patch("strata_common.client.server_url", side_effect=lambda u: u):
             err = io.StringIO()
             out = io.StringIO()
             with contextlib.redirect_stderr(err), contextlib.redirect_stdout(out):

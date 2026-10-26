@@ -14,7 +14,7 @@ from pathlib import Path
 from unittest import mock
 
 from strata_cli.cli import main
-from strata_cli.client import (ClientError, Endpoint, normalize_legacy, normalize_status_only,
+from strata_common.client import (ClientError, Endpoint, normalize_legacy, normalize_status_only,
                                sanitize_telemetry, server_url)
 from strata_cli.render import display_width, field, render_view, safe
 from serve.server import (configure_batch_telemetry_env, visible_device_order)

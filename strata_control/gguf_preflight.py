@@ -12,7 +12,7 @@ import struct
 from pathlib import Path
 
 from strata_common.profiles import ProfileError
-from tools.gguf_reader import BLOCK_GEOMETRY, GGML_TYPES
+from strata_common.gguf_reader import BLOCK_GEOMETRY, GGML_TYPES
 
 
 MAX_HEADER_BYTES = 64 * 1024 * 1024

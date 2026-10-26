@@ -16,7 +16,7 @@ from pathlib import Path
 
 from strata_control import gguf_preflight, models
 from strata_common.profiles import ProfileError
-from tools.gguf_reader import BLOCK_GEOMETRY
+from strata_common.gguf_reader import BLOCK_GEOMETRY
 
 TYPE_IDS = {"Q8_0": 8, "IQ3_S": 21, "IQ4_NL": 20, "IQ4_XS": 23, "IQ3_XXS": 18, "Q2_0": 42, "IQ2_S": 22, "IQ2_XS": 17}
 

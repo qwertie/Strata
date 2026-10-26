@@ -19,7 +19,7 @@ from rich.table import Table
 from rich.text import Text
 
 from strata_cli import nav
-from strata_cli.client import complete_slots
+from strata_common.client import complete_slots
 from strata_cli.render import (_queue_wait, activity_continuity_notice, activity_label, display_width,
                                field, group_occupancy, number, safe)
 

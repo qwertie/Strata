@@ -14,7 +14,7 @@ from pathlib import Path
 from unittest import mock
 
 from strata_cli.cli import main
-from strata_cli.client import sanitize_telemetry
+from strata_common.client import sanitize_telemetry
 from strata_cli.logs import ActivityContinuity, activity_delta
 
 

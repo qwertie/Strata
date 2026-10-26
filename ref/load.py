@@ -24,7 +24,8 @@ import sys
 import numpy as np
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent / "tools"))
-from gguf_reader import GGUFFile                     # noqa: E402
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))   # the repository: strata_common
+from strata_common.gguf_reader import GGUFFile                     # noqa: E402
 from gguf_writer import dequantize_q2_0              # noqa: E402
 
 # gguf-py names differ from our reader's names in a few places; map only what differs.

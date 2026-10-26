@@ -18,8 +18,8 @@ from unittest import mock
 from serve.frontend import ChatTemplate
 from serve.server import ByteTokenizer, Service, serve
 from strata_common.engine_client import StrataEngine, engine_args, parallel_args
-from strata_cli import bench
-from strata_cli.client import Endpoint
+from strata_control import bench
+from strata_common.client import Endpoint
 
 # The fake engine: one token every STEP seconds per active slot (a "window" serves every active slot at once);
 # GEN (solo) streams T lines; BGEN reads the prompt (one T line, DONE), answers BADM and continues in the slot.

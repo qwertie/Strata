@@ -31,7 +31,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 from pathlib import Path
 
-from strata_cli.client import ClientError, Endpoint, _NoRedirect
+from strata_common.client import ClientError, Endpoint, _NoRedirect
 from strata_common.profiles import ProfileError
 from strata_base import atomic as _atomic_mod
 from strata_base import posix_owner

@@ -13,7 +13,7 @@ import json
 import os
 import sys
 
-from strata_cli.client import ClientError, Endpoint
+from strata_common.client import ClientError, Endpoint
 from strata_cli import connections
 
 

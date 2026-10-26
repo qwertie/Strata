@@ -14,7 +14,7 @@ from rich.panel import Panel
 from rich.text import Text
 
 from strata_cli import nav
-from strata_cli.client import complete_slots
+from strata_common.client import complete_slots
 from strata_cli.dashboard import (set_ascii_boxes, _rounded, _age, _current_batch_value, _current_sample,
                                   _device_role, _gib, _meter, _rate_spark, _spark,
                                   _state, _visual_pair, _visual_panel, MonitorHistory)

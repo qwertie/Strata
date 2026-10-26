@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import argparse
 import contextlib
-import io
 import json
 import math
 import os
@@ -23,7 +22,8 @@ ROOT = Path(__file__).resolve().parents[1]
 BACKENDS = ("metal", "cuda", "hip", "sycl", "cpu")
 from strata_control.doctor import inspect as inspect_components
 from strata_common.profiles import ProfileError
-from strata_cli.client import ClientError, Endpoint
+from strata_control import launch_plan
+from strata_common.client import ClientError, Endpoint
 from strata_cli import monitor_commands, tune_commands
 
 
@@ -542,11 +542,6 @@ def _success(payload: dict, *, machine: bool, human: str | None = None) -> int:
     return 0
 
 
-def _source(ref: str) -> tuple[Path, dict | None, str | None, dict]:
-    path, saved, revision = profiles.resolve(ref)
-    return path, saved, revision, profiles.read_run_config(path)
-
-
 def _models(a: argparse.Namespace) -> int:
     from strata_control import models
     if a.models_command == "import":
@@ -723,109 +718,6 @@ def _import_words(plan: dict) -> str:
     return "\n".join(lines)
 
 
-def _redact_argv(args: list[str]) -> list[str]:
-    out = []
-    conceal_next = False
-    for item in args:
-        if conceal_next:
-            out.append("<redacted>")
-            conceal_next = False
-            continue
-        if item.startswith("-") and any(word in item.lower() for word in ("key", "token", "secret", "password", "credential")):
-            if "=" in item:
-                out.append(item.partition("=")[0] + "=<redacted>")
-            else:
-                out.append(item)
-                conceal_next = True
-        else:
-            out.append(item)
-    return out
-
-
-def _effective(cfg: dict, saved: dict | None, cli: argparse.Namespace | None = None) -> tuple[dict, dict]:
-    overrides = saved["overrides"] if saved else {}
-    values = {}
-    origins = {}
-    for key, default in (("host", "127.0.0.1"), ("port", 8095), ("parallel", None),
-                         ("batch_groups", None), ("max_queue", None), ("queue_timeout", None),
-                         ("offline", False), ("batch_telemetry", False)):
-        explicit = getattr(cli, key, None) if cli is not None else None
-        if key == "offline" and explicit is False:
-            explicit = None
-        if explicit is not None:
-            value, origin = explicit, "command"
-        elif key in overrides:
-            value, origin = overrides[key], "saved_profile"
-        elif key in cfg:
-            value, origin = cfg[key], "run_config"
-        elif key == "batch_telemetry" and "STRATA_BATCH_TELEMETRY" in os.environ:
-            value, origin = os.environ["STRATA_BATCH_TELEMETRY"] == "1", "environment"
-        else:
-            value, origin = default, "default"
-        values[key], origins[key] = value, origin
-    profiles.validate_overrides({key: value for key, value in values.items() if key in
-                                  ("host", "port", "parallel", "batch_groups", "max_queue", "queue_timeout",
-                                   "offline", "batch_telemetry")
-                                  and value is not None})
-    if values["queue_timeout"] is not None and values["max_queue"] is None:
-        raise ProfileError("queue_timeout requires max_queue to bound pending calls")
-    if values["parallel"] is not None and any(flag in cfg["args"] for flag in ("--batch", "--slots")):
-        if origins["parallel"] != "run_config":
-            raise ProfileError("parallel override conflicts with --batch/--slots in run config args")
-    if values["batch_groups"] is not None and "--batch-groups" in cfg["args"]:
-        raise ProfileError("batch_groups override conflicts with --batch-groups in run config args")
-    if values["offline"] and (cfg.get("mcp_servers") or cfg.get("before_load")):
-        raise ProfileError("offline serving requires MCP servers and before_load to be absent")
-    return values, origins
-
-
-def _launch_plan(ref: str, cli: argparse.Namespace | None = None) -> tuple[dict, list[str]]:
-    path, saved, revision, cfg = _source(ref)
-    values, origins = _effective(cfg, saved, cli)
-    host = values["host"]
-    from strata_common.engine_client import api_key_of, explicit_no_key, key_list
-    raw_key = os.environ.get("STRATA_API_KEY") or cfg.get("api_key", "")
-    if not explicit_no_key(raw_key):
-        try:
-            key_list(api_key_of(raw_key))
-        except ValueError:
-            raise ProfileError("the inference API key is invalid", 5) from None
-    # A key is recommended on a network, never required: the server warns once at start (owner decision 2026-10-20).
-    server_args = ["--engine", getattr(cli, "engine", "strata"), "--config", str(path), "--host", str(host),
-                   "--port", str(values["port"])]
-    if cli is not None:
-        server_args += ["--shutdown-timeout", str(cli.shutdown_timeout)]
-    for key, flag in (("parallel", "--parallel"), ("batch_groups", "--batch-groups"),
-                      ("max_queue", "--max-queue"), ("queue_timeout", "--queue-timeout")):
-        if values[key] is not None and origins[key] != "run_config":
-            server_args += [flag, str(values[key])]
-    if values["offline"]:
-        server_args.append("--offline")
-    if origins["batch_telemetry"] not in ("run_config", "default"):
-        server_args.append("--batch-telemetry" if values["batch_telemetry"] else "--no-batch-telemetry")
-    ready_path = None
-    if cli is not None and cli.ready_file:
-        from strata_common.ready import preflight as ready_preflight
-        ready_path = str(ready_preflight(cli.ready_file))
-        server_args += ["--ready-file", ready_path]
-    effective_cfg = {**cfg, "args": list(cfg["args"])}
-    if values["parallel"] is not None:
-        effective_cfg["parallel"] = values["parallel"]
-    if values["batch_groups"] is not None:
-        effective_cfg["args"] += ["--batch-groups", str(values["batch_groups"])]
-    from strata_common.engine_client import engine_args
-    notes = io.StringIO()
-    with contextlib.redirect_stdout(notes):
-        engine_argv = engine_args(effective_cfg)
-    plan = {"profile": saved["id"] if saved else None, "profile_revision": revision,
-            "source_config": str(path), "model_name": cfg.get("model_name"),
-            "effective": values, "origin": origins, "server_argv": server_args,
-            "ready_file": ready_path,
-            "engine_exe": cfg["exe"], "engine_argv": _redact_argv(engine_argv),
-            "notes": [line for line in notes.getvalue().splitlines() if line]}
-    return plan, server_args
-
-
 def _serve_error(a: argparse.Namespace, message: str, code: int = 2) -> int:
     if a.output == "jsonl":
         print(json.dumps({"schema_version": 1, "event": "failed", "at": time.time(),
@@ -932,7 +824,7 @@ def _serve(a: argparse.Namespace) -> int:
         if a.batch_groups is not None:
             profiles.validate_overrides({"batch_groups": a.batch_groups if a.batch_groups == "auto"
                                           else int(a.batch_groups) if a.batch_groups.isdecimal() else a.batch_groups})
-        plan, args = _launch_plan(a.config, a)
+        plan, args = launch_plan.make_launch_plan(a.config, a)
     except ValueError as exc:
         if a.output == "jsonl":
             return _serve_error(a, str(exc), getattr(exc, "exit_code", 2))
@@ -1014,7 +906,7 @@ def _profile_command(a: argparse.Namespace) -> int:
                         human=f"Restored profile {a.name}: {previous} -> {revision}; running instances are unchanged")
     result = {"profile": saved, "revision": revision}
     if a.profile_command == "validate" or a.effective:
-        plan, _ = _launch_plan(a.name)
+        plan, _ = launch_plan.make_launch_plan(a.name)
         result["plan"] = plan
     return _success(result, machine=machine, human=(f"Profile {a.name} is valid at revision {revision}"
                     if a.profile_command == "validate" else None))
@@ -1075,8 +967,8 @@ def _calibration(a: argparse.Namespace) -> int:
                         human=f"Calibration measured; review {Path(a.out).resolve()} before applying")
     if a.review_result:
         result = calibration.review(a.profile, Path(a.review_result))
-        result["before_args"] = _redact_argv(result["before_args"])
-        result["after_args"] = _redact_argv(result["after_args"])
+        result["before_args"] = launch_plan.redact_argv(result["before_args"])
+        result["after_args"] = launch_plan.redact_argv(result["after_args"])
         if machine:
             print(json.dumps({"schema_version": 1, "ok": result["applicable"], "review": result},
                              ensure_ascii=False, allow_nan=False))
@@ -1127,7 +1019,7 @@ def _calibration(a: argparse.Namespace) -> int:
 
 
 def _bench(a: argparse.Namespace) -> int:
-    from strata_cli import bench
+    from strata_control import bench
     machine = a.output == "json"
     if a.bench_command in ("report", "compare") and a.out and a.output != "markdown":
         return _error("--out requires --output markdown", 2, machine)
@@ -1199,10 +1091,10 @@ def _bench(a: argparse.Namespace) -> int:
         return _error("--require-managed-match needs a saved --profile", 2, machine)
     profile_identity = None
     if a.profile:
-        path, saved, revision, cfg = _source(a.profile)
+        path, saved, revision, cfg = launch_plan.read_source(a.profile)
         if a.require_managed_match and saved is None:
             return _error("--require-managed-match needs a saved profile name", 2, machine)
-        plan, _ = _launch_plan(a.profile)
+        plan, _ = launch_plan.make_launch_plan(a.profile)
         host = plan["effective"]["host"]
         host = "127.0.0.1" if host in ("0.0.0.0", "::") else host
         authority = f"[{host}]" if ":" in host and not host.startswith("[") else host
@@ -1255,8 +1147,8 @@ def _bench_standard(a: argparse.Namespace, machine: bool) -> int:
     saved = None
     key = os.environ.get(a.credential_env)
     if a.profile:
-        _, saved, _, cfg = _source(a.profile)
-        plan, _ = _launch_plan(a.profile)
+        _, saved, _, cfg = launch_plan.read_source(a.profile)
+        plan, _ = launch_plan.make_launch_plan(a.profile)
         plan = {**plan, "config": cfg}
         host = plan["effective"]["host"]
         host = "127.0.0.1" if host in ("0.0.0.0", "::") else host
@@ -1268,7 +1160,7 @@ def _bench_standard(a: argparse.Namespace, machine: bool) -> int:
             key = keys[0] if keys else None
     else:
         url = a.url
-    from strata_cli.client import server_url
+    from strata_common.client import server_url
     target = bench_standard.Target(server_url(url), key)
     redact = bench_facts.redactor(key or "")
     command = redact("strata " + " ".join(str(part) for part in (a.raw_argv or ["bench", "run", "--suite", "standard-v1"])))

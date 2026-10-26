@@ -441,8 +441,8 @@ class OperatorProfileTests(unittest.TestCase):
                 profiles.set_values("local", [assignment])
         profiles.set_values("local", ["queue_timeout=5"])
         with self.assertRaisesRegex(profiles.ProfileError, "requires max_queue"):
-            from strata_cli.cli import _launch_plan
-            _launch_plan("local")
+            from strata_control.launch_plan import make_launch_plan
+            make_launch_plan("local")
 
 
 if __name__ == "__main__":

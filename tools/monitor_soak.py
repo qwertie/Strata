@@ -17,7 +17,7 @@ import tracemalloc
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
-from strata_cli.client import Endpoint
+from strata_common.client import Endpoint
 
 
 class SyntheticTelemetry:

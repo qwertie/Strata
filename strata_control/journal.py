@@ -106,7 +106,7 @@ def _validate_direct_intent(kind: str, intent: object) -> dict:
             not (kind == "runtime.restart" and set(intent) in legacy_restart)):
         raise ProfileError("direct operation intent has unsupported fields", 5)
     if kind == "bench.run":
-        from strata_cli import bench
+        from strata_control import bench
         path = intent["path"]
         suite = intent["suite"]
         maximum = 64 if suite == "parallel-overload-v1" else 16

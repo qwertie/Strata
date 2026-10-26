@@ -16,7 +16,7 @@ from unittest import mock
 
 from strata_cli.cli import main
 from strata_cli import connections
-from strata_cli.client import ClientError, Endpoint, server_url
+from strata_common.client import ClientError, Endpoint, server_url
 from strata_cli.render import render_view
 
 

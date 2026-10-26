@@ -3825,7 +3825,7 @@ def make_handler(svc: Service):
                 return
             if path == "/v1/telemetry":
                 if self._authorized_telemetry():
-                    from strata_cli.client import normalize_legacy
+                    from strata_common.client import normalize_legacy
                     snapshot = normalize_legacy(svc.metrics(), svc.v1_status())
                     snapshot["source"] = "server-v1"
                     snapshot["work"]["slots_requested"] = getattr(svc, "requested_slots", None)

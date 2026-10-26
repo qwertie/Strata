@@ -38,7 +38,7 @@ try:
 except ImportError:  # Windows has no qualified owner transport yet.
     fcntl = None
 
-from strata_control import owner_transport, readiness
+from strata_control import launch_plan, owner_transport, readiness
 from strata_common import paths, procs, profiles
 from strata_base import posix_owner, private_files, winproc
 from strata_common import launch_identity
@@ -458,8 +458,7 @@ def status(name: str) -> dict:
 
 
 def _start_candidate(name: str) -> tuple[dict, str]:
-    from strata_cli.cli import _launch_plan
-    plan, _ = _launch_plan(name)
+    plan, _ = launch_plan.make_launch_plan(name)
     digest = hashlib.sha256(Path(plan["source_config"]).read_bytes()).hexdigest()
     return plan, digest
 
@@ -790,8 +789,7 @@ class Host:
         profiles._atomic(_child_marker(self.name, self.token), (json.dumps(payload) + "\n").encode())
 
     def _plan(self) -> tuple[dict, list[str], Path, bytes]:
-        from strata_cli.cli import _launch_plan
-        plan, args = _launch_plan(self.name)
+        plan, args = launch_plan.make_launch_plan(self.name)
         source = Path(plan["source_config"])
         return plan, args, source, source.read_bytes()
 
@@ -1150,7 +1148,6 @@ class Host:
                     "source_switch": switched, "source_migration": migrated,
                     "requires_allow_source_switch": switched and not allow_source_switch,
                     "requires_allow_source_migration": migrated and not allow_source_migration}
-        from strata_cli.cli import _redact_argv
         return {"ok": True, "state": "ready", "profile": self.name,
                 "current_owner_id": current["owner_id"],
                 "current_instance_id": current["instance_id"],
@@ -1161,8 +1158,8 @@ class Host:
                 "candidate_source_sha256": hashlib.sha256(source_bytes).hexdigest(),
                 "source_switch": switched, "source_migration": migrated,
                 "rollback_snapshot_required": migrated,
-                "current_server_argv": _redact_argv(self.args),
-                "candidate_server_argv": _redact_argv(candidate_args),
+                "current_server_argv": launch_plan.redact_argv(self.args),
+                "candidate_server_argv": launch_plan.redact_argv(candidate_args),
                 "changed": switched or migrated or self.args != candidate_args or
                            self.revision != plan["profile_revision"],
                 "shutdown_timeout": self.shutdown_timeout,

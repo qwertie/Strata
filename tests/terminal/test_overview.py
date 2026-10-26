@@ -165,7 +165,7 @@ class InTheMonitor(unittest.TestCase):
     def test_an_older_server_without_metrics_keeps_the_earlier_overview(self):
         class Old(Source):
             def get(self, path):
-                from strata_cli.client import ClientError
+                from strata_common.client import ClientError
                 raise ClientError("not found", http_status=404)
 
         async def go():

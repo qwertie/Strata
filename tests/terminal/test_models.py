@@ -130,7 +130,7 @@ class ModelInventoryTests(unittest.TestCase):
         snapshot = {"model": {"id": "served-demo", "loaded": True},
                     "instance": {"id": "instance-123"}}
         output = io.StringIO()
-        with mock.patch("strata_cli.client.Endpoint.snapshot", return_value=snapshot) as fetch, \
+        with mock.patch("strata_common.client.Endpoint.snapshot", return_value=snapshot) as fetch, \
                 redirect_stdout(output):
             code = main(["models", "list", "--served", "--url", "http://127.0.0.1:8095",
                          "--output", "json"])
@@ -142,7 +142,7 @@ class ModelInventoryTests(unittest.TestCase):
                                               "execution_compatibility": "unverified"}])
         fetch.assert_called_once_with()
         output = io.StringIO()
-        with mock.patch("strata_cli.client.Endpoint.snapshot", return_value={
+        with mock.patch("strata_common.client.Endpoint.snapshot", return_value={
                 "model": {"id": None, "loaded": None}, "instance": {"id": "i"}}), \
                 redirect_stdout(output):
             code = main(["models", "list", "--served", "--url", "http://127.0.0.1:8095",

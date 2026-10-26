@@ -8,7 +8,7 @@ P1.S1 of the plan says the tiny synthetic model is "written as a real GGUF via `
 
 `src/artifact/` needs a writer regardless - P1.S2 requires a reader with no ggml dependency, and the
 writer is its companion - so this is that writer in Python, where it can be validated immediately
-against `tools/gguf_reader.py` and against llama.cpp.
+against `strata_common/gguf_reader.py` and against llama.cpp.
 
 Scope: enough to build the P1.S1 tiny model. It is NOT a general-purpose quantizer; the only
 quantizer implemented is `Q2_0`, and its contract is `docs/q2_0-contract.md`:
@@ -27,8 +27,8 @@ import sys
 
 import numpy as np
 
-sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
-from gguf_reader import GGUF_MAGIC, GGUFFile  # noqa: E402
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))   # the repository: strata_common
+from strata_common.gguf_reader import GGUF_MAGIC, GGUFFile  # noqa: E402
 
 # ggml_type ids we can write. Values match GGML_TYPES in gguf_reader.py.
 TYPE_IDS = {"F32": 0, "F16": 1, "Q2_0": 42}

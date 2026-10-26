@@ -53,7 +53,8 @@ import numpy as np
 
 HERE = pathlib.Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
-import gguf_reader as G  # noqa: E402
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))   # the repository: strata_common
+from strata_common import gguf_reader as G  # noqa: E402
 
 FLOAT = {"BF16", "F32", "F16"}
 ROUTERS = ("ffn_gate_inp.weight", "ffn_gate_inp_shexp.weight")

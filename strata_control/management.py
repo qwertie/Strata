@@ -16,7 +16,7 @@ import sys
 from pathlib import Path
 from typing import Any
 
-from strata_control import doctor, journal, models, runtime
+from strata_control import doctor, journal, launch_plan, models, runtime
 from strata_common import profiles
 from strata_common.profiles import ProfileError
 
@@ -94,8 +94,7 @@ def _profile_change_plan(profile: str, overrides: object, source_config: object)
             raise ProfileError("run config changed during profile preview; retry", 6)
     except OSError as exc:
         raise ProfileError(f"cannot read run config ({type(exc).__name__})", 5) from None
-    from strata_cli.cli import _effective
-    effective, origins = _effective(cfg, proposed)
+    effective, origins = launch_plan.get_effective(cfg, proposed)
     changes = {key: {"before": current["overrides"].get(key), "after": overrides.get(key)}
                for key in sorted(profiles.OVERRIDE_KEYS)
                if current["overrides"].get(key) != overrides.get(key)}
@@ -377,7 +376,7 @@ def dispatch(request: object) -> dict:
         from strata_control import benchmarking
         result = benchmarking.job_status(profile, params["job_id"])
     elif action == "bench.progress":
-        from strata_cli import bench
+        from strata_control import bench
         from strata_control import benchmarking
         profiles.load(profile)
         target = _local_report_path(params["path"], "benchmark progress path")
@@ -392,13 +391,13 @@ def dispatch(request: object) -> dict:
         result = benchmarking.request_cancel(
             profile, _local_report_path(params["path"], "benchmark cancel path"))
     elif action == "bench.report":
-        from strata_cli import bench
+        from strata_control import bench
         profiles.load(profile)
         report = bench.load(_local_report_path(params["path"], "benchmark report path"))
         result = {"ok": True, "summary": bench.summary(report),
                   "markdown": bench.markdown_report(report)}
     elif action == "bench.compare":
-        from strata_cli import bench
+        from strata_control import bench
         profiles.load(profile)
         baseline = bench.load(_local_report_path(params["baseline"], "baseline report path"))
         candidate = bench.load(_local_report_path(params["candidate"], "candidate report path"))

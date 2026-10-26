@@ -202,7 +202,7 @@ class Base(unittest.TestCase):
             mock.patch.object(setup, "write_run_script", lambda tag, cfg, port, *_: self.t / f"start-{tag}.bat"),
             mock.patch.object(setup, "saved_calibration", lambda cfg: None),
             mock.patch.object(setup, "start", mock.Mock(side_effect=AssertionError("started"))),
-            mock.patch.dict(sys.modules, {"gguf_reader": types.SimpleNamespace(GGUFFile=FakeGGUF)}),
+            mock.patch.dict(sys.modules, {"strata_common.gguf_reader": types.SimpleNamespace(GGUFFile=FakeGGUF)}),
             mock.patch.object(sys, "argv", ["setup.py", *(["--family", "unsloth"] if family else []),
                                             *(["--model", m] if model else []),
                                             *(["--yes"] if answers is None else []), "--no-start",

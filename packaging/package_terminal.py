@@ -108,7 +108,6 @@ PAYLOAD = (
 #: installation/preparation code out of the serving import graph.
 TOOLS_SUBSET = (
     "strata_tokenizer.py",
-    "gguf_reader.py",
     "dflash2_pack.py",     # the DFlash2 drafter: strata_control/drafting_fetch.py packs the download with it (numpy only)
 )
 
@@ -122,7 +121,7 @@ INSTALLER_FILES = ("setup.py", "ref/load.py")   # ref/load.py: strata_pack.py (t
 #: list in 0.1.47, so every launch after a tune failed (#3613, #3467). setup_tool_imports() below also reads setup.py itself, so a tools/
 #: module it starts to import is never forgotten again; tests/terminal/test_bundle_imports.py checks the staged bundle.
 INSTALLER_TOOLS = ("strata_mcp", "iq_pack", "strata_pack", "pack_index", "mtp_fetch", "mtp_pack", "mtp_rt", "draft_vocab",
-                   "strata_tokenizer", "gguf_reader", "calibrate")
+                   "strata_tokenizer", "calibrate")
 #: tools run BY PATH (`python tools/.../x.py`) by setup.py, strata_cli or strata_control: no import names them, so setup_tool_imports() cannot find
 #: them.  DeepSeek's setup and launch run dsv41/pack_gguf.py (the model folder), dsv41/smoke.py (the engine's first answer) and dsv41/tune.py
 #: (the short tune); setup.py's other by-path tools (nvfp4_local_pack, strata_bench, strata_inspect) were missing from the bundle the same way.

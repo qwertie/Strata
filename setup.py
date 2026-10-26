@@ -2924,7 +2924,7 @@ def download(url, dst: Path, what=None):
 def whole_shard(s: Path) -> bool:
     """A shard as long as its own tensor directory says (check_shards' test, without stopping setup)."""
     sys.path.insert(0, str(ROOT / "tools"))
-    from gguf_reader import GGUFFile
+    from strata_common.gguf_reader import GGUFFile
     try:
         g = GGUFFile(s)
         return s.stat().st_size >= g.data_start + max((t.offset + (t.expected_bytes() or 0) for t in g.tensors),
@@ -3253,7 +3253,7 @@ def check_shards(shards):
     renamed by hand, a download finished by an older setup) otherwise passes as a model file and the engine
     fails much later, at the first tensor that runs past the end."""
     sys.path.insert(0, str(ROOT / "tools"))
-    from gguf_reader import GGUFFile
+    from strata_common.gguf_reader import GGUFFile
     for s in shards:
         if not s.exists():
             fail(f"missing {s}")
@@ -9525,7 +9525,7 @@ def main() -> int:
     # ---- 7. the start script
     step(7, "writing the start script")
     sys.path.insert(0, str(ROOT / "tools"))
-    from gguf_reader import GGUFFile                   # the PLE table's shard: shard 2 (original) or 1 (Swift)
+    from strata_common.gguf_reader import GGUFFile                   # the PLE table's shard: shard 2 (original) or 1 (Swift)
     if ready:   # the dense GGUF as --native and --native-dense-gguf (--native alone would look for a second shard),
         rp = ready_paths(model, models_dir)            # the FP8 n-gram table, the BF16 token embedding
         ple = rp["ple"]

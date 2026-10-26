@@ -161,8 +161,9 @@ class TestTheServerUsesThePolicy(unittest.TestCase):
     """A guard that is not wired in is decoration, so the wiring itself is asserted."""
 
     def setUp(self):
-        self.source = (Path(__file__).resolve().parents[2] / "serve" / "server.py").read_text(
-            encoding="utf-8")
+        root = Path(__file__).resolve().parents[2]
+        self.source = "\n".join((root / name).read_text(encoding="utf-8")
+                                for name in ("serve/server.py", "strata_common/engine_client.py"))
 
     def test_the_image_path_consults_the_policy_or_the_flag(self):
         # The reviewed server already refuses a remote image URL when offline; what matters here is

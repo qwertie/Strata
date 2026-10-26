@@ -55,8 +55,8 @@ def write_header(dim, vocab, source, what):
 def from_gguf(src, out):
     """token_embd.weight of a GGUF, dequantized and rounded to BF16 (nearest-even), in row chunks."""
     import numpy as np
-    sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
-    import gguf_reader as G
+    sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))   # the repository: strata_common
+    from strata_common import gguf_reader as G
     from _paths import add_gguf_py
     add_gguf_py()
     from gguf import GGMLQuantizationType as Q, quants

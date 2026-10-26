@@ -19,8 +19,8 @@ from pathlib import Path
 from unittest import mock
 
 from strata_cli.cli import main
-from strata_cli import bench
-from strata_cli.client import Endpoint
+from strata_control import bench
+from strata_common.client import Endpoint
 from strata_control import calibration, journal, management, owner_transport, recipes, runtime
 from strata_common import procs, profiles
 
@@ -841,14 +841,14 @@ class RuntimeTests(unittest.TestCase):
         cfg = json.loads(self.config.read_text())
         cfg.update(host="0.0.0.0", api_key=["first", "second"])
         self.config.write_text(json.dumps(cfg))
-        from strata_cli.cli import _launch_plan
-        plan, _ = _launch_plan("local")
+        from strata_control.launch_plan import make_launch_plan
+        plan, _ = make_launch_plan("local")
         self.assertEqual(plan["effective"]["host"], "0.0.0.0")
         self.assertNotIn("first", json.dumps(plan))
 
     def test_remote_bind_without_a_key_is_planned_not_refused(self):
         # owner decision 2026-10-20: a key is recommended on a network, never required
-        from strata_cli.cli import _launch_plan
+        from strata_control.launch_plan import make_launch_plan
         for key in (None, "none"):
             cfg = json.loads(self.config.read_text())
             cfg["host"] = "0.0.0.0"
@@ -857,7 +857,7 @@ class RuntimeTests(unittest.TestCase):
                 cfg["api_key"] = key
             self.config.write_text(json.dumps(cfg))
             with mock.patch.dict(os.environ, {"STRATA_API_KEY": ""}):
-                plan, args = _launch_plan("local")
+                plan, args = make_launch_plan("local")
             self.assertEqual(plan["effective"]["host"], "0.0.0.0")
 
     def test_lazy_model_is_verified_as_unloaded_without_generation(self):

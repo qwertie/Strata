@@ -3,8 +3,8 @@
     python -m pytest tests/architecture
 
 C++ is checked by its `#include "strata/..."` lines (not by includes relative to the file), Python by its absolute
-imports. Includes of the old folders that the refactor is still emptying (OLD_CPP_FOLDERS) are allowed until they are
-gone.
+imports (not in tests, which may set up any part of the system). Includes of the old folders that the refactor is still
+emptying (OLD_CPP_FOLDERS) are allowed until they are gone.
 """
 from __future__ import annotations
 
@@ -29,8 +29,8 @@ CPP_SAME_LAYER_USES = {"base/gpu": {"base/platform"}}
 PY_LAYERS = {"strata_base": 0, "strata_common": 1, "strata_server": 2, "strata_control": 2, "strata_cli": 3,
              "setup": 4, "tools": 4}
 PY_OLD_NAMES = {"serve": "strata_server"}
-# The packages whose imports are checked. Step A2 adds the others as it removes their import cycles.
-CHECKED_PY_PACKAGES = ("strata_base", "strata_common")
+# The packages whose imports are checked
+CHECKED_PY_PACKAGES = ("strata_base", "strata_common", "strata_control", "serve", "strata_cli")
 
 
 def test_cpp_includes_follow_layers():
@@ -44,7 +44,7 @@ def test_cpp_includes_follow_layers():
 def test_python_imports_follow_layers():
     problems = []
     for package in CHECKED_PY_PACKAGES:
-        for path in sorted((ROOT / package).rglob("*.py")):
+        for path in sorted(p for p in (ROOT / package).rglob("*.py") if not p.name.startswith("test_")):
             for target in find_imported_packages(path):
                 if problem := find_python_problem(package, target):
                     problems.append(f"{path.relative_to(ROOT).as_posix()}: {problem}")
@@ -116,7 +116,7 @@ def find_imported_packages(path: Path):
 
 def find_python_problem(package: str, target: str) -> str | None:
     """Gets what is wrong with `package` importing `target`, or None if the layers allow it."""
-    target = PY_OLD_NAMES.get(target, target)
+    package, target = PY_OLD_NAMES.get(package, package), PY_OLD_NAMES.get(target, target)
     if target == package or target not in PY_LAYERS:
         return None
     if PY_LAYERS[target] >= PY_LAYERS[package]:

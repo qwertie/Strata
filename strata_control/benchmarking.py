@@ -12,10 +12,8 @@ import time
 from contextlib import contextmanager
 from pathlib import Path
 
-from strata_cli import bench
-from strata_cli.cli import _launch_plan, _source
-from strata_cli.client import ClientError, Endpoint
-from strata_control import journal, runtime
+from strata_common.client import ClientError, Endpoint
+from strata_control import bench, journal, launch_plan, runtime
 from strata_common import profiles
 from strata_common.profiles import ProfileError
 from strata_base import posix_owner
@@ -205,10 +203,10 @@ def _settings(profile: str, params: dict) -> tuple[dict, dict, Endpoint, Endpoin
         raise ProfileError("benchmark output directory already exists", 2)
     if not path.parent.is_dir():
         raise ProfileError("benchmark output parent directory does not exist", 2)
-    source, saved, revision, cfg = _source(profile)
+    source, saved, revision, cfg = launch_plan.read_source(profile)
     if saved is None or revision is None:
         raise ProfileError("Desktop benchmark requires a saved profile")
-    launch, _ = _launch_plan(profile)
+    launch, _ = launch_plan.make_launch_plan(profile)
     host = launch["effective"]["host"]
     host = "127.0.0.1" if host in ("0.0.0.0", "::") else host
     authority = f"[{host}]" if ":" in host and not host.startswith("[") else host

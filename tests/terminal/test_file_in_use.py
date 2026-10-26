@@ -10,7 +10,7 @@ from strata_base import atomic, private_files
 ROOT = Path(__file__).resolve().parents[2]
 SITES = ["strata_control/calibration.py", "strata_control/components.py", "strata_common/presets.py",
          "strata_control/preset_marks.py", "strata_common/procs.py", "strata_common/profiles.py",
-         "strata_control/tune_apply.py", "strata_control/updater.py", "strata_cli/bench.py", "strata_cli/connections.py",
+         "strata_control/tune_apply.py", "strata_control/updater.py", "strata_control/bench.py", "strata_cli/connections.py",
          "strata_cli/launch/runner.py", "strata_cli/launch/store.py", "strata_cli/tune_commands.py", "serve/runconfig.py"]
 
 

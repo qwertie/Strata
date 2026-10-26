@@ -62,7 +62,7 @@ Do Phase C only if someone with an Intel Arc card can test it.
 
 | Check | Where | How |
 |---|---|---|
-| Python tests | this PC | `.venv/Scripts/python -m pytest tests/terminal tests/architecture` and the server's tests (`serve/test_*.py`, later `strata_server/`); pytest is installed in the repo's `.venv` |
+| Python tests | this PC | `.venv/Scripts/python -m pytest -n 16 tests/terminal tests/architecture serve` (`serve/` becomes `strata_server/` in A2b), and the tests in `tools/`, `tests/desktop`, `tests/sycl`, `tests/time_skip` and `tests/tuning` one file at a time (`for f in $(git ls-files 'tools/test_*.py' 'tools/**/test_*.py' 'tests/desktop/test_*.py' 'tests/sycl/test_*.py' 'tests/time_skip/test_*.py' 'tests/tuning/test_*.py'); do .venv/Scripts/python -m pytest -q "$f"; done`: pytest-xdist cannot collect `tools/` as a whole). pytest and pytest-xdist are installed in the repo's `.venv`. At the baseline, about 75 tests in `tests/terminal` and 12 in `tools/` already failed on this PC (process handling on Windows, a missing llama.cpp `gguf-py`), and a few time-sensitive ones fail now and then under `-n 16`, so compare the failures by name with a run of the previous commit |
 | HIP build and GPU tests | this PC | `build-hip-win` (gfx1151, tests on): build the targets the step touches, run their `*_parity` and `*_test` programs |
 | CUDA compile | Docker on this PC | the command below; about 3 minutes after the first build |
 | SYCL compile | Docker on this PC | the command below; about 4 minutes |
@@ -106,3 +106,6 @@ Metal is checked only by the `metal-build` GitHub workflow, because it needs a M
 |---|---|---:|---:|---|
 | baseline | `06fcbe98` | 493,148 | — | |
 | A0 | `e56c4aed` | 493,264 | +116 | the line counter itself |
+| A1 | `d757595f` | 493,367 | +219 | the layering test |
+| A2 | `f743b698` | 493,434 | +286 | moves only: imports split where some names moved |
+| A2 | `6333ec2a` | 493,526 | +378 | the engine client moved out of `serve/server.py` (8,901 → about 6,100 lines) |

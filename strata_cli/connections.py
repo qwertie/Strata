@@ -35,7 +35,7 @@ import tempfile
 from contextlib import contextmanager
 from pathlib import Path
 
-from strata_cli.client import server_url, url_prefix
+from strata_common.client import server_url, url_prefix
 
 
 NAME = re.compile(r"[a-z][a-z0-9_-]{0,63}\Z")

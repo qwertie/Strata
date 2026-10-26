@@ -20,7 +20,8 @@ import numpy as np
 
 HERE = pathlib.Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE.parent))
-import gguf_reader  # noqa: E402
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[2]))   # the repository: strata_common
+from strata_common import gguf_reader  # noqa: E402
 import tqenc  # noqa: E402
 
 CFGS = {

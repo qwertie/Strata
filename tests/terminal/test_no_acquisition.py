@@ -34,7 +34,7 @@ ROOT = Path(__file__).resolve().parents[2]
 INSTALLER_MODULES = {"setup", "pip", "ensurepip", "venv", "huggingface_hub", "modelscope", "metal.setup_mac",
                      "sycl.setup_intel"}
 #: Files that may be loaded on the start/serve side besides the control, cli and serve packages.
-ALLOWED_TOOLS = {"tools.strata_tokenizer", "tools.gguf_reader"}   # read-only: a tokenizer and a GGUF header reader
+ALLOWED_TOOLS = {"tools.strata_tokenizer"}   # read-only: a tokenizer
 
 #: argv words that mean "acquire": a subprocess whose literal argv contains one of these is an installer.
 INSTALL_WORDS = {"pip", "pip3", "git", "cmake", "ninja", "npm", "npx", "pnpm", "yarn", "winget", "apt-get", "apt",

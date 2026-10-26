@@ -5,7 +5,7 @@
 #pragma once
 // src/artifact/gguf_reader.cpp - P1.S2: GGUF v3 reader, mmap, no ggml dependency.
 //
-// The C++ counterpart of tools/gguf_reader.py, which has been the reference since P0.S6 (written
+// The C++ counterpart of strata_common/gguf_reader.py, which has been the reference since P0.S6 (written
 // because gguf-py cannot represent type 42 / Q2_0). Per P1.S2 it must:
 //   * mmap the file and parse header, metadata KV (ALL value types incl. arrays), tensor directory
 //   * be multi-shard aware (split.* keys)

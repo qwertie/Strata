@@ -51,7 +51,7 @@ def load_tokenizer():
 
 def gguf_tokenizer(path):
     """llama.cpp's qwen35 vocabulary with the template's added tokens: the one its test vectors were made with."""
-    from gguf_reader import GGUFFile
+    from strata_common.gguf_reader import GGUFFile
     md = GGUFFile(path).metadata
     tokens, types = list(md["tokenizer.ggml.tokens"]), list(md["tokenizer.ggml.token_type"])
     for s in ADDED:

@@ -31,7 +31,7 @@ import sys
 sys.path.insert(0, sys.argv[1])
 from rich.console import Console
 from textual.widgets import Static
-from strata_cli.client import Endpoint
+from strata_common.client import Endpoint
 from strata_cli.monitor import MonitorApp
 from strata_cli.dashboard import render_dashboard
 from strata_cli.detail_dashboard import render_detail_dashboard

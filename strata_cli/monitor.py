@@ -16,7 +16,7 @@ from textual.containers import Vertical
 from textual.widgets import Input, Static
 
 from strata_cli import nav
-from strata_cli.client import ClientError, Endpoint
+from strata_common.client import ClientError, Endpoint
 from strata_cli.dashboard import MonitorHistory, render_dashboard
 from strata_cli.detail_dashboard import render_detail_dashboard
 from strata_cli.logs import ActivityContinuity

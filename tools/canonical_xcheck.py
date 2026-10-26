@@ -38,7 +38,7 @@ sys.path.insert(0, REPO)
 sys.path.insert(0, HERE)
 sys.path.insert(0, os.path.join(REPO, "ref"))
 
-import gguf_reader as G                                    # noqa: E402
+from strata_common import gguf_reader as G                                    # noqa: E402
 from gguf_writer import dequantize_q2_0                    # noqa: E402
 from load import _dequant_flat                             # noqa: E402
 

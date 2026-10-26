@@ -8,7 +8,7 @@ import unicodedata
 from typing import Any
 
 from strata_cli import nav
-from strata_cli.client import complete_slots
+from strata_common.client import complete_slots
 
 
 VIEWS = ("overview", "serving", "requests", "engine", "hardware", "logs")

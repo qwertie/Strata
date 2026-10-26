@@ -8,7 +8,7 @@ import tempfile
 import unittest
 
 from tools.conversation_cache_isolation import STATE_KEYS, fixtures, verify
-from tools.gguf_reader import GGUFFile
+from strata_common.gguf_reader import GGUFFile
 
 
 def evidence(scenario):

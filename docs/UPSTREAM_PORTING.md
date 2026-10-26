@@ -52,9 +52,10 @@ code updates its rows here. Rows are grouped by step; `{a,b}` lists several file
 | `strata_control/{acquisition,draft_layer,drafting,engine_component,gpu_fit,gpu_roles,hipblaslt_tuning,offline,paths,presets,procs,profiles,signing,targets,tune_history,tune_knobs,tune_machine,user_args,vision_reader}.py`, `strata_control/update_keys.json` | `strata_common/` | A2 | done |
 | the engine client in `serve/server.py` (`StrataEngine`, `MockEngine`, `engine_args`, `child_env`, the API-key helpers, the `Engine*` errors and the module values they read) | `strata_common/engine_client.py` | A2 | done |
 | `serve/{loader_diag,logit_bias}.py` | `strata_common/` | A2 | done |
-| `strata_cli/bench.py` and the library functions of `strata_cli/cli.py` that `strata_control/` uses | `strata_control/` | A2 | planned |
-| `strata_cli/client.py` | `strata_common/` (the monitor bundle gets schema 7) | A2 | planned |
-| `tools/gguf_reader.py` | `strata_common/` | A2 | planned |
+| `strata_cli/bench.py` | `strata_control/bench.py` | A2 | done |
+| `_source`, `_redact_argv`, `_effective`, `_launch_plan` in `strata_cli/cli.py` | `strata_control/launch_plan.py`: `read_source`, `redact_argv`, `get_effective`, `make_launch_plan` | A2 | done |
+| `strata_cli/client.py` | `strata_common/client.py` (the monitor bundle's schema 7 lists it there) | A2 | done |
+| `tools/gguf_reader.py` | `strata_common/gguf_reader.py` (scripts import `strata_common.gguf_reader` and put the repository on `sys.path`) | A2 | done |
 | helpers repeated in `setup.py` and `tools/*.py` (`sha256`, `http_json`, `get_json`, GPU detection, engine download) | `strata_base/`, `strata_common/` | A2 | planned |
 | `src/platform/`, `include/strata/platform/` (except `hip_compat/`) | `src/base/platform/`, `include/strata/base/platform/` | A3 | planned |
 | `include/strata/hip_compat/`, `include/strata/platform/hip_compat/` | `include/strata/base/gpu/hip_compat/` | A3 | planned |
