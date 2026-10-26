@@ -231,7 +231,7 @@ class ImageGen:
         with self.lock:
             with open(logf, "w", encoding="utf-8", errors="replace") as lf:
                 try:
-                    from serve import lifeline
+                    from strata_common import lifeline
                     proc = lifeline.popen(cmd, "image", stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                                           stdin=subprocess.DEVNULL, env=image_env(self.cfg),
                                           cwd=str(work), text=True, errors="replace", bufsize=1)

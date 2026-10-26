@@ -30,7 +30,7 @@ sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(HERE))
 
 import serve.server as S  # noqa: E402
-import serve.telemetry as T  # noqa: E402
+import strata_common.telemetry as T  # noqa: E402
 from xe_telemetry import _XeGpu  # noqa: E402
 
 

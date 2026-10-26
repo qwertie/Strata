@@ -33,8 +33,9 @@ def _flatten(node):
 
 
 def referenced_tools(root: Path = ROOT) -> dict[str, set[str]]:
-    """{'tools/dsv41/pack_gguf.py': {files that name it}} for setup.py, strata_cli/**, strata_control/**."""
-    files = [root / "setup.py"] + sorted((root / "strata_cli").rglob("*.py")) + sorted((root / "strata_control").rglob("*.py"))
+    """{'tools/dsv41/pack_gguf.py': {files that name it}} for setup.py and the Python packages."""
+    files = [root / "setup.py"] + [f for package in ("strata_base", "strata_cli", "strata_common", "strata_control")
+                                   for f in sorted((root / package).rglob("*.py"))]
     found: dict[str, set[str]] = {}
     for f in files:
         tree = ast.parse(f.read_text(encoding="utf-8-sig"))

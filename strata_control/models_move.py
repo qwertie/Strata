@@ -317,7 +317,7 @@ def interrupted(data: Path) -> dict | None:
     pid, token = st.get("pid"), st.get("token")
     if st["state"] == "running" and isinstance(pid, int) and token and pid != os.getpid():
         try:
-            from strata_control import procs
+            from strata_common import procs
             if procs.start_token(pid) == token:
                 return None
         except Exception:
@@ -408,7 +408,7 @@ def move(old: Path, new: Path, *, on_progress: Callable[[dict], None] | None = N
     if not (_same_path(before.get("from", ""), old) and _same_path(before.get("to", ""), new)):
         before = {}
     try:
-        from strata_control import procs
+        from strata_common import procs
         token = procs.start_token(os.getpid())
     except Exception:
         token = None

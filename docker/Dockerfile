@@ -1,6 +1,6 @@
 # Strata container image, built from the engine COMPONENT PACKAGE: nothing is compiled on the user's side.
 #
-#   one image = the Terminal (bundled Python 3.12 + strata_cli / strata_control / serve, built exactly as the release archive)
+#   one image = the Terminal (bundled Python 3.12 + strata_base / strata_common / strata_cli / strata_control / serve, built exactly as the release archive)
 #             + one engine package (CUDA 13, CUDA 12, HIP gfx120X, HIP gfx110X or SYCL) + the entrypoint
 #
 # Build it with docker/build.sh (it assembles the build context: the Terminal sources and the package folder):
@@ -8,7 +8,7 @@
 #     docker/build.sh --flavor cuda --engine /path/to/0.1.45.3-linux-x86_64-cuda-cuda13 --tag strata:0.2.3-cuda13
 #
 # Plain `docker build` also works when the context folder has this layout (build.sh makes it):
-#     terminal-src/   the files package_terminal.py needs (packaging/, strata_cli/, strata_control/, serve/, tools/, data/, ...)
+#     terminal-src/   the files package_terminal.py needs (packaging/, strata_base/, strata_common/, strata_cli/, strata_control/, serve/, tools/, data/, ...)
 #     engine/         one folder per engine package, exactly as `package_engine.py` wrote it (engine-component.json inside)
 #     docker/         entrypoint.sh, strata-wrapper.sh, healthcheck.sh
 #   docker build --build-arg FLAVOR=cuda -t strata:0.2.3-cuda13 -f Dockerfile <context>

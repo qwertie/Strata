@@ -16,7 +16,7 @@ Typical use (the owner's offline machine; replace ``KEYDIR`` with a folder that 
     python packaging/feed_tool.py verify-feed RELEASE --pub KEYDIR/feed-key.pub.json
 
 ``keygen`` never prints the secret and refuses to write inside a git checkout or over an existing file. The public file's
-entry goes into ``strata_control/update_keys.json`` (``keys``) once, in the commit that ships the first signed release.
+entry goes into ``strata_common/update_keys.json`` (``keys``) once, in the commit that ships the first signed release.
 The Tauri updater key is a different key (minisign, made by ``tauri signer generate``); its public half goes in
 ``tauri.conf.json`` and in ``update_keys.json`` as ``app_minisign_public``.
 """
@@ -37,7 +37,8 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
-from strata_control import engine_component as ec, feed as feedmod, signing  # noqa: E402
+from strata_common import engine_component as ec, signing  # noqa: E402
+from strata_control import feed as feedmod  # noqa: E402
 
 
 def _inside_git(path: Path) -> bool:
@@ -75,7 +76,7 @@ def keygen(out: Path, *, allow_git: bool = False) -> dict:
     with os.fdopen(fd, "w", encoding="utf-8") as stream:
         json.dump(key, stream, indent=1)
         stream.write("\n")
-    from strata_control import private_files
+    from strata_base import private_files
     private_files.restrict_to_current_user(secret, directory=False)          # 0600, or a protected ACL on Windows
     public.write_text(json.dumps({"keys": [signing.public_part(key)]}, indent=1) + "\n", encoding="utf-8")
     return signing.public_part(key)

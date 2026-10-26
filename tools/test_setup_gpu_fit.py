@@ -1,4 +1,4 @@
-"""Graphics card roles in setup (strata_control/gpu_roles.py): the best card is Main, the others start as Helper, a card with 8 GB or less
+"""Graphics card roles in setup (strata_common/gpu_roles.py): the best card is Main, the others start as Helper, a card with 8 GB or less
 starts Off; one question, "Use these roles?"; --gpu-roles names them.
 
     python tools/test_setup_gpu_fit.py

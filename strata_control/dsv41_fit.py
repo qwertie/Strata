@@ -21,7 +21,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from strata_control import gpu_fit
+from strata_common import gpu_fit
 
 GB = 1e9
 GIB = 2 ** 30

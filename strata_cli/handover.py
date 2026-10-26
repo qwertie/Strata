@@ -32,7 +32,7 @@ _VERSION = re.compile(r"^[0-9]+(\.[0-9]+){1,3}(-[0-9A-Za-z][0-9A-Za-z.]*)?$")   
 
 
 def components_dir(environ=None) -> Path:
-    """The per-user component folder (same rule as strata_control/engine_component.py components_dir)."""
+    """The per-user component folder (same rule as strata_common/engine_component.py components_dir)."""
     environ = os.environ if environ is None else environ
     if environ.get("STRATA_COMPONENTS_DIR"):
         return Path(environ["STRATA_COMPONENTS_DIR"])

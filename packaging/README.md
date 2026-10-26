@@ -100,7 +100,7 @@ where Control finds it like any engine that `strata update` installed:
         engine-component.json     the manifest (see ENGINE-COMPONENT.md)
         strata[.exe]  *.dll | *.so   the binary and the GPU runtime libraries beside it
 
-A run config names it as `"exe": "component:strata-engine"`. At start, `strata_control/engine_component.py` picks the package for this PC
+A run config names it as `"exe": "component:strata-engine"`. At start, `strata_common/engine_component.py` picks the package for this PC
 (platform, then the backend its GPU needs, found with nvidia-smi, rocminfo or sycl-ls, or `STRATA_ENGINE_BACKEND`), checks every
 file's size and SHA-256 and puts the package folder first on the library path. A mismatch is `EngineIntegrityError` and nothing starts.
 
@@ -110,7 +110,7 @@ the next step (exit 0, nothing started). The app shows the same warning with an 
 `packaging/package_engine.py` makes a local package from a build folder.
 
 **No acquisition at run time.** `STRATA_NO_ACQUIRE=1` (set by the Tauri shell for the host, and by the host for Control) makes
-`strata_control/acquisition.py` refuse pip, downloads and compiles. On the host side `server/acquisition.mjs` refuses the llama.cpp
+`strata_common/acquisition.py` refuse pip, downloads and compiles. On the host side `server/acquisition.mjs` refuses the llama.cpp
 and cloudflared fetches (a connector placed in `components/cloudflared/` is used as it is). Models the user chooses to download are a
 separate, explicit action. `apps/host/tests/no-acquire.test.mjs` fails on any outbound request or installer process.
 `apps/desktop/scripts/installed-flow.mjs` drives an installed app end to end.

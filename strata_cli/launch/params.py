@@ -1,7 +1,7 @@
 """The Advanced table: every engine setting with its default, the tuned value and the person's own value.
 
 The list comes from the engine itself (its `--help`, the same read `strata tune` uses), plus the environment variables the tuner
-knows (strata_control/tune_knobs.py). Nothing is invented here: a setting the engine does not list is shown as unknown, with a
+knows (strata_common/tune_knobs.py). Nothing is invented here: a setting the engine does not list is shown as unknown, with a
 warning and never a refusal, because newer engines have flags this one has not heard of.
 """
 
@@ -12,7 +12,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from strata_control.user_args import MULTI_VALUE_FLAGS
+from strata_common.user_args import MULTI_VALUE_FLAGS
 
 _ENTRY = re.compile(r"^  (--[A-Za-z0-9][A-Za-z0-9-]*)( +)?(.*)$")
 _EXPERIMENTAL = re.compile(r"experimental|diagnostic|A/B arm|fault injection|oracle", re.I)
@@ -114,7 +114,7 @@ def parse_help(text: str) -> list[Param]:
 def env_params() -> list[Param]:
     """The environment settings the tuner knows (from tune_knobs.ARMS), with the tuner's own plain label."""
     try:
-        from strata_control import tune_knobs
+        from strata_common import tune_knobs
     except ImportError:
         return []
     out: dict[str, Param] = {}

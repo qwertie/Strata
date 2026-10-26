@@ -252,7 +252,7 @@ class EngineIsFreshEnough(unittest.TestCase):
             proc = mock.Mock()
             proc.stdout = iter([])
             proc.wait.return_value = 0
-            from strata_control import engine_component as ec
+            from strata_common import engine_component as ec
             with mock.patch.object(ec, "status", return_value=before), mock.patch.object(Runner, "_spawn", return_value=proc):
                 r.ensure_engine()
             self.assertTrue(any(level == "warn" and "older than this model needs" in text for level, text in events), events)

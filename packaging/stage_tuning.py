@@ -21,7 +21,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
-from strata_control import hipblaslt_tuning as ht  # noqa: E402
+from strata_common import hipblaslt_tuning as ht  # noqa: E402
 
 
 def stage(stage_dir: Path, archs: list[str], version: int | None, tables: Path, expect: list[str]) -> list[str]:

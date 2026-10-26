@@ -11,7 +11,7 @@ from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
-from strata_control import atomic  # noqa: E402
+from strata_base import atomic  # noqa: E402
 
 
 class TestReplace(unittest.TestCase):

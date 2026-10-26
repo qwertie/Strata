@@ -322,7 +322,7 @@ class StoredTuning(Base):
 
     def setUp(self):
         super().setUp()
-        from strata_control import presets
+        from strata_common import presets
         self.presets = presets
         self.cfg_path = self.base / "launch.json"
         self.cfg = {"args": ["--native", "x/model-00001-of-00002.gguf", "--max-context", "32768", "--kv", "int8"], "model_name": "qwen"}

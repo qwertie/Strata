@@ -123,28 +123,28 @@ class Computer:
 
     @property
     def usable_gpus(self) -> list[dict]:
-        """The cards that count and the engine can drive (strata_control/gpu_fit.py: an integrated chip, a tiny card or a card of another
+        """The cards that count and the engine can drive (strata_common/gpu_fit.py: an integrated chip, a tiny card or a card of another
         make is left out), the largest first. One engine drives one make, so a model is never split across makes."""
-        from strata_control import gpu_fit
+        from strata_common import gpu_fit
         return gpu_fit.usable_cards(gpu_fit.for_vendor(self.gpus, self.engine_vendor)[0])[0]
 
     @property
     def ignored_gpus(self) -> list[dict]:
-        from strata_control import gpu_fit
+        from strata_common import gpu_fit
         mine, others = gpu_fit.for_vendor(self.gpus, self.engine_vendor)
         return gpu_fit.usable_cards(mine)[1] + [{**c, "why_ignored": "another make of card than this engine drives"} for c in others]
 
     @property
     def other_vendor_note(self) -> str | None:
         """One plain line when a card of another make is the bigger one (None otherwise)."""
-        from strata_control import gpu_fit
+        from strata_common import gpu_fit
         return gpu_fit.other_vendor_note(self.gpus, self.engine_vendor)
 
     @property
     def new_card_note(self) -> tuple[str, str] | None:
         """(what, what to do) when a usable card is an Intel Arc B-series (Battlemage): allowed, but new to Strata and untested by the maintainers."""
         import re
-        from strata_control import gpu_fit
+        from strata_common import gpu_fit
         for c in gpu_fit.usable_cards(gpu_fit.for_vendor(self.gpus, self.engine_vendor)[0])[0]:
             if c.get("vendor") == "intel" and re.search(r"Arc (?:Pro )?B\d", str(c.get("name", ""))):
                 return (f"The {str(c['name']).replace('Intel ', '')} is a B-series Arc card. It is new to Strata and we have not tested it ourselves, so pictures or long answers may fail on it.",
@@ -293,7 +293,7 @@ class Catalog:
     def installed_backend(self) -> str | None:
         """The installed engine's backend (cuda, hip, sycl, cpu, metal), None when there is no usable engine yet."""
         try:
-            from strata_control import engine_component as ec
+            from strata_common import engine_component as ec
             rep = ec.status()
             if rep.get("usable"):
                 return (rep.get("engine") or {}).get("backend")
@@ -304,7 +304,7 @@ class Catalog:
     def engine_vendor(self, hw: dict | None = None) -> str | None:
         """The make of card the engine drives: the installed engine's; with none installed, the engine setup would fetch (NVIDIA first when the
         computer has several makes)."""
-        from strata_control import gpu_fit
+        from strata_common import gpu_fit
         hw = hw if hw is not None else self.hardware()
         return gpu_fit.pick_vendor(list(hw.get("gpus") or []), self.installed_backend())
 
@@ -434,22 +434,22 @@ class Catalog:
         """"present" when the installed engine carries the picture reader (strata-vision), "missing" when an engine is installed without it,
         "unknown" before any engine is installed (the first launch fetches one that has it)."""
         try:
-            from strata_control import engine_component as ec
+            from strata_common import engine_component as ec
             rep = ec.status()
             exe = (rep.get("engine") or {}).get("exe") if rep.get("usable") else None
         except Exception:                                    # noqa: BLE001
             exe = None
         if not exe:
             return "unknown"
-        from strata_control import vision_reader as VR
+        from strata_common import vision_reader as VR
         found = VR.find(Path(str(exe)).parent, os.name == "nt")
         return "present" if (found["cpu"] or found["gpu"]) else "missing"
 
     def picture_default(self, images: bool) -> str:
         """The picture setting nobody chose: off for a model that cannot read pictures or an engine without the reader; else on, with the
-        reader the one rule of strata_control/vision_reader.py gives: the CPU reader under 24 GB of graphics memory, the GPU reader from 24 GB,
+        reader the one rule of strata_common/vision_reader.py gives: the CPU reader under 24 GB of graphics memory, the GPU reader from 24 GB,
         on every make of card (owner decision 2026-10-18); on a Mac the Metal reader (unified memory). Without a usable graphics card there is nothing to read on: the CPU reader."""
-        from strata_control import vision_reader as VR
+        from strata_common import vision_reader as VR
         if not images or self.reader_state() == "missing":
             return "off"
         if self.is_mac():
@@ -459,7 +459,7 @@ class Catalog:
         return VR.default_mode(vram, "intel" if comp.engine_vendor == "intel" else "") if vram > 0 else "cpu"      # no usable card: nothing to read on, the CPU reader
 
     def is_mac(self) -> bool:
-        """An Apple Silicon Mac: the chip's memory is the system's (the Metal engine; strata_control/vision_reader.py)."""
+        """An Apple Silicon Mac: the chip's memory is the system's (the Metal engine; strata_common/vision_reader.py)."""
         return self.engine_backend() == "metal"
 
     # ---- installed models

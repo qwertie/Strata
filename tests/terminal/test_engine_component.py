@@ -16,7 +16,8 @@ from pathlib import Path
 from unittest import mock
 
 from strata_cli import cli
-from strata_control import acquisition, components, engine_component as ec
+from strata_common import acquisition, engine_component as ec
+from strata_control import components
 
 WINDOWS = os.name == "nt"
 HERE = components.host_platform()

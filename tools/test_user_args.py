@@ -1,5 +1,5 @@
 """The engine options a person set by hand survive setup, the app and every start (#3216 control vectors, #3215 and #3270
---vram-reserve-mib).  strata_control/user_args.py is the rule; setup.carry_over, serve/server.py engine_args, serve/runconfig.py
+--vram-reserve-mib).  strata_common/user_args.py is the rule; setup.carry_over, serve/server.py engine_args, serve/runconfig.py
 and strata_control/tune_apply.py use it.  Every outside effect is mocked (tools/test_setup_golden.py's install()).
 
     python -m unittest tools.test_user_args
@@ -19,7 +19,8 @@ import setup  # noqa: E402
 import strata_mcp  # noqa: E402
 from serve import runconfig  # noqa: E402
 from serve.server import engine_args  # noqa: E402
-from strata_control import tune_apply, user_args  # noqa: E402
+from strata_control import tune_apply  # noqa: E402
+from strata_common import user_args  # noqa: E402
 from test_setup_golden import PROFILES, install  # noqa: E402
 
 CVEC = ["--control-vector-scaled", "C:/vectors/mine.gguf:1.0", "--control-vector-layer-range", "4", "44",

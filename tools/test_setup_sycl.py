@@ -247,7 +247,7 @@ class ToSycl(unittest.TestCase):
 
     def test_pictures_follow_the_one_reader_rule_and_the_vision_section_survives(self):
         """Intel Arc: pictures on gives the CPU reader (strata-vision) on the host under 24 GB and, until a 24 GB+ Arc has run the SYCL reader,
-        also from 24 GB; only --vision gpu asks for the SYCL reader (strata_control/vision_reader.py is the one place for the rule)."""
+        also from 24 GB; only --vision gpu asks for the SYCL reader (strata_common/vision_reader.py is the one place for the rule)."""
         m = self.mod()
         for asked in (None, "yes", "cpu", "on"):
             self.assertEqual(m.intel_vision(asked, 8.0), "cpu")

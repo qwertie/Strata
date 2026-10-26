@@ -1,4 +1,4 @@
-"""serve/lifeline.py: a process Strata starts ends when the process that started it ends, however that ends.
+"""strata_common/lifeline.py: a process Strata starts ends when the process that started it ends, however that ends.
 
     python -m unittest serve.test_lifeline
 
@@ -24,7 +24,7 @@ POSIX = os.name == "posix"
 SERVER = textwrap.dedent("""
     import os, sys, time, threading, subprocess
     sys.path.insert(0, {root!r})
-    from serve import lifeline
+    from strata_common import lifeline
     mode = sys.argv[1]
     sleeper = [sys.executable, "-c", "import time; time.sleep(600)"]
     out = {{"mechanism": lifeline.mechanism()}}
@@ -45,7 +45,7 @@ SERVER = textwrap.dedent("""
 
 
 def alive(pid: int) -> bool:
-    from strata_control import procs
+    from strata_common import procs
     return procs.start_token(pid) is not None
 
 
@@ -120,7 +120,7 @@ class Lifeline(unittest.TestCase):
         self.assertTrue(self.wait_gone(info["child"]), "end_children at exit must stop what is still running")
 
     def test_the_child_is_recorded_while_it_runs_and_forgotten_after(self):
-        from strata_control import procs
+        from strata_common import procs
         proc, info = self.launch("sleep")
         base = Path(self.temp.name) / "Strata" / "procs" if not POSIX else Path(self.temp.name) / "strata" / "procs"
         record = base / f"{info['child']}.json"

@@ -12,9 +12,10 @@ import time
 from contextlib import contextmanager
 from pathlib import Path
 
-from strata_control import calibration, journal, profiles
-from strata_control.profiles import ProfileError
-from strata_control import posix_owner
+from strata_control import calibration, journal
+from strata_common import profiles
+from strata_common.profiles import ProfileError
+from strata_base import posix_owner
 
 
 KINDS = {"measure": "engine.calibrate.measure", "apply": "engine.calibrate.apply",

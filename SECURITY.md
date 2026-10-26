@@ -63,7 +63,7 @@ the model. The section above is about the engine's HTTP server. This is what the
 - **Starting a model and serving never download anything.** Downloads and updates are one explicit step: `strata update`, or "Update
   engine" and "Update Strata" in the app's Settings. Models and saved tuning are never replaced by an update.
 - **Updates come from a signed feed.** The release publishes `strata-feed.json` and `strata-feed.json.sig` (Ed25519). An installed
-  Strata checks the signature against the public key it carries (`strata_control/update_keys.json`), refuses a feed older than the last
+  Strata checks the signature against the public key it carries (`strata_common/update_keys.json`), refuses a feed older than the last
   one it accepted (a replayed old feed) or expired, and checks every engine package against its SHA-256, its signed manifest and the
   card in your PC before it test-starts it and switches to it. Any failure keeps the engine you had. The app installer itself is signed
   with a separate key (Tauri's minisign key) that the app and the Terminal both check. The private keys are kept offline by the owner.

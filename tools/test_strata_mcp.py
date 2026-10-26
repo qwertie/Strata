@@ -697,12 +697,12 @@ class PhysicalCores(unittest.TestCase):
     """#3417: the hardware report's cpu.cores is the physical cores; the Work profile takes 80% of it for --pool-workers."""
 
     def test_physical_not_logical(self):
-        from strata_control import tune_machine
+        from strata_common import tune_machine
         with mock.patch.object(tune_machine, "cpu", return_value={"model": "x", "logical": 16, "physical": 8, "hybrid": False}),                 mock.patch.object(M.os, "cpu_count", return_value=16):
             self.assertEqual(M.physical_cores(), 8)
 
     def test_unknown_falls_back_to_threads(self):
-        from strata_control import tune_machine
+        from strata_common import tune_machine
         with mock.patch.object(tune_machine, "cpu", return_value={"physical": None}), mock.patch.object(M.os, "cpu_count", return_value=16):
             self.assertEqual(M.physical_cores(), 16)
         with mock.patch.object(tune_machine, "cpu", side_effect=OSError("no")), mock.patch.object(M.os, "cpu_count", return_value=4):
@@ -863,7 +863,7 @@ class MixedGraphics(unittest.TestCase):
                        {"vendor": "amd", "index": 1, "name": "AMD Radeon RX 6800 XT", "arch": "gfx1030", "usable": True, "problem": None},
                        {"vendor": "amd", "index": 2, "name": "AMD Radeon RX 9070 XT", "arch": "gfx1201", "usable": True, "problem": None},
                        {"vendor": "nvidia", "index": 0, "name": "NVIDIA GeForce RTX 3060", "arch": "86", "usable": True, "problem": None}]}
-        with mock.patch("strata_control.engine_component.status", lambda: status):
+        with mock.patch("strata_common.engine_component.status", lambda: status):
             M.Strata._engine_code(hw)
         by = {g["name"]: g for g in hw["gpus"]}
         self.assertFalse(by["AMD Radeon RX 6800 XT"]["usable"])
@@ -874,11 +874,11 @@ class MixedGraphics(unittest.TestCase):
         # no engine package that lists archs (a source build, no engine yet): nothing is judged
         for other in ({"usable": False}, {"usable": True, "engine": {"backend": "cuda", "archs": ["sm_86"]}}):
             again = {"gpus": [{"vendor": "amd", "index": 1, "name": "x", "arch": "gfx1030", "usable": True, "problem": None}]}
-            with mock.patch("strata_control.engine_component.status", lambda other=other: other):
+            with mock.patch("strata_common.engine_component.status", lambda other=other: other):
                 M.Strata._engine_code(again)
             self.assertTrue(again["gpus"][0]["usable"])
 
-    @mock.patch("strata_control.engine_component.status", lambda: {"usable": False})   # not this PC's installed (CUDA) engine
+    @mock.patch("strata_common.engine_component.status", lambda: {"usable": False})   # not this PC's installed (CUDA) engine
     def test_windows_lists_an_amd_card_and_not_the_integrated_radeon(self):
         s = M.Strata(HERE.parent)
         S = s.setup_module()

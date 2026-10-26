@@ -294,7 +294,7 @@ Decode is bound by the CPU pool and the PCIe link (10.4 GB/s), not by the card's
 
 <a id="pictures-on-an-arc-2026-10-19-branch-f-021-arcvis"></a>
 Pictures follow the rule of every other card ([MODELS.md](MODELS.md#the-versions)): the picture reader runs on the CPU under 24 GB
-of VRAM and on the card from 24 GB. `strata_control/vision_reader.py` is the one place for that rule. On an Arc, pictures are on by
+of VRAM and on the card from 24 GB. `strata_common/vision_reader.py` is the one place for that rule. On an Arc, pictures are on by
 default with the CPU reader, a B-series card included. An Arc of 24 GB or more also keeps the CPU reader; `--vision gpu` asks for
 the GPU reader.
 

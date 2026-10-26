@@ -62,14 +62,14 @@ import urllib.request
 import zipfile
 from pathlib import Path
 
-from strata_control import acquisition
-from strata_control import tls
+from strata_common import acquisition
+from strata_base import tls
 
 tls.install()      # #3722: HTTPS checks the server against the operating system's certificates (what Chrome and curl.exe do)
-from strata_control import atomic
-from strata_control import draft_layer
+from strata_base import atomic
+from strata_common import draft_layer
 from strata_control.discovery import in_trash
-from strata_control import user_args
+from strata_common import user_args
 
 ROOT = Path(__file__).resolve().parent
 # The desktop app runs this installer under Strata Control (its bundled Python, STRATA_CONTROL_INSTALL=1). The source
@@ -867,7 +867,7 @@ def ask(question, choices, default, yes):
 
 def _urlopen(req, timeout=None):
     """Every network request of this file goes through here: starting and serving never reach the network
-    (strata_control/acquisition.py), only an explicit setup, update or install does."""
+    (strata_common/acquisition.py), only an explicit setup, update or install does."""
     acquisition.require("a download")
     try:
         return urllib.request.urlopen(req, timeout=timeout)
@@ -1803,8 +1803,8 @@ def fallback_card(a, gpu, chosen):
 
 
 def card_speeds() -> dict:
-    """{card number: SMs x max clock} of the NVIDIA cards (strata_control/gpu_roles.py); {} when it cannot say."""
-    from strata_control import gpu_roles
+    """{card number: SMs x max clock} of the NVIDIA cards (strata_common/gpu_roles.py); {} when it cannot say."""
+    from strata_common import gpu_roles
     return gpu_roles.nvidia_speeds()
 
 
@@ -1818,7 +1818,7 @@ def choose_roles(a, found) -> list:
     """Two or more cards can share the model: the recommended role of each (the best card Main, the others Helper, a card with 8 GB or less
     Off) and ONE question, "Use these roles?".  n takes the person's own: 1=main,0=helper (cards left out are Off).  Returns the card
     numbers in the engine's order (Main last) and keeps the roles in a._roles for the config (docs/MULTI_GPU.md)."""
-    from strata_control import gpu_roles
+    from strata_common import gpu_roles
     cards = roles_cards(found)
     roles = dict(gpu_roles.recommend(cards)["roles"])
     say()
@@ -3189,7 +3189,7 @@ def unsloth_budget(model, ram, gpu=None, asked=None) -> bool:
 def images_default(model, family, ram, gpu=None) -> bool:
     """Is "images on" setup's default answer (the question's Enter, and --yes) for this choice?  Owner rule 2026-10-18: pictures are on
     wherever the model can read them - the original Flash-Next, Swift and Coder files, Unsloth's, NVFP4 - on every make of card; which
-    reader runs is strata_control/vision_reader.py's rule (the CPU under 24 GB of VRAM, the GPU from 24 GB).  The CPU reader takes no
+    reader runs is strata_common/vision_reader.py's rule (the CPU under 24 GB of VRAM, the GPU from 24 GB).  The CPU reader takes no
     VRAM (no --vram-reserve-mib), so a small card is no exception."""
     return MODELS.get(model, {}).get("vision", FAMILIES.get(family, {}).get("vision")) is not False
 
@@ -3197,7 +3197,7 @@ def images_default(model, family, ram, gpu=None) -> bool:
 unsloth_images_default = images_default     # the earlier name
 
 
-IMAGES_GPU_ENCODER_MIN_VRAM_GB = 23.5   # = strata_control/vision_reader.py GPU_MIN_VRAM_GB, the one place for the rule; #2406: below this the images answer "yes" gets the CPU encoder (a card of 12-16 GB: the GPU
+IMAGES_GPU_ENCODER_MIN_VRAM_GB = 23.5   # = strata_common/vision_reader.py GPU_MIN_VRAM_GB, the one place for the rule; #2406: below this the images answer "yes" gets the CPU encoder (a card of 12-16 GB: the GPU
                                         # encoder's ~1.1-1.4 GB is ~850 expert slots lost, 3-5% of decode and prompt on P100 / A4000
                                         # 16 GB (Linux, IQ3_S / IQ3_XXS), and 35-60% on an RTX 4080 SUPER under Windows as reported)
 
@@ -4213,7 +4213,7 @@ def hip_probe_path() -> Path:
     if own.exists():
         return own
     try:
-        from strata_control import engine_component as EC
+        from strata_common import engine_component as EC
         found = EC.resolve(backend="hip", full=False)
         return Path(found.root) / name
     except Exception:                                  # noqa: BLE001 - no component, a damaged one: the old answer
@@ -4356,7 +4356,7 @@ def engine_from_feed(eng: Path, updating: bool = False) -> Path | None:
     (into a folder of its own under the install), and its files then become the installed engine in `eng`, the same way a
     zip's do.  None when it cannot be had (no internet, nothing for this card): the caller goes on as before."""
     acquisition.require("the ready-made engine")
-    from strata_control import engine_component as ec
+    from strata_common import engine_component as ec
     store = home() / "engine-feed"
     env = dict(os.environ)
     env.pop("STRATA_NO_ACQUIRE", None)
@@ -4572,8 +4572,8 @@ def hipblaslt_table(arch, lib_dirs, ver=None, extra_dirs=()):
     ids are valid only for that pair (the engine refuses any other table and uses plain hipBLAS).  ver: the
     hipBLASLt version the ready-made engine ships (its BUILD.json), else read from the installed headers.  extra_dirs: the
     engine folder's own tuning/ first (a ready-made engine carries its tables), then tools/hip of this checkout.
-    STRATA_HIPBLASLT_TABLE=off: none (strata_control/hipblaslt_tuning.py)."""
-    from strata_control import hipblaslt_tuning as HT
+    STRATA_HIPBLASLT_TABLE=off: none (strata_common/hipblaslt_tuning.py)."""
+    from strata_common import hipblaslt_tuning as HT
     if HT.switched_off():
         say(f"  hipBLASLt tuning table: off ({HT.SWITCH}=off); the prompt's dense matrix products use plain hipBLAS")
         return None
@@ -4651,10 +4651,10 @@ def build_engine_hip(gpu, llama, vision="none") -> Path:
 
 def hip_vision(asked, vram_gb: float = 0.0) -> str:
     """The picture reader wanted with the AMD backend (--vision): when nothing was asked or "yes" (pictures are on by default) the
-    default of strata_control/vision_reader.py for this card - the CPU reader under 24 GB, the GPU reader from 24 GB (owner decision
+    default of strata_common/vision_reader.py for this card - the CPU reader under 24 GB, the GPU reader from 24 GB (owner decision
     2026-10-18, every make of card); "gpu" / "cpu" as asked (#304), "none" for no.  "gpu" is a wish: hip_reader() settles it against
     what the engine folder carries (the HIP reader, else the CPU one) once the engine is known."""
-    from strata_control import vision_reader as VR
+    from strata_common import vision_reader as VR
     return VR.wanted(asked, vram_gb)
 
 
@@ -4673,10 +4673,10 @@ def reader_archs(eng: Path) -> list:
 
 
 def hip_reader(eng: Path, vision: str, gpu: dict):
-    """AMD: the picture reader this engine folder gets for `vision` ("gpu" or "cpu"; strata_control/vision_reader.py): the HIP
+    """AMD: the picture reader this engine folder gets for `vision` ("gpu" or "cpu"; strata_common/vision_reader.py): the HIP
     reader with the CPU reader to fall back on, else the CPU reader.  Returns (vision, Reader); a Reader of mode "none" means
     the folder has no reader.  The one plain note (a card the HIP reader has no code for, no HIP reader in this engine) is said."""
-    from strata_control import vision_reader as VR
+    from strata_common import vision_reader as VR
     r = VR.choose(eng, vision, windows=WIN, gpu_arch=str(gpu.get("arch") or ""), archs=reader_archs(eng))
     if r.note:
         warn(r.note)
@@ -6257,7 +6257,7 @@ def write_config(path: Path, cfg: dict):
 
 # #629: the run config's keys setup writes itself (and rewrites on every setup run); any other key is the user's - a
 # "sampling" or "mcp_servers" block, "allowed_hosts", "cors_origins", "open_browser" - and is kept when setup runs again
-# "args_written" (strata_control/user_args.py) is setup's own; "user_args" is not in SETUP_KEYS on purpose: carry_over keeps it,
+# "args_written" (strata_common/user_args.py) is setup's own; "user_args" is not in SETUP_KEYS on purpose: carry_over keeps it,
 # then applies the person's options over the generated ones
 SETUP_KEYS = frozenset({"exe", "args", "cwd", "tokenizer", "model_name", "log", "lib_dirs", "port", "backend", "env",
                         "gpu", "gpus_asked", "layer_split", "host", "api_key", "draft_vocab", "vision", "args_written"})
@@ -6335,7 +6335,7 @@ def explicit_args(a) -> list[str]:
 
 def carry_user_args(old: dict, cfg: dict, explicit: list[str] | None = None) -> list[str]:
     """#3216 #3215 #3270: the engine options the person set by hand in the earlier run config are put back over the
-    generated ones, and recorded in the new one's "user_args" (strata_control/user_args.py).  They are the earlier
+    generated ones, and recorded in the new one's "user_args" (strata_common/user_args.py).  They are the earlier
     "user_args", the options of "args" that differ from "args_written" (hand edits), for a config with no "args_written"
     the options its args had and the new ones do not (control vectors, --spec, ...) and an explicit --vram-reserve-mib of
     the earlier file.  `explicit`: options given on this run's command line, which win.  The names kept are returned."""
@@ -6839,7 +6839,7 @@ def settings_summary(cfg: dict, port=None) -> str:
 
 def start(cfg_path: Path, port: int | None, gpu: int | list | None = None, open_browser=True, yes=False,
           layer_split=None, keep=None) -> int:
-    """Start the model.  Nothing is installed, downloaded or compiled while it starts (strata_control/acquisition.py):
+    """Start the model.  Nothing is installed, downloaded or compiled while it starts (strata_common/acquisition.py):
     what is missing is named with the command that installs it (SETUP / UPDATE / strata install)."""
     with acquisition.forbidden():
         return _start(cfg_path, port, gpu, open_browser, yes, layer_split, keep)
@@ -7449,11 +7449,11 @@ def sycl_setup(argv) -> int:
 
 
 def control_engine_step(gpu, vision):
-    """Step 4 in the app: the engine is the component folder's package (strata_control/engine_component.py), found if it is
+    """Step 4 in the app: the engine is the component folder's package (strata_common/engine_component.py), found if it is
     there and never fetched or built. A model can be downloaded and prepared before the engine is installed; the run config
     names "component:strata-engine" and the engine is looked up when the model is loaded. llama.cpp's source zip is fetched
     for gguf-py only (the preparation tools), as setup always did: no git, no compiler."""
-    from strata_control import engine_component as EC
+    from strata_common import engine_component as EC
     llama = get_llama_cpp()
     ok(f"llama.cpp {LLAMA_CPP_COMMIT[:7]} (gguf-py for the preparation tools)")
     try:
@@ -7544,7 +7544,7 @@ def own_path_size(fam: dict, ram: float) -> str:
 
 def own_path_vision(a, fam: dict, gpu: dict, hip: bool) -> str:
     """The image encoder for an own-path family (Qwen3.6-35B-A3B): "gpu", "cpu" or "none".  Pictures are on by default (owner rule
-    2026-10-18) and the reader follows strata_control/vision_reader.py's one rule on every make of card: the CPU encoder under 24 GB of
+    2026-10-18) and the reader follows strata_common/vision_reader.py's one rule on every make of card: the CPU encoder under 24 GB of
     VRAM (the GPU one takes ~1.4 GB the experts would use), the GPU encoder from 24 GB.  --vision yes|no|gpu|cpu, else a question whose
     default answer is yes; what is asked for with --vision gpu / cpu is kept, with a note (recommend, never force)."""
     asked = a.vision
@@ -7552,7 +7552,7 @@ def own_path_vision(a, fam: dict, gpu: dict, hip: bool) -> str:
     if asked in ("no", "none"):
         return "none"
     if asked is None:
-        from strata_control import vision_reader as VR
+        from strata_common import vision_reader as VR
         mode = VR.default_mode(vram)
         say()
         say(f"  Images: {fam['title']} can also read pictures (screenshots, photos, scanned pages). This adds a "
@@ -7803,7 +7803,7 @@ def install_own_path(a, family, gpu, hip, amd, cuda_tk, multi, port, ram, adopte
         cfg["vision"] = {"exe": str(eng / VEXE), "mmproj": str(mmproj), "model": str(gguf), "gpu": vision == "gpu",
                          "max_tokens": vt}          # the text model, opened vocab-only
         if reader is not None:                      # AMD: the HIP reader with the CPU reader behind it, or the CPU reader
-            from strata_control import vision_reader as VR
+            from strata_common import vision_reader as VR
             cfg["vision"] = VR.vision_section(reader, cfg["vision"])
         if vision == "cpu":
             cfg["vision"]["threads"] = vision_threads()
@@ -8323,9 +8323,9 @@ def preview_family(a) -> int:
 
 def mac_vision(asked, model: str, ram: float) -> str:
     """The picture setting of a Mac's setup: "gpu", "cpu" or "none".  Pictures are on wherever the model can read them (owner rule
-    2026-10-18) and the reader follows strata_control/vision_reader.py: on a Mac, the GPU (Metal) reader, because the memory is shared
+    2026-10-18) and the reader follows strata_common/vision_reader.py: on a Mac, the GPU (Metal) reader, because the memory is shared
     (no card to keep free) and the CPU reader is ~100x slower.  --vision cpu is kept, with a note (recommend, never force)."""
-    from strata_control import vision_reader as VR
+    from strata_common import vision_reader as VR
     if asked in ("no", "none", "off"):
         return "none"
     if asked is None and not images_default(model, "qwen", ram):
@@ -8343,7 +8343,7 @@ def mac_vision(asked, model: str, ram: float) -> str:
 def mac_reader(eng: Path, vision: str):
     """The picture reader the Mac engine folder carries (strata-vision: Metal built in), for `vision` "gpu" or "cpu".  A folder
     without it gets pictures off, said once."""
-    from strata_control import vision_reader as VR
+    from strata_common import vision_reader as VR
     r = VR.choose(eng, vision, windows=False, mac=True)
     if r.mode == "none":
         warn(r.note or "this engine has no picture reader: pictures off")
@@ -8402,7 +8402,7 @@ def mac_control_setup(a) -> int:
     stream = MF.streams(model, ram)
 
     step(4, "the Strata engine (Metal)")
-    from strata_control import engine_component as EC
+    from strata_common import engine_component as EC
     llama = get_llama_cpp()                            # gguf-py for the preparation tools only: no git, no compiler
     ok(f"llama.cpp {LLAMA_CPP_COMMIT[:7]} (gguf-py for the preparation tools)")
     reader = None
@@ -8513,8 +8513,8 @@ def mac_control_setup(a) -> int:
         cfg["draft_vocab"] = a.draft_vocab
     if a.browser is not None:
         cfg["open_browser"] = a.browser
-    if vision != "none":                               # the Mac's one program reads on the GPU (--gpu) or the CPU (strata_control/vision_reader.py)
-        from strata_control import vision_reader as VR
+    if vision != "none":                               # the Mac's one program reads on the GPU (--gpu) or the CPU (strata_common/vision_reader.py)
+        from strata_common import vision_reader as VR
         cfg["args"].append("--vision")
         cfg["vision"] = VR.vision_section(reader, {"exe": str(reader.exe), "mmproj": str(mmproj), "model": str(files[0]),
                                                    "gpu": vision == "gpu", "max_tokens": vision_tokens(a.vision_tokens, vision, None)})
@@ -8531,7 +8531,7 @@ def mac_control_setup(a) -> int:
 
 def main() -> int:
     try:                                               # files made by a run as administrator still belong to the user
-        from strata_control import private_files as _pf
+        from strata_base import private_files as _pf
         _pf.adopt_user_defaults()
     except Exception:
         pass
@@ -8699,7 +8699,7 @@ def main() -> int:
     if a.gpu_roles:
         if a.gpu is not None or a.gpus:
             ap.error("use --gpu-roles (a role for each card) or --gpu / --gpus (which cards), not both")
-        from strata_control import gpu_roles as GR
+        from strata_common import gpu_roles as GR
         try:
             named = GR.parse_roles(a.gpu_roles)
         except ValueError as e:
@@ -8839,7 +8839,7 @@ def main() -> int:
               " - docs/AMD_HIP.md)")
         say("  One engine drives the cards of one make: a model is never split across NVIDIA and AMD cards, and two models at the same")
         say("  time, one on each, is not supported yet.")
-        from strata_control import gpu_fit
+        from strata_common import gpu_fit
         bigger = gpu_fit.other_vendor_note([{**g, "vendor": "nvidia", "usable": gpu_problem(g) is None} for g in found] +
                                            [{**g, "vendor": "amd", "usable": True} for g in amd_ok], "nvidia")
         if bigger:
@@ -8856,7 +8856,7 @@ def main() -> int:
         for g in amd:
             say(f"    GPU {g['index']}: {g['name']}, {amd_mem_text(g)} - " + (amd_problem(g) or "can be used"))
         if not WIN:                                    # WSL: the Linux HIP engines hang there; a warning, the run goes on
-            from strata_control.engine_component import wsl_amd_note
+            from strata_common.engine_component import wsl_amd_note
             wsl_note = wsl_amd_note("hip", wsl=is_wsl())
             if wsl_note:
                 warn(wsl_note)
@@ -9730,7 +9730,7 @@ def main() -> int:
         # prompt speed on the 7900 XTX): only a table for this card's arch AND the installed hipBLASLt version (the
         # engine refuses any other one and falls back to plain hipBLAS)
         if CONTROL:
-            pass    # the app's engine is a package: the server picks its tuning/ table for the card when it starts (strata_control/hipblaslt_tuning.py)
+            pass    # the app's engine is a package: the server picks its tuning/ table for the card when it starts (strata_common/hipblaslt_tuning.py)
         else:
             table = hipblaslt_table(gpu["arch"], lib_dirs, meta.get("hipblaslt_version"), [eng / "tuning"])
             if table:
@@ -9767,7 +9767,7 @@ def main() -> int:
             cfg["gpu_order"] = "as_given"
         ok(f"layer split across GPUs {multi} ({cfg['layer_split']})")
         recommend_remote_expert_opt(cfg, off=a.no_remote_expert_opt)
-    if getattr(a, "_roles", None):                     # the roles themselves (strata_control/gpu_roles.py); "gpu" above is their mirror
+    if getattr(a, "_roles", None):                     # the roles themselves (strata_common/gpu_roles.py); "gpu" above is their mirror
         final = cfg["gpu"] if isinstance(cfg.get("gpu"), list) else [cfg["gpu"]]      # what the checks above left (a model that cannot share keeps one card)
         main = final[-1]
         cfg["gpu_roles"] = {str(i): ("main" if i == main else "helper" if i in final else "off") for i in sorted(set(a._roles) | set(final))}
@@ -9824,7 +9824,7 @@ def main() -> int:
                          "model": str(ready_paths(model, models_dir)["dense"] if ready else shards[0]),
                          "gpu": vision == "gpu", "max_tokens": vt}
         if reader is not None:                          # AMD: the HIP reader with the CPU reader behind it, or the CPU reader
-            from strata_control import vision_reader as VR
+            from strata_common import vision_reader as VR
             cfg["vision"] = VR.vision_section(reader, cfg["vision"])
         if vision == "cpu":
             cfg["vision"]["threads"] = vision_threads()

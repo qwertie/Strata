@@ -66,21 +66,21 @@ from serve.frontend import (THINK_END, ChatTemplate, Event, OutputParser, anthro
                             tool_choice_of, unmark_think_literals)
 from serve.mcp import McpCancelled, hub_from_config  # noqa: E402
 from serve import runconfig  # noqa: E402
-from strata_control import engine_component  # noqa: E402
-from strata_control import tls  # noqa: E402
+from strata_common import engine_component  # noqa: E402
+from strata_base import tls  # noqa: E402
 
 tls.install()       # #3722: image URLs and tool servers over HTTPS are checked against the operating system's certificates
-from strata_control import hipblaslt_tuning  # noqa: E402
-from strata_control import vision_reader  # noqa: E402
-from strata_control import draft_layer  # noqa: E402
-from strata_control import drafting  # noqa: E402
-from strata_control import user_args  # noqa: E402
-from strata_control import gpu_roles  # noqa: E402
-from serve import ready as ready_file  # noqa: E402
+from strata_common import hipblaslt_tuning  # noqa: E402
+from strata_common import vision_reader  # noqa: E402
+from strata_common import draft_layer  # noqa: E402
+from strata_common import drafting  # noqa: E402
+from strata_common import user_args  # noqa: E402
+from strata_common import gpu_roles  # noqa: E402
+from strata_common import ready as ready_file  # noqa: E402
 from serve import owner_guard  # noqa: E402
-from serve import launch_identity  # noqa: E402
+from strata_common import launch_identity  # noqa: E402
 from serve import logit_bias as bias_api  # noqa: E402
-from serve import lifeline  # noqa: E402
+from strata_common import lifeline  # noqa: E402
 from serve.structured import StructuredOutputError, prepare_format, validated_json  # noqa: E402
 from serve import responses as responses_api  # noqa: E402
 from serve.responses import ResponsesError, error_body as responses_error_body  # noqa: E402
@@ -95,7 +95,7 @@ def popen(what: str, args: list, role: str = "engine", **kw):
     Smart App Control on a clean Windows 11 blocks an exe that is not signed) is said in words instead of a bare
     OSError."""
     try:
-        return lifeline.popen(args, role, **kw)       # a child that cannot outlive this server (serve/lifeline.py)
+        return lifeline.popen(args, role, **kw)       # a child that cannot outlive this server (strata_common/lifeline.py)
     except OSError as e:
         if getattr(e, "winerror", None) in (4551, 1260):
             raise OSError(f"Windows blocked {what} ({args[0]}): Smart App Control, or an application-control policy, does "
@@ -128,13 +128,13 @@ def rttime_limit_note() -> str:
 
 
 def end_leftover_engines(exe: str) -> None:
-    """Before an engine starts: end the ones a lost server left running (strata_control/procs.py). Only a process
+    """Before an engine starts: end the ones a lost server left running (strata_common/procs.py). Only a process
     this install recorded whose starter is gone, or an orphan of exactly this executable running --serve, and only
     after its PID, start time and command line are checked again at the moment of the signal. Never raises."""
     if os.environ.get("STRATA_KEEP_LEFTOVERS") == "1":
         return
     try:
-        from strata_control import procs
+        from strata_common import procs
         say = lambda text: print(text, flush=True)        # noqa: E731
         procs.end_leftovers(say=say)
         procs.end_orphans(exe, say=say)
@@ -3111,11 +3111,11 @@ _CARD_CLASS: list = []
 
 
 def drafting_card_class() -> str:
-    """The class of this computer's graphics card for the drafter table (strata_control/drafting.py), looked up once."""
+    """The class of this computer's graphics card for the drafter table (strata_common/drafting.py), looked up once."""
     if not _CARD_CLASS:
         archs: list[str] = []
         try:
-            from strata_control import engine_component
+            from strata_common import engine_component
             archs = list(engine_component.cuda_archs_present()) + list(engine_component.hip_archs_present())
         except Exception:                                    # noqa: BLE001 - an unknown card is the "other" class, never an error
             pass
@@ -3128,11 +3128,11 @@ def engine_args(cfg: dict) -> list[str]:
     config: "auto" by default, or the first layer of each later GPU's share, e.g. "18" or "16,32"; see
     layer_split_value)."""
     args = list(cfg["args"])
-    # "user_args" (strata_control/user_args.py): the options the person set by hand, over the generated ones at every start,
+    # "user_args" (strata_common/user_args.py): the options the person set by hand, over the generated ones at every start,
     # so a setup run or the app rewriting "args" cannot undo them (#3216 #3215 #3270)
     if cfg.get("user_args"):
         args = user_args.merge(args, cfg["user_args"])
-    # "drafting": auto | mtp | dflash2 | off (strata_control/drafting.py; the Models screen and `strata launch --drafting` write it): which drafter
+    # "drafting": auto | mtp | dflash2 | off (strata_common/drafting.py; the Models screen and `strata launch --drafting` write it): which drafter
     # guesses ahead. A choice that cannot be applied starts the MTP and says why in the engine's /metrics ("drafting_note").
     if cfg.get("drafting") is not None or drafting.suggest(drafting_card_class()) != "mtp":
         shaped = {**cfg, "args": args}
@@ -3377,7 +3377,7 @@ def igpu_cards(indices: list[int], archs: dict[int, str] | None) -> set[int]:
 def gpu_vram_mib(indices: list[int], hip: bool = False) -> dict[int, int] | None:
     """Total VRAM of each card in MiB (NVML / amdgpu sysfs); None when any of them cannot be read."""
     try:
-        from serve.telemetry import gpu_reader
+        from strata_common.telemetry import gpu_reader
     except ImportError:
         return None
     out = {}
@@ -3566,7 +3566,7 @@ def child_env(cfg: dict, *, offline: bool = False) -> dict:
     # the policy by naming the same variable.
     if offline:
         try:
-            from strata_control import offline as offline_policy
+            from strata_common import offline as offline_policy
             env.update(offline_policy.OFFLINE_ENV)
         except ImportError:
             # The policy module is part of the application; without it, refuse rather than silently
@@ -4320,7 +4320,7 @@ class Service:
         """Free VRAM on the engine's (first) GPU, from the backend's reader - NVML, the amdgpu sysfs files (#301) or
         IOKit on macOS (Metal backend); None when it can't be read (then nothing is refused)."""
         try:
-            from serve.telemetry import gpu_reader
+            from strata_common.telemetry import gpu_reader
             g = gpu_reader(int(getattr(self, "gpu_index", 0) or 0), amd=getattr(self, "backend", None) == "hip")
             if not g.ok():
                 return None
@@ -4585,9 +4585,9 @@ class Service:
         return req
 
     def start_telemetry(self):
-        """The hardware sampler behind GET /metrics (serve/telemetry.py), recording this server's tok/s too."""
+        """The hardware sampler behind GET /metrics (strata_common/telemetry.py), recording this server's tok/s too."""
         if getattr(self, "telemetry", None) is None:
-            from serve.telemetry import Telemetry
+            from strata_common.telemetry import Telemetry
             self.telemetry = Telemetry(extra=lambda: {"tok_s": self._tok_s(), "tok_s_mean": self._tok_s_mean(),
                                                     "prefill_tok_s_mean": self._prefill_tok_s_mean()},
                                        gpu_index=int(getattr(self, "gpu_index", 0) or 0),
@@ -8050,7 +8050,7 @@ SAMPLING_ALIASES = {"repeat_penalty": "repetition_penalty", "repeat_last_n": "pe
 
 
 def apply_saved_tuning(cfg: dict, *, say=None) -> dict:
-    """The run config with the active saved tuning for its choices put on top (strata_control/presets.py), with no measurement.
+    """The run config with the active saved tuning for its choices put on top (strata_common/presets.py), with no measurement.
     Every start path runs this (the Terminal, `runtime start`, the app's load, a restart of the app, an unload and a load), so the
     tuning is applied every time and never re-measured. A tune's own worker sets STRATA_NO_PRESET so that it measures the
     configuration it was given. Never fails a start: a store that cannot be read means the configuration as it is."""
@@ -8058,7 +8058,7 @@ def apply_saved_tuning(cfg: dict, *, say=None) -> dict:
         return cfg
     say = say or (lambda line: print(line, flush=True))
     try:
-        from strata_control import presets as _presets
+        from strata_common import presets as _presets
         out, applied = _presets.overlay(cfg)
         if applied.get("applied"):
             changes = {**(applied.get("args") or {}), **(applied.get("env") or {})}
@@ -8133,7 +8133,7 @@ def sampling_defaults_from_config(cfg: dict) -> dict:
             if not number or value != int(value) or value <= 0:
                 raise SystemExit(f"[strata] config sampling.seed={value!r}: expected a positive integer")
             out[key] = int(value)
-        elif key == "strata_tune":           # a saved tuning's per-request settings (strata_control/presets.py)
+        elif key == "strata_tune":           # a saved tuning's per-request settings (strata_common/presets.py)
             if not isinstance(value, dict):
                 raise SystemExit(f"[strata] config sampling.strata_tune={value!r}: expected an object")
             out[key] = {k: v for k, v in value.items() if k in ("pcie_frac", "spec_min_p", "aux_cpus")}
@@ -8294,7 +8294,7 @@ def with_component_engine(cfg: dict) -> dict:
 
 def _component_exe(reference: str, cfg: dict) -> str:
     """The engine a run config names as "component:strata-engine". No engine for this PC is a clear notice and exit 5;
-    the server never goes looking on the internet for one (strata_control/engine_component.py)."""
+    the server never goes looking on the internet for one (strata_common/engine_component.py)."""
     try:
         return engine_component.expand(reference, cfg)
     except engine_component.EngineMissing as e:
@@ -8304,7 +8304,7 @@ def _component_exe(reference: str, cfg: dict) -> str:
 
 def main(argv=None, *, lifecycle_event=None, interrupt_exit_code: int = 0) -> int:
     try:                                               # files made by a run as administrator still belong to the user
-        from strata_control import private_files as _pf
+        from strata_base import private_files as _pf
         _pf.adopt_user_defaults()
     except Exception:
         pass
@@ -8517,7 +8517,7 @@ def main(argv=None, *, lifecycle_event=None, interrupt_exit_code: int = 0) -> in
         # The same decision, reported through the policy module so the two cannot drift: a profile
         # that permits a network source is refused here rather than on its first request.
         try:
-            from strata_control import offline as offline_policy
+            from strata_common import offline as offline_policy
             blocked = offline_policy.ensure_strictly_offline(cfg)
         except ImportError:
             blocked = []

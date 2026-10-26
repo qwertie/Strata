@@ -42,7 +42,7 @@ def _home(home: Path | None) -> Path:
 
 
 def components_dir(environ=None, *, windows: bool | None = None, home: Path | None = None) -> Path:
-    from strata_control import engine_component
+    from strata_common import engine_component
     return engine_component.components_dir(environ, windows=windows, home=home)
 
 

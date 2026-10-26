@@ -16,7 +16,8 @@ from types import SimpleNamespace
 from unittest import mock
 
 from strata_cli.cli import main
-from strata_control import calibration, journal, management, profiles, runtime
+from strata_control import calibration, journal, management, runtime
+from strata_common import profiles
 import setup
 
 

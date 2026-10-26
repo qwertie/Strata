@@ -120,7 +120,7 @@ ROWS: dict[str, tuple[str, str, str]] = {
             "library cannot create one, so Windows uses a loopback-only TCP listener whose "
             "authority rests on a 256-bit control token plus a private state directory. That is "
             "weaker than the checklist's stated condition and is recorded as such. Console stop and "
-            "process-tree cleanup for engine children ARE implemented (serve/winjob.py, tested). "
+            "process-tree cleanup for engine children ARE implemented (strata_base/winjob.py, tested). "
             "The Windows branch of the transport is exercised on macOS but has never run on "
             "Windows.",
             "strata_control/owner_transport.py, docs/work/evidence/owner-transport-suite.txt"),
@@ -338,7 +338,7 @@ ROWS: dict[str, tuple[str, str, str]] = {
             "not, the reason in plain words. An unknown identity is never treated as a match, and "
             "incomparable history is retained rather than deleted. Twenty-one tests cover each "
             "element of the key separately.",
-            "tests/tuning/test_tune_history.py, strata_control/tune_history.py"),
+            "tests/tuning/test_tune_history.py, strata_common/tune_history.py"),
     "T07": ("passed",
             "`strata tune apply` revalidates the report hash, re-checks the sweep's artifact identity "
             "against what is installed, refuses an incomplete sweep, a no-change result, material "

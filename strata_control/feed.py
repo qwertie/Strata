@@ -16,7 +16,7 @@ one in the signed feed is never installed. Three refusals are tested: a bad sign
 downgrade guard has two parts: a feed whose ``sequence`` is lower than the last one this PC accepted is refused (a replayed
 old feed), and a package older than the installed one is never installed by an update.
 
-Nothing here touches the network itself; `strata_control.transfer` does.
+Nothing here touches the network itself; `strata_base.transfer` does.
 """
 
 from __future__ import annotations
@@ -26,8 +26,9 @@ import json
 import re
 from dataclasses import dataclass, field
 
-from strata_control import signing, transfer
-from strata_control.targets import BACKEND_MATRIX
+from strata_common import signing
+from strata_base import transfer
+from strata_common.targets import BACKEND_MATRIX
 
 SCHEMA_VERSION = 1
 FEED_NAME = "strata-feed.json"
@@ -372,7 +373,7 @@ def gfx_covers(archs, present: list[str]) -> bool:
 def engine_fit_reasons(pkg: EnginePackage, hardware: dict) -> list[str]:
     """Why `pkg` cannot run on the machine `hardware` describes; empty when it fits. `hardware` is what
     `updater.detect_hardware()` returns: platform, backend, nvidia driver, cuda archs, gfx names, runtime version."""
-    from strata_control import engine_component as ec
+    from strata_common import engine_component as ec
     reasons = []
     if pkg.platform != hardware["platform"]:
         reasons.append(f"{pkg.label} is for {pkg.platform}, this PC is {hardware['platform']}")
@@ -398,7 +399,7 @@ def engine_fit_reasons(pkg: EnginePackage, hardware: dict) -> list[str]:
 def select_engine(packages, hardware: dict) -> tuple[EnginePackage | None, list[str]]:
     """The best package for this PC and, when none fits, every reason. Best = newest version; with equal versions the build
     that needs the newer driver (CUDA 13 beside CUDA 12), as `engine_component.resolve` chooses between installed ones."""
-    from strata_control import engine_component as ec
+    from strata_common import engine_component as ec
     fitting, reasons = [], []
     for pkg in packages:
         why = engine_fit_reasons(pkg, hardware)
@@ -437,7 +438,7 @@ def _settle_hip_variants(fitting: list, hardware: dict, reasons: list[str]) -> l
     hip = [p for p in fitting if p.backend == "hip"]
     if len({p.variant for p in hip}) < 2:
         return fitting
-    from strata_control import engine_component as ec
+    from strata_common import engine_component as ec
     chosen, why = [], ""
     wanted = str(hardware.get("variant_wanted") or "").lower()
     if wanted:

@@ -1,4 +1,4 @@
-"""serve/telemetry.py - hardware readings for the web app's Monitor tab (idea from PR #22 by code-martin).
+"""strata_common/telemetry.py - hardware readings for the web app's Monitor tab (idea from PR #22 by code-martin).
 
 A background thread samples once a second and keeps the last 60 readings of each series for the sparklines:
 - GPU: NVIDIA's own NVML library (nvml.dll / libnvidia-ml.so.1, installed with every driver) through ctypes, so no

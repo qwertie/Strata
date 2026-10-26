@@ -1,4 +1,4 @@
-"""strata_control/gpu_roles.py: Main / Helper / Off for every graphics card (the rules the app, `strata launch`, setup and the server share)."""
+"""strata_common/gpu_roles.py: Main / Helper / Off for every graphics card (the rules the app, `strata launch`, setup and the server share)."""
 
 from __future__ import annotations
 
@@ -6,7 +6,7 @@ import json
 import unittest
 from pathlib import Path
 
-from strata_control import gpu_roles as R
+from strata_common import gpu_roles as R
 
 ROOT = Path(__file__).resolve().parents[2]
 V = json.loads((ROOT / "tests" / "data" / "gpu_roles_vectors.json").read_text(encoding="utf-8"))

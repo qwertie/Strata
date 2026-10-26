@@ -21,7 +21,8 @@ from unittest import mock
 from strata_cli.cli import main
 from strata_cli import bench
 from strata_cli.client import Endpoint
-from strata_control import calibration, journal, management, owner_transport, procs, profiles, recipes, runtime
+from strata_control import calibration, journal, management, owner_transport, recipes, runtime
+from strata_common import procs, profiles
 
 
 WINDOWS = os.name == "nt"
@@ -686,7 +687,7 @@ class RuntimeTests(unittest.TestCase):
         snapshot = Path(result["rollback_source_config"])
         self.assertEqual(snapshot.parent, self.root / "runtime")
         if WINDOWS:
-            from strata_control import private_files
+            from strata_base import private_files
             self.assertTrue(private_files.is_unshared(snapshot))      # NTFS has no mode bits: the ACL is the promise
         else:
             self.assertEqual(snapshot.stat().st_mode & 0o077, 0)
@@ -1220,7 +1221,7 @@ class RuntimeTests(unittest.TestCase):
 
     @unittest.skipUnless(WINDOWS, "ACLs stand in for mode 0700 on Windows")
     def test_runtime_directory_is_owner_only_and_a_shared_one_is_refused(self):
-        from strata_control import private_files
+        from strata_base import private_files
         directory = runtime.runtime_dir()
         self.assertTrue(private_files.is_private(directory))
         shared = Path(self.temp.name) / "shared-runtime"
@@ -1310,7 +1311,8 @@ class RuntimeTests(unittest.TestCase):
 
 class StartWaitLimit(unittest.TestCase):
     def test_a_start_may_wait_up_to_thirty_minutes_for_a_big_model(self):                    # #3949
-        from strata_control import runtime as rt, profiles as pr
+        from strata_control import runtime as rt
+        from strata_common import profiles as pr
         self.assertEqual(rt.MAX_START_WAIT, 1800)
         with self.assertRaisesRegex(pr.ProfileError, "start wait must be 0..1800"):
             rt.start("x", wait=1801)

@@ -235,7 +235,7 @@ class InstalledModelsNeedNoNetwork(unittest.TestCase):
 
     def test_the_runtime_has_no_model_host_in_it(self):
         """strata launch, serve, the monitor and the API reach no model host: the names are in setup.py and the install
-        tools only (and strata_control.acquisition refuses a download under STRATA_NO_ACQUIRE=1)."""
+        tools only (and strata_common.acquisition refuses a download under STRATA_NO_ACQUIRE=1)."""
         hosts = re.compile(r"huggingface\.co|hf-mirror|HF_ENDPOINT|modelscope|hf_hub_download", re.I)
         # The harmless mentions: the model-card link a benchmark result file names (nothing opens it), and the pinned
         # DFlash2 drafter address, which only `strata drafting fetch` downloads from, behind acquisition.require (refused
@@ -244,7 +244,7 @@ class InstalledModelsNeedNoNetwork(unittest.TestCase):
         harmless = ('MODEL_CARD_URL = "https://huggingface.co/Qwen/Qwen3.8-Flash-Next"',
                     'BASE_URL = f"https://huggingface.co/{REPO}/resolve/{REVISION}/"')
         found = []
-        for folder in ("strata_cli", "serve", "strata_control"):
+        for folder in ("strata_base", "strata_cli", "strata_common", "serve", "strata_control"):
             for p in (ROOT / folder).rglob("*.py"):
                 if "test" in p.name:
                     continue
@@ -256,7 +256,7 @@ class InstalledModelsNeedNoNetwork(unittest.TestCase):
         self.assertEqual(found, [])
 
     def test_a_download_is_refused_while_serving(self):
-        from strata_control import acquisition
+        from strata_common import acquisition
         with acquisition.forbidden():
             with self.assertRaises(acquisition.AcquisitionRefused):
                 setup.download(pinned_url("Q2_0/x.gguf"), Path(tempfile.gettempdir()) / "strata-never.gguf")

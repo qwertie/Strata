@@ -247,7 +247,7 @@ class MoveTests(MoveCase):
         self.assertEqual(mm.interrupted(self.old)["state"], "running")
 
     def test_a_move_that_is_running_now_is_not_interrupted(self):
-        from strata_control import procs
+        from strata_common import procs
         mm._write_state(self.old, state="running", pid=os.getpid() + 7, token="t", **{"from": str(self.old), "to": str(self.new)})
         with mock.patch.object(procs, "start_token", return_value="t"):
             self.assertIsNone(mm.interrupted(self.old))

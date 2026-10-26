@@ -115,8 +115,8 @@ def parser() -> argparse.ArgumentParser:
 
 def _file_words(exc: BaseException) -> str:
     try:
-        from strata_control import longpath
-    except ImportError:                                 # the standalone monitor bundle does not carry strata_control
+        from strata_base import longpath
+    except ImportError:                                 # the standalone monitor bundle does not carry strata_base
         return f"local file operation failed ({type(exc).__name__})"
     return longpath.file_words(exc)
 

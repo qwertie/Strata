@@ -21,7 +21,8 @@ from unittest import mock
 
 import setup
 from strata_cli.cli import main
-from strata_control import models, profiles
+from strata_control import models
+from strata_common import profiles
 
 from tests.terminal.test_models import gguf_fixture
 

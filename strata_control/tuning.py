@@ -57,7 +57,7 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Sequence
 
-from strata_control import atomic
+from strata_base import atomic
 
 SCHEMA_VERSION = 1
 
@@ -197,7 +197,7 @@ def engine_env(engine: Path | str) -> dict[str, str] | None:
         return None
     var = "PATH" if os.name == "nt" else "LD_LIBRARY_PATH"
     env = dict(os.environ)
-    from strata_control import engine_component
+    from strata_common import engine_component
     env[var] = os.pathsep.join(engine_component.package_lib_dirs(folder) + ([env[var]] if env.get(var) else []))
     return env
 
@@ -686,7 +686,7 @@ class Tuner:
         report present a recommendation next to incomparable earlier numbers without saying so.
         """
         try:
-            from strata_control import tune_history
+            from strata_common import tune_history
         except ImportError:                                  # history is optional
             self.history = {"note": "the history store is unavailable"}
             return
@@ -753,7 +753,7 @@ def plan_tuning(engine: Path, backend: str, model: str, objective: str,
     # Identity by content, so a later sweep can tell whether these numbers still apply. `model_path`
     # is optional: when the caller does not know where the weights are, the model's digest is
     # `None`, which makes the record incomparable to everything rather than falsely comparable.
-    from strata_control import tune_history
+    from strata_common import tune_history
     identity = tune_history.comparison_key(
         engine=tune_history.file_identity(engine, full=full_digests),
         model=(tune_history.file_identity(model_path, full=full_digests) if model_path

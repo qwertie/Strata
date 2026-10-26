@@ -322,7 +322,7 @@ def kept_key(name: str | None = None) -> str | None:
     own config (profile `launch-<name>`), the saved preset's, else the one in the newest launch config. None when there is none; `--new-key`
     and the key button are the only ways to rotate it."""
     try:
-        from strata_control import profiles
+        from strata_common import profiles
         from strata_cli.launch import settings as S, store
         if name:
             try:
@@ -362,7 +362,7 @@ def mask_key(key: str | None) -> str:
 # ----------------------------------------------------------------------------------------------- the quick tunnel
 
 def _state_dir() -> Path:
-    from strata_control import paths
+    from strata_common import paths
     d = paths.state_base() / "launch"
     d.mkdir(parents=True, exist_ok=True)
     return d
@@ -397,7 +397,7 @@ def start_tunnel(name: str, port: int, *, wait: float = 45.0) -> tuple[str | Non
         kw = ({"creationflags": subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.CREATE_NO_WINDOW} if WINDOWS
               else {"start_new_session": True})
         proc = subprocess.Popen(argv, stdin=subprocess.DEVNULL, stdout=out, stderr=subprocess.STDOUT, **kw)
-    from strata_control import procs
+    from strata_common import procs
     token = procs.start_token(proc.pid)
     url = None
     deadline = time.monotonic() + wait
@@ -428,7 +428,7 @@ def tunnel_info(name: str) -> dict | None:
         state = json.loads(_tunnel_state(name).read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return None
-    from strata_control import procs
+    from strata_common import procs
     if isinstance(state, dict) and procs.is_same(int(state.get("pid", 0)), state.get("token") or "", state.get("cmd")):
         return state
     return None
@@ -439,7 +439,7 @@ def stop_tunnel(name: str) -> bool:
     state = tunnel_info(name)
     ok = False
     if state:
-        from strata_control import procs
+        from strata_common import procs
         outcome = procs.end_one({"pid": state["pid"], "token": state["token"], "cmd": state["cmd"]}, grace=5.0)
         ok = outcome in ("ended", "gone")
     try:

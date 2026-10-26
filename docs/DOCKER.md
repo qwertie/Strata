@@ -320,7 +320,7 @@ files the signed update feed names. Nothing publishes by itself: a maintainer st
 5. Check one pull from a computer that is not logged in: `docker pull ghcr.io/niko1221/strata:0.2.3-cuda13`.
 
 For each flavor the job runs [docker/fetch-engines.py](../docker/fetch-engines.py), which reads the release's signed feed (the
-Ed25519 key in `strata_control/update_keys.json`), downloads the package, and checks the archive's size and SHA-256, the manifest
+Ed25519 key in `strata_common/update_keys.json`), downloads the package, and checks the archive's size and SHA-256, the manifest
 hash, the package signature and every file's hash, exactly as `strata update` does; a package that fails stops the job before
 anything is built. [docker/build.sh](../docker/build.sh) then builds the image (and checks the package again inside the build), and
 the job starts the image once to see that the Terminal inside it runs.

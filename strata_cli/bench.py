@@ -7,8 +7,8 @@ sampled from telemetry; missing signals stay unknown. It does not tune a model.
 from __future__ import annotations
 
 try:
-    from strata_control.private_files import private_mkdir as _private_mkdir
-except ImportError:                                     # a thin bundle (monitor only) ships without strata_control
+    from strata_base.private_files import private_mkdir as _private_mkdir
+except ImportError:                                     # a thin bundle (monitor only) ships without strata_base
     def _private_mkdir(path, *, parents=False, exist_ok=True):
         path.mkdir(mode=0o700, parents=parents, exist_ok=exist_ok)
         return path
@@ -32,9 +32,9 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from strata_cli.client import ClientError, Endpoint, _NoRedirect
-from strata_control.profiles import ProfileError
-from strata_control import atomic as _atomic_mod
-from strata_control import posix_owner
+from strata_common.profiles import ProfileError
+from strata_base import atomic as _atomic_mod
+from strata_base import posix_owner
 
 
 SCHEMA = 1

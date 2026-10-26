@@ -978,7 +978,7 @@ class Strata:
         for g in hw["gpus"]:                            # each make numbers its cards from 0 (the engine drives one make): a stable id tells two cards apart
             g.setdefault("id", f"{g.get('vendor') or 'gpu'}:{g.get('index')}")
         try:                                            # how fast each card is (SMs x clock): the app and the Terminal pick the Main card by it
-            from strata_control import gpu_roles
+            from strata_common import gpu_roles
             gpu_roles.add_speeds(hw["gpus"])
         except Exception:                               # noqa: BLE001 - unknown speed: the card with the most memory is Main
             pass
@@ -997,7 +997,7 @@ class Strata:
         if not amd:
             return
         try:
-            from strata_control import engine_component as ec
+            from strata_common import engine_component as ec
             rep = ec.status()
             eng = rep.get("engine") or {}
             built = [a for a in eng.get("archs") or [] if str(a).startswith("gfx")]
@@ -1014,12 +1014,12 @@ class Strata:
     def _engine_vendor(hw: dict) -> None:
         """One engine drives the cards of ONE make (CUDA: NVIDIA, HIP: AMD, ...): note which one for this PC (the installed engine's, else the one
         setup fetches first) and, when the other make has the bigger card, the one plain line that says so. The model list below only counts
-        the cards this engine can drive; a model is never split across makes (strata_control/gpu_fit.py)."""
+        the cards this engine can drive; a model is never split across makes (strata_common/gpu_fit.py)."""
         try:
-            from strata_control import gpu_fit
+            from strata_common import gpu_fit
             backend = None
             try:
-                from strata_control import engine_component as ec
+                from strata_common import engine_component as ec
                 rep = ec.status()
                 backend = (rep.get("engine") or {}).get("backend") if rep.get("usable") else None
             except Exception:                           # noqa: BLE001
@@ -1261,7 +1261,7 @@ class Strata:
                 sizes.append({"model": m, "about": d["about"], "download_gb": d["download_gb"],
                               "experimental": bool(d.get("experimental")),
                               "images": d.get("vision", fd.get("vision", True)) is not False,
-                              # which picture reader "pictures on" gets on this PC (strata_control/vision_reader.py, the one rule: the CPU reader
+                              # which picture reader "pictures on" gets on this PC (strata_common/vision_reader.py, the one rule: the CPU reader
                               # under 24 GB of graphics memory, the GPU reader from 24 GB; the person can switch it per model)
                               "images_reader": self.images_reader(vram),
                               "ram_needed_gb": d["ram_gb"], "experts_gb": d.get("arena_gb"),
@@ -1273,7 +1273,7 @@ class Strata:
                               "engine_min": ".".join(map(str, d["engine"])) if d.get("engine") else None,
                               "memory_gb": round(float(d["ram_gb"]) if d.get("mem_total") else float(d.get("arena_gb") or d["ram_gb"]) + 1.0, 1),
                               "on_this_pc": verdict, "installed": tag in have, "id": tag,
-                              # which graphics cards to use for it (strata_control/gpu_fit.py, the one rule app / Terminal / setup share):
+                              # which graphics cards to use for it (strata_common/gpu_fit.py, the one rule app / Terminal / setup share):
                               # only with two or more cards that count; "recommended" names the pre-selected option
                               "gpu_options": (self.dsv41_options(hw, m) if own and own.get("multi_file")
                                               else None if own else self.gpu_options(d, ram, hw))})   # Qwen3.6 runs on one card so far
@@ -1372,7 +1372,7 @@ class Strata:
     @staticmethod
     def images_reader(vram) -> str:
         try:
-            from strata_control import vision_reader
+            from strata_common import vision_reader
             return vision_reader.default_mode(vram) if vram else "cpu"
         except Exception:                                  # noqa: BLE001
             return "cpu"
@@ -1380,7 +1380,7 @@ class Strata:
     @staticmethod
     def gpu_options(d: dict, ram, hw) -> dict | None:
         try:
-            from strata_control import gpu_fit
+            from strata_common import gpu_fit
             mem = float(d["ram_gb"]) if d.get("mem_total") else float(d.get("arena_gb") or d["ram_gb"]) + 1.0
             res = gpu_fit.options(round(mem, 1), ram, (hw or {}).get("gpus", []), (hw or {}).get("engine_vendor"))
             if len(res["options"]) >= 2:
@@ -1693,7 +1693,7 @@ def physical_cores() -> int | None:
     """The CPU's physical cores (os.cpu_count() counts logical threads: 16 on an 8-core SMT chip, and the app's Work profile took
     80% of that for --pool-workers, more than the cores, #3417).  Falls back to the thread count when the machine cannot say."""
     try:
-        from strata_control import tune_machine
+        from strata_common import tune_machine
         n = tune_machine.cpu().get("physical")
         if isinstance(n, int) and n > 0:
             return n
@@ -2200,7 +2200,7 @@ class Tools:
             raise ToolError(f"images are not available with {families[family]['title']} {model} yet: use vision=no")
         if vision is None:
             # owner rule (2026-10-18): pictures are on by default wherever the model can read them and the engine has a reader; setup picks
-            # the reader (strata_control/vision_reader.py: the CPU under 24 GB, the GPU from 24 GB, every make of card; a Mac reads on its GPU).
+            # the reader (strata_common/vision_reader.py: the CPU under 24 GB, the GPU from 24 GB, every make of card; a Mac reads on its GPU).
             can_read = md.get("vision", families[family].get("vision")) is not False
             vision = "yes" if can_read else "no"
         target = self.check_data_dir(data_dir) if data_dir else s.data_dir()

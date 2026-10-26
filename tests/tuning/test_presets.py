@@ -10,7 +10,7 @@ import time
 import unittest
 from pathlib import Path
 
-from strata_control import presets
+from strata_common import presets
 
 CFG = {"exe": "strata", "model_name": "swift-iq2_xs", "ui_resource_profile": "work", "vram_reserve_mib": 1536,
        "args": ["--pack", "P", "--native", "Swift-IQ3_S-00001-of-00002.gguf", "--expert-cache", "auto", "--prefill", "auto",

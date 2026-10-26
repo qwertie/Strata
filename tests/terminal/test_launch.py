@@ -552,7 +552,7 @@ class AdoptRules(unittest.TestCase):
             engine = h.base / "engine"
             engine.mkdir()
             found = SimpleNamespace(root=engine, version="0.1.45", backend="cuda", platform="linux-x86_64")
-            with mock.patch.object(mod, "get_llama_cpp", return_value=engine), mock.patch("strata_control.engine_component.resolve", return_value=found):
+            with mock.patch.object(mod, "get_llama_cpp", return_value=engine), mock.patch("strata_common.engine_component.resolve", return_value=found):
                 self.assertEqual(mod.control_engine_step({}, "cpu")[5], "none")           # no strata-vision beside the engine: off, with a note
                 (engine / mod.VEXE).write_text("x")
                 self.assertEqual(mod.control_engine_step({}, "cpu")[5], "cpu")            # the component carries it: the choice is kept
@@ -588,7 +588,7 @@ class AdoptRules(unittest.TestCase):
     def test_the_cards_of_this_launch_go_into_its_config_without_reinstalling(self):
         from tests.terminal.launch_support import HW_2X16
         from strata_cli.launch.runner import apply_cards, cards_for_launch
-        from strata_control import tune_knobs
+        from strata_common import tune_knobs
         base = {"exe": "component:strata-engine", "args": ["--max-context", "32768"], "gpu": 0, "port": 8080}
         with Home() as h:
             # an installed single-card config, then the split chosen now
@@ -1282,7 +1282,7 @@ class ConnectCommand(unittest.TestCase):
 
 
 class GpuRolesFlag(unittest.TestCase):
-    """--gpu-roles: a role for each card (strata_control/gpu_roles.py); unnamed cards are Off."""
+    """--gpu-roles: a role for each card (strata_common/gpu_roles.py); unnamed cards are Off."""
 
     def setUp(self):
         self.home = Home().__enter__()

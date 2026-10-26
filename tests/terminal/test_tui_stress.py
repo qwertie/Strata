@@ -57,20 +57,20 @@ class KeptKeyTests(unittest.TestCase):
     def test_key_of_the_launch_config_is_kept(self):
         from strata_cli.launch import access
         self._write("sk-strata-AAA")
-        with mock.patch("strata_control.profiles.load", return_value=({"source_config": self.cfg}, "r")):
+        with mock.patch("strata_common.profiles.load", return_value=({"source_config": self.cfg}, "r")):
             self.assertEqual(access.kept_key("gyro-s 32K"), "sk-strata-AAA")
 
     def test_no_key_and_none_are_not_kept(self):
         from strata_cli.launch import access
         self._write("none")
-        with mock.patch("strata_control.profiles.load", return_value=({"source_config": self.cfg}, "r")),              mock.patch("strata_control.profiles.list_profiles", return_value=[]):
+        with mock.patch("strata_common.profiles.load", return_value=({"source_config": self.cfg}, "r")),              mock.patch("strata_common.profiles.list_profiles", return_value=[]):
             self.assertIsNone(access.kept_key("gyro-s 32K"))
 
     def test_newest_launch_config_is_the_fallback(self):
         from strata_cli.launch import access
         self._write("sk-strata-BBB")
         rows = [{"id": "launch-other", "source_config": self.cfg}, {"id": "other", "source_config": "x"}]
-        with mock.patch("strata_control.profiles.load", side_effect=Exception("none")),              mock.patch("strata_cli.launch.store.load", return_value=None),              mock.patch("strata_control.profiles.list_profiles", return_value=rows):
+        with mock.patch("strata_common.profiles.load", side_effect=Exception("none")),              mock.patch("strata_cli.launch.store.load", return_value=None),              mock.patch("strata_common.profiles.list_profiles", return_value=rows):
             self.assertEqual(access.kept_key("gyro-s 64K"), "sk-strata-BBB")
 
     def test_apply_defaults_reuses_the_key_and_new_key_is_a_different_step(self):

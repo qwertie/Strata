@@ -34,7 +34,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from strata_control import loopback
+from strata_base import loopback
 from strata_control.tune_engine import EngineMeasurement, MeasurementError, process_tree_peak_mib
 
 
@@ -82,7 +82,7 @@ class ApiHarness:
         self._log = tempfile.NamedTemporaryFile(prefix="strata-api-harness-", suffix=".log",
                                                 delete=False)
         try:
-            from serve import lifeline       # the worker (and the engine under it) end with this process
+            from strata_common import lifeline       # the worker (and the engine under it) end with this process
             self._proc = lifeline.popen(self._argv(), "worker", cwd=str(self.serve_dir), env=self.env,
                                         stdout=self._log, stderr=subprocess.STDOUT)
         except OSError as e:

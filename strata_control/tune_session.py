@@ -31,7 +31,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Iterator, Protocol
 
-from strata_control import loopback, tune_machine
+from strata_base import loopback
+from strata_common import tune_machine
 
 # --------------------------------------------------------------------------- the contract
 
@@ -479,7 +480,7 @@ class WorkerSession:
                     "--host", "127.0.0.1", "--port", str(port)]
             t0 = time.time()
             try:
-                from serve import lifeline
+                from strata_common import lifeline
                 proc = lifeline.popen(argv, "worker", cwd=str(self.serve_dir), env=spawn_env, stdout=wl,
                                       stderr=subprocess.STDOUT)
             except OSError as e:

@@ -431,7 +431,7 @@ class EngineHarness:
             raise MeasurementError(f"the engine binary is not at {self.engine}")
         started = time.monotonic()
         try:
-            from serve import lifeline       # the engine ends with this process, however this process ends
+            from strata_common import lifeline       # the engine ends with this process, however this process ends
             self._proc = lifeline.popen(
                 self._argv(), "engine", cwd=str(self.cwd), env=self.env,
                 stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,

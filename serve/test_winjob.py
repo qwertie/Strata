@@ -1,4 +1,4 @@
-"""serve/winjob.py: a contained child - and whatever it starts - ends when the process that contained it ends, even
+"""strata_base/winjob.py: a contained child - and whatever it starts - ends when the process that contained it ends, even
 when that process is killed outright (the console window closed, Task Manager), with no cleanup of its own.
 
     python -m unittest serve.test_winjob      (Windows only; skipped elsewhere)
@@ -17,7 +17,7 @@ sys.path.insert(0, str(ROOT))
 PARENT = f"""
 import subprocess, sys, time
 sys.path.insert(0, {str(ROOT)!r})
-from serve.winjob import contain
+from strata_base.winjob import contain
 code = ("import subprocess, sys, time; g = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(120)']); "
         "print(g.pid, flush=True); time.sleep(120)")
 child = subprocess.Popen([sys.executable, "-c", code], stdout=subprocess.PIPE, text=True)
@@ -59,7 +59,7 @@ class TestWinJob(unittest.TestCase):
                     subprocess.run(["taskkill", "/PID", str(pid), "/F"], capture_output=True)
 
     def test_elsewhere_or_without_a_process_it_is_a_no_op(self):
-        from serve.winjob import contain
+        from strata_base.winjob import contain
         self.assertFalse(contain(None))
 
 
@@ -72,7 +72,7 @@ class TestNoThrottle(unittest.TestCase):
     def test_a_contained_child_is_opted_out_of_power_throttling(self):
         # #691: contain() also sets ProcessPowerThrottling (EcoQoS off), so a minimized server window does not move the
         # engine to the E-cores
-        from serve import winjob
+        from strata_base import winjob
         child = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"])
         try:
             self.assertTrue(winjob.no_throttle(int(child._handle)))

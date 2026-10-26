@@ -1,4 +1,4 @@
-"""strata_control/gpu_fit.py: the one rule for which graphics cards a model uses (app, strata launch and setup share it)."""
+"""strata_common/gpu_fit.py: the one rule for which graphics cards a model uses (app, strata launch and setup share it)."""
 
 from __future__ import annotations
 
@@ -6,7 +6,7 @@ import re
 import unittest
 from pathlib import Path
 
-from strata_control import gpu_fit as G
+from strata_common import gpu_fit as G
 
 ROOT = Path(__file__).resolve().parents[2]
 

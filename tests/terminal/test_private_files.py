@@ -12,7 +12,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
-from strata_control import private_files as pf  # noqa: E402
+from strata_base import private_files as pf  # noqa: E402
 
 
 class PrivateFileTests(unittest.TestCase):
@@ -167,7 +167,7 @@ class ElevatedRunLockoutTests(unittest.TestCase):
         self.assertFalse(pf.repair_access(os.environ.get("SystemRoot", "C:\Windows") + "\System32\drivers"))
 
     def test_a_profile_that_was_locked_loads(self):
-        from strata_control import profiles
+        from strata_common import profiles
         os.environ["STRATA_PROFILE_DIR"] = str(self.root / "profiles")
         self.addCleanup(os.environ.pop, "STRATA_PROFILE_DIR", None)
         directory = self.root / "profiles"

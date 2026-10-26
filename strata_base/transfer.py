@@ -25,7 +25,7 @@ import urllib.request
 from pathlib import Path
 from typing import Callable
 
-from strata_control import tls
+from strata_base import tls
 
 tls.install()      # #3722: the operating system's certificates, like the browser
 

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from strata_control.private_files import private_mkdir as _private_mkdir
+from strata_base.private_files import private_mkdir as _private_mkdir
 import hashlib
 import errno
 import os
@@ -15,9 +15,10 @@ from pathlib import Path
 from strata_cli import bench
 from strata_cli.cli import _launch_plan, _source
 from strata_cli.client import ClientError, Endpoint
-from strata_control import journal, profiles, runtime
-from strata_control.profiles import ProfileError
-from strata_control import posix_owner
+from strata_control import journal, runtime
+from strata_common import profiles
+from strata_common.profiles import ProfileError
+from strata_base import posix_owner
 
 
 #: Windows byte-range locks are mandatory: a locked byte cannot be read through any other handle. The lock

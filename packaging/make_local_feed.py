@@ -13,7 +13,7 @@ What it writes into FEED (the folder a person would host):
     install-manifest.txt           one line per platform for install.sh / install.ps1: platform version url sha256 size (written by feed_tool build-feed)
     install.sh, install.ps1        the one-line installers with this feed's address filled in (--url)
     test-trust.json                the PUBLIC test key: `STRATA_UPDATE_TRUSTED_KEYS=<this file>` lets this build trust the feed
-                                   (the real key goes into strata_control/update_keys.json at release; this one never does)
+                                   (the real key goes into strata_common/update_keys.json at release; this one never does)
 
 The engine package folders are copied (never changed in place) before they are signed with the test key.
 """

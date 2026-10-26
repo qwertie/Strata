@@ -4,7 +4,7 @@ import json
 import unittest
 from unittest import mock
 
-from serve.launch_identity import attestation
+from strata_common.launch_identity import attestation
 from strata_control import readiness
 
 

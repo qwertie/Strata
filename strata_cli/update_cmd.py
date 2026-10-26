@@ -172,7 +172,8 @@ def _print_check(report: dict) -> None:
 
 
 def run(a) -> int:
-    from strata_control import acquisition, engine_component as ec, feed as feedmod, signing, updater
+    from strata_common import acquisition, engine_component as ec, signing
+    from strata_control import feed as feedmod, updater
     machine = a.output in ("json", "jsonl")
 
     def fail(message: str, code: int) -> int:

@@ -299,7 +299,7 @@ def engine_identity(exe: str | os.PathLike[str]) -> dict[str, Any]:
 def model_identity(files: list[str | os.PathLike[str]]) -> dict[str, Any]:
     """The model file(s): size and a digest of the head, middle and tail of the first shard (the whole file would
     mean reading tens of gigabytes before every tune)."""
-    from strata_control import tune_history
+    from strata_common import tune_history
     out: list[dict[str, Any]] = []
     for f in files[:2]:
         ident = tune_history.file_identity(Path(f))

@@ -28,8 +28,8 @@ import uuid
 from pathlib import Path
 from typing import Any
 
-from strata_control import tune_knobs, tune_machine
-from strata_control import atomic as _atomic_mod
+from strata_common import tune_knobs, tune_machine
+from strata_base import atomic as _atomic_mod
 
 SCHEMA = "strata.preset/1"
 RECHECK_SET = "recheck/1"
@@ -46,7 +46,7 @@ def preset_dir() -> Path:
     explicit = os.environ.get("STRATA_PRESET_DIR")
     if explicit:
         return Path(explicit).expanduser()
-    from strata_control import profiles
+    from strata_common import profiles
     return profiles.profile_dir().parent / "presets"
 
 
@@ -135,7 +135,7 @@ def slot_key(choices: dict[str, Any], model_digest: str | None) -> str:
 
 def current_identity(cfg: dict[str, Any], *, exe: str | None = None, pcie: str | None = None) -> dict[str, Any]:
     """The identity this PC, engine and model file have now."""
-    from strata_control import engine_component
+    from strata_common import engine_component
     args = [str(a) for a in cfg.get("args") or []]
     files = [a for a in args if a.lower().endswith(".gguf")]
     native = None
@@ -489,7 +489,7 @@ def history_path() -> Path:
 
 
 def record_trials(trials: list[dict[str, Any]], *, hw_hash: str, model_digest: str | None, engine_sha: str | None) -> None:
-    from strata_control import tune_knobs as k
+    from strata_common import tune_knobs as k
     rows = []
     for t in trials:
         args = {}

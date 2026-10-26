@@ -186,7 +186,7 @@ def other_gpus() -> tuple[list[dict], str | None]:
         try:
             if str(ROOT) not in sys.path:
                 sys.path.insert(0, str(ROOT))
-            from serve.telemetry import windows_amd_cards
+            from strata_common.telemetry import windows_amd_cards
             found = windows_amd_cards()
             cards = [{"device_index": i, "name": c["name"], "memory_bytes": c.get("vram_bytes") or None,
                       "memory_kind": "dedicated", "power_limit_w": None} for i, c in enumerate(found)]

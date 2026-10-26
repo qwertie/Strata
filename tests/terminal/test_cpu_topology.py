@@ -1,4 +1,4 @@
-"""serve/telemetry.py `_cpu_topology`: how many CPU sockets and NUMA nodes the computer has (for "2 CPUs · 64 cores" in the monitor)."""
+"""strata_common/telemetry.py `_cpu_topology`: how many CPU sockets and NUMA nodes the computer has (for "2 CPUs · 64 cores" in the monitor)."""
 
 from __future__ import annotations
 
@@ -9,7 +9,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from serve import telemetry
+from strata_common import telemetry
 
 
 def fake_sysfs(root: Path, packages: list[int], nodes: int) -> None:

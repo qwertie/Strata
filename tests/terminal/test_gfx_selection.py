@@ -5,7 +5,8 @@ from __future__ import annotations
 import unittest
 from unittest import mock
 
-from strata_control import engine_component as ec, feed as feedmod, updater
+from strata_common import engine_component as ec
+from strata_control import feed as feedmod, updater
 
 WIN = "windows-x86_64"
 

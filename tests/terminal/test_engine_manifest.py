@@ -12,7 +12,8 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from strata_control import components, engine_component as ec, signing
+from strata_control import components
+from strata_common import engine_component as ec, signing
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "packaging"))

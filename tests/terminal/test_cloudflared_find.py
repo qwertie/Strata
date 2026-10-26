@@ -131,7 +131,7 @@ class OtherTunnels(unittest.TestCase):
                 mock.patch.object(access, "_state_dir", return_value=Path(tmp)), \
                 mock.patch.object(access, "cloudflared_procs", return_value=[(4242, "cloudflared tunnel run --token X")]), \
                 mock.patch.object(access.subprocess, "Popen", side_effect=lambda *a, **k: (k["stdout"].write(b"https://abc-def.trycloudflare.com"), k["stdout"].flush(), proc)[2]) as popen, \
-                mock.patch("strata_control.procs.start_token", return_value="t"), mock.patch("strata_control.procs.command_line", return_value=["x"]):
+                mock.patch("strata_common.procs.start_token", return_value="t"), mock.patch("strata_common.procs.command_line", return_value=["x"]):
             url, message = access.start_tunnel("demo", 8080, wait=2)
         popen.assert_called_once()
         self.assertEqual(url, "https://abc-def.trycloudflare.com")

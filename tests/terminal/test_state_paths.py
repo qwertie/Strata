@@ -7,7 +7,8 @@ from pathlib import Path
 from unittest import mock
 
 from strata_cli.cli import main
-from strata_control import paths, runtime
+from strata_common import paths
+from strata_control import runtime
 
 
 class StatePaths(unittest.TestCase):

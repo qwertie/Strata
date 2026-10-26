@@ -13,7 +13,8 @@ from pathlib import Path
 from unittest import mock
 
 from strata_cli.cli import main
-from strata_control import journal, profiles, recipes
+from strata_control import journal, recipes
+from strata_common import profiles
 
 
 class RecipeTests(unittest.TestCase):

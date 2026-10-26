@@ -91,6 +91,8 @@ PYTHON_PIN = {**PYTHON_PINS["darwin-arm64"], "target": "darwin-arm64"}
 #: The application, as paths relative to ROOT (copied to the same place in the archive).
 PAYLOAD = (
     "strata.py",
+    "strata_base",
+    "strata_common",
     "strata_control",
     "strata_cli",
     "serve",

@@ -7,7 +7,7 @@ them. It deliberately does not start processes or contact a network service.
 
 from __future__ import annotations
 
-from strata_control.private_files import private_mkdir as _private_mkdir
+from strata_base.private_files import private_mkdir as _private_mkdir
 import hashlib
 import json
 import math
@@ -17,7 +17,7 @@ import shlex
 import stat
 import subprocess
 import tempfile
-from strata_control import atomic as _atomic_mod
+from strata_base import atomic as _atomic_mod
 from contextlib import contextmanager
 from pathlib import Path
 
@@ -152,7 +152,7 @@ def load(name: str) -> tuple[dict, str]:
     try:
         if not stat.S_ISREG(path.lstat().st_mode):
             raise ProfileError("profile must be a regular file", 5)
-        from strata_control import private_files
+        from strata_base import private_files
         data = private_files.read_bytes_repairing(path)      # a profile an elevated run locked is repaired once, in place
         if len(data) > 1024 * 1024:
             raise ProfileError("profile is larger than 1 MiB", 5)

@@ -2,7 +2,7 @@
 // ggml-common.h, and the default expert-profile / draft-vocabulary tables.
 //
 // A build used from its own source tree finds them through the paths compiled in (STRATA_*_DEFAULT). A component package
-// (strata_control/engine_component.py) is moved away from the tree that built it, so the engine also looks beside its
+// (strata_common/engine_component.py) is moved away from the tree that built it, so the engine also looks beside its
 // own executable first:
 //
 //     <exe dir>/metal/kernels/*.metal            the kernel sources (metal/kernels)

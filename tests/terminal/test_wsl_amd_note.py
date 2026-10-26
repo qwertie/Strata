@@ -10,7 +10,7 @@ from unittest import mock
 
 from strata_cli.launch import settings as S
 from strata_cli.launch.runner import Runner
-from strata_control import engine_component as ec
+from strata_common import engine_component as ec
 
 
 def dev(root: str, dxg: bool = True, kfd: bool = False) -> str:

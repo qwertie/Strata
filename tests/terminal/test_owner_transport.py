@@ -27,7 +27,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from strata_control import owner_transport as ot  # noqa: E402
-from strata_control.private_files import restrict_to_current_user  # noqa: E402
+from strata_base.private_files import restrict_to_current_user  # noqa: E402
 
 
 class TestAddressing(unittest.TestCase):

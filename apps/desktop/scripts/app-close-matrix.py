@@ -32,7 +32,8 @@ sys.path.insert(0, str(ROOT))
 
 import psutil  # noqa: E402
 
-from strata_control import procs, runtime  # noqa: E402
+from strata_common import procs  # noqa: E402
+from strata_control import runtime  # noqa: E402
 from tests.terminal.lifecycle_matrix import install_fake_engine, port_open  # noqa: E402
 
 if os.name != "nt":

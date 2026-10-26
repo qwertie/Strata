@@ -249,7 +249,7 @@ def settings_from_args(a: argparse.Namespace, catalog=None) -> tuple[S.LaunchSet
         s.gpus = _gpus(a.gpu)
         s.gpu_roles = None
     if getattr(a, "gpu_roles", None):
-        from strata_control import gpu_roles as GR
+        from strata_common import gpu_roles as GR
         try:
             s.gpu_roles = {str(k): v for k, v in GR.parse_roles(a.gpu_roles).items()}
         except ValueError as e:
@@ -373,7 +373,7 @@ def roles_line(s: S.LaunchSettings, catalog) -> str | None:
     if not (s.gpu_roles or s.gpus) or catalog is None:
         return None
     try:
-        from strata_control import gpu_roles
+        from strata_common import gpu_roles
         comp = catalog.computer()
         cards = gpu_roles.rows(comp.gpus, comp.engine_vendor)
         if s.gpu_roles:
@@ -389,7 +389,7 @@ def roles_line(s: S.LaunchSettings, catalog) -> str | None:
 def gpu_notices(s: S.LaunchSettings, comp) -> list[S.Notice]:
     """Cards of another make than the engine drives: never offered, never mixed into a split. Said in plain words: a named card of the other
     make is refused with the reason, and a better card of the other make is mentioned once (recommend, never force)."""
-    from strata_control import gpu_fit
+    from strata_common import gpu_fit
     out: list[S.Notice] = []
     vendor = comp.engine_vendor
     if s.gpus and vendor:
@@ -407,7 +407,7 @@ def gpu_notices(s: S.LaunchSettings, comp) -> list[S.Notice]:
                                     f"Name a {make} card (" + ", ".join(str(g.get("index")) for g in comp.usable_gpus) + f"), or install the {omake} "
                                     "build of Strata to use that card."))
     if s.gpu_roles and vendor:
-        from strata_control import gpu_roles
+        from strata_common import gpu_roles
         have = {int(c.get("index", -1)): c for c in gpu_roles.rows(comp.gpus, vendor)}
         for k in s.gpu_roles:
             if int(k) not in have:
@@ -481,7 +481,8 @@ def _printer(quiet: bool = False):
 
 def _stop_all(name: str | None) -> int:
     from strata_cli.launch import access, store
-    from strata_control import profiles, runtime
+    from strata_common import profiles
+    from strata_control import runtime
     targets = [name] if name else [p["id"] for p in profiles.list_profiles() if p["id"].startswith("launch-")]
     stopped = 0
     for prof in targets:
@@ -588,7 +589,8 @@ def _tui(run, *args, **kw) -> int:
 
 def running_launches() -> list[dict]:
     """Launch profiles whose server is up now: [{name, profile, url, state}]."""
-    from strata_control import profiles, runtime
+    from strata_common import profiles
+    from strata_control import runtime
     out = []
     try:
         listing = profiles.list_profiles()

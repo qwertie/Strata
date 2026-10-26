@@ -7,7 +7,7 @@ hardware; applying it is a separate operation with a backup and smoke generation
 
 from __future__ import annotations
 
-from strata_control.private_files import private_mkdir as _private_mkdir
+from strata_base.private_files import private_mkdir as _private_mkdir
 import copy
 import hashlib
 import json
@@ -23,11 +23,11 @@ import uuid
 from contextlib import contextmanager
 from pathlib import Path
 
-from strata_control import profiles
+from strata_common import profiles
 from strata_control.doctor import inspect as inspect_components
-from strata_control.profiles import ProfileError
-from strata_control import atomic as _atomic_mod
-from strata_control import posix_owner
+from strata_common.profiles import ProfileError
+from strata_base import atomic as _atomic_mod
+from strata_base import posix_owner
 
 
 SUITE = "legacy-decode-v1"
@@ -112,7 +112,7 @@ def preview(ref: str) -> dict:
 
 
 def _resolved(raw: str, cfg: dict, path: Path) -> Path:
-    from strata_control import engine_component
+    from strata_common import engine_component
     if engine_component.is_reference(raw):
         return Path(engine_component.expand(raw, cfg))
     value = Path(raw).expanduser()

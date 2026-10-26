@@ -13,7 +13,7 @@ setup.py's, unchanged.  What is replaced:
     sycl/serve/strata-sycl.sh; docs/INTEL.md) instead of a CUDA/HIP build;
   - pictures (on by default on every Arc card, see pictures_on_by_default): read by the portable CPU reader (`strata-vision`, the program the
     AMD packages carry beside their engine, compiled here by setup's own step) on the host; it hands the image embeddings to the engine through
-    /dev/shm, which strata-sycl.sh shares with the container.  The reader choice is strata_control/vision_reader.py's one rule (CPU reader under
+    /dev/shm, which strata-sycl.sh shares with the container.  The reader choice is strata_common/vision_reader.py's one rule (CPU reader under
     24 GB of VRAM); an Arc of 24 GB or more also keeps the CPU reader unless --vision gpu asks for the SYCL one (`strata-vision-sycl`, compiled
     on the host when the oneAPI compiler is there).  --vision no is the off switch;
   - the RAM rule: the CUDA engine keeps every expert in RAM, the SYCL port streams them from the GGUF into VRAM
@@ -159,10 +159,10 @@ READER_DIR = ROOT / "engine-sycl"    # the folder setup treats as the engine's: 
 
 
 def intel_vision(asked, vram_gb: float = 0.0) -> str:
-    """The picture reader wanted on an Intel Arc, by strata_control/vision_reader.py's rule: "none" when switched off, "cpu" by default (under 24 GB
+    """The picture reader wanted on an Intel Arc, by strata_common/vision_reader.py's rule: "none" when switched off, "cpu" by default (under 24 GB
     of VRAM the CPU reader is the rule, and an Arc of 24 GB or more keeps it too until the SYCL reader has run on such a card), "gpu" only when
     asked for.  Takes setup.hip_vision's arguments."""
-    from strata_control import vision_reader as VR
+    from strata_common import vision_reader as VR
     return VR.wanted(asked, vram_gb, "intel")
 
 

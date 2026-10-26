@@ -13,7 +13,7 @@ import sys
 from importlib import metadata, util
 from pathlib import Path
 
-from strata_control.profiles import read_run_config
+from strata_common.profiles import read_run_config
 
 
 PATH_FLAGS = {
@@ -28,7 +28,7 @@ MONITOR_TEXTUAL_VERSION = "8.2.8"
 
 
 def _location(raw: str, cfg: dict, config_path: Path) -> Path:
-    from strata_control import engine_component
+    from strata_common import engine_component
     if engine_component.is_reference(raw):
         try:
             return Path(engine_component.expand(raw, cfg, full=False))

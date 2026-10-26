@@ -7,7 +7,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from strata_control import posix_owner
+from strata_base import posix_owner
 
 posix_only = unittest.skipUnless(os.name == "posix", "POSIX modes")
 

@@ -30,7 +30,7 @@ import urllib.error
 import urllib.request
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from strata_control import tls  # noqa: E402
+from strata_base import tls  # noqa: E402
 
 tls.install()       # #3722: the operating system's certificates
 

@@ -6,7 +6,7 @@ import threading
 import unittest
 from unittest import mock
 
-from strata_control import loopback
+from strata_base import loopback
 
 
 class Hello(http.server.BaseHTTPRequestHandler):

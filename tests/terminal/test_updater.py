@@ -16,8 +16,9 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from strata_control import acquisition, engine_component as ec, feed as feedmod, preset_marks, signing, updater
-from strata_control.targets import host_platform
+from strata_common import acquisition, engine_component as ec, signing
+from strata_control import feed as feedmod, preset_marks, updater
+from strata_common.targets import host_platform
 from tests.terminal import update_fixture as fx
 
 PLATFORM = host_platform()
@@ -414,9 +415,9 @@ class EngineUpdate(UpdaterCase):
     def test_a_started_engine_check_does_not_import_the_updater(self):
         """The start path (engine_component, runtime) must not reach the update machinery or the network code."""
         import subprocess
-        code = ("import sys; import strata_control.engine_component, strata_control.runtime, strata_control.acquisition; "
+        code = ("import sys; import strata_common.engine_component, strata_control.runtime, strata_common.acquisition; "
                 "import strata_cli.cli as c; c.parser(); "
-                "print(sorted(m for m in sys.modules if m in ('strata_control.updater','strata_control.transfer','strata_control.feed')))")
+                "print(sorted(m for m in sys.modules if m in ('strata_control.updater','strata_base.transfer','strata_control.feed')))")
         done = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, cwd=str(fx.ROOT))
         self.assertEqual(done.returncode, 0, done.stderr)
         self.assertEqual(done.stdout.strip(), "[]")

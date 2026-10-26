@@ -61,7 +61,7 @@ class Feed(unittest.TestCase):
         """A tiny terminal archive that is a working `strata` (the repo's own source with the system Python)."""
         top = work / "bundle" / "strata-terminal-9.9.9-linux-x86_64"
         top.mkdir(parents=True)
-        for name in ("strata.py", "strata_cli", "strata_control", "serve"):
+        for name in ("strata.py", "strata_base", "strata_common", "strata_cli", "strata_control", "serve"):
             src = ROOT / name
             (shutil.copytree(src, top / name, ignore=shutil.ignore_patterns("__pycache__", "*.pyc")) if src.is_dir() else shutil.copy2(src, top / name))
         (top / "bin").mkdir(parents=True, exist_ok=True)

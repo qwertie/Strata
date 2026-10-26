@@ -84,5 +84,5 @@ def host_of(url: str) -> str | None:
         return None
 
 
-if __name__ == "__main__":                                 # python -m strata_control.tls: what this process would use
+if __name__ == "__main__":                                 # python -m strata_base.tls: what this process would use
     print(install(), sys.version.split()[0])

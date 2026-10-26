@@ -11,7 +11,8 @@ from pathlib import Path
 from unittest import mock
 
 from strata_cli.cli import main
-from strata_control import doctor, profiles, runtime
+from strata_control import doctor, runtime
+from strata_common import profiles
 
 
 class OperatorProfileTests(unittest.TestCase):
@@ -232,7 +233,7 @@ class OperatorProfileTests(unittest.TestCase):
             return mock.Mock(returncode=0)
 
         with mock.patch.dict(os.environ, {"EDITOR": "fake-editor", "VISUAL": ""}), \
-                mock.patch("strata_control.profiles.subprocess.run", side_effect=corrupt):
+                mock.patch("strata_common.profiles.subprocess.run", side_effect=corrupt):
             code, result = self.command("profile", "edit", "local", "--output", "json")
         self.assertEqual(code, 2)
         self.assertFalse(result["ok"])

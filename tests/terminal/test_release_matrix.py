@@ -115,7 +115,7 @@ class ReleaseSelection(unittest.TestCase):
                         seen[arch] = p["variant"]
 
     def test_other_unified_memory_radeons_get_no_engine_and_the_plain_family_line(self):
-        from strata_control import engine_component as ec
+        from strata_common import engine_component as ec
         for platform in ("windows-x86_64", "linux-x86_64"):
             for gfx in ("gfx1103", "gfx1150", "gfx1152", "gfx1032"):
                 got, why = self.pick(pc(platform, "hip", gfx=[gfx]))
@@ -128,7 +128,7 @@ class ReleaseSelection(unittest.TestCase):
 
     def test_rx6000_has_its_own_package_and_only_gfx103x_cards_get_it(self):
         """0.2.2: gfx1030 / gfx1031 are in the RX 6000 package (Linux rx6000, Windows rdna2) and in no other; no RX 7000 / 9000 card gets it."""
-        from strata_control import engine_component as ec
+        from strata_common import engine_component as ec
         want = {"windows-x86_64": "rdna2", "linux-x86_64": "rx6000"}
         for platform, variant in want.items():
             for gfx in ("gfx1030", "gfx1031"):
@@ -157,7 +157,7 @@ class ReleaseSelection(unittest.TestCase):
                 self.assertEqual(best.variant, "rx9070")
 
     def test_installed_packages_are_chosen_the_same_way(self):
-        from strata_control import engine_component as ec
+        from strata_common import engine_component as ec
         self.assertEqual(ec.hip_preference(("gfx1030", "gfx1031")), 0)
         self.assertEqual(ec.hip_preference(("gfx1100", "gfx1101", "gfx1102")), 1)
         self.assertEqual(ec.hip_preference(("gfx1030", "gfx1100")), 1)

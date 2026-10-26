@@ -22,7 +22,7 @@ import sys
 import tempfile
 import threading
 import time
-from strata_control import atomic as _atomic_mod
+from strata_base import atomic as _atomic_mod
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable
@@ -326,7 +326,7 @@ def apply_choices(cfg: dict, s: S.LaunchSettings) -> dict:
 def apply_cards(cfg: dict, gpus: "list[int] | dict | None") -> None:
     """The graphics cards of THIS launch go into its run config, whatever card the model was installed with (no reinstall): one card is a number,
     several are a list with the automatic layer split. None: the installed config's own choice stays.  A dict is the roles of every card
-    (strata_control/gpu_roles.mirror: "gpu_roles" plus the legacy "gpu" with the Main card last)."""
+    (strata_common/gpu_roles.mirror: "gpu_roles" plus the legacy "gpu" with the Main card last)."""
     if isinstance(gpus, dict):
         for k in ("gpu", "gpu_order", "gpu_none", "gpu_roles", "gpu_cards"):
             cfg.pop(k, None)
@@ -371,10 +371,10 @@ def installed_cards(base: dict | None) -> list[int] | None:
 def cards_for_launch(s: S.LaunchSettings, catalog, ram_gb: float | None = None, base: dict | None = None) -> "list[int] | dict | None":
     """The cards this launch uses: the ones named (--gpu / --gpus, the Cards step), else the cards the installed config was set to (a person's
     earlier choice, "gpu": 1 or [1, 0] - never replaced by the automatic pick, which would put the first of equal cards back), else the
-    recommended ones by the shared fit rule (strata_control/gpu_fit.py) when the computer has more than one card that counts, else None."""
+    recommended ones by the shared fit rule (strata_common/gpu_fit.py) when the computer has more than one card that counts, else None."""
     if s.gpu_roles:
         try:
-            from strata_control import gpu_roles
+            from strata_common import gpu_roles
             comp = catalog.computer()
             cards = gpu_roles.rows(comp.gpus, comp.engine_vendor)
             named = {int(k): v for k, v in s.gpu_roles.items()}
@@ -387,7 +387,7 @@ def cards_for_launch(s: S.LaunchSettings, catalog, ram_gb: float | None = None, 
     if installed_cards(base) or (isinstance(base, dict) and base.get("gpu_roles")):
         return None
     try:
-        from strata_control import gpu_roles
+        from strata_common import gpu_roles
         comp = catalog.computer()
         if len(comp.usable_gpus) < 2:
             return None
@@ -492,7 +492,7 @@ def apply_experts(cfg: dict, experts: int | None) -> None:
 def derive_config(base: dict, s: S.LaunchSettings, *, bool_flags: frozenset[str], log: str | None = None, gpus: "list[int] | dict | None" = None,
                   experts: int | None = None) -> dict:
     """The private run config of this launch: the installed one plus the choices that are not setup's (host, port, key, cards, advanced)."""
-    from strata_control import tune_knobs
+    from strata_common import tune_knobs
     cfg = json.loads(json.dumps(base))
     cfg["host"] = acc.host_for(s.access)
     cfg["port"] = int(s.port)
@@ -502,7 +502,7 @@ def derive_config(base: dict, s: S.LaunchSettings, *, bool_flags: frozenset[str]
         cfg["api_key"] = "none"                              # served without a key on purpose (the server warns once at start)
     else:
         cfg.pop("api_key", None)
-    if s.drafting:                                           # strata_control/drafting.py: serve/server.py applies it at every start
+    if s.drafting:                                           # strata_common/drafting.py: serve/server.py applies it at every start
         cfg["drafting"] = s.drafting
     cfg.setdefault("exe", "component:strata-engine")
     cfg["open_browser"] = False                              # strata launch never opens a browser by itself (only `--open` does, after the start)
@@ -511,10 +511,10 @@ def derive_config(base: dict, s: S.LaunchSettings, *, bool_flags: frozenset[str]
     if log:
         cfg["log"] = log
     apply_cards(cfg, gpus)
-    from strata_control import drafting as _drafting
+    from strata_common import drafting as _drafting
     drafting_off = _drafting.normalize(s.drafting if s.drafting is not None else cfg.get("drafting")) == "off"
     if s.mtp == "off" or drafting_off:                       # no draft layer for this launch (serve/server.py applies "mtp": false at every start)
-        from strata_control import draft_layer              # --drafting off: the written file carries no --mtp either (it was left in before)
+        from strata_common import draft_layer              # --drafting off: the written file carries no --mtp either (it was left in before)
         cfg["mtp"] = False
         draft_layer.apply(cfg)
     elif s.mtp == "on":
@@ -524,7 +524,7 @@ def derive_config(base: dict, s: S.LaunchSettings, *, bool_flags: frozenset[str]
         cfg["args"] = tune_knobs.apply_to_argv([str(x) for x in cfg.get("args") or []], a_changes)
         if e_changes:
             cfg["env"] = tune_knobs.apply_to_env(dict(cfg.get("env") or {}), e_changes)
-    from strata_control import draft_layer
+    from strata_common import draft_layer
     draft_layer.apply(cfg)                                   # "mtp": false (from the installed config too) never sits beside --mtp in the saved args (B10)
     apply_experts(cfg, experts)
     return cfg
@@ -546,14 +546,14 @@ def write_private(path: Path, data: dict) -> None:
             os.unlink(tmp)
     if WINDOWS:
         try:
-            from strata_control import private_files
+            from strata_base import private_files
             private_files.restrict_to_current_user(path, directory=False)
         except Exception:                                    # noqa: BLE001
             pass
 
 
 def launch_dir() -> Path:
-    from strata_control import paths
+    from strata_common import paths
     d = paths.state_base() / "launch"
     d.mkdir(parents=True, exist_ok=True)
     return d
@@ -670,7 +670,7 @@ class Runner:
         """Under WSL the Linux AMD engines hang (no /dev/kfd, librocdxg never completes a GPU command): say so plainly with one next step,
         and go on (a warning, never a refusal)."""
         try:
-            from strata_control import engine_component as ec
+            from strata_common import engine_component as ec
             note = ec.wsl_amd_note("hip") and ec.wsl_amd_note(ec.detect_backend()[0])    # the cheap file test first: no GPU tool is run on other systems
         except Exception:                                    # noqa: BLE001 - a nicety, never a reason to stop
             return
@@ -686,7 +686,7 @@ class Runner:
             self.emit("engine", "DeepSeek runs on its own engine package, so the Strata engine is not downloaded for it.", 100)
             return
         self.emit("engine", "Checking the engine for this computer…")
-        from strata_control import engine_component as ec
+        from strata_common import engine_component as ec
         root = Path(self.components_dir) if self.components_dir else None
         report = ec.status(root)
         stale = None
@@ -820,7 +820,7 @@ class Runner:
         if "backend" in report and report["backend"] is None:                    # not even a graphics card Strata knows: say that, not "the feed has nothing"
             names = []
             try:
-                from strata_control import engine_component as ec
+                from strata_common import engine_component as ec
                 names = [a.get("name", "") for a in ec.windows_display_adapters()] if os.name == "nt" else []
             except Exception:                                # noqa: BLE001 - the names are a nicety
                 pass
@@ -1217,7 +1217,7 @@ class Runner:
         """The installer cannot set this graphics card up (Intel Arc, for one): if the model's files and prepared pack are already on disk,
         write the run config here (strata_cli/launch/adopt.py); else say what is missing."""
         from strata_cli.launch import adopt
-        from strata_control import engine_component
+        from strata_common import engine_component
         s, cat = self.s, self.catalog
         if not adopt.setup_cannot_handle_this_card(setup_error):
             return None
@@ -1354,8 +1354,8 @@ class Runner:
 
     # ---- 3. config and profile
     def drafting_inputs(self, cfg: dict) -> dict:
-        """What strata_control/drafting.py needs to decide for this launch: the choice, the card class, the model and the data folder."""
-        from strata_control import drafting, engine_component
+        """What strata_common/drafting.py needs to decide for this launch: the choice, the card class, the model and the data folder."""
+        from strata_common import drafting, engine_component
         try:
             archs = list(engine_component.cuda_archs_present()) + list(engine_component.hip_archs_present())
         except Exception:                                    # noqa: BLE001 - an unknown card is the "other" class
@@ -1367,7 +1367,8 @@ class Runner:
     def ensure_drafter(self, base_path: Path) -> None:
         """Fetch the DFlash2 drafter when this launch will use it and it is not here yet. Never stops the launch: if it cannot be had, the model
         starts with the MTP and the person is told (recommend, never force)."""
-        from strata_control import drafting, drafting_fetch
+        from strata_common import drafting
+        from strata_control import drafting_fetch
         try:
             want = self.drafting_inputs(read_config(base_path))
             if want["data_dir"] is None or not drafting.needs_pack(**want):
@@ -1388,7 +1389,7 @@ class Runner:
             self.emit("model", text, None, level="warn")
 
     def build_config(self, base_path: Path) -> Path:
-        from strata_control import tune_knobs
+        from strata_common import tune_knobs
         base = read_config(base_path)
         cfg = derive_config(base, self.s, bool_flags=tune_knobs.BOOL_FLAGS,
                             log=str(launch_dir() / f"{self.name}.engine.log"), gpus=cards_for_launch(self.s, self.catalog, base=base))
@@ -1403,7 +1404,7 @@ class Runner:
         return out
 
     def ensure_profile(self, config: Path) -> None:
-        from strata_control import profiles
+        from strata_common import profiles
         name = self.profile
         parallel = self.s.parallel if self.s.parallel else self.catalog_parallel()
         sets = [f"host={acc.host_for(self.s.access)}", f"port={int(self.s.port)}"] + ([f"parallel={parallel}"] if parallel else [])
@@ -1488,7 +1489,7 @@ class Runner:
         if self.multi_file():
             self.tune_deepseek()
             return
-        from strata_control import presets
+        from strata_common import presets
         if not self.retune:
             if s.tuned_preset:
                 try:
@@ -1558,7 +1559,7 @@ class Runner:
         """The measuring engine needs the card, so this launch's own server (the same profile) is stopped first and `start()` brings it back with
         the result (E07). Other engines are never touched here; the tuner says plainly when another program holds the card."""
         from strata_control import runtime
-        from strata_control.profiles import ProfileError
+        from strata_common.profiles import ProfileError
         self.stop_others()
         try:
             serving = runtime.status(self.profile).get("state") in ("ready", "starting")
@@ -1579,7 +1580,7 @@ class Runner:
         another model file) is not reused: it is measured again."""
         if self.config_path is None:
             return None
-        from strata_control import presets
+        from strata_common import presets
         try:
             _cfg, info = presets.overlay(read_config(self.config_path))
             if not info.get("applied") or not info.get("preset"):
@@ -1618,7 +1619,8 @@ class Runner:
 
     def serving_launches(self) -> list[dict]:
         """Launch servers that are up now (this one included): [{profile, name, port, choices}]."""
-        from strata_control import profiles, runtime
+        from strata_common import profiles
+        from strata_control import runtime
         out = []
         try:
             listing = profiles.list_profiles()
@@ -1705,7 +1707,7 @@ class Runner:
     def stop_others(self) -> None:
         """Stop the other launch servers that hold this port, so the new one gets it (no "port already in use")."""
         from strata_control import runtime
-        from strata_control.profiles import ProfileError
+        from strata_common.profiles import ProfileError
         for pid in self._stop_first:
             self.emit("start", f"Stopping {pid[7:]} so the new choices can use port {int(self.s.port)}…", None)
             try:
@@ -1718,7 +1720,7 @@ class Runner:
     # ---- 5. start
     def start(self) -> None:
         from strata_control import runtime
-        from strata_control.profiles import ProfileError
+        from strata_common.profiles import ProfileError
         name = self.profile
         self.stop_others()
         st = runtime.status(name)
@@ -1861,7 +1863,7 @@ class Runner:
     def download_plan(self) -> dict:
         """What this launch would download, in numbers and words (nothing is changed): the model's missing files, and for a model that is
         not on this computer yet also the draft layer and the picture reader that setup fetches after it. 0 when everything is here."""
-        from strata_control import engine_component
+        from strata_common import engine_component
         from strata_control.discovery import MMPROJ_GB, MTP_FETCH_GB
         s = self.s
         st = self.model_state()
@@ -1887,7 +1889,7 @@ class Runner:
             except OSError:
                 pass
         try:
-            from strata_control import drafting
+            from strata_common import drafting
             _b, _cfg = self.installed_state()
             want = self.drafting_inputs(_cfg or {})
             want["data_dir"] = want["data_dir"] or self.existing_data_dir() or self.catalog.data_dir()
@@ -1969,7 +1971,7 @@ class Runner:
         place of a clean one, files that are not the model that was named. Nothing is changed."""
         out: list[str] = list(self.identity_notes)
         try:
-            from strata_control import engine_component as ec
+            from strata_common import engine_component as ec
             report = ec.status(Path(self.components_dir) if self.components_dir else None)
             if report.get("usable"):
                 stale = self.stale_engine(report["engine"].get("version"))
@@ -2051,7 +2053,7 @@ class Runner:
 
     def drafting_plan_line(self) -> str:
         """The drafting line of --plan: what drafts, or why not what was asked for. Nothing is changed or downloaded."""
-        from strata_control import drafting
+        from strata_common import drafting
         if self.multi_file():                                # DeepSeek drafts with its own DSpark drafter (the --dspark auto the config writes), not MTP
             return "Drafting: DSpark (used when it speeds up answers on this computer)"
         try:
@@ -2143,7 +2145,7 @@ class Runner:
             return best[2], True
         folders: list[Path] = [Path(self.catalog.root) / dsv41_engine.DIR]       # (nothing there: the older places, as before)
         try:
-            from strata_control import engine_component as ec
+            from strata_common import engine_component as ec
             rep = ec.status()
             exe = (rep.get("engine") or {}).get("exe") if rep.get("usable") else None
             if exe:

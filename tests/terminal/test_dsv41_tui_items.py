@@ -72,7 +72,7 @@ class PlanEngine(unittest.TestCase):
             fake.s.data_dir = d
             fake.catalog.data_dir.return_value = Path(d)
             fake.catalog.strata.setup_module.side_effect = RuntimeError("no setup")
-            with mock.patch.dict("os.environ", {"STRATA_DSV41_EXE": ""}),                     mock.patch("strata_control.engine_component.status", return_value={"usable": False}):
+            with mock.patch.dict("os.environ", {"STRATA_DSV41_EXE": ""}),                     mock.patch("strata_common.engine_component.status", return_value={"usable": False}):
                 found, known = R.Runner.dsv41_engine_found(fake)
             self.assertEqual(found, exe)
             self.assertTrue(known)
@@ -202,7 +202,7 @@ class WhichInstallsEngine(unittest.TestCase):
         from strata_cli.launch import runner as R
         f = self.runner(own, root)
         with mock.patch.dict("os.environ", {"STRATA_DSV41_EXE": "", "STRATA_INSTALL_DIR": ""}), \
-                mock.patch("strata_control.engine_component.status", return_value={"usable": False}):
+                mock.patch("strata_common.engine_component.status", return_value={"usable": False}):
             out = R.Runner.dsv41_engine_found(f)
         return out[0], getattr(f, "dsv41_choice", None)
 

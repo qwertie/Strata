@@ -26,7 +26,7 @@ ACCESS_WORDS = {"local": "This computer only", "lan": "My local network", "cloud
 TUNE_MODES = ("quick", "thorough", "skip")
 VISION_MODES = ("off", "on", "gpu", "cpu")
 MTP_MODES = ("on", "off")
-#: strata_control/drafting.py MODES (tests/terminal/test_drafting.py keeps the two the same)
+#: strata_common/drafting.py MODES (tests/terminal/test_drafting.py keeps the two the same)
 DRAFTING_MODES = ("auto", "mtp", "dflash2", "off")
 SPEED_MODES = ("faster", "full")             # DeepSeek: 5 experts per word (Faster) or all 6 (Full quality)
 FASTER_VRAM_GIB = 16.0                        # the engine's rule (src/dsv41/ds4_experts_rule.hpp): `--experts auto` is 5 when the cards used total 16 GiB or less
@@ -109,7 +109,7 @@ class LaunchSettings:
     vision: str | None = None                  # None = the default (on when the model can read pictures and the engine has the reader), off | on | gpu | cpu
     parallel: int | None = None                # None = fit to the card
     speed: str | None = None                   # DeepSeek only: None = the default for this PC (faster up to 16 GB of graphics memory); faster | full
-    drafting: str | None = None                # None = Auto (recommended): the table in strata_control/drafting.py; mtp | dflash2 | off choose one. Saved in the launch config
+    drafting: str | None = None                # None = Auto (recommended): the table in strata_common/drafting.py; mtp | dflash2 | off choose one. Saved in the launch config
     mtp: str | None = None                     # None = as installed (draft layer on); "off" starts without it (less graphics memory and RAM, slower); "on" overrides an installed "off"
     tune: str = "skip"                         # quick | thorough | skip
     tune_allow_small: bool = False             # the "answer-changing" tick, off by default, as in the app

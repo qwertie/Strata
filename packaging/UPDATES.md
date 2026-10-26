@@ -64,7 +64,7 @@ For a GitHub release the assets are flat: pack with `--url-prefix ""` and upload
 
 ### What a PC checks, in order
 
-1. the signature of the feed (key ids it trusts: `strata_control/update_keys.json`, plus `STRATA_UPDATE_TRUSTED_KEYS` for a test setup, which
+1. the signature of the feed (key ids it trusts: `strata_common/update_keys.json`, plus `STRATA_UPDATE_TRUSTED_KEYS` for a test setup, which
    the CLI announces);
 2. `channel`, `expires_at`, and `sequence` not lower than the last accepted feed (the downgrade guard for a replayed old feed);
 3. the engine package that fits **this** PC (`feed.select_engine`): platform, backend (CUDA / HIP / SYCL / Metal as detected),
@@ -112,7 +112,7 @@ On an offline machine, outside any git checkout:
 Back both up (a lost feed key means every installed PC needs a build with a new key; a lost Tauri key means the same for the app).
 Then, in git, once, in the commit that ships the first signed release (the release key id is `5d1bc23abbeffd0d`):
 
-* the `keys` entry from `feed-key.pub.json` into `strata_control/update_keys.json`;
+* the `keys` entry from `feed-key.pub.json` into `strata_common/update_keys.json`;
 * the Tauri public key into `apps/desktop/src-tauri/tauri.conf.json` (`plugins.updater.pubkey`) and into `update_keys.json` as `app_minisign_public`
   (the Terminal verifies the app installer with it).
 

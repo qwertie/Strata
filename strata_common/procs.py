@@ -19,7 +19,7 @@ exactly the engine executable that is about to be started, running ``--serve`` w
 
 from __future__ import annotations
 
-from strata_control.private_files import private_mkdir as _private_mkdir
+from strata_base.private_files import private_mkdir as _private_mkdir
 import json
 import os
 import signal
@@ -29,8 +29,8 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 
-from strata_control import paths
-from strata_control import atomic as _atomic_mod
+from strata_common import paths
+from strata_base import atomic as _atomic_mod
 
 WINDOWS = os.name == "nt"
 SCHEMA = 1
@@ -59,7 +59,7 @@ def start_token(pid: int) -> str | None:
         except (OSError, ValueError, IndexError):
             return None
     if WINDOWS:
-        from strata_control import winproc
+        from strata_base import winproc
         started = winproc.process_started(pid)
         return None if started is None else f"w:{started}"
     if psutil is not None:
@@ -89,7 +89,7 @@ def started_epoch(pid: int) -> float | None:
         except (psutil.Error, OSError):
             return None
     if WINDOWS:
-        from strata_control import winproc
+        from strata_base import winproc
         ticks = winproc.process_started(pid)
         return None if ticks is None else (ticks - 116444736000000000) / 1e7     # 100 ns ticks since 1601
     if sys.platform.startswith("linux"):
@@ -195,7 +195,7 @@ def procs_dir(create: bool = True) -> Path:
     if create and not base.exists():
         _private_mkdir(base, parents=True, exist_ok=True)
         if WINDOWS:
-            from strata_control import private_files
+            from strata_base import private_files
             private_files.restrict_to_current_user(base, directory=True)
     return base
 

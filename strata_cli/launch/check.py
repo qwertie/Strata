@@ -15,7 +15,7 @@ import urllib.error
 import urllib.request
 from dataclasses import dataclass
 
-from strata_control import loopback
+from strata_base import loopback
 
 #: harness id -> the endpoint family it speaks (the others use chat completions)
 WIRE = {"codex": "responses", "claude-code": "messages"}

@@ -10,7 +10,9 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from strata_control import feed as feedmod, signing, transfer
+from strata_control import feed as feedmod
+from strata_common import signing
+from strata_base import transfer
 from tests.terminal import update_fixture as fx
 
 SEED1 = bytes.fromhex("9d61b19deffd5a60ba844af492ec2cc44449c5697b326919703bac031cae7f60")

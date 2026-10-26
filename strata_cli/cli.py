@@ -14,7 +14,7 @@ import sys
 import time
 from pathlib import Path
 
-from strata_control import profiles
+from strata_common import profiles
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -22,7 +22,7 @@ ROOT = Path(__file__).resolve().parents[1]
 #: stay declarative without importing the tuning module on every CLI start.
 BACKENDS = ("metal", "cuda", "hip", "sycl", "cpu")
 from strata_control.doctor import inspect as inspect_components
-from strata_control.profiles import ProfileError
+from strata_common.profiles import ProfileError
 from strata_cli.client import ClientError, Endpoint
 from strata_cli import monitor_commands, tune_commands
 
@@ -518,7 +518,7 @@ def parser() -> argparse.ArgumentParser:
 
 def _file_words(exc: BaseException) -> str:
     try:
-        from strata_control import longpath
+        from strata_base import longpath
     except ImportError:
         return f"local file operation failed ({type(exc).__name__})"
     return longpath.file_words(exc)
@@ -805,7 +805,7 @@ def _launch_plan(ref: str, cli: argparse.Namespace | None = None) -> tuple[dict,
         server_args.append("--batch-telemetry" if values["batch_telemetry"] else "--no-batch-telemetry")
     ready_path = None
     if cli is not None and cli.ready_file:
-        from serve.ready import preflight as ready_preflight
+        from strata_common.ready import preflight as ready_preflight
         ready_path = str(ready_preflight(cli.ready_file))
         server_args += ["--ready-file", ready_path]
     effective_cfg = {**cfg, "args": list(cfg["args"])}
@@ -1173,7 +1173,8 @@ def _bench(a: argparse.Namespace) -> int:
         return _success({"comparison": result}, machine=machine,
                         human=bench.format_comparison(result))
     if a.bench_command == "cancel":
-        from strata_control import benchmarking, profiles
+        from strata_control import benchmarking
+        from strata_common import profiles
         if not Path(a.path).is_absolute():
             return _error("benchmark cancel path must be absolute", 2, machine)
         profiles.load(a.profile)
@@ -1479,7 +1480,7 @@ def _timeskip(a: argparse.Namespace) -> int:
         env = os.environ.get("STRATA_TIMESKIP_DIR")
         if env:
             return Path(env)
-        from strata_control.paths import state_base
+        from strata_common.paths import state_base
         return state_base() / "time-skip"
 
     store = time_skip.TimeSkipStore(state_root())
@@ -1620,7 +1621,7 @@ def _reopen_run(store, data: dict):
 
 def _engine_arg(value: str, backend: str) -> Path:
     """`--engine` is a path, or `component:strata-engine` for the engine package installed for this PC."""
-    from strata_control import engine_component
+    from strata_common import engine_component
     if engine_component.is_reference(value):
         try:
             return Path(engine_component.expand(value, {"backend": backend}))
@@ -1646,7 +1647,7 @@ def _tune(a: argparse.Namespace) -> int:
         env = os.environ.get("STRATA_TUNE_DIR")
         if env:
             return Path(env)
-        from strata_control.paths import state_base
+        from strata_common.paths import state_base
         return state_base() / "tuning"
 
     if a.tune_command == "auto":
@@ -1854,7 +1855,8 @@ def _tune_apply(a: argparse.Namespace, *, store_root: Path) -> int:
     least one token before the file is touched. A sweep cannot see that failure, because a sweep
     measures generation on a configuration it never writes.
     """
-    from strata_control import tune_apply, tune_history
+    from strata_control import tune_apply
+    from strata_common import tune_history
 
     job = _load_job(store_root, a.job_id)
     if job is None:
@@ -2014,7 +2016,7 @@ def _components_plan(a: argparse.Namespace) -> int:
 def _components_engine(a: argparse.Namespace) -> int:
     """Which engine package the local component folder offers this PC. Read-only; a missing engine is a notice with a
     non-zero exit (5), never a fetch."""
-    from strata_control import engine_component
+    from strata_common import engine_component
     root = Path(a.components_dir) if a.components_dir else None
     try:
         report = engine_component.status(root, backend=a.backend, full=a.full)
@@ -2086,7 +2088,7 @@ def _access_retry(a: argparse.Namespace, error: BaseException) -> int | None:
     """A file in Strata's own per-user folders that this user cannot open (a run as administrator made it) is repaired once
     and the command runs again; if that does not help the person gets one plain sentence, with the technical text after it."""
     try:
-        from strata_control import private_files
+        from strata_base import private_files
     except ImportError:
         return None
     if not (isinstance(error, PermissionError) or "PermissionError" in str(error)):
@@ -2105,7 +2107,7 @@ def _access_retry(a: argparse.Namespace, error: BaseException) -> int | None:
 
 
 def _repair_access(a: argparse.Namespace) -> int:
-    from strata_control import private_files
+    from strata_base import private_files
     report = private_files.repair_known_roots()
     if getattr(a, "output", "human") == "json":
         print(json.dumps({"ok": not report["failed"], **report}))
@@ -2216,9 +2218,9 @@ class _QuietCapture:
 
 def main(argv: list[str] | None = None) -> int:
     try:
-        from strata_control import private_files
+        from strata_base import private_files
         private_files.adopt_user_defaults()      # what this process creates belongs to the user even when it runs as administrator
-    except ImportError:                          # a thin bundle ships without strata_control
+    except ImportError:                          # a thin bundle ships without strata_base
         pass
     ap = parser()
     a, extras = ap.parse_known_args(argv)

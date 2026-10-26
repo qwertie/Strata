@@ -15,7 +15,7 @@ child is still there.
 
 from __future__ import annotations
 
-from strata_control.private_files import private_mkdir as _private_mkdir
+from strata_base.private_files import private_mkdir as _private_mkdir
 import argparse
 import errno
 import hashlib
@@ -38,9 +38,11 @@ try:
 except ImportError:  # Windows has no qualified owner transport yet.
     fcntl = None
 
-from strata_control import owner_transport, paths, posix_owner, private_files, procs, profiles, readiness, winproc
-from serve import launch_identity
-from strata_control.profiles import ProfileError
+from strata_control import owner_transport, readiness
+from strata_common import paths, procs, profiles
+from strata_base import posix_owner, private_files, winproc
+from strata_common import launch_identity
+from strata_common.profiles import ProfileError
 
 
 MAX_MESSAGE = 64 * 1024
@@ -472,7 +474,7 @@ def _engine_preflight(plan: dict) -> None:
         return
     if not isinstance(cfg, dict):
         return
-    from strata_control import engine_component
+    from strata_common import engine_component
     if not engine_component.is_reference(cfg.get("exe")):
         return
     try:
@@ -868,7 +870,7 @@ class Host:
                                                   stderr=subprocess.STDOUT, close_fds=True, env=child_env,
                                                   creationflags=subprocess.CREATE_NO_WINDOW)
                     # the whole server tree ends with this host, however the host ends (a kill-on-close job)
-                    from serve import winjob
+                    from strata_base import winjob
                     winjob.contain(self.child)
                 else:
                     self.child = subprocess.Popen([sys.executable, "-m", "serve.server", *server_args],
@@ -1033,7 +1035,7 @@ class Host:
         if child is None:
             return
         if WINDOWS:
-            from serve import winjob
+            from strata_base import winjob
             if not winjob.terminate():
                 subprocess.run(["taskkill", "/T", "/F", "/PID", str(child.pid)], capture_output=True)
             try:

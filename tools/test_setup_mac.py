@@ -282,7 +282,8 @@ class ControlMode(unittest.TestCase):
             self.files.append(f)
 
     def run_setup(self, hw=M4, argv=("--yes", "--no-start", "--family", "qwen", "--model", "Q2_0", "--context", "8192"), clt_rc=0):
-        from strata_control import engine_component, mac_fit
+        from strata_common import engine_component
+        from strata_control import mac_fit
         ran = []
 
         def fake_tool(cmd, **kw):

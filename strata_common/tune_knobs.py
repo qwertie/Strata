@@ -19,7 +19,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any, Callable, Sequence
 
-from strata_control import user_args
+from strata_common import user_args
 
 ANSWER_ORDER = ("exact", "placement", "nonrepeatable", "quality")
 

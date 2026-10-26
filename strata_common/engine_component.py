@@ -49,8 +49,9 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath, PureWindowsPath
 
-from strata_control import acquisition, longpath
-from strata_control.targets import BACKEND_MATRIX, backend_supported, host_platform
+from strata_common import acquisition
+from strata_base import longpath
+from strata_common.targets import BACKEND_MATRIX, backend_supported, host_platform
 
 SCHEMA_VERSION = 2
 READABLE_SCHEMAS = (1, 2)           # schema 1 (S3's first packages: no archs/min_driver/build_id/signature) still loads
@@ -357,7 +358,7 @@ def verify_signature(component: "EngineComponent", environ=None) -> str:
     if _verifier is None:
         # the keys this build trusts (update_keys.json, plus the explicit test-key file) become the verifier on first use, so
         # a signed package is verified on every start without anything having to register it first
-        from strata_control import signing
+        from strata_common import signing
         try:
             signing.ensure_component_verifier()
         except signing.SignatureError as exc:

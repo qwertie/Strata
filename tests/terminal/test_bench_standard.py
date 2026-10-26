@@ -20,7 +20,7 @@ from unittest import mock
 
 from strata_cli import bench, bench_facts, bench_standard as bs
 from strata_cli.cli import main
-from strata_control.profiles import ProfileError
+from strata_common.profiles import ProfileError
 
 COMMIT = "a" * 40
 TEMPLATE = "{{ messages }} mock chat template"

@@ -1,5 +1,5 @@
 """The hipBLASLt tuning tables in the AMD engine packages: what a package holds per card family, and the one rule that decides at a start
-whether a table is used (strata_control/hipblaslt_tuning.py). Folders are throwaways; no GPU tool is run.
+whether a table is used (strata_common/hipblaslt_tuning.py). Folders are throwaways; no GPU tool is run.
 
 The packages' hipBLASLt versions below are the ones the 0.2.x release packages bundle (docs/AMD_HIP.md, Ready-made packages): Windows ROCm
 10.2.0a20260930 carries 1.5.0 (100500), the Linux 7.10.0a20251120 wheels 1.2.0 (100200), Linux Strix Halo's 7.14.1 1.4.1 (100401)."""
@@ -15,7 +15,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from strata_control import hipblaslt_tuning as ht
+from strata_common import hipblaslt_tuning as ht
 
 ROOT = Path(__file__).resolve().parents[2]
 TABLES = ROOT / "tools" / "hip"
@@ -220,7 +220,7 @@ class Apply(TempDir):
         self.assertIn("hipBLASLt tuning table", out.getvalue())
 
     def test_present_archs_picks_the_configured_card_on_linux(self):
-        with mock.patch("strata_control.engine_component.hip_archs_present", return_value=["gfx1100", "gfx1201"]):
+        with mock.patch("strata_common.engine_component.hip_archs_present", return_value=["gfx1100", "gfx1201"]):
             if os.name != "nt":
                 self.assertEqual(ht.present_archs({"gpu": 1}), ["gfx1201"])
                 self.assertEqual(ht.present_archs({"gpu": [1, 0]}), ["gfx1201", "gfx1100"])
@@ -311,7 +311,7 @@ class PackagedAndHashed(TempDir):
         self.assertIn("tuning/gfx1201-hipblaslt-100500.txt", listed)
         self.assertEqual(len(listed["tuning/gfx1201-hipblaslt-100500.txt"]["sha256"]), 64)
         (folder / "tuning" / "gfx1201-hipblaslt-100500.txt").write_text("changed", encoding="utf-8")   # a swapped table fails the start's hash check
-        from strata_control import engine_component as ec
+        from strata_common import engine_component as ec
         with self.assertRaises(ec.ComponentProblem):
             ec.verify(ec.read_manifest(folder), full=True)
 

@@ -15,7 +15,7 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
 
 from strata_control import calibration, tune_apply, tuning  # noqa: E402
-from strata_control.profiles import ProfileError  # noqa: E402
+from strata_common.profiles import ProfileError  # noqa: E402
 
 
 class BooleanFlags(unittest.TestCase):
@@ -93,14 +93,14 @@ class HipPackageForAnotherCard(unittest.TestCase):
             (node / "properties").write_text("cpu_cores_count 1\ngfx_target_version " + value + "\n", encoding="utf-8")
 
     def test_gfx_target_version_becomes_the_gfx_name(self):
-        from strata_control import engine_component as ec
+        from strata_common import engine_component as ec
         with tempfile.TemporaryDirectory() as d:
             self._kfd(Path(d), ["0", "110003", "120001", "90010", "100300"])
             self.assertEqual(ec.hip_archs_present(d), ["gfx1103", "gfx1201", "gfx90a", "gfx1030"])
         self.assertEqual(ec.hip_archs_present("/nonexistent/kfd"), [])
 
     def test_a_package_without_the_cards_arch_is_not_chosen_and_one_with_it_is(self):
-        from strata_control import engine_component as ec
+        from strata_common import engine_component as ec
         from tests.terminal.test_engine_component import make_package, rewrite
         with tempfile.TemporaryDirectory() as d:
             root = Path(d)

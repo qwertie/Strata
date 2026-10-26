@@ -21,7 +21,7 @@ class OldLauncherIsToldTheTruth(unittest.TestCase):
         base = Path(self.enterContext(tempfile.TemporaryDirectory(prefix="strata-stage-"))) / parent / "ab12"
         base.mkdir(parents=True)
         shutil.copy2(ROOT / "strata.py", base / "strata.py")
-        for package in ("strata_cli", "strata_control"):
+        for package in ("strata_base", "strata_cli", "strata_common", "strata_control"):
             shutil.copytree(ROOT / package, base / package, ignore=shutil.ignore_patterns("__pycache__"))
         return base
 

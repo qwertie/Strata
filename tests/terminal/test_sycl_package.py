@@ -13,7 +13,8 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from strata_control import engine_component as ec, feed as feedmod, updater
+from strata_common import engine_component as ec
+from strata_control import feed as feedmod, updater
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "packaging"))

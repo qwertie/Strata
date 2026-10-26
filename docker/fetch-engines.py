@@ -8,7 +8,7 @@
 What it does, in the same order and with the same code as `strata update`:
 
 1. reads strata-feed.json and strata-feed.json.sig from the release (GitHub release assets, or a folder / URL given with --source)
-   and checks the Ed25519 signature against the public key in strata_control/update_keys.json;
+   and checks the Ed25519 signature against the public key in strata_common/update_keys.json;
 2. for each flavor picks the linux-x86_64 engine package the feed lists for it (see FLAVORS);
 3. downloads the archive and checks its size and SHA-256 against the signed feed (a mismatch deletes the file and stops);
 4. unpacks it (the archive's names and links are checked, its size may not exceed what the feed declares), checks that the
@@ -27,7 +27,9 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT))
 
-from strata_control import engine_component as ec, feed as feedmod, signing, transfer, updater  # noqa: E402
+from strata_common import engine_component as ec, signing  # noqa: E402
+from strata_control import feed as feedmod, updater  # noqa: E402
+from strata_base import transfer  # noqa: E402
 
 #: image flavor (the tag suffix) -> (feed backend, feed variant or None for any, docker/build.sh --flavor)
 FLAVORS = {

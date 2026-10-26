@@ -11,7 +11,7 @@ import time
 import unittest
 from pathlib import Path
 
-from serve.ready import preflight, publish, remove_if_owned
+from strata_common.ready import preflight, publish, remove_if_owned
 
 
 class ReadyFileTests(unittest.TestCase):

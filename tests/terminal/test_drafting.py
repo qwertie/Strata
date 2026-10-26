@@ -1,5 +1,5 @@
 """Which drafter a model uses (MTP, DFlash2 or none): the suggestion table, the Terminal flag, the engine arguments, the download and the
-fallback words. strata_control/drafting.py is the one place; the Terminal and the app read it."""
+fallback words. strata_common/drafting.py is the one place; the Terminal and the app read it."""
 
 from __future__ import annotations
 
@@ -15,7 +15,8 @@ from unittest import mock
 
 from strata_cli.launch import settings as S
 from strata_cli.launch.runner import derive_config
-from strata_control import acquisition, drafting, drafting_fetch
+from strata_common import acquisition, drafting
+from strata_control import drafting_fetch
 from tests.terminal.launch_support import run_cli
 
 ROOT = Path(__file__).resolve().parents[2]

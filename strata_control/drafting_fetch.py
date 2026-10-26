@@ -3,8 +3,8 @@
     strata drafting plan  [--data-dir DIR]      what it would download (nothing is changed)
     strata drafting fetch [--data-dir DIR]      download, check, pack; progress in plain words
 
-Only an explicit command reaches the network (strata_control/acquisition.py): a start never downloads. The drafter is
-incoai/Qwen3.8-Flash-Next-DFlash2 at one revision (strata_control/drafting.py has the revision, the file sizes and hashes). The 1.2 GB
+Only an explicit command reaches the network (strata_common/acquisition.py): a start never downloads. The drafter is
+incoai/Qwen3.8-Flash-Next-DFlash2 at one revision (strata_common/drafting.py has the revision, the file sizes and hashes). The 1.2 GB
 safetensors file is packed (tools/dflash2_pack.py, numpy only) into the engine's 0.76 GB runtime file and then removed.
 """
 
@@ -17,7 +17,8 @@ import threading
 from pathlib import Path
 from typing import Callable
 
-from strata_control import acquisition, drafting, transfer
+from strata_common import acquisition, drafting
+from strata_base import transfer
 
 Progress = Callable[[str, int, int], None]    # (step in plain words, bytes done, bytes total)
 

@@ -8,13 +8,13 @@ from __future__ import annotations
 
 import os
 try:
-    from strata_control.private_files import private_mkdir as _private_mkdir
-except ImportError:                                     # a thin bundle (monitor only) ships without strata_control
+    from strata_base.private_files import private_mkdir as _private_mkdir
+except ImportError:                                     # a thin bundle (monitor only) ships without strata_base
     def _private_mkdir(path, *, parents=False, exist_ok=True):
         path.mkdir(mode=0o700, parents=parents, exist_ok=exist_ok)
         return path
 try:
-    from strata_control import posix_owner
+    from strata_base import posix_owner
 except ImportError:                                     # the same thin bundle: the old plain check
     import stat as _stat
 
@@ -22,7 +22,7 @@ except ImportError:                                     # the same thin bundle: 
         owner_only_wrong = staticmethod(lambda path, details: os.name == "posix" and (details.st_uid != os.getuid() or _stat.S_IMODE(details.st_mode) & 0o077))
         owner_only_text = staticmethod(lambda text, path: text)
 try:
-    from strata_control import atomic as _atomic_mod
+    from strata_base import atomic as _atomic_mod
 except ImportError:                                     # the same thin bundle: a plain replace
     class _atomic_mod:                                  # noqa: N801
         replace = staticmethod(os.replace)

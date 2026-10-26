@@ -26,7 +26,7 @@ from unittest import mock
 
 import setup
 from strata_cli import cli
-from strata_control import acquisition
+from strata_common import acquisition
 
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -46,7 +46,7 @@ NETWORK_ALLOWED = {
     ("serve/mcp.py", "urlopen"): "the MCP servers the user configured, at request time",
     ("strata_control/tune_api.py", "urlopen"): "the loopback engine/server of a tuning job the user started",
     ("strata_control/tune_session.py", "urlopen"): "the loopback engine (127.0.0.1) the auto-tuner a user started measures",
-    ("strata_control/loopback.py", "urlopen"): "the one opener for this computer's own servers (no proxy); any other address is passed on unchanged",
+    ("strata_base/loopback.py", "urlopen"): "the one opener for this computer's own servers (no proxy); any other address is passed on unchanged",
     ("strata_control/components.py", "urlopen"): "the component fetcher: only `strata install`/UPDATE call it",
     ("strata_control/dsv41_engine.py", "urlopen"): "the DeepSeek engine's one 10-second 'is the feed reachable' check, called only by strata launch and "
                                                   "setup (test_the_deepseek_engine_check_is_reached_only_from_launch_and_setup); never while serving",
@@ -56,7 +56,7 @@ INSTALLER_IMPORT_ALLOWED = {
     "strata_control/calibration.py": "`strata engine calibrate`: an explicit tuning command, imports setup lazily",
 }
 
-SERVING_DIRS = ("serve", "strata_cli", "strata_control")
+SERVING_DIRS = ("serve", "strata_base", "strata_cli", "strata_common", "strata_control")
 
 
 def _sources():
@@ -88,7 +88,7 @@ class ImportGraphTests(unittest.TestCase):
         self.assertEqual(sorted(loaded & INSTALLER_MODULES), [])
         for name, rel in got["mods"].items():
             top = rel.split("/")[0]
-            self.assertIn(top, ("serve", "strata_cli", "strata_control"),
+            self.assertIn(top, SERVING_DIRS,
                           f"{name} ({rel}) is loaded by starting/serving but is not part of it")
         self.assertNotIn("strata_control.calibration", got["mods"])
         self.assertNotIn("strata_control.components", got["mods"])

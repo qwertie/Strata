@@ -38,7 +38,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
-from strata_control import hipblaslt_tuning as ht  # noqa: E402
+from strata_common import hipblaslt_tuning as ht  # noqa: E402
 
 ASSET = "strata-windows-x64-hip.zip"
 PROGRAMS = ("strata.exe", "strata-device.exe")
@@ -180,7 +180,7 @@ def main() -> int:
     if a.vision_hip is not None:
         meta.update({"vision": "gpu", "vision_gpu": a.vision_hip.name, "vision_archs": archs})
     (stage / "BUILD.json").write_text(json.dumps(meta, indent=1), encoding="utf-8")
-    # the hipBLASLt tuning tables of tools/hip for these archs and exactly this hipBLASLt version, in tuning/ (strata_control/hipblaslt_tuning.py):
+    # the hipBLASLt tuning tables of tools/hip for these archs and exactly this hipBLASLt version, in tuning/ (strata_common/hipblaslt_tuning.py):
     # the engine start points STRATA_HIPBLASLT_TUNING at the one for the card; an arch without a table keeps plain hipBLAS
     tables = ht.stage_tables(stage, archs, meta["hipblaslt_version"], ROOT / "tools" / "hip")
     for arch, have in ht.missing_report(archs, meta["hipblaslt_version"], ROOT / "tools" / "hip").items():

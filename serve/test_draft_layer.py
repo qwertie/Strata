@@ -1,5 +1,5 @@
 """The draft layer switch: "mtp": false in a run config starts the engine without --mtp (serve/server.py engine_args), however the
-arguments got there, and strata_control/draft_layer.py is the one rule setup, the launcher and the server share.
+arguments got there, and strata_common/draft_layer.py is the one rule setup, the launcher and the server share.
 
     python -m unittest serve.test_draft_layer
 """
@@ -9,7 +9,7 @@ import unittest
 
 from serve import runconfig
 from serve.server import engine_args
-from strata_control import draft_layer
+from strata_common import draft_layer
 
 ARGS = ["--pack", "/p", "--spec", "4", "--spec-min-p", "0.5", "--mtp", "/m/rt", "--max-context", "32768", "--batch-mtp", "--kv", "int8"]
 

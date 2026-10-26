@@ -1,6 +1,6 @@
-"""Intel Arc (xe driver) readings for the server's Monitor tab, in the shape of serve/telemetry.py's readers.
+"""Intel Arc (xe driver) readings for the server's Monitor tab, in the shape of strata_common/telemetry.py's readers.
 
-Kept out of serve/telemetry.py so the SYCL port touches no shared file: sycl/serve/server_intel.py installs it as
+Kept out of strata_common/telemetry.py so the SYCL port touches no shared file: sycl/serve/server_intel.py installs it as
 telemetry.gpu_reader when there is no NVIDIA card.  Load and VRAM need root (xe's only VRAM accounting is per-client
 fdinfo), so they come from a root sampler's /run/gpustat.json (sycl/tools/gpustat.py); temperature, power and the
 PCIe link are read from sysfs, so they show without it.

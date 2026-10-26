@@ -7,7 +7,7 @@ schema and operation authority rather than add a separate implementation.
 
 from __future__ import annotations
 
-from strata_control.private_files import private_mkdir as _private_mkdir
+from strata_base.private_files import private_mkdir as _private_mkdir
 import hashlib
 import json
 import os
@@ -20,9 +20,9 @@ import tempfile
 import uuid
 from pathlib import Path
 
-from strata_control import profiles
-from strata_control.profiles import ProfileError
-from strata_control import posix_owner
+from strata_common import profiles
+from strata_common.profiles import ProfileError
+from strata_base import posix_owner
 
 
 KINDS = frozenset({"runtime.restart", "engine.calibrate.measure", "components.verify"})

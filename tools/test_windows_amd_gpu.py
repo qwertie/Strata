@@ -14,7 +14,7 @@ from unittest import mock
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "tools"))
-from serve import telemetry as T  # noqa: E402
+from strata_common import telemetry as T  # noqa: E402
 
 GB = 1 << 30
 

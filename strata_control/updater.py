@@ -42,9 +42,11 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable
 
-from strata_control import acquisition, components, engine_component as ec, feed as feedmod, longpath, preset_marks, signing, transfer
-from strata_control.targets import host_platform
-from strata_control import atomic as _atomic_mod
+from strata_common import acquisition, engine_component as ec, signing
+from strata_control import components, feed as feedmod, preset_marks
+from strata_base import longpath, transfer
+from strata_common.targets import host_platform
+from strata_base import atomic as _atomic_mod
 
 STATE_DIR = ".updates"
 STAGE_DIR = ".s"                 # staging is short on purpose: <components>\.s\<4 hex>\engine\<folder> (see longpath.py)
@@ -281,7 +283,8 @@ def detect_hardware(environ=None) -> dict:
 def serving_now() -> list[dict]:
     """Engines that are serving: managed instances of the owner runtime and anything holding the shared activity lease
     (`strata serve`, a runtime host). Empty when nothing is. The exclusive lease is only tried, never kept."""
-    from strata_control import profiles, runtime
+    from strata_common import profiles
+    from strata_control import runtime
     try:
         managed = runtime.active_managed_instances()
     except (profiles.ProfileError, OSError):
@@ -707,7 +710,8 @@ def stage_engine(ctx: Context, feed: feedmod.Feed, pkg: feedmod.EnginePackage, a
 def discover_run_config(environ=None) -> Path | None:
     """A saved model's run config for the test start: the one a saved profile uses if its files are all present, otherwise any
     installed model whose files are present. None when no model is installed (the first run)."""
-    from strata_control import models, profiles
+    from strata_control import models
+    from strata_common import profiles
     try:
         listed = models.list_installed()
     except Exception:                                   # noqa: BLE001 - discovery is best effort
@@ -884,7 +888,8 @@ def default_test_start(stage_root: Path, component: ec.EngineComponent, ctx: Con
         if not ctx.allow_no_model_smoke:
             raise TestStartFailed(component.version, "no installed model to test with")
         return binary_smoke(component)
-    from strata_control import profiles, runtime
+    from strata_common import profiles
+    from strata_control import runtime
     sandbox = Path(tempfile.mkdtemp(prefix="t-", dir=stage_root))
     try:
         cfg = json.loads(source.read_text(encoding="utf-8-sig"))

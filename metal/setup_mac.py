@@ -402,9 +402,9 @@ def main(argv=None) -> int:
     for n in model_note(model, info["ram_gb"]):
         S.warn(n)
     vision = a.vision or ("yes" if S.ask("Should the model also read images? (the image encoder, ~1 GB more)",
-                                          ["y", "n"], "y", a.yes) == "y" else "no")   # on by default (strata_control/vision_reader.py)
+                                          ["y", "n"], "y", a.yes) == "y" else "no")   # on by default (strata_common/vision_reader.py)
     if vision == "cpu":
-        from strata_control import vision_reader as VR
+        from strata_common import vision_reader as VR
         S.warn(VR.MAC_CPU_NOTE)
     vision_gpu = vision != "cpu"
     vision = "no" if vision == "no" else "yes"

@@ -7,7 +7,7 @@ crash has unknown completion; it is not proof that a worker is still running.
 
 from __future__ import annotations
 
-from strata_control.private_files import private_mkdir as _private_mkdir
+from strata_base.private_files import private_mkdir as _private_mkdir
 import json
 import math
 import os
@@ -17,9 +17,10 @@ import time
 import uuid
 from pathlib import Path
 
-from strata_control import profiles, recipes
-from strata_control.profiles import ProfileError
-from strata_control import posix_owner
+from strata_common import profiles
+from strata_control import recipes
+from strata_common.profiles import ProfileError
+from strata_base import posix_owner
 
 
 MAX_RECORDS = 500

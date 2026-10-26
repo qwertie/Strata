@@ -24,7 +24,7 @@ from pathlib import Path
 from strata_control import discovery
 from strata_control.doctor import inspect as inspect_components
 from strata_control.gguf_preflight import inspect_metadata, real_model_file
-from strata_control.profiles import ProfileError
+from strata_common.profiles import ProfileError
 
 
 ROOT = Path(__file__).resolve().parents[1]

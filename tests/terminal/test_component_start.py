@@ -19,7 +19,8 @@ from pathlib import Path
 from unittest import mock
 
 from strata_cli.cli import main
-from strata_control import components, engine_component as ec, profiles, runtime
+from strata_control import components, runtime
+from strata_common import engine_component as ec, profiles
 
 WINDOWS = os.name == "nt"
 FAKE_ENGINE = (

@@ -39,7 +39,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Iterable, Sequence
 
-from strata_control import atomic
+from strata_base import atomic
 
 SCHEMA_VERSION = 1
 

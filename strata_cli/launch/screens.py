@@ -588,7 +588,7 @@ class ModelScreen(Base):
 # ------------------------------------------------------------------------------------------------ 2 cards (only with 2+ cards)
 
 class CardsScreen(Base):
-    """Main / Helper / Off for every card (strata_control/gpu_roles.py). The recommendation is already selected; M H O set the role of the
+    """Main / Helper / Off for every card (strata_common/gpu_roles.py). The recommendation is already selected; M H O set the role of the
     card under the cursor, R goes back to the recommendation, D shows what the roles mean."""
 
     step_id = "cards"
@@ -620,13 +620,13 @@ class CardsScreen(Base):
             return None
 
     def cards(self) -> list[dict]:
-        from strata_control import gpu_roles
+        from strata_common import gpu_roles
         c = self.ctx.computer
         return gpu_roles.rows(c.gpus, c.engine_vendor)
 
     def start_roles(self) -> dict[int, str]:
         """The roles the screen opens with: this launch's own, else the installed model's own choice, else the recommendation."""
-        from strata_control import gpu_roles
+        from strata_common import gpu_roles
         s, cards = self.ctx.settings, self.cards()
         if s.gpu_roles:
             return gpu_roles.normalize({int(k): v for k, v in s.gpu_roles.items()}, cards)
@@ -636,7 +636,7 @@ class CardsScreen(Base):
 
     def baseline(self) -> dict[int, str]:
         """What "no choice made here" means: the installed model's own cards, else the recommendation."""
-        from strata_control import gpu_roles
+        from strata_common import gpu_roles
         inst = self.installed()
         cards = self.cards()
         if inst:
@@ -644,7 +644,7 @@ class CardsScreen(Base):
         return dict(gpu_roles.recommend(cards, self.ctx.computer.engine_vendor)["roles"])
 
     def on_mount(self) -> None:
-        from strata_control import gpu_roles
+        from strata_common import gpu_roles
         self.detail = False
         self.note = ""
         self.cardlist = self.cards()
@@ -660,7 +660,7 @@ class CardsScreen(Base):
         return "".join(f"[ {w} ] " if r == role else f"  {w}   " for r, w in words)
 
     def fill(self, index: int = 0) -> None:
-        from strata_control import gpu_roles
+        from strata_common import gpu_roles
         items = []
         for c in self.cardlist:
             i = int(c.get("index", 0))
@@ -676,7 +676,7 @@ class CardsScreen(Base):
         return None if cur is None else int(cur.key)
 
     def action_role(self, role: str) -> None:
-        from strata_control import gpu_roles
+        from strata_common import gpu_roles
         i = self.current_card()
         if i is None:
             return
@@ -711,7 +711,7 @@ class CardsScreen(Base):
     def refresh_body(self) -> None:
         if not hasattr(self, "roles"):
             return
-        from strata_control import gpu_fit, gpu_roles
+        from strata_common import gpu_fit, gpu_roles
         c = self.ctx.computer
         try:
             self.query_one("#reco", Static).update(Text(gpu_roles.sentence(self.cardlist, c.engine_vendor), style=MUTE))

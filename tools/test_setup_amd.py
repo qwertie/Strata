@@ -364,7 +364,7 @@ class WindowsDetection(unittest.TestCase):
     def test_probe_in_the_component_folder(self):
         """#3418: the app keeps the engine in the component folder, not in control/engine; the cards must be numbered by the
         HIP runtime there too (an iGPU on ordinal 0 made the display-order "GPU 0" the wrong card)."""
-        from strata_control import engine_component as EC
+        from strata_common import engine_component as EC
         name = "strata-device.exe" if setup.WIN else "strata-device"
         with tempfile.TemporaryDirectory() as d:
             root, comp = Path(d) / "control", Path(d) / "components" / "0.2-hip"

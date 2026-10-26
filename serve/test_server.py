@@ -4975,7 +4975,7 @@ class AmdTelemetry(unittest.TestCase):
     def test_pcie_link_is_the_narrowest_slowest_hop(self):
         """#1733: the link is the slowest/narrowest hop between the root port and the card; the bottleneck is only
         claimed when every hop could be read (pcie_path says how many were)."""
-        from serve import telemetry
+        from strata_common import telemetry
         with tempfile.TemporaryDirectory() as d:
             hops = []
             for i, (speed, width) in enumerate((("8.0 GT/s PCIe", "16"), ("8.0 GT/s PCIe", "8"), ("16.0 GT/s PCIe", "16"))):
@@ -5000,7 +5000,7 @@ class AmdTelemetry(unittest.TestCase):
             self.assertFalse(telemetry._Amd._bdf("pci0000:00"))
 
     def test_readings(self):
-        from serve import telemetry
+        from strata_common import telemetry
         with tempfile.TemporaryDirectory() as d:
             self.tree(d)
             with mock.patch.object(telemetry, "SYSFS", d):
@@ -5029,7 +5029,7 @@ class AmdTelemetry(unittest.TestCase):
                 self.assertIsNone(telemetry.free_vram_mib(0, amd=True))
 
     def test_free_vram_on_hip(self):
-        from serve import telemetry
+        from strata_common import telemetry
         tok = ByteTokenizer()
         svc = Service(MockEngine(tok, "x", max_context=CTX), tok, ChatTemplate(ROOT / "serve/chat_template.jinja"))
         svc.backend, svc.gpu_index = "hip", 1
@@ -5066,19 +5066,19 @@ class MacTelemetry(unittest.TestCase):
     """The macOS (Metal backend) reader: IOKit's IOAccelerator nodes and the device's Metal working set."""
 
     def _reader(self, index=0, text=IOREG_FIXTURE):
-        from serve import telemetry
+        from strata_common import telemetry
         return telemetry._Metal(index, run=lambda: text)
 
     def test_readings(self):
         g = self._reader()
         self.assertTrue(g.ok())
         self.assertEqual(g.name(), "Apple M1 Max")
-        with mock.patch("serve.telemetry.metal_working_set", lambda: WORKING_SET):
+        with mock.patch("strata_common.telemetry.metal_working_set", lambda: WORKING_SET):
             self.assertEqual(g.read(), {"util": 76, "mem_used": 13384105984, "mem_total": WORKING_SET})
         # the second accelerator is index 1: the older chips' renderer/tiler-only utilization is the fallback
         g1 = self._reader(1)
         self.assertTrue(g1.ok())
-        with mock.patch("serve.telemetry.metal_working_set", lambda: WORKING_SET):
+        with mock.patch("strata_common.telemetry.metal_working_set", lambda: WORKING_SET):
             self.assertEqual(g1.read()["util"], 3)          # the renderer, the higher of the two
             self.assertEqual(g1.name(), "Apple M2 Ultra")
         self.assertFalse(self._reader(5).ok())
@@ -5090,13 +5090,13 @@ class MacTelemetry(unittest.TestCase):
         self.assertIsNone(g.name())
 
     def test_bad_process(self):
-        from serve import telemetry
+        from strata_common import telemetry
         g = telemetry._Metal(0, run=lambda: (_ for _ in ()).throw(OSError("no ioreg")))
         self.assertFalse(g.ok())
         self.assertEqual(g.read(), {})
 
     def test_note_reaches_the_monitor(self):
-        from serve import telemetry
+        from strata_common import telemetry
         t = telemetry.Telemetry(extra=lambda: {"tok_s": 1.0})
         try:
             with mock.patch.object(telemetry, "gpu_reader", lambda index=0, amd=False: self._reader()):
@@ -5104,7 +5104,7 @@ class MacTelemetry(unittest.TestCase):
                 try:
                     self.assertEqual(t2.static["gpu_name"], "Apple M1 Max")
                     self.assertIn("powermetrics", t2.static["gpu_note"])
-                    with mock.patch("serve.telemetry.metal_working_set", lambda: WORKING_SET):
+                    with mock.patch("strata_common.telemetry.metal_working_set", lambda: WORKING_SET):
                         s = t2.sample()
                     self.assertEqual(s["gpu_util"], 76)
                     self.assertEqual(s["gpu_mem_used"], 13384105984)
@@ -5123,7 +5123,7 @@ class TelemetryNoDisks(unittest.TestCase):
     /metrics' hardware empty and the frozen-engine check's GPU reading at 0."""
 
     def test_sampler_runs_without_disk_counters(self):
-        from serve import telemetry
+        from strata_common import telemetry
         vm = SimpleNamespace(total=64 * 2**30, available=40 * 2**30)
         fake = SimpleNamespace(cpu_count=lambda logical=True: 8, cpu_percent=lambda interval=None: 12.5,
                                virtual_memory=lambda: vm, disk_io_counters=lambda: None)

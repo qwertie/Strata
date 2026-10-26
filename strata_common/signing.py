@@ -248,7 +248,7 @@ def verify_bytes(trusted: dict[str, bytes], payload: bytes, signature: dict) -> 
 def install_component_verifier(trusted: dict[str, bytes]) -> None:
     """Hook the engine component's signature check (engine_component.register_signature_verifier) to `trusted`.
     A manifest then counts as verified only if one of these keys signed its canonical payload."""
-    from strata_control import engine_component
+    from strata_common import engine_component
 
     def verifier(payload: bytes, signature: dict, component) -> None:
         try:
@@ -262,7 +262,7 @@ def install_component_verifier(trusted: dict[str, bytes]) -> None:
 def ensure_component_verifier() -> bool:
     """Register the verifier with the shipped keys (and the explicit extra-keys file) unless one is registered already.
     Returns False when there are no keys to check against: signed packages are then reported unverified, never verified."""
-    from strata_control import engine_component
+    from strata_common import engine_component
     if engine_component._verifier is not None:
         return True
     trusted = load_trusted_keys()

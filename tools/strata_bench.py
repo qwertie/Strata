@@ -508,7 +508,7 @@ def gpu_info_local() -> dict:
         try:
             if str(ROOT) not in sys.path:
                 sys.path.insert(0, str(ROOT))
-            from serve.telemetry import windows_amd_cards
+            from strata_common.telemetry import windows_amd_cards
             info["gpus"] = [{"name": c["name"], "vram_mib": (c["vram_bytes"] >> 20) if c["vram_bytes"] else None,
                              "driver": c["driver"]} for c in windows_amd_cards()]
         except Exception:   # noqa: BLE001 - a report without the card's name is still a report

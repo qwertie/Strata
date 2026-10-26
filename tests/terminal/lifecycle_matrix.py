@@ -31,7 +31,8 @@ sys.path.insert(0, str(ROOT))
 
 import psutil  # noqa: E402
 
-from strata_control import components, engine_component as ec, procs, profiles, runtime  # noqa: E402
+from strata_control import components, runtime  # noqa: E402
+from strata_common import engine_component as ec, procs, profiles  # noqa: E402
 
 WINDOWS = os.name == "nt"
 LINUX = sys.platform.startswith("linux")

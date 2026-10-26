@@ -227,7 +227,7 @@ class DraftingOffConfig(unittest.TestCase):
     BASE = {"args": ["--model", "m.gguf", "--mtp", "C:/x/mtp", "--spec-min-p", "0.5", "--batch-mtp", "--max-context", "32768"], "exe": "x"}
 
     def derive(self, base, **kw):
-        from strata_control import tune_knobs
+        from strata_common import tune_knobs
         s = S.LaunchSettings(family="gyro", model="Gyro-S", context=32768, **kw)
         return R.derive_config(base, s, bool_flags=tune_knobs.BOOL_FLAGS)
 

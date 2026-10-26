@@ -6,7 +6,7 @@ from unittest import mock
 
 from strata_cli.launch import modelstate, settings as S
 from strata_cli.launch.runner import Runner, derive_config
-from strata_control import engine_component
+from strata_common import engine_component
 from tests.terminal.launch_support import HW_12, Home, catalog
 
 

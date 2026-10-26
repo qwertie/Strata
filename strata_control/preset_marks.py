@@ -25,8 +25,8 @@ import tempfile
 import uuid
 from pathlib import Path
 
-from strata_control import paths
-from strata_control import atomic as _atomic_mod
+from strata_common import paths
+from strata_base import atomic as _atomic_mod
 
 SCHEMA_VERSION = 1
 IDENTITY_KEYS = ("version", "build_id", "manifest_sha256", "backend", "platform", "variant")

@@ -39,7 +39,7 @@ in that order instead of the engine dying under a request.
 | The app is killed, crashes, logoff | the job object around the app ends the host, Control, the owner host, the server and the engine | the host sees its parent gone within a second, stops the engines cleanly; each owner follows the host's PID (`--die-with-pid`) | same |
 | The app's host crashes | each owner sees the host's PID gone (about a second) and stops its engine, drained | same | same |
 
-`strata_control/procs.py` is the identity rule behind every "is this still the process I started": PID **and** start time
+`strata_common/procs.py` is the identity rule behind every "is this still the process I started": PID **and** start time
 **and** command line, checked again at the moment of each signal. A PID alone is never signalled.
 
 ## Leftovers, and how they are found

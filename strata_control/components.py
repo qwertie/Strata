@@ -51,8 +51,8 @@ from typing import Any, Iterable, Sequence
 
 SCHEMA_VERSION = 1
 
-from strata_control.targets import BACKEND_MATRIX, ComponentError, backend_supported, host_platform  # noqa: E402,F401
-from strata_control import atomic as _atomic_mod
+from strata_common.targets import BACKEND_MATRIX, ComponentError, backend_supported, host_platform  # noqa: E402,F401
+from strata_base import atomic as _atomic_mod
 #: Component kinds, so a manifest cannot claim a role the architecture does not have.
 KINDS = ("application", "runtime", "agent-runtime", "tuning", "engine", "prepared-data")
 
@@ -528,11 +528,11 @@ class ComponentStore:
         are kept under `partial/` and a ranged request picks up where it stopped. The result is
         verified by the caller before anything is unpacked.
         """
-        from strata_control import acquisition
+        from strata_common import acquisition
         acquisition.require(f"the download of {artifact.name}", "strata install")
         import urllib.error
         import urllib.request
-        from strata_control import tls
+        from strata_base import tls
         tls.install()
         partial = self.root / "partial" / artifact.name
         have = partial.stat().st_size if partial.exists() else 0

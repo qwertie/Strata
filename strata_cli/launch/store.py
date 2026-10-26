@@ -13,7 +13,7 @@ import json
 import os
 import tempfile
 import time
-from strata_control import atomic as _atomic_mod
+from strata_base import atomic as _atomic_mod
 from pathlib import Path
 from typing import Any
 
@@ -28,7 +28,7 @@ def preset_dir() -> Path:
     explicit = os.environ.get("STRATA_LAUNCH_PRESET_DIR")
     if explicit:
         return Path(explicit).expanduser()
-    from strata_control import profiles
+    from strata_common import profiles
     return profiles.profile_dir().parent / "launch-presets"
 
 
@@ -54,7 +54,7 @@ def _private_write(path: Path, payload: bytes) -> None:
             os.unlink(tmp)
     if os.name == "nt":
         try:
-            from strata_control import private_files
+            from strata_base import private_files
             private_files.restrict_to_current_user(path, directory=False)
         except Exception:                                    # noqa: BLE001 - a file the user can read is still theirs
             pass

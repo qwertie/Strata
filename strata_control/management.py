@@ -16,8 +16,9 @@ import sys
 from pathlib import Path
 from typing import Any
 
-from strata_control import doctor, journal, models, profiles, runtime
-from strata_control.profiles import ProfileError
+from strata_control import doctor, journal, models, runtime
+from strata_common import profiles
+from strata_common.profiles import ProfileError
 
 
 MAX_REQUEST_BYTES = 64 * 1024

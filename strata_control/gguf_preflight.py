@@ -11,7 +11,7 @@ import stat
 import struct
 from pathlib import Path
 
-from strata_control.profiles import ProfileError
+from strata_common.profiles import ProfileError
 from tools.gguf_reader import BLOCK_GEOMETRY, GGML_TYPES
 
 

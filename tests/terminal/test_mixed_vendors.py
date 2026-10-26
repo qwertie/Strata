@@ -13,7 +13,7 @@ from unittest import mock
 from strata_cli.launch import cmd, settings as S
 from strata_cli.launch.runner import cards_for_launch
 from strata_cli.launch.screens import flow_for
-from strata_control import gpu_fit as G
+from strata_common import gpu_fit as G
 from tests.terminal.launch_support import HW_12, Home, catalog
 
 ROOT = Path(__file__).resolve().parents[2]

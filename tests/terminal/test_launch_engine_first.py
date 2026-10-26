@@ -14,7 +14,7 @@ from unittest import mock
 
 from strata_cli.launch import settings as S
 from strata_cli.launch.runner import LaunchError, NO_ENGINE_STEP, Runner, no_engine_final, no_engine_warning
-from strata_control import engine_component as ec
+from strata_common import engine_component as ec
 
 ROOT = Path(__file__).resolve().parents[2]
 

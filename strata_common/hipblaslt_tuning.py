@@ -240,10 +240,10 @@ def apply(cfg: dict, folder, archs_present=None, *, environ=None, say=print) -> 
 
 
 def present_archs(cfg: dict | None = None) -> list[str]:
-    """The AMD architectures of the GPUs the engine will use, as ``strata_control.engine_component.hip_archs_present`` lists them; the run
+    """The AMD architectures of the GPUs the engine will use, as ``strata_common.engine_component.hip_archs_present`` lists them; the run
     config's "gpu" picks one card of several when the list is per card (Linux)."""
     try:
-        from strata_control import engine_component as ec
+        from strata_common import engine_component as ec
         archs = ec.hip_archs_present()
     except Exception:
         return []

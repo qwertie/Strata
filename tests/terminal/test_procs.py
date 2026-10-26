@@ -10,7 +10,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from strata_control import procs
+from strata_common import procs
 
 SLEEP = [sys.executable, "-c", "import time; time.sleep(120)"]
 NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)

@@ -98,7 +98,7 @@ class Ctx:
 
     def engine_exe(self) -> str | None:
         try:
-            from strata_control import engine_component as ec
+            from strata_common import engine_component as ec
             rep = ec.status()
             return (rep.get("engine") or {}).get("exe") if rep.get("usable") else None
         except Exception:                                    # noqa: BLE001
@@ -142,7 +142,7 @@ class Ctx:
         tuned_args, tuned_env = None, None
         if cfg:
             try:
-                from strata_control import presets
+                from strata_common import presets
                 merged, info = presets.overlay(cfg)
                 if info.get("applied"):
                     tuned_args, tuned_env = list(merged.get("args") or []), dict(merged.get("env") or {})
@@ -177,7 +177,7 @@ class Ctx:
         if cfg is None:
             return line + "   (the engine command is shown once the model is installed)"
         try:
-            from strata_control import tune_knobs
+            from strata_common import tune_knobs
             from strata_cli.launch.runner import apply_choices, cards_for_launch, derive_config
             from serve.server import engine_args
             import contextlib

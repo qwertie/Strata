@@ -24,7 +24,7 @@ from pathlib import Path
 from unittest import mock
 
 import setup
-from strata_control import transfer
+from strata_base import transfer
 
 PIECE = 64 << 10
 SIZE = 40 * PIECE + 12345            # 41 pieces, the last one short
@@ -406,7 +406,7 @@ class Repair(DownloadCase):
 
 
 class UpdateTransfer(unittest.TestCase):
-    """strata_control/transfer.py (update archives): a resumed answer is appended only when it starts at the byte asked for."""
+    """strata_base/transfer.py (update archives): a resumed answer is appended only when it starts at the byte asked for."""
 
     def setUp(self):
         self.tmp = Path(tempfile.mkdtemp(prefix="dlint"))

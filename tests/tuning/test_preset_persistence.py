@@ -46,7 +46,7 @@ class PersistenceTest(unittest.TestCase):
         sys.path.insert(0, str(ROOT))
         os.environ["STRATA_PRESET_DIR"] = str(t / "presets")
         self.addCleanup(lambda: os.environ.pop("STRATA_PRESET_DIR", None))
-        from strata_control import presets
+        from strata_common import presets
         self.presets = presets
         ident = presets.current_identity(self.cfg, exe=self.cfg["exe"])
         result = {"outcome": "improved", "seconds": 900, "settings": {"args": {"--kv-resident": 65536}, "env": {}, "per_request": {}},

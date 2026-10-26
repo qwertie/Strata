@@ -16,7 +16,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from strata_control import gpu_fit
+from strata_common import gpu_fit
 
 ROLES = ("main", "helper", "off")
 OFF_AT_OR_BELOW_GB = 8.0          # owner rule: a card with 8 GB or less starts Off (it is not a helper unless the person turns it on)

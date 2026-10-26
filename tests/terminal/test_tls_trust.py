@@ -11,7 +11,7 @@ from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
-from strata_control import tls  # noqa: E402
+from strata_base import tls  # noqa: E402
 
 RAW = ("<urlopen error [SSL: CERTIFICATE_VERIFY_FAILED] certificate verify failed: unable to get local issuer certificate "
        "(_ssl.c:1010)>")
@@ -101,7 +101,7 @@ class Plain(unittest.TestCase):
                 setup._urlopen(types.SimpleNamespace(full_url="https://github.com/x"))
 
     def test_the_update_reader_gives_the_plain_message(self):
-        from strata_control import transfer
+        from strata_base import transfer
         with mock.patch.object(transfer, "check_url_policy", lambda url: None), \
                 mock.patch.object(transfer._opener, "open", side_effect=cert_error()):
             with self.assertRaises(transfer.TransferError) as cm:

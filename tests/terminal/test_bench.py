@@ -21,8 +21,8 @@ from strata_cli import bench
 from strata_cli.cli import main
 from strata_cli.client import Endpoint
 from strata_control import benchmarking, journal, management
-from strata_control.private_files import is_unshared
-from strata_control.profiles import ProfileError
+from strata_base.private_files import is_unshared
+from strata_common.profiles import ProfileError
 
 
 class _NoGpu:
@@ -45,7 +45,7 @@ class BenchTests(unittest.TestCase):
         self.root = Path(self.temp.name)
         # The telemetry sampler reads the machine's real GPU on a timer; a card's first reading lands
         # between two benchmark runs and makes their reported environments differ. Use no GPU.
-        patcher = mock.patch("serve.telemetry.gpu_reader", lambda index=0, amd=False: _NoGpu())
+        patcher = mock.patch("strata_common.telemetry.gpu_reader", lambda index=0, amd=False: _NoGpu())
         patcher.start()
         self.addCleanup(patcher.stop)
         tok = ByteTokenizer()
@@ -163,7 +163,7 @@ class BenchTests(unittest.TestCase):
             linked.symlink_to(output, target_is_directory=True)
             with self.assertRaisesRegex(ProfileError, "owner-only"):
                 benchmarking.request_cancel("local", linked)
-            with mock.patch("strata_control.profiles.load", return_value=({"id": "local"}, "a" * 16)):
+            with mock.patch("strata_common.profiles.load", return_value=({"id": "local"}, "a" * 16)):
                 request = management.dispatch({"schema_version": 1, "action": "bench.cancel",
                                                "profile": "local",
                                                "params": {"path": str(output / "results.json")}})
@@ -187,7 +187,7 @@ class BenchTests(unittest.TestCase):
         request = {"schema_version": 1, "action": "bench.progress", "profile": "local",
                    "params": {"path": str(output / "results.json")}}
         with mock.patch.dict(os.environ, {"STRATA_PROFILE_DIR": str(self.root / "profiles")}), \
-                mock.patch("strata_control.profiles.load", return_value=({"id": "local"}, "a" * 16)):
+                mock.patch("strata_common.profiles.load", return_value=({"id": "local"}, "a" * 16)):
             with benchmarking.benchmark_lease("local", output):
                 active = management.dispatch(request)
                 self.assertEqual(active["activity"], "active")
@@ -209,7 +209,7 @@ class BenchTests(unittest.TestCase):
                    "owner_id": "d" * 32, "instance_id": instance}
         (self.root / "profiles").mkdir(mode=0o700)
         with mock.patch.dict(os.environ, {"STRATA_PROFILE_DIR": str(self.root / "profiles")}), \
-                mock.patch("strata_control.profiles.load", return_value=({"id": "local"}, revision)), \
+                mock.patch("strata_common.profiles.load", return_value=({"id": "local"}, revision)), \
                 mock.patch.object(benchmarking, "_settings", return_value=settings), \
                 mock.patch.object(benchmarking, "plan", return_value=planned), \
                 mock.patch.object(bench, "_managed_match", return_value={"matched": True,

@@ -1,9 +1,9 @@
-"""serve/lifeline.py - a process Strata starts ends when the process that started it ends, however that ends.
+"""strata_common/lifeline.py - a process Strata starts ends when the process that started it ends, however that ends.
 
 The graceful path is the server's own (QUIT to the engine, drain, exit). This module is the guarantee behind it
 for the cases where nothing gets to run: kill -9, a crash, the console window closed, logoff, power-off.
 
-* Windows: the child joins a kill-on-close job object whose only handle is ours (serve/winjob.py).
+* Windows: the child joins a kill-on-close job object whose only handle is ours (strata_base/winjob.py).
 * Linux: ``PR_SET_PDEATHSIG`` = SIGKILL, set in the child before it execs. The kernel ties the signal to the
   THREAD that forked the child, not to the process, so every start goes through one long-lived "anchor" thread;
   a request thread that starts an engine and then finishes would otherwise take the engine with it.
@@ -25,8 +25,8 @@ import sys
 import threading
 import time
 
-from serve import winjob
-from strata_control import procs
+from strata_base import winjob
+from strata_common import procs
 
 _REAL_POPEN = subprocess.Popen                  # tests replace subprocess.Popen; isinstance needs the class
 LINUX = sys.platform.startswith("linux")
@@ -240,7 +240,7 @@ def popen(args, role: str = "engine", **kw) -> subprocess.Popen:
     the engine the clean way (STOP, QUIT, wait) instead of the engine dying under a request that could have been
     finished or cancelled. What ties the engine's life to ours is the guarantee below, not the shared terminal.
 
-    It also leaves a record (strata_control/procs.py) so that, if everything here dies anyway, the next start can
+    It also leaves a record (strata_common/procs.py) so that, if everything here dies anyway, the next start can
     find this process by PID, start time and command line and end it."""
     how = mechanism()
     isolate = role in ISOLATED_ROLES

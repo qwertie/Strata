@@ -2,7 +2,7 @@
 
 The choice is the person's, and it is saved in the model's run config as ``"drafting"``: ``auto`` (the default), ``mtp``, ``dflash2`` or
 ``off``. ``strata launch --drafting ...`` writes it, the app's Models screen writes it, and ``serve/server.py`` applies it at every start
-(like ``"mtp": false``, strata_control/draft_layer.py), so a setup run that rewrites the engine arguments cannot undo it.
+(like ``"mtp": false``, strata_common/draft_layer.py), so a setup run that rewrites the engine arguments cannot undo it.
 
   mtp      the engine's default drafter, the model's own draft layer (no extra flags)
   dflash2  ``--draft dflash2 --draft-model <pack>``: the DFlash2 block drafter (incoai/Qwen3.8-Flash-Next-DFlash2) for Qwen3.8-Flash-Next
@@ -214,7 +214,7 @@ def data_dir_of(args: list[Any]) -> Path | None:
 
 def apply(cfg: dict[str, Any], *, klass: str, data_dir: str | Path | None = None, family: str | None = None) -> Decision:
     """Put the config's ``"drafting"`` choice on its engine arguments (in place). ``off`` is the draft layer's own switch (``"mtp": false``)."""
-    from strata_control import draft_layer
+    from strata_common import draft_layer
     decision = decide(cfg.get("drafting"), klass=klass, model_name=cfg.get("model_name"), family=family, data_dir=data_dir)
     if cfg.get("drafting") is None and decision.drafter == "mtp":
         return decision                                       # nobody chose and Auto is the MTP: the arguments stay exactly as they are

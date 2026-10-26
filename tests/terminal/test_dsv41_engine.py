@@ -15,8 +15,9 @@ from unittest import mock
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "packaging"))
 import feed_tool  # noqa: E402
 import package_engine  # noqa: E402
-from strata_control import components, dsv41_engine, engine_component as ec, signing  # noqa: E402
-from strata_control.targets import host_platform  # noqa: E402
+from strata_control import components, dsv41_engine  # noqa: E402
+from strata_common import engine_component as ec, signing  # noqa: E402
+from strata_common.targets import host_platform  # noqa: E402
 from tests.terminal import update_fixture as fx  # noqa: E402
 
 EXE = dsv41_engine.exe_name()

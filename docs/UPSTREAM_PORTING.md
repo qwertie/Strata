@@ -47,9 +47,12 @@ code updates its rows here. Rows are grouped by step; `{a,b}` lists several file
 | Upstream path | Path here | Step | Status |
 |---|---|---|---|
 | `serve/` | `strata_server/` | A2 | planned |
-| `serve/{winjob,keepawake}.py` | `strata_base/` | A2 | planned |
-| `strata_control/{procs,tls,private_files}.py` | `strata_base/` | A2 | planned |
-| `strata_control/{gpu_roles,engine_component,presets}.py` | `strata_common/` | A2 | planned |
+| `serve/winjob.py`, `strata_control/{atomic,longpath,loopback,posix_owner,private_files,tls,transfer,winproc}.py` | `strata_base/` | A2 | done |
+| `serve/{launch_identity,lifeline,ready,telemetry}.py` | `strata_common/` | A2 | done |
+| `strata_control/{acquisition,draft_layer,drafting,engine_component,gpu_fit,gpu_roles,hipblaslt_tuning,offline,paths,presets,procs,profiles,signing,targets,tune_history,tune_knobs,tune_machine,user_args,vision_reader}.py`, `strata_control/update_keys.json` | `strata_common/` | A2 | done |
+| the engine client in `serve/server.py` (`StrataEngine`, `MockEngine`, `engine_args`, `child_env`, the API-key helpers) | `strata_common/` | A2 | planned |
+| `strata_cli/bench.py` and the library functions of `strata_cli/cli.py` that `strata_control/` uses | `strata_control/` | A2 | planned |
+| `strata_cli/client.py` | `strata_common/` (the monitor bundle gets schema 7) | A2 | planned |
 | `tools/gguf_reader.py` | `strata_common/` | A2 | planned |
 | helpers repeated in `setup.py` and `tools/*.py` (`sha256`, `http_json`, `get_json`, GPU detection, engine download) | `strata_base/`, `strata_common/` | A2 | planned |
 | `src/platform/`, `include/strata/platform/` (except `hip_compat/`) | `src/base/platform/`, `include/strata/base/platform/` | A3 | planned |

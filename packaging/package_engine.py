@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Make a local, unpublished engine package for the component folder (strata_control/engine_component.py).
+"""Make a local, unpublished engine package for the component folder (strata_common/engine_component.py).
 
     python packaging/package_engine.py --src <folder with strata[.exe] and its libraries> --backend cuda \
         --version 0.1.45 --out <components>/engine --arch sm_86 --arch compute_89 \
@@ -40,7 +40,7 @@ sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import binary_deps  # noqa: E402
-from strata_control import engine_component as ec  # noqa: E402
+from strata_common import engine_component as ec  # noqa: E402
 from strata_control.components import BACKEND_MATRIX, host_platform  # noqa: E402
 
 
@@ -159,7 +159,7 @@ def select(src: Path, entrypoint: str, *, tree: bool, include: list[str]) -> lis
         if tree or (top_level and wanted(path)) or any(fnmatch.fnmatch(rel, pattern) for pattern in include):
             chosen.add(rel)
     for path in sorted((src / "tuning").glob("*.txt")) if (src / "tuning").is_dir() else []:
-        if path.is_file() and not path.is_symlink():      # the hipBLASLt tuning tables of an AMD package (strata_control/hipblaslt_tuning.py)
+        if path.is_file() and not path.is_symlink():      # the hipBLASLt tuning tables of an AMD package (strata_common/hipblaslt_tuning.py)
             chosen.add(path.relative_to(src).as_posix())
     chosen.discard(entrypoint)
     return [entrypoint] + sorted(chosen)
@@ -181,7 +181,7 @@ def build(src: Path, backend: str, version: str, target: str, out: Path, *, entr
         raise SystemExit("refusing to package the cuda12 engine without sm_60, sm_61 or sm_70: it is the Pascal and Volta build "
                          "(CUDA 12.9, -DSTRATA_EXPERIMENTAL_SM60=ON, --arch sm_60 --arch sm_61 --arch sm_70 ...; see packaging/build_cuda_linux.sh)")
     if backend == "hip":
-        from strata_control import hipblaslt_tuning
+        from strata_common import hipblaslt_tuning
         problems = hipblaslt_tuning.check_stage(src, archs)
         if problems:
             raise SystemExit("refusing to package the AMD engine:\n  " + "\n  ".join(problems))

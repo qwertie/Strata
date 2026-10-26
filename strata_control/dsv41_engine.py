@@ -52,8 +52,9 @@ def install_package(dest: Path, package: str | os.PathLike, *, emit: Callable[[s
     """Install a DeepSeek engine package the person downloaded from the release page (a .tar.gz / .zip, or the unpacked folder) into `dest`.
     Checked before anything is installed: it is a DeepSeek engine package for this system, its manifest is signed by a key Strata trusts, and every
     file matches the hash in the manifest.  Returns the new strata-dsv41, or None with a plain line through `emit`."""
-    from strata_control import components, engine_component as ec, signing, updater
-    from strata_control.targets import host_platform
+    from strata_control import components, updater
+    from strata_common import engine_component as ec, signing
+    from strata_common.targets import host_platform
 
     src, dest = Path(package).expanduser(), Path(dest)
     if not src.exists():
@@ -119,7 +120,8 @@ def install_package(dest: Path, package: str | os.PathLike, *, emit: Callable[[s
 def install(dest: Path, source: str, *, hardware: dict | None = None, emit: Callable[[str], None] = print, cancel=None) -> Path | None:
     """Fetch the DeepSeek engine package for this PC from the signed feed at `source` (a URL or a folder) into `dest`.
     Returns the new strata-dsv41, or None with a plain line through `emit` when there is none (not in the feed, nothing for this PC)."""
-    from strata_control import feed as feedmod, signing, updater
+    from strata_control import feed as feedmod, updater
+    from strata_common import signing
 
     dest = Path(dest)
     work = dest.parent / (DIR + ".work")
@@ -167,7 +169,7 @@ def source_reachable(source: str, timeout: float = 10.0) -> bool:
     import urllib.error
     import urllib.parse
     import urllib.request
-    from strata_control import transfer
+    from strata_base import transfer
     kind = transfer.kind_of(source)
     if kind in ("path", "file"):
         try:
@@ -206,7 +208,9 @@ def upgrade(dest: Path, source: str, *, installed: Path | None = None, hardware:
     folders (one generation).  Returns the new strata-dsv41, or None: nothing newer, the feed cannot be read (silent: a launch never waits on the
     network), or the newer one could not be installed (one plain line, the installed engine keeps running).  Versions compare numerically
     (0.1.49 < 0.1.49.1).  The caller does not call this for a --dsv41-package or a STRATA_DSV41_EXE."""
-    from strata_control import feed as feedmod, signing, transfer, updater
+    from strata_control import feed as feedmod, updater
+    from strata_common import signing
+    from strata_base import transfer
 
     dest = Path(dest)
     current = installed or find(dest)

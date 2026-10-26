@@ -13,7 +13,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "tools"))
 import setup  # noqa: E402
-from strata_control import vision_reader as VR  # noqa: E402
+from strata_common import vision_reader as VR  # noqa: E402
 
 
 class PictureDefaults(unittest.TestCase):
@@ -72,7 +72,7 @@ class PictureDefaults(unittest.TestCase):
         self.assertEqual(setup.hip_vision("gpu", 16.0), "gpu")
 
 class MacPictureDefaults(unittest.TestCase):
-    """setup.py on a Mac: pictures on by default, on the Metal reader (strata_control/vision_reader.py)."""
+    """setup.py on a Mac: pictures on by default, on the Metal reader (strata_common/vision_reader.py)."""
 
     def test_nothing_asked_means_the_gpu_reader_for_every_mac_size(self):
         from strata_control import mac_fit as MF

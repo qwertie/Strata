@@ -11,7 +11,7 @@ import json
 import sys
 from pathlib import Path
 
-from strata_control import acquisition, drafting
+from strata_common import acquisition, drafting
 
 
 def add_parser(sp) -> None:
@@ -31,7 +31,7 @@ def add_parser(sp) -> None:
 
 def _card_class() -> str:
     try:
-        from strata_control import engine_component
+        from strata_common import engine_component
         return drafting.card_class(list(engine_component.cuda_archs_present()) + list(engine_component.hip_archs_present()))
     except Exception:                                        # noqa: BLE001 - an unknown card is the "other" class
         return "other"

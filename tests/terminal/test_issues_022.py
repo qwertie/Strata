@@ -105,7 +105,7 @@ class WindowsRuntimeFolderRefused(unittest.TestCase):
 
     def setUp(self):
         from unittest import mock
-        from strata_control import private_files as pf
+        from strata_base import private_files as pf
         self.pf, self.mock = pf, mock
         self.me = "S-1-5-21-1-2-3-1001"
         patch = mock.patch.object(pf, "current_user_sid", return_value=self.me)
@@ -163,7 +163,8 @@ class WindowsRuntimeFolderRefused(unittest.TestCase):
                 self.assertEqual(r.call_count, 1)
 
     def test_runtime_dir_still_refuses_and_says_who_when_the_repair_fails(self):
-        from strata_control import profiles, runtime
+        from strata_common import profiles
+        from strata_control import runtime
         pf = self.pf
         with tempfile.TemporaryDirectory() as tmp:
             base = Path(tmp) / "runtime"
@@ -188,7 +189,8 @@ class WindowsRuntimeFolderMoreCases(unittest.TestCase):
 
     def run_dir(self, *, sddl, restrict=None, repair=None, acls=True):
         from unittest import mock
-        from strata_control import private_files as pf, runtime
+        from strata_base import private_files as pf
+        from strata_control import runtime
         with tempfile.TemporaryDirectory() as tmp:
             base = Path(tmp) / "runtime"
             base.mkdir()
@@ -262,7 +264,7 @@ class WindowsRuntimeFolderMoreCases(unittest.TestCase):
         self.assertEqual(calls["restrict"], 1)
 
     def test_the_real_system_drive_has_permissions(self):
-        from strata_control import private_files as pf
+        from strata_base import private_files as pf
         self.assertTrue(pf.volume_has_acls(os.environ.get("SystemRoot", "C:\\Windows")))
 
 
@@ -352,7 +354,7 @@ class Issue3302AdministratorAlias(unittest.TestCase):
 
     def setUp(self):
         from unittest import mock
-        from strata_control import private_files as pf
+        from strata_base import private_files as pf
         self.pf = pf
         self.mock = mock
         # the built-in Administrator's string SID on this machine: resolve the alias the same way the fix does
@@ -394,7 +396,7 @@ class Issue3488IntegrityRetry(unittest.TestCase):
 
     def test_second_read_decides(self):
         from unittest import mock
-        from strata_control import engine_component as ec
+        from strata_common import engine_component as ec
         path = Path("x")
         with mock.patch.object(ec, "_sha256", side_effect=["bad", "good"]) as sha, mock.patch.object(ec.time, "sleep"):
             self.assertEqual(ec._hash_settled(path, "good"), "good")
@@ -427,7 +429,7 @@ class Issue3504MultiValueArgs(unittest.TestCase):
             "--conversation-cache-mib", "8192"]
 
     def test_two_values_are_two_entries(self):
-        from strata_control import tune_knobs
+        from strata_common import tune_knobs
         for typed in ("4,44", "4 44", "4-44"):
             out = tune_knobs.apply_to_argv(self.ARGS, {"--control-vector-layer-range": typed})
             i = out.index("--control-vector-layer-range")
@@ -436,7 +438,7 @@ class Issue3504MultiValueArgs(unittest.TestCase):
 
     def test_off_removes_the_option_and_every_value(self):
         from strata_cli.launch import settings as S
-        from strata_control import tune_knobs
+        from strata_common import tune_knobs
         extra = {"--control-vector-layer-range": "off", "--cvec-dir": "off"}
         a, _ = S.as_argv_changes(extra, tune_knobs.BOOL_FLAGS)
         out = tune_knobs.apply_to_argv(self.ARGS, a)
@@ -444,14 +446,14 @@ class Issue3504MultiValueArgs(unittest.TestCase):
 
     def test_an_empty_value_is_no_bare_flag(self):
         from strata_cli.launch import settings as S
-        from strata_control import tune_knobs
+        from strata_common import tune_knobs
         a, _ = S.as_argv_changes({"--cvec-dir": "", "--kv-grow": ""}, tune_knobs.BOOL_FLAGS)
         self.assertEqual(a, {"--kv-grow": True})
         self.assertEqual(tune_knobs.apply_to_argv(self.ARGS, a)[:-1].count("--cvec-dir"), 1)
 
     def test_set_flag_and_the_table_keep_both_values(self):
         from strata_cli.launch import params
-        from strata_control import user_args
+        from strata_common import user_args
         self.assertEqual(user_args.set_flag([], "--control-vector-layer-range", "4,44"),
                          ["--control-vector-layer-range", "4", "44"])
         self.assertEqual(params.argv_to_dict(self.ARGS)["--control-vector-layer-range"], "4 44")

@@ -10,7 +10,7 @@ import sys
 import tempfile
 import threading
 import time
-from strata_control import atomic as _atomic_mod
+from strata_base import atomic as _atomic_mod
 from pathlib import Path
 from typing import Any
 
@@ -109,13 +109,13 @@ def _fail(message: str, code: int, machine: bool) -> int:
 
 
 def _load_target(target: str) -> tuple[Path, dict[str, Any]]:
-    from strata_control import profiles
+    from strata_common import profiles
     path, _profile, _rev = profiles.resolve(target)
     return path, profiles.read_run_config(path)
 
 
 def _engine_exe(cfg: dict[str, Any]) -> str:
-    from strata_control import engine_component
+    from strata_common import engine_component
     ref = cfg.get("exe")
     if engine_component.is_reference(ref):
         return engine_component.expand(ref, cfg, full=False)
@@ -165,14 +165,15 @@ def minutes_text(seconds: float | None) -> str:
 
 
 def _hw_hash(identity: dict[str, Any]) -> str:
-    from strata_control import tune_machine
+    from strata_common import tune_machine
     return tune_machine.stable_hash((identity.get("hardware") or {}).get("hard"))
 
 
 # --------------------------------------------------------------------------- tune auto
 
 def auto(a: argparse.Namespace) -> int:
-    from strata_control import autotune, engine_component, presets, tune_knobs, tune_machine, tuning
+    from strata_control import autotune, tuning
+    from strata_common import engine_component, presets, tune_knobs, tune_machine
     from strata_control.tune_session import WorkerSession
 
     machine = a.output == "json"
@@ -271,8 +272,8 @@ def _human_result(r: dict[str, Any], saved: dict[str, Any] | None) -> str:
         lines.append("  Changed: " + ", ".join(f"{k} {v}" for k, v in shown.items()))
         lines.append(f"  Measured: {r['base'].get('decode_tok_s')} -> {r['chosen'].get('decode_tok_s')} tok/s "
                      f"({r['faster_pairs']} of {r['pairs']} pairs faster)")
-        from strata_control.tune_knobs import ANSWER_NOTICE
-        from strata_control.tune_knobs import ANSWER_NOTICE_UNSTEADY
+        from strata_common.tune_knobs import ANSWER_NOTICE
+        from strata_common.tune_knobs import ANSWER_NOTICE_UNSTEADY
         unsteady = r["answers"].get("default_repeatable") is False and r["answers"]["class"] in ANSWER_NOTICE_UNSTEADY
         lines.append("  " + (ANSWER_NOTICE_UNSTEADY if unsteady else ANSWER_NOTICE).get(r["answers"]["class"], ""))
     else:
@@ -287,7 +288,8 @@ def _human_result(r: dict[str, Any], saved: dict[str, Any] | None) -> str:
 # --------------------------------------------------------------------------- presets
 
 def presets_command(a: argparse.Namespace) -> int:
-    from strata_control import autotune, presets, tune_knobs
+    from strata_control import autotune
+    from strata_common import presets, tune_knobs
 
     machine = a.output == "json"
     cmd = a.presets_command
@@ -349,7 +351,7 @@ def presets_command(a: argparse.Namespace) -> int:
 
 
 def _summary(p: dict[str, Any]) -> dict[str, Any]:
-    from strata_control import presets
+    from strata_common import presets
     m = p.get("measured") or {}
     return {"id": p["id"], "name": p["name"], "active": bool(p.get("active")), "created": p.get("created"),
             "choices": p.get("choices"), "settings": p.get("settings"), "answers": p.get("answers"),
@@ -361,7 +363,7 @@ def _summary(p: dict[str, Any]) -> dict[str, Any]:
 def _effective(a: argparse.Namespace, machine: bool) -> int:
     """The values a start will really use (owner feedback, item 11): the configuration with the active saved tuning put on top,
     plus the list of what the tuning changed, so Expert mode can show the tuned numbers and not the untuned ones."""
-    from strata_control import presets, tune_knobs
+    from strata_common import presets, tune_knobs
     _path, cfg = _load_target(a.target)
     merged, info = presets.overlay(cfg)
     before = [str(x) for x in cfg.get("args") or []]
@@ -380,7 +382,7 @@ def _effective(a: argparse.Namespace, machine: bool) -> int:
 
 def _off(a: argparse.Namespace, machine: bool) -> int:
     """Switch the saved tuning off for these choices. It is kept (and listed), so switching it back on is one step."""
-    from strata_control import presets
+    from strata_common import presets
     _path, cfg = _load_target(a.target)
     ident = presets.current_identity(cfg)
     slot = presets.slot_key(presets.choices_from_config(cfg), (ident.get("model") or {}).get("sha256_shard1"))
@@ -389,7 +391,7 @@ def _off(a: argparse.Namespace, machine: bool) -> int:
 
 
 def _status(a: argparse.Namespace, machine: bool) -> int:
-    from strata_control import presets
+    from strata_common import presets
     _path, cfg = _load_target(a.target)
     ident = presets.current_identity(cfg)
     choices = presets.choices_from_config(cfg)
@@ -409,7 +411,8 @@ def _status(a: argparse.Namespace, machine: bool) -> int:
 
 
 def _recheck(a: argparse.Namespace, machine: bool) -> int:
-    from strata_control import autotune, presets, tuning
+    from strata_control import autotune, tuning
+    from strata_common import presets
     from strata_control.tune_session import WorkerSession
     preset = presets.find(a.preset)
     _path, cfg = _load_target(a.target)

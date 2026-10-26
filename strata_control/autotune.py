@@ -29,7 +29,7 @@ import time
 from dataclasses import dataclass, field
 from typing import Any, Callable
 
-from strata_control import engine_component, tune_knobs, tune_machine
+from strata_common import engine_component, tune_knobs, tune_machine
 from strata_control.tune_session import RequestSet, RunResult, Session, StartFailed
 
 MIN_FREE_RAM_MIB = 3584            # 3.5 GiB left for the system at every start (6.5)
