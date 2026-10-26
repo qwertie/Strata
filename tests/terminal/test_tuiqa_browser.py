@@ -66,12 +66,13 @@ class NoBrowserByItself(unittest.TestCase):
 class StartMessage(unittest.TestCase):
     def narrate(self, opens: bool) -> str:
         from serve import server
+        from strata_common import engine_client
         d = tempfile.mkdtemp()
         log = Path(d) / "engine.log"
         log.write_text("strata generate: expert arena: resident, 31.64 GiB\n", encoding="utf-8")
         done, out = threading.Event(), io.StringIO()
-        with mock.patch.object(server, "OPENS_BROWSER", opens), contextlib.redirect_stdout(out):
-            t = threading.Thread(target=server.narrate_start, args=(str(log), 0, [], done))
+        with mock.patch.object(engine_client, "OPENS_BROWSER", opens), contextlib.redirect_stdout(out):
+            t = threading.Thread(target=engine_client.narrate_start, args=(str(log), 0, [], done))
             t.start()
             time.sleep(0.8)
             done.set()

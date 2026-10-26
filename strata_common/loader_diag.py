@@ -1,4 +1,4 @@
-"""serve/loader_diag.py - name the file a Windows engine could not load.
+"""strata_common/loader_diag.py - name the file a Windows engine could not load.
 
 A Windows program that imports a DLL which is not there ends with exit code 0xC0000135 and prints nothing. The person only sees
 "the engine stopped". This reads the engine's import table (the same reader as packaging/binary_deps.py, copied because the

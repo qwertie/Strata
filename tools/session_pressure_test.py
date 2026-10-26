@@ -15,7 +15,8 @@ REPO = Path(os.environ.get("STRATA_REPO", Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO / "tools")); sys.path.insert(0, str(REPO))
 import strata_tokenizer as ST
 from serve import server as S
-from serve.server import StrataEngine, child_env
+from strata_common.engine_client import StrataEngine, child_env
+from strata_common import engine_client  # noqa: E402
 
 cfg = json.load(open(sys.argv[1]))
 out_file = sys.argv[2]
@@ -66,7 +67,7 @@ try:
     r = eng.session_file("save", out_file)
     saved = True
     print("SAVE: ok", r, flush=True)
-except S.SessionRefused as e:
+except engine_client.SessionRefused as e:
     print("SAVE: refused", e.kind, str(e)[:300], flush=True)
 if not saved and "--session-save-reclaim" in args:
     # the server's bounded retry on the same engine
@@ -74,10 +75,10 @@ if not saved and "--session-save-reclaim" in args:
         engine = eng
     from serve.session_save_retry import session_file as retry
     try:
-        r = retry(Svc, "save", out_file, S.SessionRefused)
+        r = retry(Svc, "save", out_file, engine_client.SessionRefused)
         saved = True
         print("SAVE after the bounded wait: ok", r, flush=True)
-    except S.SessionRefused as e:
+    except engine_client.SessionRefused as e:
         print("SAVE after the bounded wait: refused", e.kind, str(e)[:300], flush=True)
 hog = None   # the RAM goes back
 if not saved:

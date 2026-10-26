@@ -32,12 +32,13 @@ class CyrillicFolder(unittest.TestCase):
         self.assertIn(WORD, back["args"][1])
 
     def test_a_child_python_gets_the_path_as_an_argument_and_prints_it_back(self):
-        # the server starts the engine through serve.server.popen; the child reads the argument and its own file listing
+        # the server starts the engine through strata_common.engine_client.popen; the child reads the argument and its own file listing
         from serve import server
+        from strata_common import engine_client
         (self.dir / "m.gguf").write_bytes(b"x")
         env = dict(os.environ, PYTHONUTF8="1", PYTHONIOENCODING="utf-8")
         code = "import sys, os; print(sys.argv[1]); print(os.path.exists(os.path.join(sys.argv[1], 'm.gguf')))"
-        proc = server.popen("test child", [sys.executable, "-c", code, str(self.dir)], role="test",
+        proc = engine_client.popen("test child", [sys.executable, "-c", code, str(self.dir)], role="test",
                             stdout=subprocess.PIPE, env=env)
         out = proc.stdout.read().decode("utf-8").splitlines()
         proc.wait(timeout=30)

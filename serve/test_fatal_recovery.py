@@ -8,7 +8,8 @@ import time
 import unittest
 import json
 import urllib.request
-from serve.server import StrataEngine, Service, ChatTemplate, EngineDied, serve
+from serve.server import Service, ChatTemplate, serve
+from strata_common.engine_client import StrataEngine, EngineDied
 from serve.test_server import ByteTokenizer
 
 FAKE=r'''

@@ -10,7 +10,7 @@ import unittest
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from serve.server import StrataEngine  # noqa: E402
+from strata_common.engine_client import StrataEngine  # noqa: E402
 
 
 def engine(batch, groups, pipelined=True):

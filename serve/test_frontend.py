@@ -4,7 +4,8 @@ from pathlib import Path
 import unittest
 
 from serve.frontend import ChatTemplate, anthropic_to_messages, openai_to_messages, require_messages
-from serve.server import ByteTokenizer, MockEngine, Service
+from serve.server import ByteTokenizer, Service
+from strata_common.engine_client import MockEngine
 
 
 class EmptyAssistantHistory(unittest.TestCase):

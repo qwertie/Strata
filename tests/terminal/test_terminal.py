@@ -17,9 +17,9 @@ from strata_cli.cli import main
 from strata_cli.client import (ClientError, Endpoint, normalize_legacy, normalize_status_only,
                                sanitize_telemetry, server_url)
 from strata_cli.render import display_width, field, render_view, safe
-from serve.server import (configure_batch_telemetry_env, parse_batch_window_sample,
-                          parse_stage_in_flight_sample, parse_engine_stage_line,
-                          read_engine_stage_log, visible_device_order)
+from serve.server import (configure_batch_telemetry_env, visible_device_order)
+from strata_common.engine_client import (parse_batch_window_sample, parse_stage_in_flight_sample,
+    parse_engine_stage_line, read_engine_stage_log)
 
 
 def four_gpu_snapshot():
@@ -580,7 +580,8 @@ class ContractTests(unittest.TestCase):
             self.assertEqual(main(["serve", "--profile", "missing.json", "--parallel", "0"]), 2)
 
     def test_offline_server_rejects_remote_image_before_fetch(self):
-        from serve.server import ByteTokenizer, ChatTemplate, MockEngine, Service
+        from serve.server import ByteTokenizer, ChatTemplate, Service
+        from strata_common.engine_client import MockEngine
         tok = ByteTokenizer()
         svc = Service(MockEngine(tok, "ok"), tok,
                       ChatTemplate(Path(__file__).resolve().parents[2] / "serve/chat_template.jinja"))

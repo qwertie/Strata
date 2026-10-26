@@ -17,7 +17,7 @@ from pathlib import Path
 REPO = Path(os.environ.get("STRATA_REPO", Path(__file__).resolve().parent.parent))
 sys.path.insert(0, str(REPO / "tools")); sys.path.insert(0, str(REPO))
 import strata_tokenizer as ST
-from serve.server import StrataEngine, child_env
+from strata_common.engine_client import StrataEngine, child_env
 
 cfg = json.load(open(sys.argv[1]))
 tp = Path(cfg["tokenizer"])

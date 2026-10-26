@@ -11,7 +11,8 @@ for name in ['source', 'config', 'candidate', 'output']:
 a = ap.parse_args()
 source = a.source.resolve()
 sys.path[:0] = [str(source), str(source / 'tools')]
-from serve.server import StrataEngine, Service, engine_args, child_env, serve
+from serve.server import Service, serve
+from strata_common.engine_client import StrataEngine, engine_args, child_env
 from serve.frontend import ChatTemplate
 import strata_tokenizer as ST
 

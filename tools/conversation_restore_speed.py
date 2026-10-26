@@ -104,7 +104,7 @@ def main():
         print('Dry run: baseline (live turns) vs candidate (every turn after the first restored from a parked '
               'snapshot); greedy, fixed residency. Use --run with the GPU free.')
         return
-    from serve.server import StrataEngine, child_env
+    from strata_common.engine_client import StrataEngine, child_env
     from serve.frontend import ChatTemplate
     from conversation_cache_parity import load_tokenizer
     cfg = json.loads(a.config.read_text(encoding='utf-8'))

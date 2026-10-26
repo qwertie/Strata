@@ -146,7 +146,7 @@ REPO = Path(os.environ["STRATA_REPO"])
 sys.path.insert(0, str(REPO / "tools"))
 sys.path.insert(0, str(REPO))
 import strata_tokenizer as ST  # noqa: E402
-from serve.server import child_env  # noqa: E402
+from strata_common.engine_client import child_env  # noqa: E402
 
 SMP = Sampler()
 CFG, OUT = sys.argv[2], Path(sys.argv[3])

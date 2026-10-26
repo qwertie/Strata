@@ -16,7 +16,7 @@ REPO = Path(os.environ["STRATA_REPO"])
 sys.path.insert(0, str(REPO / "tools"))
 sys.path.insert(0, str(REPO))
 import strata_tokenizer as ST  # noqa: E402
-from serve.server import StrataEngine, child_env  # noqa: E402
+from strata_common.engine_client import StrataEngine, child_env  # noqa: E402
 
 EXE = sys.argv[1]
 NAME = sys.argv[2] if len(sys.argv) > 2 else "agent"

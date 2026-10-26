@@ -8,7 +8,7 @@ import io
 import unittest
 
 from serve import runconfig
-from serve.server import engine_args
+from strata_common.engine_client import engine_args
 from strata_common import draft_layer
 
 ARGS = ["--pack", "/p", "--spec", "4", "--spec-min-p", "0.5", "--mtp", "/m/rt", "--max-context", "32768", "--batch-mtp", "--kv", "int8"]

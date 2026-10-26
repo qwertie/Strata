@@ -12,7 +12,9 @@ import urllib.request
 from unittest import mock
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import serve.server as server                                            # noqa: E402
-from serve.server import StrataEngine, Service, ChatTemplate, ByteTokenizer, serve  # noqa: E402
+from strata_common import engine_client
+from serve.server import Service, ChatTemplate, ByteTokenizer, serve  # noqa: E402
+from strata_common.engine_client import StrataEngine
 
 # never prints READY: the READY read times out and the process is killed
 SILENT = r'''
@@ -42,7 +44,7 @@ class ReadyTimeout(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory(); self.addCleanup(self.tmp.cleanup)
         self.root = Path(self.tmp.name)
-        self._patchers = [mock.patch.object(server, 'ENGINE_READY_S', 0.5),
+        self._patchers = [mock.patch.object(engine_client, 'ENGINE_READY_S', 0.5),
                           mock.patch.object(StrataEngine, 'RESTART_RETRY_S', 0.0)]
         for p in self._patchers:
             p.start(); self.addCleanup(p.stop)

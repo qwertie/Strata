@@ -17,7 +17,7 @@ from conversation_cache_parity import STATE_KEYS, load_tokenizer, require, state
 from conversation_cache_disabled import SETTINGS, common_args
 from conversation_cache_soak import answer_text
 from serve.frontend import ChatTemplate
-from serve.server import StrataEngine, child_env
+from strata_common.engine_client import StrataEngine, child_env
 
 NAMES = ['A', 'B-0', 'A-grow-0', 'B-1', 'A-grow-1', 'B-2', 'A-grow-2',
          'B-rewind', 'A-rewind', 'B-branch', 'A-branch', 'B-final']

@@ -12,7 +12,8 @@ from unittest import mock
 
 from serve.frontend import ChatTemplate
 from serve.replicas import BLOCK, ReplicaConfigError, ReplicaEngine, Router, cpu_sets, gpu_groups, replica_cfg
-from serve.server import ByteTokenizer, Service, StrataEngine, serve
+from serve.server import ByteTokenizer, Service, serve
+from strata_common.engine_client import StrataEngine
 from serve.test_parallel import FAKE_BATCH
 
 
@@ -122,7 +123,7 @@ class RouteChoice(unittest.TestCase):
 
     def test_nonfinite_forgets_the_replica(self):
         """#879: after DONE ... nonfinite the engine holds no conversation: the router forgets that replica."""
-        from serve.server import EngineNonFinite
+        from strata_common.engine_client import EngineNonFinite
 
         class NonFinite(FakeEngine):
             def generate(self, ids, max_new, sampling, cancel):

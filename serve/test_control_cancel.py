@@ -9,11 +9,12 @@ import unittest
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from serve import server  # noqa: E402
+from strata_common import engine_client
 
 
 class ControlCancelTest(unittest.TestCase):
     def _engine(self, lines):
-        eng = object.__new__(server.StrataEngine)
+        eng = object.__new__(engine_client.StrataEngine)
         eng.lines = queue.Queue()
         for l in lines:
             eng.lines.put(l)

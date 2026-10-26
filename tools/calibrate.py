@@ -223,9 +223,9 @@ class Session:
 
 def run(cfg: dict, say=print, start_engine=None, *, progress=None, cancel_event=None) -> dict:
     """Measure on the engine `cfg` describes; returns {"settings": {flag: value}, "report": {...}}.
-    `start_engine(args)` returns a started engine (serve.server.StrataEngine or a stand-in in tests)."""
+    `start_engine(args)` returns a started engine (strata_common.engine_client.StrataEngine or a stand-in in tests)."""
     if start_engine is None:
-        from serve.server import StrataEngine, child_env
+        from strata_common.engine_client import StrataEngine, child_env
 
         def start_engine(args, env=None):
             e = child_env(cfg)
@@ -248,11 +248,11 @@ def run(cfg: dict, say=print, start_engine=None, *, progress=None, cancel_event=
 
 
 def engine_args(cfg: dict) -> list[str]:
-    """The arguments the server starts this config's engine with (serve.server.engine_args), so the tuning measures
+    """The arguments the server starts this config's engine with (engine_client.engine_args), so the tuning measures
     the engine as it runs.  #447: this used to read any "gpu" list as a layer split and add --layer-split auto, which
     broke a one-card config with a helper card for the expert tier ("gpu": [0] + --expert-cache-device1: the engine
     refuses a split that leaves no card without a stage), missed the "0,2" spelling, and ignored split_skip_if_fits."""
-    from serve.server import engine_args as server_args
+    from strata_common.engine_client import engine_args as server_args
     return server_args(cfg)
 
 

@@ -11,7 +11,7 @@ import threading
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path[:0] = [str(ROOT), str(ROOT / 'tools')]
-from serve.server import StrataEngine, child_env
+from strata_common.engine_client import StrataEngine, child_env
 from serve.frontend import ChatTemplate
 import strata_tokenizer as ST
 

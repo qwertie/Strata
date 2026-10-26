@@ -201,6 +201,7 @@ class Apply(TempDir):
 
     def test_the_server_start_applies_it_for_a_component_engine(self):
         from serve import server
+        from strata_common import engine_client
         pkg = fake_package(self.root)
         (pkg / "strata").write_text("x", encoding="utf-8")
         cfg = {"exe": "component:strata-engine", "backend": "hip"}
@@ -210,13 +211,13 @@ class Apply(TempDir):
                 mock.patch.dict(os.environ, {}, clear=False), contextlib.redirect_stdout(out):
             os.environ.pop(ht.SWITCH, None)
             os.environ.pop(ht.ENGINE_VAR, None)
-            self.assertNotIn(ht.ENGINE_VAR, server.child_env(server.with_component_engine(cfg)))     # "auto" is off by default
+            self.assertNotIn(ht.ENGINE_VAR, engine_client.child_env(server.with_component_engine(cfg)))     # "auto" is off by default
             os.environ[ht.SWITCH] = "on"
             started = server.with_component_engine(cfg)
-            env = server.child_env(started)
+            env = engine_client.child_env(started)
             self.assertEqual(env[ht.ENGINE_VAR], str(pkg / "tuning" / "gfx1201-hipblaslt-100500.txt"))
             os.environ[ht.SWITCH] = "off"
-            self.assertNotIn(ht.ENGINE_VAR, server.child_env(server.with_component_engine(cfg)))
+            self.assertNotIn(ht.ENGINE_VAR, engine_client.child_env(server.with_component_engine(cfg)))
         self.assertIn("hipBLASLt tuning table", out.getvalue())
 
     def test_present_archs_picks_the_configured_card_on_linux(self):

@@ -11,7 +11,8 @@ from pathlib import Path
 from unittest import mock
 
 from serve.frontend import ChatTemplate
-from serve.server import ByteTokenizer, EngineDied, MockEngine, Service, serve
+from serve.server import ByteTokenizer, Service, serve
+from strata_common.engine_client import EngineDied, MockEngine
 
 
 class ReloadableEngine(MockEngine):
@@ -298,7 +299,7 @@ class EngineConversations(unittest.TestCase):
         import io
         import queue
         from types import SimpleNamespace
-        from serve.server import StrataEngine
+        from strata_common.engine_client import StrataEngine
         engine = StrataEngine.__new__(StrataEngine)
         engine.proc = SimpleNamespace(stdin=io.StringIO(), poll=lambda: None)
         engine.lines, engine.wlock, engine.ended = queue.Queue(), threading.Lock(), False
@@ -332,7 +333,7 @@ class EngineConversations(unittest.TestCase):
                          {"parked4": [1, 2], "slot1": [], "parked3": None})
 
     def test_an_engine_that_refuses_or_ends(self):
-        from serve.server import EngineDied
+        from strata_common.engine_client import EngineDied
         with self.assertRaises(EngineDied):
             self.bare(["ERR unknown command"]).list_conversations()
         engine = self.bare(["CONVERSATION main vram empty 0 4096 409600 0"])

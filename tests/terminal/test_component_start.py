@@ -21,6 +21,7 @@ from unittest import mock
 from strata_cli.cli import main
 from strata_control import components, runtime
 from strata_common import engine_component as ec, profiles
+from strata_common import engine_client  # noqa: E402
 
 WINDOWS = os.name == "nt"
 FAKE_ENGINE = (
@@ -187,12 +188,13 @@ class ComponentStart(unittest.TestCase):
 
     def test_the_package_folder_is_first_on_the_library_path(self):
         from serve import server
+        from strata_common import engine_client
         folder = install_fake_engine(self.components)
         cfg = server.with_component_engine({"exe": "component:strata-engine", "backend": "cuda", "lib_dirs": ["/other"]})
         self.assertEqual(Path(cfg["exe"]).parent.resolve(), folder.resolve())
         self.assertEqual(cfg["lib_dirs"][0], str(folder / ("engine.cmd" if WINDOWS else "engine")).rsplit(os.sep, 1)[0])
         self.assertEqual(cfg["lib_dirs"][1:], ["/other"])
-        env = server.child_env(cfg)
+        env = engine_client.child_env(cfg)
         var = "PATH" if WINDOWS else "LD_LIBRARY_PATH"
         self.assertTrue(env[var].startswith(str(folder)))
         plain = {"exe": "/some/where/strata", "args": []}
@@ -228,7 +230,7 @@ class ComponentStart(unittest.TestCase):
         (folder / "BUILD.json").write_text(json.dumps({"lib_dirs": ["rocm/bin", "../escape", "missing", "/abs"]}), encoding="utf-8")
         cfg = server.with_component_engine({"exe": "component:strata-engine", "backend": "cuda", "lib_dirs": ["/other"]})
         self.assertEqual(cfg["lib_dirs"], [str(folder), str(folder / "rocm" / "bin"), "/other"])
-        env = server.child_env(cfg)
+        env = engine_client.child_env(cfg)
         var = "PATH" if WINDOWS else "LD_LIBRARY_PATH"
         self.assertTrue(env[var].startswith(str(folder) + os.pathsep + str(folder / "rocm" / "bin")))
 

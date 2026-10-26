@@ -40,7 +40,7 @@ def _address(ready: dict, expected_host: str) -> tuple[str, int]:
 
 
 def _credential(source_bytes: bytes) -> str | None:
-    from serve.server import api_key_of, key_list
+    from strata_common.engine_client import api_key_of, key_list
 
     cfg = json.loads(source_bytes.decode("utf-8-sig"))
     if not isinstance(cfg, dict):

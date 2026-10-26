@@ -13,7 +13,8 @@ from unittest import mock
 
 import serve.server as server
 from serve.frontend import ChatTemplate
-from serve.server import ByteTokenizer, MockEngine, Service, serve
+from serve.server import ByteTokenizer, Service, serve
+from strata_common.engine_client import MockEngine
 
 ROOT = Path(__file__).resolve().parents[1]
 

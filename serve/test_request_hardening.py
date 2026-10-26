@@ -11,7 +11,8 @@ from pathlib import Path
 from unittest import mock
 
 from serve.frontend import ChatTemplate
-from serve.server import ByteTokenizer, MockEngine, Service, body_limit, serve
+from serve.server import ByteTokenizer, Service, body_limit, serve
+from strata_common.engine_client import MockEngine
 
 ROOT = Path(__file__).resolve().parent.parent
 

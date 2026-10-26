@@ -15,7 +15,8 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "tools"))
 from serve.frontend import ChatTemplate  # noqa: E402
-from serve.server import ByteTokenizer, MockEngine, Service  # noqa: E402
+from serve.server import ByteTokenizer, Service  # noqa: E402
+from strata_common.engine_client import MockEngine
 from strata_tokenizer import PromptEncoder, plain_agree_until  # noqa: E402
 
 

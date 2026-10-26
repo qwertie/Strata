@@ -8,7 +8,7 @@ from __future__ import annotations
 import unittest
 from unittest import mock
 
-from serve.server import engine_args, parallel_args
+from strata_common.engine_client import engine_args, parallel_args
 
 
 def cfg(**kw):

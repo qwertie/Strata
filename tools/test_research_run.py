@@ -12,7 +12,8 @@ sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "tools"))
 import research_run  # noqa: E402
 from serve.frontend import ChatTemplate  # noqa: E402
-from serve.server import ByteTokenizer, MockEngine, Service, serve  # noqa: E402
+from serve.server import ByteTokenizer, Service, serve  # noqa: E402
+from strata_common.engine_client import MockEngine
 
 
 class Recorder(MockEngine):

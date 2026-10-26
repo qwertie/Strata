@@ -17,7 +17,7 @@ sys.path[:0] = [str(ROOT), str(ROOT / 'tools')]
 from conversation_cache_parity import load_tokenizer, require
 from conversation_cache_soak import answer_text
 from serve.frontend import ChatTemplate
-from serve.server import StrataEngine, child_env
+from strata_common.engine_client import StrataEngine, child_env
 
 NAMES = ('short', 'A', 'A-live', 'A-checkpoint', 'B', 'A-return', 'B-return', 'A-return-again')
 # (not 'version': the gate also compares a new release with the previous one, where only the version differs)

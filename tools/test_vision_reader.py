@@ -14,6 +14,7 @@ from unittest import mock
 
 from strata_common import vision_reader as VR
 import serve.server as server
+from strata_common import engine_client  # noqa: E402
 
 
 def folder(*names: str) -> Path:
@@ -206,7 +207,7 @@ class Fallback(unittest.TestCase):
 
         v = make_vision(cfg or self.CFG)
         out = io.StringIO()
-        with mock.patch.object(server, "popen", popen), mock.patch("builtins.print", lambda *a, **k: out.write(" ".join(map(str, a)) + "\n")):
+        with mock.patch.object(engine_client, "popen", popen), mock.patch("builtins.print", lambda *a, **k: out.write(" ".join(map(str, a)) + "\n")):
             err = None
             try:
                 v._start()
@@ -250,7 +251,7 @@ class Fallback(unittest.TestCase):
     def test_restart_after_a_fallback_stays_on_the_cpu_reader(self):
         v, started, log, err = self.run_start({"strata-vision-hip": "ERR nope\n", "strata-vision": "READY 2048\n"})
         started.clear()
-        with mock.patch.object(server, "popen", lambda what, args, **kw: started.append(args) or FakeProc("READY 2048\n")):
+        with mock.patch.object(engine_client, "popen", lambda what, args, **kw: started.append(args) or FakeProc("READY 2048\n")):
             v.restart()
         self.assertEqual([Path(a[0]).name for a in started], ["strata-vision"])
 

@@ -22,12 +22,12 @@ from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from serve.frontend import ChatTemplate, literal_tags, mark_think_literals, unmark_think_literals  # noqa: E402
-from serve.server import (ANSWER_RESERVE_MIN, CTX_SLACK, ByteTokenizer, EngineDied, EngineNonFinite, GpuBusy, MockEngine,  # noqa: E402
-                          PP_DONE_TAIL, Service,
-                          StrataEngine, api_key_of, engine_args, key_matches, layer_split_value, prompt_progress,
-                          prompt_tokens_seen,
-                          request_stats, request_timings, serve, start_failure_hint)
+from serve.server import (ANSWER_RESERVE_MIN, CTX_SLACK, ByteTokenizer, PP_DONE_TAIL, Service, key_matches,  # noqa: E402
+    prompt_progress, prompt_tokens_seen, request_stats, request_timings, serve)
+from strata_common.engine_client import (EngineDied, EngineNonFinite, GpuBusy, MockEngine, StrataEngine, api_key_of,  # noqa: E402
+    engine_args, layer_split_value, start_failure_hint)
 from types import SimpleNamespace  # noqa: E402
+from strata_common import engine_client  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[1]
 CTX = 4096
@@ -102,7 +102,7 @@ class MaxTokens(unittest.TestCase):
     def test_request_line_parses_the_engine_summary(self):
         line = ("strata serve: prompt 1200 tokens = 1000 reused + 200 read in 50 ms (4000.0 tok/s), 30 generated in "
                 "300 ms (100.0 tok/s), drafts accepted 20 of 28, 2 checkpoints")
-        from serve.server import ENGINE_REQUEST
+        from strata_common.engine_client import ENGINE_REQUEST
         m = ENGINE_REQUEST.search(line)
         self.assertIsNotNone(m)
         self.assertEqual((m["prompt"], m["reused"], m["gen"], m["tg"]), ("1200", "1000", "30", "100.0"))
@@ -620,7 +620,7 @@ class VisionTempFiles(unittest.TestCase):
 
     def test_smart_app_control_is_said_in_words(self):
         import subprocess
-        from serve.server import popen
+        from strata_common.engine_client import popen
         for code in (4551, 1260):
             err = OSError(22, "blocked")
             err.winerror = code
@@ -1738,7 +1738,7 @@ class GpuChoice(unittest.TestCase):
     """Issue #51: the config's \"gpu\" reaches the engine as CUDA_VISIBLE_DEVICES, numbered like nvidia-smi."""
 
     def test_env(self):
-        from serve.server import child_env
+        from strata_common.engine_client import child_env
         env = child_env({"gpu": 1})
         self.assertEqual(env["CUDA_VISIBLE_DEVICES"], "1")
         self.assertEqual(env["CUDA_DEVICE_ORDER"], "PCI_BUS_ID")
@@ -1748,7 +1748,8 @@ class GpuChoice(unittest.TestCase):
 
     def test_card_note_ties_the_engines_numbering_to_the_persons(self):
         """The engine counts the cards it is given from 0, so GPU 1 reads "GPU 0 / CUDA0" in its log: one line says which is which."""
-        from serve.server import card_note, child_env
+        from serve.server import card_note
+        from strata_common.engine_client import child_env
         one = {"gpu": 1, "args": []}
         self.assertIn("GPU 1", card_note(one, child_env(one)))
         self.assertIn("GPU 0 / CUDA0", card_note(one, child_env(one)))
@@ -1762,7 +1763,7 @@ class GpuChoice(unittest.TestCase):
     def test_card_order(self):
         """#1352: with an auto layer split the faster card (SMs x clock) goes last; ties, a manual split, a
         measurement we lack, HIP and "gpu_order": "as_given" keep the config's order."""
-        from serve.server import child_env, hip_speed_scores, ordered_gpus
+        from strata_common.engine_client import child_env, hip_speed_scores, ordered_gpus
         fast_first = {0: 8448.0 * 2610, 2: 4608.0 * 2575}      # 4070 Ti SUPER (66 SMs) vs 5060 Ti (36 SMs), shaped
         base = {"gpu": [0, 2], "args": []}
         self.assertEqual(ordered_gpus(base, fast_first), [2, 0])
@@ -1795,7 +1796,7 @@ class GpuChoice(unittest.TestCase):
     def test_igpu_is_never_the_last_stage(self):
         """Strix Halo (gfx1151, BIOS carve-out up to 96 GB) beside an R9700 (gfx1201, 32 GB): the #1576 memory guard used to keep the
         iGPU LAST (head, draft layer, verify).  Built-in graphics goes first, the cards with memory of their own follow."""
-        from serve.server import ordered_gpus
+        from strata_common.engine_client import ordered_gpus
         cfg = {"gpu": [0, 1], "backend": "hip", "args": []}
         arch = {0: "gfx1151", 1: "gfx1201"}
         speeds = {0: 80 * 2900.0, 1: 128 * 2350.0}
@@ -1826,7 +1827,7 @@ class GpuChoice(unittest.TestCase):
 
     def test_kfd_archs_and_engine_nice(self):
         import tempfile
-        from serve.server import engine_nice, hip_gpu_archs
+        from strata_common.engine_client import engine_nice, hip_gpu_archs
         with tempfile.TemporaryDirectory() as d:
             for n, simd, ver in ((0, 0, 0), (1, 80, 110501), (2, 128, 120001)):
                 os.makedirs(os.path.join(d, str(n)))
@@ -1860,7 +1861,7 @@ class GpuChoice(unittest.TestCase):
     def test_kfd_scores(self):
         """AMD on Linux: the GPU nodes of the KFD topology, SIMDs x clock, node order = the config's index."""
         import tempfile
-        from serve.server import hip_speed_scores
+        from strata_common.engine_client import hip_speed_scores
         with tempfile.TemporaryDirectory() as d:
             for n, simd, clk in ((0, 0, 0), (1, 128, 2350), (2, 64, 2000), (3, 128, 2350)):
                 os.makedirs(os.path.join(d, str(n)))
@@ -1877,7 +1878,7 @@ class GpuChoice(unittest.TestCase):
 
     def test_automatic_card_skips_what_the_engine_cannot_run(self):
         """#3203: a mini PC's Radeon 760M is HIP's device 0 and has no code in the engine; Automatic must run on the card behind it."""
-        from serve.server import hip_auto_devices, parse_hip_devices, pick_hip_devices
+        from strata_common.engine_client import hip_auto_devices, parse_hip_devices, pick_hip_devices
         devices = parse_hip_devices(self.DEVICES_MINI_PC)
         self.assertEqual([(d["index"], d["arch"], d["integrated"], bool(d["cannot_run"])) for d in devices],
                          [(0, "gfx1103", True, True), (1, "gfx1201", False, False)])
@@ -1909,19 +1910,19 @@ class GpuChoice(unittest.TestCase):
             probe.write_text("")
             cfg = {"backend": "hip", "exe": str(exe), "args": []}
             done = SimpleNamespace(returncode=0, stdout=self.DEVICES_MINI_PC)
-            with mock.patch("serve.server.subprocess.run", return_value=done) as run, contextlib.redirect_stdout(io.StringIO()) as out:
+            with mock.patch("strata_common.engine_client.subprocess.run", return_value=done) as run, contextlib.redirect_stdout(io.StringIO()) as out:
                 self.assertEqual(hip_auto_devices(cfg, {}), [1])
                 self.assertEqual(run.call_args[0][0], [str(probe), "--list-devices"])
                 self.assertIn("automatic GPU choice: GPU 1", out.getvalue())
-            with mock.patch("serve.server.subprocess.run", return_value=done) as run:
+            with mock.patch("strata_common.engine_client.subprocess.run", return_value=done) as run:
                 self.assertIsNone(hip_auto_devices({**cfg, "gpu": 0}, {}))
                 self.assertIsNone(hip_auto_devices({**cfg, "hip_ordinal": 2}, {}))
                 self.assertIsNone(hip_auto_devices(cfg, {"HIP_VISIBLE_DEVICES": "0"}))
                 self.assertIsNone(hip_auto_devices({**cfg, "backend": "cuda"}, {}))
                 run.assert_not_called()
-            with mock.patch("serve.server.subprocess.run", return_value=SimpleNamespace(returncode=1, stdout="")):
+            with mock.patch("strata_common.engine_client.subprocess.run", return_value=SimpleNamespace(returncode=1, stdout="")):
                 self.assertIsNone(hip_auto_devices(cfg, {}))                         # a probe that fails changes nothing
-            with mock.patch("serve.server.subprocess.run", return_value=SimpleNamespace(returncode=0, stdout=(
+            with mock.patch("strata_common.engine_client.subprocess.run", return_value=SimpleNamespace(returncode=0, stdout=(
                             "device 0: A\n  arch gfx1030, 16.0 GiB, wave32\n  cannot run: compiled for (gfx1200)\n"))):
                 with self.assertRaises(SystemExit) as stop:
                     hip_auto_devices(cfg, {})
@@ -1932,7 +1933,8 @@ class GpuChoice(unittest.TestCase):
 
     def test_vision_device(self):
         # #408: the image encoder on its own card; the engine's environment stays as it was
-        from serve.server import child_env, vision_env
+        from serve.server import vision_env
+        from strata_common.engine_client import child_env
         cfg = {"gpu": [0, 1], "gpu_order": "as_given", "vision": {"exe": "v", "cuda_device": 2}}
         env = child_env(cfg)
         venv = vision_env(cfg, env)
@@ -1944,7 +1946,7 @@ class GpuChoice(unittest.TestCase):
 
     def test_hip_ordinal(self):
         """#325: on Windows the HIP ordinal setup resolved wins over the config's "gpu" (an iGPU takes HIP's 0)."""
-        from serve.server import child_env
+        from strata_common.engine_client import child_env
         self.assertEqual(child_env({"backend": "hip", "gpu": 1})["HIP_VISIBLE_DEVICES"], "1")       # Linux: KFD order
         self.assertEqual(child_env({"backend": "hip", "hip_ordinal": 1})["HIP_VISIBLE_DEVICES"], "1")
         self.assertEqual(child_env({"backend": "hip", "gpu": 0, "hip_ordinal": 1})["HIP_VISIBLE_DEVICES"], "1")
@@ -1961,7 +1963,7 @@ class HipEnvGuard(unittest.TestCase):
 
     def test_stale_hip_path_dropped(self):
         import tempfile
-        from serve.server import hip_env_guard
+        from strata_common.engine_client import hip_env_guard
         with tempfile.TemporaryDirectory() as d:
             gone = os.path.join(d, "TheRock", "build")
             env = {"HIP_PATH": gone, "HIP_DEVICE_LIB_PATH": gone, "LLVM_PATH": d}
@@ -1973,7 +1975,7 @@ class HipEnvGuard(unittest.TestCase):
 
     def test_unwritable_temp_replaced(self):
         import tempfile
-        from serve.server import hip_env_guard
+        from strata_common.engine_client import hip_env_guard
         with tempfile.TemporaryDirectory() as d:
             nothing = os.path.join(d, "no", "such", "dir")
             env = {"TEMP": nothing, "TMP": d}
@@ -1984,7 +1986,7 @@ class HipEnvGuard(unittest.TestCase):
 
     def test_healthy_untouched(self):
         import tempfile
-        from serve.server import hip_env_guard
+        from strata_common.engine_client import hip_env_guard
         with tempfile.TemporaryDirectory() as d:
             env = {"HIP_PATH": d, "TEMP": d}
             before = dict(env)
@@ -1992,7 +1994,7 @@ class HipEnvGuard(unittest.TestCase):
             self.assertEqual(env, before)
 
     def test_only_for_hip(self):
-        from serve.server import child_env
+        from strata_common.engine_client import child_env
         os.environ["HIP_PATH"] = r"Z:\definitely\not\here"
         try:
             self.assertEqual(child_env({}).get("HIP_PATH"), os.environ["HIP_PATH"])
@@ -2443,7 +2445,7 @@ class PeerDevice(unittest.TestCase):
         self.assertEqual(engine_args({"args": list(args), "gpu": [0, 1], "split_skip_if_fits": True}), args)
 
     def test_both_cards_visible(self):
-        from serve.server import child_env
+        from strata_common.engine_client import child_env
         env = child_env({"args": ["--peer-device", "1"], "gpu": [0, 1]})
         self.assertEqual(env["CUDA_VISIBLE_DEVICES"], "0,1")
 
@@ -2736,7 +2738,7 @@ class StartFailureLog(unittest.TestCase):
     """#496: whatever stopped the engine before READY, the error carries this start's last log lines."""
 
     def test_the_last_lines_of_this_start(self):
-        from serve.server import start_log_tail
+        from strata_common.engine_client import start_log_tail
         d = tempfile.mkdtemp()
         p = Path(d) / "engine.log"
         before = "strata serve: an earlier start's line\n"
@@ -2765,7 +2767,7 @@ class StartFailureLog(unittest.TestCase):
             real = server.subprocess.Popen
             with mock.patch.object(server.subprocess, "Popen",
                                    lambda cmd, **kw: real([sys.executable, str(script), *cmd[1:]], **kw)), \
-                    mock.patch.object(server, "narrate_start", lambda *a, **k: None):
+                    mock.patch.object(engine_client, "narrate_start", lambda *a, **k: None):
                 with self.assertRaises(RuntimeError) as cm:
                     StrataEngine("strata", [], log=str(log))
             text = str(cm.exception)
@@ -2790,8 +2792,8 @@ class StartCrashReported(unittest.TestCase):
             out = io.StringIO()
             with mock.patch.object(server.subprocess, "Popen",
                                    lambda cmd, **kw: real([sys.executable, str(script), *cmd[1:]], **kw)), \
-                    mock.patch.object(server, "narrate_start", lambda *a, **k: None), \
-                    mock.patch.object(server, "START_RETRIES", retries), \
+                    mock.patch.object(engine_client, "narrate_start", lambda *a, **k: None), \
+                    mock.patch.object(engine_client, "START_RETRIES", retries), \
                     mock.patch.object(server.time, "sleep", lambda s: None), \
                     contextlib.redirect_stdout(out):
                 with self.assertRaises(RuntimeError) as cm:
@@ -2799,7 +2801,7 @@ class StartCrashReported(unittest.TestCase):
             return str(cm.exception), out.getvalue()
 
     def test_status_words(self):
-        from serve.server import engine_crashed, engine_exit_words
+        from strata_common.engine_client import engine_crashed, engine_exit_words
         self.assertEqual(engine_exit_words(None), "")
         self.assertEqual(engine_exit_words(2), "exit code 2")
         self.assertIn("illegal instruction", engine_exit_words(0xC000001D).lower())
@@ -2815,7 +2817,7 @@ class StartCrashReported(unittest.TestCase):
             self.assertFalse(engine_crashed(-int(signal.SIGTERM)))
 
     def test_a_crash_is_not_a_transient_start(self):
-        from serve.server import transient_start_failure
+        from strata_common.engine_client import transient_start_failure
         d = tempfile.mkdtemp()
         p = Path(d) / "engine.log"
         p.write_text("[strata] 2026-10-13 17:49:15 engine started: /x/strata --serve\n", encoding="utf-8")
@@ -2864,7 +2866,7 @@ class StartNarrator(unittest.TestCase):
     """#505: the start's words say what happens to the experts - --mmap-experts loads nothing into RAM up front."""
 
     def test_the_words_follow_the_flags(self):
-        from serve.server import experts_loading_words
+        from strata_common.engine_client import experts_loading_words
         self.assertIn("loading the experts into RAM (about 38 GB)", experts_loading_words([], "about 38 GB"))
         mapped = experts_loading_words(["--mmap-experts"], "about 47 GB")
         self.assertIn("mapping the experts from the model files (about 47 GB", mapped)
@@ -2877,7 +2879,7 @@ class StartNarrator(unittest.TestCase):
     def narrate(self, args, lines):
         import contextlib
         import io
-        from serve.server import narrate_start
+        from strata_common.engine_client import narrate_start
         d = tempfile.mkdtemp()
         log = Path(d) / "engine.log"
         log.write_text("".join(x + "\n" for x in lines), encoding="utf-8")
@@ -5165,7 +5167,7 @@ class SilentEngine(unittest.TestCase):
         threading.Thread(target=put, daemon=True).start()
 
     def test_silence_mid_answer_ends_the_engine(self):
-        from serve.server import EngineSilent
+        from strata_common.engine_client import EngineSilent
         engine = self.bare(0.3)
         engine.lines.put("T 5")
         gen = engine.generate([1], 10, {}, threading.Event())
@@ -5232,7 +5234,7 @@ class SilentEngine(unittest.TestCase):
         engine.proc.kill.assert_not_called()
 
     def test_a_stop_never_acknowledged(self):
-        from serve.server import EngineSilent
+        from strata_common.engine_client import EngineSilent
         engine = self.bare(0.3, can_stop=True)
         engine.lines.put("T 5")
         gen = engine.generate([1], 10, {}, threading.Event())
@@ -5246,11 +5248,11 @@ class SilentEngine(unittest.TestCase):
     def test_frozen_engine_is_ended_by_the_stall_watchdog(self):
         # #1317 part 2: silent AND no CPU / disk work for the stall window -> ended, long before engine_silence_s
         from serve import server
-        from serve.server import EngineSilent
+        from strata_common.engine_client import EngineSilent
         engine = self.bare(300.0)
         engine.lines.put("T 5")
         engine._activity = lambda: (12.0, 4096)                  # the same reading every time: no work
-        with mock.patch.object(server, "ENGINE_STALL_S", 1.0):
+        with mock.patch.object(engine_client, "ENGINE_STALL_S", 1.0):
             gen = engine.generate([1], 10, {}, threading.Event())
             self.assertEqual(next(gen), 5)
             t0 = time.monotonic()
@@ -5266,7 +5268,7 @@ class SilentEngine(unittest.TestCase):
         ticks = iter(range(10 ** 6))
         engine._activity = lambda: (float(next(ticks)), 0)       # CPU time advances: it is working
         self.later(engine, 3.0, "T 7", "DONE 1 1 1 1 length")
-        with mock.patch.object(server, "ENGINE_STALL_S", 1.0):
+        with mock.patch.object(engine_client, "ENGINE_STALL_S", 1.0):
             self.assertEqual(list(engine.generate([1], 10, {}, threading.Event())), [7])
         engine.proc.kill.assert_not_called()
 
@@ -5277,7 +5279,7 @@ class SilentEngine(unittest.TestCase):
         engine._activity = lambda: (12.0, 4096)
         engine.gpu_busy = lambda: True
         self.later(engine, 2.5, "T 7", "DONE 1 1 1 1 length")
-        with mock.patch.object(server, "ENGINE_STALL_S", 1.0):
+        with mock.patch.object(engine_client, "ENGINE_STALL_S", 1.0):
             self.assertEqual(list(engine.generate([1], 10, {}, threading.Event())), [7])
         engine.proc.kill.assert_not_called()
 
@@ -5287,12 +5289,12 @@ class SilentEngine(unittest.TestCase):
             engine = self.bare(300.0)
             engine._activity = act
             self.later(engine, 2.5, "T 7", "DONE 1 1 1 1 length")
-            with mock.patch.object(server, "ENGINE_STALL_S", stall):
+            with mock.patch.object(engine_client, "ENGINE_STALL_S", stall):
                 self.assertEqual(list(engine.generate([1], 10, {}, threading.Event())), [7])
             engine.proc.kill.assert_not_called()
 
     def test_engine_frozen_samples(self):
-        from serve.server import engine_frozen
+        from strata_common.engine_client import engine_frozen
         self.assertTrue(engine_frozen((10.0, 100), (10.2, 100)))
         self.assertFalse(engine_frozen((10.0, 100), (13.0, 100)))
         self.assertFalse(engine_frozen((10.0, 100), (10.0, 100 + (8 << 20))))
@@ -5303,7 +5305,8 @@ class SilentEngine(unittest.TestCase):
         self.assertEqual(list(engine.generate([1], 10, {}, threading.Event())), [5])
 
     def test_config(self):
-        from serve.server import ENGINE_SILENCE_S, engine_silence_s
+        from serve.server import engine_silence_s
+        from strata_common.engine_client import ENGINE_SILENCE_S
         self.assertEqual(engine_silence_s({}), ENGINE_SILENCE_S)
         self.assertEqual(engine_silence_s({"engine_silence_s": 0}), 0.0)
         self.assertEqual(engine_silence_s({"engine_silence_s": 900}), 900.0)
@@ -5948,7 +5951,7 @@ class LazyVision(unittest.TestCase):
             started.append(p)
             return p
 
-        with mock.patch.object(server, "popen", popen):
+        with mock.patch.object(engine_client, "popen", popen):
             v = server.Vision({"exe": "strata-vision", "mmproj": "m.gguf", "model": "t.gguf"}, lazy=True)
             self.addCleanup(lambda: shutil.rmtree(v.dir, ignore_errors=True))
             return v, started, popen
@@ -5961,7 +5964,7 @@ class LazyVision(unittest.TestCase):
     def test_restart_starts_it_and_close_ends_it(self):
         import serve.server as server
         v, started, popen = self.make()
-        with mock.patch.object(server, "popen", popen):
+        with mock.patch.object(engine_client, "popen", popen):
             v.restart()
         self.assertTrue(v.alive())
         self.assertEqual(len(started), 1)
@@ -5983,7 +5986,7 @@ class LazyVision(unittest.TestCase):
                     return 0
             started.append(P)
             return P()
-        with mock.patch.object(server, "popen", popen):
+        with mock.patch.object(engine_client, "popen", popen):
             with self.assertRaises(RuntimeError):
                 v.restart()
         self.assertTrue(started[-1].killed)
@@ -6140,8 +6143,8 @@ class UntimedReads(unittest.TestCase):
                 procs.append(real([sys.executable, str(script), *cmd[1:]], **kw))
                 return procs[-1]
             with mock.patch.object(server.subprocess, "Popen", popen), \
-                    mock.patch.object(server, "ENGINE_READY_S", 1.0), \
-                    mock.patch.object(server, "narrate_start", lambda *a, **k: None):
+                    mock.patch.object(engine_client, "ENGINE_READY_S", 1.0), \
+                    mock.patch.object(engine_client, "narrate_start", lambda *a, **k: None):
                 t0 = time.monotonic()
                 with self.assertRaises(RuntimeError) as cm:
                     StrataEngine("strata", [])
@@ -6191,7 +6194,7 @@ class UntimedReads(unittest.TestCase):
         v.spawn = (["strata-vision"], None, None)
         v.dir = Path(tempfile.mkdtemp(prefix="strata-vision-test-"))
         try:
-            with mock.patch.object(server, "popen", lambda *a, **k: proc), mock.patch.object(server, "VISION_READY_S", 0.3):
+            with mock.patch.object(engine_client, "popen", lambda *a, **k: proc), mock.patch.object(server, "VISION_READY_S", 0.3):
                 with self.assertRaises(RuntimeError) as cm:
                     v._start()
             self.assertIn("did not start", str(cm.exception))

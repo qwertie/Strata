@@ -17,8 +17,9 @@ from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from serve.frontend import ChatTemplate  # noqa: E402
-from serve.server import (ByteTokenizer, MockEngine, Service, allowed_hosts_of, host_allowed,  # noqa: E402
-                          host_name, host_names_for, origin_allowed, serve)
+from serve.server import (ByteTokenizer, Service, allowed_hosts_of, host_allowed, host_name, host_names_for,  # noqa: E402
+    origin_allowed, serve)
+from strata_common.engine_client import MockEngine  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[1]
 LOCAL = {"localhost", "127.0.0.1", "::1"}
@@ -348,7 +349,7 @@ class NoApiKey(unittest.TestCase):
     """A key is recommended on a network, never required (owner decision 2026-10-20)."""
 
     def test_none_means_no_key_on_purpose(self):
-        from serve.server import explicit_no_key
+        from strata_common.engine_client import explicit_no_key
         for v in ("none", " None ", "NONE"):
             self.assertTrue(explicit_no_key(v))
         for v in ("", None, "sk-none", ["none"], "none,x"):

@@ -783,7 +783,7 @@ def _launch_plan(ref: str, cli: argparse.Namespace | None = None) -> tuple[dict,
     path, saved, revision, cfg = _source(ref)
     values, origins = _effective(cfg, saved, cli)
     host = values["host"]
-    from serve.server import api_key_of, explicit_no_key, key_list
+    from strata_common.engine_client import api_key_of, explicit_no_key, key_list
     raw_key = os.environ.get("STRATA_API_KEY") or cfg.get("api_key", "")
     if not explicit_no_key(raw_key):
         try:
@@ -813,7 +813,7 @@ def _launch_plan(ref: str, cli: argparse.Namespace | None = None) -> tuple[dict,
         effective_cfg["parallel"] = values["parallel"]
     if values["batch_groups"] is not None:
         effective_cfg["args"] += ["--batch-groups", str(values["batch_groups"])]
-    from serve.server import engine_args
+    from strata_common.engine_client import engine_args
     notes = io.StringIO()
     with contextlib.redirect_stdout(notes):
         engine_argv = engine_args(effective_cfg)
@@ -1263,7 +1263,7 @@ def _bench_standard(a: argparse.Namespace, machine: bool) -> int:
         authority = f"[{host}]" if ":" in host and not host.startswith("[") else host
         url = f"http://{authority}:{plan['effective']['port']}"
         if not key and cfg.get("api_key") and str(cfg["api_key"]).strip().lower() != "none":
-            from serve.server import api_key_of, key_list
+            from strata_common.engine_client import api_key_of, key_list
             keys = key_list(api_key_of(cfg["api_key"]))
             key = keys[0] if keys else None
     else:

@@ -152,14 +152,15 @@ class HardFallback(unittest.TestCase):
     def test_an_engine_that_ignores_everything_is_killed(self):
         from unittest import mock
         from serve import server
-        engine = server.StrataEngine("missing-executable", [], lazy=True)
+        from strata_common import engine_client
+        engine = engine_client.StrataEngine("missing-executable", [], lazy=True)
         engine.proc = subprocess.Popen([sys.executable, "-c", STUBBORN], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                                        text=True, creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
         engine.proc.stdout.readline()
         victim = engine.proc
         t0 = time.monotonic()
-        with mock.patch.object(server, "ENGINE_QUIT_WAIT_S", 1), mock.patch.object(server, "ENGINE_TERM_WAIT_S", 1), \
-                mock.patch.object(server, "ENGINE_KILL_WAIT_S", 10):
+        with mock.patch.object(engine_client, "ENGINE_QUIT_WAIT_S", 1), mock.patch.object(engine_client, "ENGINE_TERM_WAIT_S", 1), \
+                mock.patch.object(engine_client, "ENGINE_KILL_WAIT_S", 10):
             engine.close()
         self.assertLess(time.monotonic() - t0, 12)
         self.assertIsNotNone(victim.poll(), "the engine is still running after close()")

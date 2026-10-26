@@ -422,7 +422,7 @@ class OperatorProfileTests(unittest.TestCase):
     def test_calibration_preview_has_no_engine_or_config_side_effects(self):
         profiles.create("local", str(self.config))
         before = self.config.read_bytes()
-        with mock.patch("serve.server.StrataEngine", side_effect=AssertionError("engine started")), \
+        with mock.patch("strata_common.engine_client.StrataEngine", side_effect=AssertionError("engine started")), \
                 mock.patch("tools.calibrate.run", side_effect=AssertionError("measurement started")):
             code, result = self.command("engine", "calibrate", "--profile", "local", "--plan", "--output", "json")
         self.assertEqual(code, 0)

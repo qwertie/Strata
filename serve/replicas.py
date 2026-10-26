@@ -29,6 +29,8 @@ import os
 import threading
 import time
 
+from strata_common.engine_client import EngineDied, EngineNonFinite
+
 BLOCK = 64                          # tokens per hashed block of a prompt
 LOAD_TOKENS = 3000                  # the cost of one request already running on a replica, in prompt tokens
 INDEX_MAX = 262144                  # block hashes kept (about 17M tokens of prompts)
@@ -381,8 +383,6 @@ class ReplicaEngine:
             threading.Thread(target=run, daemon=True).start()
 
     def generate(self, ids, max_new, sampling, cancel, embeddings=None):
-        # imported here: serve.server imports this module
-        from serve.server import EngineDied, EngineNonFinite
         k = self.route(ids)
         if k < 0:
             raise EngineDied("no replica is running; this request was not sent")

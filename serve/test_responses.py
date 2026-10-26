@@ -18,7 +18,8 @@ from serve import responses  # noqa: E402
 from serve.frontend import ChatTemplate  # noqa: E402
 from serve.responses import (ENCRYPTED_PREFIX, ResponsesError, collect, input_messages, prompt_made,  # noqa: E402
                              prompt_tools, request_tools, template_kwargs, text_format, thread_title_events)
-from serve.server import ByteTokenizer, MockEngine, Service, serve  # noqa: E402
+from serve.server import ByteTokenizer, Service, serve  # noqa: E402
+from strata_common.engine_client import MockEngine
 
 ROOT = Path(__file__).resolve().parents[1]
 TEMPLATE = ChatTemplate(ROOT / "serve/chat_template.jinja")

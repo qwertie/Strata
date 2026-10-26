@@ -8,7 +8,8 @@ from unittest import mock
 
 from serve.frontend import ChatTemplate
 from serve import structured
-from serve.server import ByteTokenizer, MockEngine, Service, serve
+from serve.server import ByteTokenizer, Service, serve
+from strata_common.engine_client import MockEngine
 
 try:
     import jsonschema  # noqa: F401

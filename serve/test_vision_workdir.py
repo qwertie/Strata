@@ -10,6 +10,7 @@ from types import SimpleNamespace
 from unittest import mock
 
 import serve.server as server
+from strata_common import engine_client  # noqa: E402
 
 
 class WorkDir(unittest.TestCase):
@@ -27,7 +28,7 @@ class WorkDir(unittest.TestCase):
                 seen.append(Path(k["cwd"]).is_dir())      # the real popen raises WinError 267 when it is not
                 return proc
 
-            with mock.patch.object(server, "popen", fake_popen):
+            with mock.patch.object(engine_client, "popen", fake_popen):
                 v._start()
             self.assertEqual(seen, [True])
             self.assertTrue(v.dir.is_dir())

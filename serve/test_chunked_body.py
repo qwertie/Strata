@@ -10,7 +10,8 @@ import unittest
 from pathlib import Path
 
 from serve.frontend import ChatTemplate
-from serve.server import ByteTokenizer, MockEngine, Service, serve
+from serve.server import ByteTokenizer, Service, serve
+from strata_common.engine_client import MockEngine
 import serve.server as server
 
 ROOT = Path(__file__).resolve().parent.parent

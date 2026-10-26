@@ -23,8 +23,10 @@ import strata_tokenizer as ST  # noqa: E402
 from serve import frontend, server  # noqa: E402
 from serve.dsml import DsmlOutputParser, DsmlTranslator, to_dsml_force  # noqa: E402
 from serve.frontend import ChatTemplate, OutputParser, openai_to_messages  # noqa: E402
-from serve.server import (FAMILY_MODEL_NAMES, MockEngine, REASONING_WRAP_UP, Service, default_model_name, model_card_sampling,  # noqa: E402
-                          serve)
+from serve.server import (FAMILY_MODEL_NAMES, REASONING_WRAP_UP, Service, default_model_name, model_card_sampling,  # noqa: E402
+    serve)
+from strata_common.engine_client import MockEngine  # noqa: E402
+from strata_common import engine_client  # noqa: E402
 
 FIX = ROOT / "serve" / "fixtures" / "deepseek41"
 TEMPLATE = FIX / "chat_template.jinja"
@@ -285,12 +287,12 @@ class ReadyTimeout(unittest.TestCase):
 
     def test_the_config_sets_it_and_a_bad_value_is_said(self):
         from serve import server
-        before = server.ENGINE_READY_S
+        before = engine_client.ENGINE_READY_S
         self.addCleanup(setattr, server, "ENGINE_READY_S", before)
         server.apply_ready_timeout({})
-        self.assertEqual(server.ENGINE_READY_S, before)
+        self.assertEqual(engine_client.ENGINE_READY_S, before)
         server.apply_ready_timeout({"engine_ready_s": 3600})
-        self.assertEqual(server.ENGINE_READY_S, 3600.0)
+        self.assertEqual(engine_client.ENGINE_READY_S, 3600.0)
         for bad in (0, -5, "soon", True):
             with self.assertRaises(ValueError):
                 server.apply_ready_timeout({"engine_ready_s": bad})
@@ -593,7 +595,7 @@ class SlotEnv(unittest.TestCase):
     def env(self, cfg):
         saved = {k: os.environ.pop(k, None) for k in self.KEYS}
         try:
-            return server.child_env(cfg)
+            return engine_client.child_env(cfg)
         finally:
             for k, v in saved.items():
                 if v is not None:

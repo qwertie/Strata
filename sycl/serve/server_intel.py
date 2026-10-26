@@ -30,6 +30,7 @@ sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(HERE))
 
 import serve.server as S  # noqa: E402
+from strata_common import engine_client  # noqa: E402
 import strata_common.telemetry as T  # noqa: E402
 from xe_telemetry import _XeGpu  # noqa: E402
 
@@ -151,16 +152,16 @@ def install_switcher(argv):
 
 def install_logprobs():
     """`LP` lines next to their tokens, the request's `logprobs` to the engine, OpenAI's `logprobs` in the reply."""
-    Eng = S.StrataEngine
+    Eng = engine_client.StrataEngine
 
-    def _pump(self):   # serve/server.py's StrataEngine._pump, plus: an LP line goes beside its token, not in the queue
+    def _pump(self):   # engine_client's StrataEngine._pump, plus: an LP line goes beside its token, not in the queue
         proc, lines = self.proc, self.lines
         slot_q = self.slot_q
         lp = self.__dict__.setdefault("lp_lines", collections.deque())
         last_t = None
         line = None
         for line in proc.stdout:
-            if line.startswith(S.FATAL_PREFIXES):   # as serve/server.py: never a slot's own line
+            if line.startswith(engine_client.FATAL_PREFIXES):   # as StrataEngine._pump: never a slot's own line
                 if self.proc is proc:
                     self.silent_note = "Unrecoverable native verification failure: " + line[4:].strip()
                     self.ended = True
@@ -263,11 +264,11 @@ def install_logprobs():
 
 
 def install_narrator():
-    """The start narrator of serve/server.py says the CUDA engine's thing - tens of GB read into RAM, "YOUR PC CAN BE
-    SLOW OR STOP RESPONDING" - at the experts' step. With --stream-experts the SYCL port reads them from the GGUF
+    """The start narrator (engine_client.narrate_start) says the CUDA engine's thing - tens of GB read into RAM,
+    "YOUR PC CAN BE SLOW OR STOP RESPONDING" - at the experts' step. With --stream-experts the SYCL port reads them from the GGUF
     into VRAM (and a pinned mirror), which does not do that: say that instead. Without it (an i915 card) the experts
     do go into a RAM arena and the original text stands."""
-    orig = S.narrate_start
+    orig = engine_client.narrate_start
 
     def narrate_start(log_path, offset, args, done, heartbeat=20.0):
         if "--stream-experts" not in args:
@@ -309,7 +310,7 @@ def install_narrator():
             if time.time() - last > heartbeat:
                 last = time.time()
                 print(f"[strata] still starting ({time.time() - t0:.0f} s) - please wait ...", flush=True)
-    S.narrate_start = narrate_start
+    engine_client.narrate_start = narrate_start
 
 
 def top_logprobs(req: dict):

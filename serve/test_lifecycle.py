@@ -11,7 +11,8 @@ from pathlib import Path
 from unittest import mock
 
 from serve.frontend import ChatTemplate
-from serve.server import ByteTokenizer, EngineDied, EngineStuck, MockEngine, Service, StrataEngine, serve
+from serve.server import ByteTokenizer, Service, serve
+from strata_common.engine_client import EngineDied, EngineStuck, MockEngine, StrataEngine
 
 
 class ResidentEngine(StrataEngine):

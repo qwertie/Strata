@@ -6,7 +6,8 @@ import unittest
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from serve.server import card_roles_lines, child_env, gpu_list, ordered_gpus  # noqa: E402
+from serve.server import card_roles_lines  # noqa: E402
+from strata_common.engine_client import child_env, gpu_list, ordered_gpus
 
 
 class Roles(unittest.TestCase):

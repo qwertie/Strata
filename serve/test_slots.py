@@ -19,8 +19,8 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from serve.frontend import ChatTemplate  # noqa: E402
-from serve.server import (ByteTokenizer, Service, StrataEngine, serve, slot_filename_problem,  # noqa: E402
-                          slot_save_dir)
+from serve.server import (ByteTokenizer, Service, serve, slot_filename_problem, slot_save_dir)  # noqa: E402
+from strata_common.engine_client import StrataEngine  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[1]
 

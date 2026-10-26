@@ -14,7 +14,8 @@ from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import serve.server as server  # noqa: E402
-from serve.server import StrataEngine  # noqa: E402
+from strata_common import engine_client
+from strata_common.engine_client import StrataEngine  # noqa: E402
 
 
 def engine_without_process(n=2):
@@ -79,13 +80,13 @@ class AdmitOrderTest(unittest.TestCase):
         return self.order
 
     def test_short_first_puts_the_chat_before_the_agent_reads(self):
-        with mock.patch.object(server, "ADMIT_SHORT_FIRST", 8192), mock.patch.object(server, "ADMIT_MAX_WAIT_S", 60.0):
+        with mock.patch.object(engine_client, "ADMIT_SHORT_FIRST", 8192), mock.patch.object(engine_client, "ADMIT_MAX_WAIT_S", 60.0):
             order = self.queue(("agent1", 120000), ("agent2", 190000), ("chat", 500), ("agent3", 150000))
         self.assertEqual(order[0], "chat")
         self.assertEqual(order[1:], ["agent1", "agent2", "agent3"])      # arrival order among the long ones
 
     def test_a_long_request_that_waited_too_long_goes_first(self):
-        with mock.patch.object(server, "ADMIT_SHORT_FIRST", 8192), mock.patch.object(server, "ADMIT_MAX_WAIT_S", 0.2):
+        with mock.patch.object(engine_client, "ADMIT_SHORT_FIRST", 8192), mock.patch.object(engine_client, "ADMIT_MAX_WAIT_S", 0.2):
             self.assertTrue(self.e.ctl.acquire(timeout=1))
             self.take("agent", 120000, new=True)
             self.until(lambda: self.e.waiting == 1)
@@ -97,15 +98,15 @@ class AdmitOrderTest(unittest.TestCase):
         self.assertEqual(self.order, ["agent", "chat"])
 
     def test_off_by_default(self):
-        self.assertEqual(server.ADMIT_SHORT_FIRST if "STRATA_ADMIT_SHORT_FIRST" not in __import__("os").environ
+        self.assertEqual(engine_client.ADMIT_SHORT_FIRST if "STRATA_ADMIT_SHORT_FIRST" not in __import__("os").environ
                          else 0, 0)
-        with mock.patch.object(server, "ADMIT_SHORT_FIRST", 0):
+        with mock.patch.object(engine_client, "ADMIT_SHORT_FIRST", 0):
             order = self.queue(("agent1", 120000), ("chat", 500))
         self.assertEqual(sorted(order), ["agent1", "chat"])            # both get their turn, in any order
 
     def test_a_continuation_is_not_held_back(self):
         """A request already admitted once (new=False: promoted from the solo path) is not part of the order."""
-        with mock.patch.object(server, "ADMIT_SHORT_FIRST", 8192), mock.patch.object(server, "ADMIT_MAX_WAIT_S", 60.0):
+        with mock.patch.object(engine_client, "ADMIT_SHORT_FIRST", 8192), mock.patch.object(engine_client, "ADMIT_MAX_WAIT_S", 60.0):
             self.assertTrue(self.e.ctl.acquire(timeout=1))
             self.take("chat", 500, new=True)
             self.take("continuation", 190000)

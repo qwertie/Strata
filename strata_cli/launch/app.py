@@ -179,7 +179,7 @@ class Ctx:
         try:
             from strata_common import tune_knobs
             from strata_cli.launch.runner import apply_choices, cards_for_launch, derive_config
-            from serve.server import engine_args
+            from strata_common.engine_client import engine_args
             import contextlib
             import io
             d = derive_config(apply_choices(cfg, s), s, bool_flags=tune_knobs.BOOL_FLAGS, gpus=cards_for_launch(s, self.catalog, base=cfg))

@@ -11,6 +11,7 @@ from types import SimpleNamespace
 from unittest import mock
 
 import serve.server as server
+from strata_common import engine_client  # noqa: E402
 
 
 class Busy(unittest.TestCase):
@@ -42,7 +43,7 @@ class Busy(unittest.TestCase):
         v = server.Vision.__new__(server.Vision)
         v.spawn = (["strata-vision"], None, None)
         v.dir = Path(tempfile.gettempdir())
-        with mock.patch.object(server, "popen", lambda *a, **k: proc):
+        with mock.patch.object(engine_client, "popen", lambda *a, **k: proc):
             with self.assertRaises(RuntimeError) as cm:
                 v._start()
         self.assertIn("Exclusive_Process", str(cm.exception))

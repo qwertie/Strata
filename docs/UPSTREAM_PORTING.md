@@ -50,7 +50,8 @@ code updates its rows here. Rows are grouped by step; `{a,b}` lists several file
 | `serve/winjob.py`, `strata_control/{atomic,longpath,loopback,posix_owner,private_files,tls,transfer,winproc}.py` | `strata_base/` | A2 | done |
 | `serve/{launch_identity,lifeline,ready,telemetry}.py` | `strata_common/` | A2 | done |
 | `strata_control/{acquisition,draft_layer,drafting,engine_component,gpu_fit,gpu_roles,hipblaslt_tuning,offline,paths,presets,procs,profiles,signing,targets,tune_history,tune_knobs,tune_machine,user_args,vision_reader}.py`, `strata_control/update_keys.json` | `strata_common/` | A2 | done |
-| the engine client in `serve/server.py` (`StrataEngine`, `MockEngine`, `engine_args`, `child_env`, the API-key helpers) | `strata_common/` | A2 | planned |
+| the engine client in `serve/server.py` (`StrataEngine`, `MockEngine`, `engine_args`, `child_env`, the API-key helpers, the `Engine*` errors and the module values they read) | `strata_common/engine_client.py` | A2 | done |
+| `serve/{loader_diag,logit_bias}.py` | `strata_common/` | A2 | done |
 | `strata_cli/bench.py` and the library functions of `strata_cli/cli.py` that `strata_control/` uses | `strata_control/` | A2 | planned |
 | `strata_cli/client.py` | `strata_common/` (the monitor bundle gets schema 7) | A2 | planned |
 | `tools/gguf_reader.py` | `strata_common/` | A2 | planned |

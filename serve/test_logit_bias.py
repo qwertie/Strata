@@ -5,8 +5,9 @@ import unittest
 import urllib.error
 import urllib.request
 
-from serve.logit_bias import engine_key, normalize, validate_request
-from serve.server import ByteTokenizer, MockEngine, Service, StrataEngine, serve
+from strata_common.logit_bias import engine_key, normalize, validate_request
+from serve.server import ByteTokenizer, Service, serve
+from strata_common.engine_client import MockEngine, StrataEngine
 from serve.frontend import ChatTemplate
 
 
@@ -65,12 +66,12 @@ class LogitBiasCache(unittest.TestCase):
     """A long list is normalized once; the cache must not change what a call returns or raises."""
 
     def setUp(self):
-        from serve import logit_bias
+        from strata_common import logit_bias
         logit_bias._cache.clear()
         logit_bias._last = None
 
     def test_same_answers_as_the_plain_function(self):
-        from serve.logit_bias import _normalize
+        from strata_common.logit_bias import _normalize
         forms = [{str(i): -100 for i in range(200)},
                  [[i, False] for i in range(200)],
                  {str(i): (i % 7) - 3.5 for i in range(200)},
@@ -126,7 +127,7 @@ class LogitBiasCache(unittest.TestCase):
         self.assertEqual(validate_request({"logit_bias": ids}, SimpleNamespace(info={"logit_bias": 1}), 1000)[0], -1.0)
 
     def test_an_equal_list_in_a_later_request_is_a_hit(self):
-        from serve import logit_bias
+        from strata_common import logit_bias
         a = {str(i): -100 for i in range(100)}
         b = json.loads(json.dumps(a))
         self.assertIsNot(a, b)
@@ -137,7 +138,7 @@ class LogitBiasCache(unittest.TestCase):
         self.assertEqual(len(logit_bias._cache), 1)
 
     def test_the_cache_is_bounded(self):
-        from serve import logit_bias
+        from strata_common import logit_bias
         for n in range(logit_bias._CACHE_MAX + 3):
             normalize({str(i): -(n + 1) for i in range(100)})
         self.assertEqual(len(logit_bias._cache), logit_bias._CACHE_MAX)

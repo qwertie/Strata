@@ -18,7 +18,8 @@ from unittest import mock
 
 from serve import images as images_api
 from serve.frontend import ChatTemplate
-from serve.server import ByteTokenizer, MockEngine, Service, serve
+from serve.server import ByteTokenizer, Service, serve
+from strata_common.engine_client import MockEngine
 
 ROOT = Path(__file__).resolve().parents[1]
 FAKE = ROOT / "serve" / "fixtures" / "fake_sd_cli.py"

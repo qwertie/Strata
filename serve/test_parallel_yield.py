@@ -12,6 +12,7 @@ import urllib.request
 from pathlib import Path
 from unittest import mock
 from serve import test_parallel as tp
+from strata_common import engine_client  # noqa: E402
 
 
 class ParallelServiceYield(tp.FakeEngineCase):
@@ -249,7 +250,7 @@ class ParallelServiceYield(tp.FakeEngineCase):
         import serve.server as server
         self.start(2, slot_cache=True, reuse=True, more=("--readfield",))
         res = {}
-        with mock.patch.object(server, "EOS_IDS", {257}):          # the fake engine's stop token
+        with mock.patch.object(engine_client, "EOS_IDS", {257}):          # the fake engine's stop token
             a = threading.Thread(target=lambda: res.setdefault("a", self.chat("List three primes please", 200)))
             b = threading.Thread(target=lambda: res.setdefault("b", self.chat("Name two rivers in Germany", 200)))
             a.start(); b.start(); a.join(30); b.join(30)

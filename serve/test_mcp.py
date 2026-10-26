@@ -20,7 +20,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from serve import mcp_fake_server as fake  # noqa: E402
 from serve.frontend import ChatTemplate  # noqa: E402
 from serve.mcp import McpCancelled, McpHub, hub_from_config  # noqa: E402
-from serve.server import ByteTokenizer, MockEngine, Service, serve  # noqa: E402
+from serve.server import ByteTokenizer, Service, serve  # noqa: E402
+from strata_common.engine_client import MockEngine
 
 ROOT = Path(__file__).resolve().parents[1]
 FAKE = str(ROOT / "serve" / "mcp_fake_server.py")

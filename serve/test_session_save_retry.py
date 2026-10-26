@@ -11,7 +11,8 @@ from unittest import mock
 
 from serve import session_save_retry as retry
 from serve.frontend import ChatTemplate
-from serve.server import ByteTokenizer, EngineDied, Service, SessionRefused, serve
+from serve.server import ByteTokenizer, Service, serve
+from strata_common.engine_client import EngineDied, SessionRefused
 from serve import test_slots as slot_tests
 from serve.test_slots import FakeEngine, FakeProc
 

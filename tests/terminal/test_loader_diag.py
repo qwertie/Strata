@@ -11,8 +11,8 @@ sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "packaging"))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import binary_deps  # noqa: E402
-from serve import loader_diag  # noqa: E402
-from serve.server import start_exit_note  # noqa: E402
+from strata_common import loader_diag  # noqa: E402
+from strata_common.engine_client import start_exit_note  # noqa: E402
 from test_engine_deps import make_pe  # noqa: E402
 
 

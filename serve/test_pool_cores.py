@@ -3,7 +3,7 @@ import contextlib
 import io
 import unittest
 
-from serve.server import engine_args, pool_cores_args
+from strata_common.engine_client import engine_args, pool_cores_args
 
 
 class PoolCoresConfig(unittest.TestCase):

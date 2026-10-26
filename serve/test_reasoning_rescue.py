@@ -22,7 +22,8 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from serve.frontend import ChatTemplate, OutputParser  # noqa: E402
-from serve.server import ByteTokenizer, MockEngine, Service, serve  # noqa: E402
+from serve.server import ByteTokenizer, Service, serve  # noqa: E402
+from strata_common.engine_client import MockEngine
 from serve.test_server import CTX  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[1]

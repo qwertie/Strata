@@ -183,13 +183,13 @@ class EngineArguments(unittest.TestCase):
         self.assertEqual(c["args"], self.ARGS)
 
     def test_the_server_applies_it_at_every_start(self):
-        from serve.server import engine_args
+        from strata_common.engine_client import engine_args
         pack = drafting.pack_path(Path("/d"))
-        with mock.patch("serve.server.drafting_card_class", return_value="blackwell"), serving_dflash2(), \
+        with mock.patch("strata_common.engine_client.drafting_card_class", return_value="blackwell"), serving_dflash2(), \
                 mock.patch.object(drafting, "pack_ready", return_value=True), mock.patch.object(drafting, "data_dir_of", return_value=Path("/d")):
             args = engine_args(self.cfg(drafting="dflash2"))
             self.assertEqual(args[-4:], ["--draft", "dflash2", "--draft-model", str(pack)])
-        with mock.patch("serve.server.drafting_card_class", return_value="blackwell"):
+        with mock.patch("strata_common.engine_client.drafting_card_class", return_value="blackwell"):
             self.assertEqual(engine_args(self.cfg()), self.ARGS, "no choice: nothing changes")
             off = engine_args(self.cfg(drafting="off"))
             self.assertNotIn("--mtp", off)

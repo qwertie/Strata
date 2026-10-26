@@ -388,7 +388,7 @@ def review(ref: str, report_path: Path) -> dict:
 def _smoke(cfg: dict, source_path: Path) -> int:
     """Start the candidate and require at least one generated token before writing it."""
     import strata_tokenizer as st
-    from serve.server import StrataEngine, child_env, engine_args
+    from strata_common.engine_client import StrataEngine, child_env, engine_args
     cal = _full_folder("tools.calibrate")
     tokdir = _resolved(cfg["tokenizer"], cfg, source_path)
     vocab = json.loads((tokdir / "vocab.json").read_text(encoding="utf-8"))

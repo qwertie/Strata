@@ -9,7 +9,8 @@ import urllib.request
 from pathlib import Path
 
 from serve.frontend import ChatTemplate
-from serve.server import ByteTokenizer, EngineDied, Service, add_carry, carry_leg, request_timings, serve
+from serve.server import ByteTokenizer, Service, request_timings, serve
+from strata_common.engine_client import EngineDied, add_carry, carry_leg
 from serve.test_server import ThinkingEngine
 
 

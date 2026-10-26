@@ -10,7 +10,8 @@ from pathlib import Path
 from unittest import mock
 
 from serve.frontend import ChatTemplate
-from serve.server import ByteTokenizer, EngineDied, Service, StrataEngine, engine_args, serve
+from serve.server import ByteTokenizer, Service, serve
+from strata_common.engine_client import EngineDied, StrataEngine, engine_args
 from serve.test_lifecycle import ResidentEngine
 
 

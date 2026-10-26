@@ -16,7 +16,8 @@ from pathlib import Path
 from unittest import mock
 
 from serve.frontend import ChatTemplate
-from serve.server import ByteTokenizer, Service, StrataEngine, engine_args, parallel_args, serve
+from serve.server import ByteTokenizer, Service, serve
+from strata_common.engine_client import StrataEngine, engine_args, parallel_args
 from strata_cli import bench
 from strata_cli.client import Endpoint
 

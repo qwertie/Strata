@@ -18,7 +18,7 @@ sys.path.insert(0, str(ROOT / "tools"))
 import setup  # noqa: E402
 import strata_mcp  # noqa: E402
 from serve import runconfig  # noqa: E402
-from serve.server import engine_args  # noqa: E402
+from strata_common.engine_client import engine_args  # noqa: E402
 from strata_control import tune_apply  # noqa: E402
 from strata_common import user_args  # noqa: E402
 from test_setup_golden import PROFILES, install  # noqa: E402

@@ -18,6 +18,7 @@ from unittest import mock
 import urllib.request
 
 from serve import server
+from strata_common import engine_client
 
 
 FAKE = r'''import json, queue, sys, threading, time
@@ -74,7 +75,7 @@ class QuietPromptCancel(unittest.TestCase):
             real_popen = server.subprocess.Popen
             with mock.patch.object(server.subprocess, 'Popen', lambda cmd, **kw:
                                    real_popen([sys.executable, str(script), *cmd[1:]], **kw)):
-                engine = server.StrataEngine('strata', ['--batch', str(batch), '--events', str(events)])
+                engine = engine_client.StrataEngine('strata', ['--batch', str(batch), '--events', str(events)])
             service = server.Service(engine, server.ByteTokenizer(),
                                      server.ChatTemplate(Path(__file__).parent / 'chat_template.jinja'))
             http = server.serve(service, port=0)
@@ -166,7 +167,7 @@ class QuietPromptCancel(unittest.TestCase):
 
 class QuietWaitPolicy(unittest.TestCase):
     def test_expired_silence_is_not_a_heartbeat(self):
-        engine = object.__new__(server.StrataEngine)
+        engine = object.__new__(engine_client.StrataEngine)
         engine.proc = mock.Mock()
         engine.proc.poll.return_value = None
         engine.proc.stdin = io.StringIO()
@@ -185,7 +186,7 @@ class QuietWaitPolicy(unittest.TestCase):
         engine.lines.get.side_effect = get
         with mock.patch.object(server.time, 'monotonic', clock):
             gen = engine.generate([], 10, {}, threading.Event())
-            with self.assertRaises(server.EngineSilent):
+            with self.assertRaises(engine_client.EngineSilent):
                 next(gen)                  # must fail before yielding an overdue heartbeat to a slow consumer
         engine.proc.kill.assert_called_once()
         self.assertNotIn('STOP', engine.proc.stdin.getvalue())
@@ -193,7 +194,7 @@ class QuietWaitPolicy(unittest.TestCase):
     def test_polling_keeps_ten_second_heartbeats(self):
         for control in (False, True):
             with self.subTest(control=control):
-                engine = object.__new__(server.StrataEngine)
+                engine = object.__new__(engine_client.StrataEngine)
                 engine.proc = mock.Mock()
                 engine.proc.poll.return_value = None
                 engine.proc.stdin = io.StringIO()

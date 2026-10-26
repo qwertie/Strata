@@ -10,7 +10,8 @@ from unittest import mock
 
 from serve.frontend import ChatTemplate
 from serve.keepawake import ES_CONTINUOUS, ES_SYSTEM_REQUIRED, KeepAwake
-from serve.server import ByteTokenizer, MockEngine, Service
+from serve.server import ByteTokenizer, Service
+from strata_common.engine_client import MockEngine
 
 ROOT = Path(__file__).resolve().parents[1]
 ON = ES_CONTINUOUS | ES_SYSTEM_REQUIRED

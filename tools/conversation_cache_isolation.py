@@ -16,7 +16,7 @@ sys.path[:0] = [str(ROOT), str(ROOT / 'tools')]
 from conversation_cache_parity import STATE_KEYS, engine_args, load_tokenizer, require, state_hashes
 from gguf_reader import GGUFFile
 from gguf_writer import GGUFWriter
-from serve.server import StrataEngine, child_env
+from strata_common.engine_client import StrataEngine, child_env
 from serve.frontend import ChatTemplate
 import numpy as np
 
