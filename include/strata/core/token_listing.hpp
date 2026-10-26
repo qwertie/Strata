@@ -4,15 +4,19 @@
 // commands are parsed and answered here, so the lines are the same on every path.
 //
 //   LIST_CONVERSATIONS [<marker> <n>]
-//     CONVERSATION <id> <place> <state> <tokens> <bytes> [<preview>]   one line each, then END_CONVERSATIONS
+//     CONVERSATION <id> <place> <state> <tokens> <capacity> <bytes> <used> [<preview>]   one line each, then
+//     END_CONVERSATIONS
 //   GET_CONTEXT_WINDOWS <id> [<id> ...]
 //     CONTEXT_WINDOW <id> <n> [<ids>]   or   CONTEXT_WINDOW <id> gone   one line each, then END_CONTEXT_WINDOWS
 //
 // id: `main` (the engine's own session), `slot<b>` (a --batch slot's session) or `parked<serial>` (a parked
 // conversation; the serial is never reused).  place: vram, ram or disk.  state: holding, decoding, reading (a prompt
-// read that gave way and goes on later), empty or parked.  bytes: a parked conversation's size (0 for a session, whose
-// memory is allocated whatever it holds).  Token ids are comma-separated, as GEN takes them, and left out when there
-// are none.  <marker> (comma-separated ids) and <n> ask for a preview: the first n tokens after the first place the
+// read that gave way and goes on later), empty or parked.  tokens: what it holds; capacity: the most it can hold
+// (a session's --max-context; a parked conversation's own tokens).  bytes: its physical size (a session's allocation,
+// a parked conversation's snapshot); used: what its tokens take of that (for a session the size a session sized for
+// just them would have: its state and buffers and their K/V; 0 when empty).  Both bytes are 0 where the engine path
+// does not know them (DeepSeek V4.1's session).  Token ids are comma-separated, as GEN
+// takes them, and left out when there are none.  <marker> (comma-separated ids) and <n> ask for a preview: the first n tokens after the first place the
 // conversation holds the marker - the server passes the chat template's user-turn header, so the preview is the start
 // of the first user message.  Neither command changes anything.
 #pragma once
@@ -33,8 +37,10 @@ struct HeldConversation {
     const char* place = "vram";
     const char* state = "holding";
     const int32_t* ids = nullptr;
-    size_t n = 0;
-    uint64_t bytes = 0;
+    size_t n = 0;              // the tokens it holds
+    uint64_t capacity = 0;     // the most it can hold, in tokens
+    uint64_t bytes = 0;        // its physical size
+    uint64_t used = 0;         // what its tokens take of that
 };
 
 inline bool is_conversation_command(const std::string& line) {
@@ -85,7 +91,7 @@ inline void answer_conversation_command(const std::string& line, const std::vect
         }
         for (const HeldConversation& c : held) {
             std::string s = "CONVERSATION " + c.id + " " + c.place + " " + c.state + " " + std::to_string(c.n) + " " +
-                            std::to_string(c.bytes);
+                            std::to_string(c.capacity) + " " + std::to_string(c.bytes) + " " + std::to_string(c.used);
             if (!marker.empty() && want > 0) {
                 const int32_t* at = std::search(c.ids, c.ids + c.n, marker.begin(), marker.end());
                 if (at != c.ids + c.n) {

@@ -655,13 +655,16 @@ int serve(strata::ds4::Model& m, const std::string& eos_list, bool spec, float c
         if (strata::core::is_conversation_command(line)) {
             std::vector<strata::core::HeldConversation> held;
             const std::vector<int32_t>& t = m.tokens();
-            held.push_back({"main", "vram", t.empty() ? "empty" : "holding", t.data(), t.size(), 0});
+            // (its state's size is not known on this path: 0 bytes)
+            held.push_back({"main", "vram", t.empty() ? "empty" : "holding", t.data(), t.size(),
+                            (uint64_t) m.max_context(), 0, 0});
             std::vector<size_t> order(slots.size());
             std::iota(order.begin(), order.end(), size_t{0});
             std::sort(order.begin(), order.end(), [&](size_t a, size_t b) { return slots[a].used < slots[b].used; });
             for (const size_t i : order)
                 held.push_back({"parked" + std::to_string(slots[i].serial), slots[i].data ? "ram" : "disk", "parked",
-                                slots[i].tokens.data(), slots[i].tokens.size(), slots[i].bytes});
+                                slots[i].tokens.data(), slots[i].tokens.size(), slots[i].tokens.size(), slots[i].bytes,
+                                slots[i].bytes});
             strata::core::answer_conversation_command(line, held);
             continue;
         }
