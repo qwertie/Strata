@@ -22,6 +22,7 @@
 #include "ds4_os.hpp"
 #include "ds4_packinfo.hpp"
 #include "ds4_slotmeta.hpp"
+#include "strata/core/token_listing.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -318,9 +319,10 @@ bool parse_gen(const std::string& line, Req& r, bool geni) {
 int serve(strata::ds4::Model& m, const std::string& eos_list, bool spec, float conf_min, const std::string& pack) {
     std::vector<int> eos = parse_ids(eos_list);
     for (const std::string& l : m.info_lines()) std::printf("%s\n", l.c_str());
-    std::printf("READY %lld stop\n", (long long) m.max_context());
+    // "stop": STOP ends a request; "lists": LIST_SESSION_TOKENS and LIST_PARKED_CONVERSATIONS
+    std::printf("READY %lld stop lists\n", (long long) m.max_context());
     std::fflush(stdout);
-    std::fprintf(stderr, "maya ds4 serve: GEN <max_new> [keys] <ids>; GENI <max_new> [keys] <pictures> <ids>; STOP, QUIT\n");
+    std::fprintf(stderr, "maya ds4 serve: GEN <max_new> [keys] <ids>; GENI <max_new> [keys] <pictures> <ids>; STOP, QUIT, LIST_SESSION_TOKENS, LIST_PARKED_CONVERSATIONS\n");
     Lines in;
     in.start();
     std::string line;
@@ -645,9 +647,28 @@ int serve(strata::ds4::Model& m, const std::string& eos_list, bool spec, float c
     }
     while (in.next(line)) {
         if (line == "QUIT") break;
+        // what the model holds and the conversations set aside hold (token_listing.hpp), between requests
+        if (line == "LIST_SESSION_TOKENS") {
+            const std::vector<int32_t>& t = m.tokens();
+            strata::core::print_session_tokens("main", t.empty() ? "empty" : "holding", t.data(), t.size());
+            std::printf("END_SESSION_TOKENS\n");
+            std::fflush(stdout);
+            continue;
+        }
+        if (line == "LIST_PARKED_CONVERSATIONS") {   // the least recently used (the next to go) first
+            std::vector<size_t> order(slots.size());
+            std::iota(order.begin(), order.end(), size_t{0});
+            std::sort(order.begin(), order.end(), [&](size_t a, size_t b) { return slots[a].used < slots[b].used; });
+            for (const size_t i : order)
+                strata::core::print_parked_conversation(slots[i].used, slots[i].data == nullptr, slots[i].bytes,
+                                                        slots[i].tokens.data(), slots[i].tokens.size());
+            std::printf("END_PARKED_CONVERSATIONS\n");
+            std::fflush(stdout);
+            continue;
+        }
         const bool geni = line.rfind("GENI ", 0) == 0;
         if (!geni && line.rfind("GEN ", 0) != 0) {
-            std::printf("ERR unsupported command '%s' (GEN, GENI, STOP and QUIT)\n", line.substr(0, line.find(' ')).c_str());
+            std::printf("ERR unsupported command '%s' (GEN, GENI, STOP, QUIT, LIST_SESSION_TOKENS and LIST_PARKED_CONVERSATIONS)\n", line.substr(0, line.find(' ')).c_str());
             std::fflush(stdout);
             continue;
         }

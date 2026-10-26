@@ -51,6 +51,7 @@ import threading
 import time
 import urllib.request
 import uuid
+from array import array
 from http.client import HTTPException
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -992,6 +993,7 @@ class StrataEngine:
         self.ended, self.unloaded = True, True
         self.max_context = int(args[args.index("--max-context") + 1]) if "--max-context" in args else 4096
         self.can_stop = False            # the engine honours a STOP line mid-request (READY <ctx> stop)
+        self.can_list = False            # it answers LIST_SESSION_TOKENS and LIST_PARKED_CONVERSATIONS (... lists)
         self.last = {}
         self.info = {}                   # INFO key=value facts (engine 0.1.8+): kv, expert slots, ... (Monitor tab)
         self.terminal_stages: list[dict] = []  # final layer ranges from this engine start's bounded stderr log
@@ -1074,6 +1076,7 @@ class StrataEngine:
                 f = line.split()
                 self.max_context = int(f[1])
                 self.can_stop = "stop" in f[2:]
+                self.can_list = "lists" in f[2:]
                 break
         loading.set()
         if self.max_context <= 0:
@@ -1384,6 +1387,42 @@ class StrataEngine:
                 return out
             if time.time() > deadline:
                 raise EngineDied("the engine did not answer the VRAM command")
+
+    def list_held(self, timeout: float = 30.0) -> dict:
+        """The API monitor's Context view: `LIST_SESSION_TOKENS` and `LIST_PARKED_CONVERSATIONS` (an engine whose READY
+        says "lists"; include/strata/core/token_listing.hpp), between requests - the caller holds the service's FIFO
+        and, with --batch, the control lines; the slots may decode meanwhile (the engine answers between their
+        windows).  -> {"sessions": [{"name", "state", "tokens"}], "parked": [{"where", "bytes", "tokens"}]}, the
+        parked conversations the next to be evicted first, the tokens as array("i"); raises EngineDied when the
+        engine ended or did not answer."""
+        if not self.alive():
+            raise EngineDied("the engine is not running")
+        out = {"sessions": [], "parked": []}
+        for command, kind, key in (("LIST_SESSION_TOKENS", "SESSION_TOKENS", "sessions"),
+                                   ("LIST_PARKED_CONVERSATIONS", "PARKED_CONVERSATION", "parked")):
+            self._send(command)
+            deadline = time.time() + timeout
+            while True:
+                try:
+                    line = self.lines.get(timeout=max(0.1, deadline - time.time()))
+                except queue.Empty:
+                    raise EngineDied(f"the engine did not answer {command}") from None
+                if line is None:
+                    raise EngineDied("the engine ended")
+                f = line.split()
+                if f[:1] == ["END_" + command[5:]]:
+                    break
+                if f[:1] == ["ERR"]:
+                    raise EngineDied(f"the engine refused {command}: {line[4:].strip()}")
+                if f[:1] != [kind]:
+                    continue                            # (another line on the way: a NOTE, BSTAT)
+                if kind == "SESSION_TOKENS":            # SESSION_TOKENS <name> <state> <n> [<ids>]
+                    ids = array("i", map(int, f[4].split(","))) if len(f) > 4 else array("i")
+                    out[key].append({"name": f[1], "state": f[2], "tokens": ids})
+                else:                                   # PARKED_CONVERSATION <id> <ram|disk> <bytes> <n> [<ids>]
+                    ids = array("i", map(int, f[5].split(","))) if len(f) > 5 else array("i")
+                    out[key].append({"where": f[2], "bytes": int(f[3]), "tokens": ids})
+        return out
 
     @staticmethod
     def sampling_keys(sampling: dict) -> str:
@@ -3688,6 +3727,25 @@ class ByteTokenizer:
         return raw.decode("utf-8", errors=errors)
 
 
+def token_pieces(tok, ids) -> list[str]:
+    """Each token's text, so that the pieces join to the decoded text: a character split across tokens belongs to
+    the token that completes it (the others get "").  An id outside the vocabulary is shown as <?id>."""
+    raw = getattr(tok, "token_bytes", None)
+    dec = codecs.getincrementaldecoder("utf-8")("replace")
+    pieces = []
+    for t in ids:
+        try:
+            b = raw(t) if raw else tok.decode([t], errors="surrogateescape").encode("utf-8", "surrogateescape")
+        except (IndexError, KeyError):
+            pieces.append(dec.decode(b"", final=True) + f"<?{t}>")
+            continue
+        pieces.append(dec.decode(b))
+    tail = dec.decode(b"", final=True)
+    if tail and pieces:
+        pieces[-1] += tail
+    return pieces
+
+
 # ------------------------------------------------------------------------------------------------ core
 class Detokenizer:
     """Incremental decode: each token's bytes go through an incremental UTF-8 decoder, which emits the complete
@@ -3878,6 +3936,8 @@ class Service:
         # #332: the API request monitor (/api-monitor) keeps the last 100 requests' prompts and answers in memory,
         # so it is off unless the config's "api_monitor" (or --api-monitor) turns it on
         self.api_monitor = False
+        self.context_list = None                        # the Context view's last list (context_view), its entries' tokens
+        self.context_lists = 0                          # ... and how many were read: the list's number
         self.api_requests = collections.deque(maxlen=100)  # bounded I/O in memory; no headers or API keys
         self.request_trace = threading.local()
         self.history = collections.deque(maxlen=500)    # the last finished requests, newest last (GET /metrics)
@@ -4581,6 +4641,74 @@ class Service:
             self.api_requests.append(record)
         self.request_trace.record = record
         return record
+
+    CONTEXT_WAIT_S = 2.0      # how long GET /api/context waits for the engine's turn before it shows the last list
+
+    def context_view(self) -> dict:
+        """GET /api/context (API monitor): what the engine holds - each session in VRAM, then each parked conversation,
+        the next to be evicted first (StrataEngine.list_held) - without the tokens (context_entry gives an entry's).
+        Read between requests: while a request has the engine's turn (one without --batch, or one alone on the solo
+        path) it waits CONTEXT_WAIT_S, then shows the last list, marked busy.  The list is kept, so an entry is read
+        from the list its name came from."""
+        eng, base = self.engine, {"loaded": self.loaded(), "max_context": self.reported_ctx()}
+        if not self.loaded():
+            return {"available": False, "reason": "unloaded", **base}
+        if not getattr(eng, "can_list", False):
+            return {"available": False, "reason": "engine", **base}
+        busy, error = False, None
+        if not self.fifo.acquire(timeout=self.CONTEXT_WAIT_S):
+            busy = True
+        else:
+            # parallel requests do not hold the fifo: the engine's control lines (a request alone, an admission) too
+            ctl = getattr(eng, "ctl", None) if getattr(eng, "batch", 0) else None
+            try:
+                if ctl is not None and not ctl.acquire(timeout=self.CONTEXT_WAIT_S):
+                    busy = True
+                else:
+                    try:
+                        held = eng.list_held()
+                    finally:
+                        if ctl is not None:
+                            ctl.release()
+                    self.context_lists += 1
+                    self.context_list = {"list": self.context_lists, "at": time.time(),
+                                         "entries": self._context_entries(held)}
+            except EngineDied as e:
+                error = str(e)
+            finally:
+                self.fifo.release()
+        got = self.context_list
+        return {"available": True, **base, "busy": busy, "error": error,
+                "list": got and got["list"], "at": got and got["at"],
+                "entries": [{k: v for k, v in e.items() if k != "tokens"} | {"count": len(e["tokens"])}
+                            for e in (got["entries"] if got else [])]}
+
+    def _context_entries(self, held: dict) -> list[dict]:
+        """The engine's lists as the Context view names them.  `main` is the engine's own session: with --batch, where a
+        request alone runs and every admission is read first (src/program/generate.cpp); `slot<b>` a batch slot's (on
+        the Qwen3.6 path a request alone takes one of them)."""
+        eng, entries = self.engine, []
+        batch, used = getattr(eng, "batch", 0), getattr(eng, "slot_used", None) or []
+        for h in held["sessions"]:
+            slot = int(h["name"][4:]) if h["name"].startswith("slot") else None
+            entries.append({"kind": "session", "slot": slot, "state": h["state"], "tokens": h["tokens"],
+                            "name": f"Slot {slot}" if slot is not None else "Solo session" if batch else "Session",
+                            "used": used[slot] if slot is not None and slot < len(used) else None})
+        for k, h in enumerate(held["parked"]):
+            entries.append({"kind": "parked", "slot": None, "state": "parked", "tokens": h["tokens"],
+                            "name": f"Parked conversation {k + 1} of {len(held['parked'])}", "where": h["where"],
+                            "bytes": h["bytes"]})
+        return entries
+
+    def context_entry(self, number: int, index: int) -> dict | None:
+        """GET /api/context?list=N&entry=I: entry I of list N, with its tokens and each token's text (None: that list
+        is not the last one read, or has no such entry)."""
+        got = self.context_list
+        if not got or got["list"] != number or not 0 <= index < len(got["entries"]):
+            return None
+        e = got["entries"][index]
+        return {"list": number, "entry": index, "name": e["name"], "tokens": e["tokens"].tolist(),
+                "pieces": token_pieces(self.tok, e["tokens"])}
 
     def request_records(self, request_id=None):
         with self.status_lock:
@@ -6604,6 +6732,19 @@ def make_handler(svc: Service):
                                                         "mem_total": None, "util": None, "temp": None, "power": None})
                     self._json(200, snapshot)
                 return
+            if path == "/api/context" and svc.api_monitor:
+                if self._authorized():
+                    q = parse_qs(urlsplit(self.path).query)
+                    if "entry" not in q:
+                        self._json(200, svc.context_view())
+                        return
+                    try:
+                        got = svc.context_entry(int(q.get("list", ["0"])[0]), int(q["entry"][0]))
+                    except ValueError:
+                        got = None
+                    self._json(200 if got else 404, got or {"error": {"message": "this list is no longer kept; press "
+                                                                      "Refresh"}})
+                return
             if path == "/api/requests" and svc.api_monitor:
                 if self._authorized():
                     request_id = parse_qs(urlsplit(self.path).query).get("id", [None])[0]
@@ -6637,7 +6778,8 @@ def make_handler(svc: Service):
                 self._json(200, {"status": "ok", "max_context": svc.reported_ctx(), "model": svc.model,
                                  "images": svc.vision is not None, "api_key": bool(svc.api_key),
                                  "image_generation": svc.images is not None,
-                                 "loaded": svc.loaded(), "service": "strata"})
+                                 "loaded": svc.loaded(), "service": "strata",
+                                 **({"api_monitor": True} if svc.api_monitor else {})})
             elif path.startswith("/v1/images/files/"):
                 # response_format url: the name (32 random hex digits) is the access, as an OpenAI image URL is
                 f = svc.images.file(path[len("/v1/images/files/"):]) if svc.images is not None else None

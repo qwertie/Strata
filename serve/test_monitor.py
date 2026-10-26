@@ -1,5 +1,6 @@
 """Request inspection through HTTP; no native model or GPU is required."""
 import json
+from array import array
 import threading
 import time
 import unittest
@@ -43,7 +44,9 @@ class MonitorOff(unittest.TestCase):
             with urllib.request.urlopen(req, timeout=10) as r:
                 self.assertEqual(r.status, 200)
             self.assertEqual(len(svc.api_requests), 0)
-            for path in ("/api/requests", "/api-monitor"):
+            with urllib.request.urlopen(base + "/health", timeout=10) as r:
+                self.assertNotIn("api_monitor", json.loads(r.read()))   # the default answer is unchanged
+            for path in ("/api/requests", "/api-monitor", "/api/context"):
                 with self.assertRaises(urllib.error.HTTPError) as e:
                     urllib.request.urlopen(base + path, timeout=10)
                 self.assertEqual(e.exception.code, 404, path)
@@ -187,6 +190,59 @@ class Monitor(unittest.TestCase):
         self.assertLess(records[1]["load_s"], records[0]["load_s"])
         self.assertTrue(all(r["state"] == "completed" for r in records))
 
+    def test_context_of_an_engine_that_cannot_list_it(self):
+        code, body = self.request("/api/context")
+        self.assertEqual(code, 200)
+        self.assertEqual((body["available"], body["reason"]), (False, "engine"))   # an engine before "lists"
+        self.assertTrue(self.request("/health")[1]["api_monitor"])
+
+    def lists(self, held):
+        """The engine answers LIST_SESSION_TOKENS / LIST_PARKED_CONVERSATIONS with `held` (StrataEngine.list_held)."""
+        self.engine.can_list = True
+        self.engine.list_held = lambda: {k: [{**e, "tokens": array("i", e["tokens"])} for e in v]
+                                         for k, v in held.items()}
+
+    def test_context_lists_then_gives_an_entry_with_its_text(self):
+        # "é" is two bytes, one token each: the first token's piece is empty, the second completes it
+        ids = [256, *"hi é".encode(), 257]
+        self.lists({"sessions": [{"name": "main", "state": "holding", "tokens": ids}],
+                    "parked": [{"where": "ram", "bytes": 1536, "tokens": [1, 2]}]})
+        code, body = self.request("/api/context")
+        self.assertEqual(code, 200)
+        self.assertEqual((body["available"], body["busy"], body["max_context"]), (True, False, self.svc.reported_ctx()))
+        session, parked = body["entries"]
+        self.assertEqual((session["name"], session["state"], session["count"]), ("Session", "holding", len(ids)))
+        self.assertNotIn("tokens", session)              # the list carries no tokens: an entry is read on its own
+        self.assertEqual({k: parked[k] for k in ("name", "kind", "where", "bytes", "count")},
+                         {"name": "Parked conversation 1 of 1", "kind": "parked", "where": "ram", "bytes": 1536,
+                          "count": 2})
+        code, got = self.request(f"/api/context?list={body['list']}&entry=0")
+        self.assertEqual(code, 200)
+        self.assertEqual(got["tokens"], ids)
+        self.assertEqual(got["pieces"], ["<|im_start|>", "h", "i", " ", "", "é", "<|im_end|>"])
+        self.assertEqual(self.request(f"/api/context?list={body['list']}&entry=1")[1]["tokens"], [1, 2])
+        # an entry of a list that is no longer the last one read, or not in it: the page reads the list again
+        self.request("/api/context")
+        for query in (f"list={body['list']}&entry=0", f"list={body['list'] + 1}&entry=2", "list=x&entry=0"):
+            self.assertEqual(self.request("/api/context?" + query)[0], 404, query)
+
+    def test_context_while_a_request_has_the_engine(self):
+        self.lists({"sessions": [{"name": "main", "state": "holding", "tokens": [5, 6]}], "parked": []})
+        self.svc.CONTEXT_WAIT_S = 0.05
+        with self.svc.fifo:                              # a request is running: nothing read yet
+            body = self.request("/api/context")[1]
+        self.assertEqual((body["busy"], body["list"], body["entries"]), (True, None, []))
+        first = self.request("/api/context")[1]
+        with self.svc.fifo:                              # ... then the list read last, marked busy
+            body = self.request("/api/context")[1]
+        self.assertEqual((body["busy"], body["list"], body["at"]), (True, first["list"], first["at"]))
+        self.assertEqual(body["entries"], first["entries"])
+
+    def test_context_needs_the_key(self):
+        self.svc.api_key = "k"
+        self.assertEqual(self.request("/api/context")[0], 401)
+        self.assertEqual(self.request("/api/context", headers={"Authorization": "Bearer k"})[0], 200)
+
     def test_page_and_relative_assets_are_served(self):
         code, html = self.request("/api-monitor")
         self.assertEqual(code, 200)
@@ -195,7 +251,58 @@ class Monitor(unittest.TestCase):
         self.assertEqual(code, 200)
         self.assertIn("textContent", script)
         self.assertNotIn("innerHTML", script)
+        for el in ("ctx-view", "ctx-refresh", "ctx-save", "ctx-binary", "ctx-slot", "ctx-sum", "ctx-note", "ctx-pager",
+                   "ctx-prev", "ctx-next", "ctx-range"):
+            self.assertIn(f'id="{el}"', html)
+            self.assertIn(f'"{el}"', script)
+
+    def test_the_main_page_links_to_the_monitor(self):
+        web = Path(__file__).parent / "web"
+        html, js = (web / "index.html").read_text(encoding="utf-8"), (web / "app.js").read_text(encoding="utf-8")
+        for el in ("api-monitor-link", "req-monitor"):
+            self.assertIn(f'id="{el}"', html)
+            self.assertIn(f'"{el}"', js)
+        self.assertIn('href="api-monitor"', html)
         self.assertEqual(self.request("/web/../server.py")[0], 404)
+
+
+class ListHeld(unittest.TestCase):
+    """StrataEngine.list_held: the engine's LIST_SESSION_TOKENS and LIST_PARKED_CONVERSATIONS answers."""
+
+    @staticmethod
+    def bare(lines):
+        """A StrataEngine without a process: its output lines are queued up front."""
+        import io
+        import queue
+        from types import SimpleNamespace
+        from serve.server import StrataEngine
+        engine = StrataEngine.__new__(StrataEngine)
+        engine.proc = SimpleNamespace(stdin=io.StringIO(), poll=lambda: None)
+        engine.lines, engine.wlock, engine.ended = queue.Queue(), threading.Lock(), False
+        for line in lines:
+            engine.lines.put(line + "\n")
+        return engine
+
+    def test_sessions_and_parked_conversations(self):
+        engine = self.bare(["SESSION_TOKENS main holding 3 248045,0,7", "NOTE sessions: something else",
+                            "SESSION_TOKENS slot0 decoding 1 9", "SESSION_TOKENS slot1 empty 0", "END_SESSION_TOKENS",
+                            "PARKED_CONVERSATION 4 ram 1535867580 2 1,2", "PARKED_CONVERSATION 9 disk 17 0",
+                            "END_PARKED_CONVERSATIONS"])
+        got = engine.list_held()
+        self.assertEqual(engine.proc.stdin.getvalue(), "LIST_SESSION_TOKENS\nLIST_PARKED_CONVERSATIONS\n")
+        self.assertEqual([(s["name"], s["state"], s["tokens"].tolist()) for s in got["sessions"]],
+                         [("main", "holding", [248045, 0, 7]), ("slot0", "decoding", [9]), ("slot1", "empty", [])])
+        self.assertEqual([(p["where"], p["bytes"], p["tokens"].tolist()) for p in got["parked"]],
+                         [("ram", 1535867580, [1, 2]), ("disk", 17, [])])
+
+    def test_an_engine_that_refuses_or_ends(self):
+        from serve.server import EngineDied
+        with self.assertRaises(EngineDied):
+            self.bare(["ERR unknown command"]).list_held()
+        engine = self.bare(["SESSION_TOKENS main empty 0"])
+        engine.lines.put(None)                            # its output closed
+        with self.assertRaises(EngineDied):
+            engine.list_held()
 
 
 class ConversationCacheCard(unittest.TestCase):
