@@ -11202,8 +11202,8 @@ int main(int argc, char** argv) {
         }
         strata::core::pin_sim_report("at READY");
         strata::core::pin_reserve_release_hard();   // the load is over: nothing else needs the headroom
-        // "stop": this engine honours STOP; "lists": it answers LIST_SESSION_TOKENS and LIST_PARKED_CONVERSATIONS
-        std::printf("READY %lld stop lists\n", (long long) o.max_context);
+        // "stop": this engine honours STOP; "conversations": it answers LIST_CONVERSATIONS and GET_CONTEXT_WINDOWS
+        std::printf("READY %lld stop conversations\n", (long long) o.max_context);
         std::fflush(stdout);
         std::string line;
         int64_t rounds = 0;
@@ -12028,28 +12028,24 @@ int main(int argc, char** argv) {
                 std::fflush(stdout);
                 continue;
             }
-            // what the sessions and the parked conversations hold, for the server's API monitor (token_listing.hpp):
+            // the conversations the sessions hold and the parked ones, for the server's API monitor (token_listing.hpp):
             // between requests and between batch windows, changing nothing
-            if (line == "LIST_SESSION_TOKENS") {
-                const bool held = live_ok && !live.empty();
-                strata::core::print_session_tokens("main", held ? "holding" : "empty", live.data(), held ? live.size() : 0);
+            if (strata::core::is_conversation_command(line)) {
+                std::vector<strata::core::HeldConversation> held;
+                const bool main_held = live_ok && !live.empty();
+                held.push_back({"main", "vram", main_held ? "holding" : "empty", live.data(), main_held ? live.size() : 0, 0});
                 for (size_t b = 0; b < bs.size(); ++b) {
                     const BSlot& sl = bs[b];
-                    const char* st = sl.active ? "decoding" : sl.partial ? "reading" : sl.cached ? "holding" : "empty";
                     const bool known = sl.active || sl.partial || sl.cached;
-                    strata::core::print_session_tokens("slot" + std::to_string(b), st, sl.ids.data(),
-                                                       known ? sl.ids.size() : 0);
+                    held.push_back({"slot" + std::to_string(b), "vram",
+                                    sl.active ? "decoding" : sl.partial ? "reading" : sl.cached ? "holding" : "empty",
+                                    sl.ids.data(), known ? sl.ids.size() : 0, 0});
                 }
-                std::printf("END_SESSION_TOKENS\n");
-                std::fflush(stdout);
-                continue;
-            }
-            if (line == "LIST_PARKED_CONVERSATIONS") {
-                conversations.for_each([](uint64_t serial, const strata::core::SavedConversation& c) {
-                    strata::core::print_parked_conversation(serial, false, c.bytes(), c.live.ids.data(), c.live.ids.size());
+                conversations.for_each([&](uint64_t serial, const strata::core::SavedConversation& c) {
+                    held.push_back({"parked" + std::to_string(serial), "ram", "parked", c.live.ids.data(),
+                                    c.live.ids.size(), (uint64_t) c.bytes()});
                 });
-                std::printf("END_PARKED_CONVERSATIONS\n");
-                std::fflush(stdout);
+                strata::core::answer_conversation_command(line, held);
                 continue;
             }
             // a command may touch the expert cache (a request lends slots, a K/V growth moves them, a session restore
