@@ -79,6 +79,115 @@ Source setup does not make an unsupported model or backend compatible. Strata's 
 - Keep the docs' style: plain words, short sentences, written for non-technical users first. Give measured numbers
   with what they were measured on. Make no claim without a measurement.
 
+## Second pass
+
+After writing code (unless asked to "bypass" this or to "prototype"), use a subagent to review the code you just
+wrote, sending it the user's original prompts, Q&A, and user-approved final plan if any, asking it to follow these
+instructions to edit the changes:
+
+1. Look for inelegancy (such as repetition) and ways to write the new code more concisely, e.g. combine this example into one LoC:
+
+        auto the_foo = get_foo(x);
+        return bar(the_foo).baz;
+
+2. Follow prime directives from AGENTS.md.
+3. Follow style & other directives from AGENTS.md.
+4. Rename things whose changed behavior invalidates their name.
+5. Look for bugs
+6. If you do something weird (e.g. violating normal programming principles is necessary), add a comment to explain why.
+7. Add doc comments on new items (variables/functions/types) and update comments you saw that are no longer accurate
+8. Ensure all new and edited comments follow these rules, deleting comments where appropriate. The rules are for new
+   comments: change an existing comment only when it is wrong (it may then follow these rules).
+  a. DO NOT describe WHAT is being done: the specs on related members/types should make the WHAT self-evident. For example, an `if (pipe.FlowLps > 0.1)` statement MUST NOT have a comment saying whether negative flow is included. Instead, the doc comment on FlowLps's definition should say whether it's signed. Exception: ONE-LINE summaries of BLOCKS of code are fine
+  b. DO NOT write comments for fixed bugs or how things once were; only commit messages should talk about changes. For example, if you split `try { Presolve(...); Solve(...); }` into two try-catches, you MUST NOT write a comment saying "Presolve in a separate try block, so that a presolver bug is not misreported as solver not available". Exception: describing a bug in a regression test or why a design is awkward.
+  c. WHEN IN DOUBT, DELETE THE COMMENT.
+  d. Document parameters or return values iff their purpose is non-obvious without reading the function
+  e. If an item is special-purpose (designed for use by only one module or type), mention what uses it.
+  f. Doc comments on functions must use sentences: say "Gets number of children" not "Number of children"
+  g. To reduce ambiguity, try describing an item with different words than the item's name uses. Real examples: a comment on `IEndpoint endpoint` says "Final destination of water flowing through current connection/entity."; comment on `BuildSingleProblem` says "Converts a set of ConnectionDBO into a SolverProblem"
+  h. Use theory-of-mind to verify that comments make sense in context and are clear and unambiguous. Doc comments should be friendly by assuming the reader has little familiarity with other items (types/members), but to avoid wordiness, comments on logic and on private members SHOULD assume the reader is familiar with all 'summary' doc comments
+
+If a newly identified issue is hard to avoid without a lot more code or work, the main agent must decide between these two options:
+
+1. If a different solution now seems clearly better:
+  - If user asked for this, explain the issue and ask how to proceed.
+  - If you chose a poor solution, scrap it and redo implementation or planning
+
+2. Otherwise, don't do the extra code/work. Instead write a comment about the issue in the code and explain the issue to the user.
+
+## Directives
+
+### Prime directives
+
+- Concise, elegant, reuseable and reused code are crucial to maximize agents' productivity. Concise does NOT mean minimizing newlines. Instead, follow the generalized DRY principle: factor code to avoid repeating patterns of any kind. When adding features, actively seek out similar functionality to find opportunities for code re-use. Make the code concise via in-function refactoring during the Second Pass. Do not without approval add large ancillary code blocks to handle special cases.
+- Care about Separation of Concerns and Information Hiding
+- To give reviewers a simpler diff, avoid unnecessary changes during tasks (but you can ignore added/removed BOMs)
+- In TypeScript, NEVER USE `as any`. DO NOT USE `: any`. AVOID `as unknown as`.
+
+### Style directives
+
+- Put high-level code first and callers before callees (helper functions at bottom).
+  - Put nested functions at the bottom of the outer function or of the block it is called from.
+- Renaming something? If the file has that name, rename it too.
+- Wrap code and comments before column 120
+- Naming:
+  - Use verb phrases for names of new functions: find_foo(), not foo_lookup()
+  - Affixes: x_if_y() = do X in case of Y, try_x() = "do X if possible" or "does not throw on failure", maybe_x() = do X if a condition to complex to describe in an _if_y suffix holds; x_core() = x_core is the "core" of x() which does ancillary tasks like checking permissions
+  - Use is_/are_/get_ prefix on getter functions, but React Components and fast property-like queries can use a noun: `double minimum_at(time_index)`
+  - Indicate whether transforms are in-place or not (`reverse()` vs `get_reversed()`)
+  - Very long names are OK on rarely-used symbols; very oft-used words/symbols can be abbreviated
+- Avoid one-liner loops/flow: spread `if (x) continue` and `for (let x of list) write(x)` over two lines
+
+### Other
+
+- Use subagents more often when your task is large and context exceeds 100K tokens
+- When debugging via console logs, prefix logs with `???` to mark them temporary in case they are accidentally committed
+- Unless you're on a dedicated temporary worktree, other agents may be working in the same tree so prefer not to stash and never switch branches when the user didn't explicitly ask for it
+- By default, create a commit after completing a feature or bug fix, and offer to push it.
+
+## Writing commit messages
+
+Commit messages should mention
+
+1. The task/issue number
+2. *the goal* of the changes
+3. *the reasons why* the changes were made (you can leave this out if the reasons are obvious. The reason to fix a bug or add a feature is usually obvious but the reason refactoring was needed is usually not and deserves a motivating explanation.)
+
+Always make changes sound like changes, not descriptions of a status quo or noun phrases, and connect changes to reasons:
+
+- WRONG: UI/eslint.config.js: the `indent` rule is off. AI agents didn't obey it and...
+- RIGHT: UI/eslint.config.js: turn off the `indent` rule because AI agents didn't obey it and...
+- WRONG: MapArea.tsx reports missing WebGL clearly...
+- RIGHT: MapArea.tsx: report missing WebGL clearly...
+- RIGHT: MapArea.tsx: missing WebGL is now reported clearly...
+
+Stay brief and focused:
+
+- assume reader can look at the code to see finer details
+- don't mention features that existed before the commit (except to explain why something is changing or that the feature is changing).
+
+### Structure
+
+1. Subject line: `#<work item> <area>: <summary>`, where the optional area is a domain of substantial size e.g. TreeList (representing TreeList.tsx). Make the summary an action-phrase just like bullet points.
+2. Superstructure: main, then Also; divide the work into a *main* work product and *ancillary* changes that the main work does not depend on, if any. Describe the main product first. Build each half independently by the rules below.
+3. Don't exceed 79 characters per line; after committing check with `git log -1 --format=%B | awk 'length > 79'` and amend on mistake.
+
+#### For each section
+
+If it is one clear change, describe it in prose with no bullets, starting with motivation/use case, then how to use the UI if relevant, then the technical approach (mentioning real code symbols). If there are many related changes, start with an unbulleted paragraph summarizing the whole in this way, then give details as bullets. Ancillary changes follow under an `### Also` line.
+
+When multiple bullets:
+
+1. Plan a first draft of top-level bullets in a way that feels natural to you. Each bullet should start by saying which file(s) or class(es) were changed unless all changes are to the same file that was already mentioned.
+  - For bugs, say what the bug caused, the circumstances required to trigger it, and then the bug's cause: "Bug fix: in [context], no error appeared if acquiring a lock failed because `msgBox` was uninitialized in the temporary `ViewModel`".
+2. Improve the draft by merging or grouping similar/related bullets (e.g. those that share one rationale, that could only be done together, or that changed the same file).
+  - Completely leave out trivial changes that don't affect UI/UX (unless their rationale is important and nonobvious), e.g. cleaning up `using` statements, improving a comment's wording, renaming something for clarity, or correcting a minor inefficiency.
+  - Test: could a reviewer revert this bullet on its own? If not, merge it with others.
+  - If there are multiple changes to the same file, consider grouping them under a `- FileName.ext:` bullet
+  - Follow the usual communication directives
+3. When a change C was done to help/enable/improve another change B, make C a child/sub-bullet of B (You can also break up a large bullet point into sub-bullets.) When C helps multiple other bullets, place C at the outer level immediately below the bullets to which it is subordinate and say something like "[Location]: To complete the N changes above it was necessary to [C]"
+4. Identify bullets that are "internal", meaning changes that end-users wouldn't see, such as refactors, or fixes of theoretical non-reproduceable bugs. Show a separate section headed "Internal:" for those.
+
 ## Contributing a change or report
 
 The rules are in **[CONTRIBUTING.md](CONTRIBUTING.md)**. Read it before you open an issue or a pull request, and
