@@ -16,7 +16,7 @@ import * as supervisor from './supervisor.mjs';
 import { get as getStore } from './store.mjs';
 import { which } from './util.mjs';
 
-/** Where Strata's own API worker listens by default (`serve/server.py`, `--port 8095`). */
+/** Where Strata's own API worker listens by default (`strata_server/server.py`, `--port 8095`). */
 const STRATA_DEFAULT_URL = 'http://127.0.0.1:8095/v1';
 
 const CANDIDATES = [

@@ -409,7 +409,7 @@ def start_worker(scripts: list[str], port: int, log_path: Path,
         raise FlowError(
             f"port {port} is already in use; a worker left over from an earlier session would answer "
             "this test's requests and its results would look plausible")
-    argv = [PYTHON, "-m", "serve.server", "--engine", "mock", "--port", str(port), "--script-cycle"]
+    argv = [PYTHON, "-m", "strata_server.server", "--engine", "mock", "--port", str(port), "--script-cycle"]
     if delay_s:
         # A turn that finishes before Stop can arrive proves nothing about Stop. The mock honours
         # cancellation between tokens, so a delay makes the window real.

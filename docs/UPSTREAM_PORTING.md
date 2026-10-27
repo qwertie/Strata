@@ -46,7 +46,7 @@ code updates its rows here. Rows are grouped by step; `{a,b}` lists several file
 
 | Upstream path | Path here | Step | Status |
 |---|---|---|---|
-| `serve/` | `strata_server/` | A2 | planned |
+| `serve/` (everything not listed below) | `strata_server/` | A2 | done |
 | `serve/winjob.py`, `strata_control/{atomic,longpath,loopback,posix_owner,private_files,tls,transfer,winproc}.py` | `strata_base/` | A2 | done |
 | `serve/{launch_identity,lifeline,ready,telemetry}.py` | `strata_common/` | A2 | done |
 | `strata_control/{acquisition,draft_layer,drafting,engine_component,gpu_fit,gpu_roles,hipblaslt_tuning,offline,paths,presets,procs,profiles,signing,targets,tune_history,tune_knobs,tune_machine,user_args,vision_reader}.py`, `strata_control/update_keys.json` | `strata_common/` | A2 | done |

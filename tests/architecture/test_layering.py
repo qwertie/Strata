@@ -28,9 +28,8 @@ CPP_SAME_LAYER_USES = {"base/gpu": {"base/platform"}}
 # Python packages and scripts by layer; packages in one layer must not import each other
 PY_LAYERS = {"strata_base": 0, "strata_common": 1, "strata_server": 2, "strata_control": 2, "strata_cli": 3,
              "setup": 4, "tools": 4}
-PY_OLD_NAMES = {"serve": "strata_server"}
 # The packages whose imports are checked
-CHECKED_PY_PACKAGES = ("strata_base", "strata_common", "strata_control", "serve", "strata_cli")
+CHECKED_PY_PACKAGES = ("strata_base", "strata_common", "strata_control", "strata_server", "strata_cli")
 
 
 def test_cpp_includes_follow_layers():
@@ -67,7 +66,7 @@ def test_rules_catch_violations():
     assert find_python_problem("strata_server", "strata_common") is None
     assert find_python_problem("strata_base", "strata_common")
     assert find_python_problem("strata_server", "strata_control")
-    assert find_python_problem("strata_control", "serve")
+    assert find_python_problem("strata_control", "strata_server")
     assert find_python_problem("strata_control", "tools")
 
 
@@ -116,7 +115,6 @@ def find_imported_packages(path: Path):
 
 def find_python_problem(package: str, target: str) -> str | None:
     """Gets what is wrong with `package` importing `target`, or None if the layers allow it."""
-    package, target = PY_OLD_NAMES.get(package, package), PY_OLD_NAMES.get(target, target)
     if target == package or target not in PY_LAYERS:
         return None
     if PY_LAYERS[target] >= PY_LAYERS[package]:

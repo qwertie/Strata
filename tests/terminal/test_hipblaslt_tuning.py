@@ -200,7 +200,7 @@ class Apply(TempDir):
         self.assertEqual(lines, [])
 
     def test_the_server_start_applies_it_for_a_component_engine(self):
-        from serve import server
+        from strata_server import server
         from strata_common import engine_client
         pkg = fake_package(self.root)
         (pkg / "strata").write_text("x", encoding="utf-8")

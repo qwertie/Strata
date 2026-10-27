@@ -2,7 +2,7 @@
 
     python tools/agent_turns_bench.py strata-iq2_xs.json base: hcq8:STRATA_HC_Q8=2 [--rounds 2]
 
-The workload is five simulated coding-agent sessions over this repository's own files (README, serve/, setup.py, the
+The workload is five simulated coding-agent sessions over this repository's own files (README, strata_server/, setup.py, the
 expert cache, the hyper-connection kernels, the tokenizer): a system prompt, four tools, a task (three in English, two
 in French), then tool calls whose results are the real files, at most 2,000 lines per read as agents' read tools
 return them.  Every point right after a tool result is one turn the model continues - 23 turns from ~2.5K to ~100K
@@ -62,8 +62,8 @@ SESSIONS = [
      "already waiting, document it in the README's settings section, and add a test.",
      [("read_file", "README.md", "I'll start with the README to see how settings are documented."),
       ("grep", "add_argument", "Now let me find where the server parses its options."),
-      ("read_file", "serve/server.py", "The options are in serve/server.py; reading it."),
-      ("read_file", "serve/frontend.py", "Requests go through the frontend; let me read it too."),
+      ("read_file", "strata_server/server.py", "The options are in strata_server/server.py; reading it."),
+      ("read_file", "strata_server/frontend.py", "Requests go through the frontend; let me read it too."),
       ("read_file", "docs/DETAILS.md", "Checking DETAILS.md for the existing API documentation style.")]),
     ("expert-cache",
      "Explain precisely how the expert cache decides which experts stay in VRAM during decode, then propose and "
@@ -93,8 +93,8 @@ SESSIONS = [
      "cas limites), puis corrige les bugs que les tests révèlent. Réponds en français.",
      [("read_file", "tools/strata_tokenizer.py", "Je lis d'abord le tokenizer."),
       ("grep", "strata_tokenizer", "Je cherche qui l'utilise."),
-      ("read_file", "serve/frontend.py", "Le frontend l'appelle ; je le lis pour voir les usages réels."),
-      ("read_file", "serve/chat_template.jinja", "Je regarde aussi le modèle de conversation."),
+      ("read_file", "strata_server/frontend.py", "Le frontend l'appelle ; je le lis pour voir les usages réels."),
+      ("read_file", "strata_server/chat_template.jinja", "Je regarde aussi le modèle de conversation."),
       ("read_file", "chat.py", "Et le client en ligne de commande.")]),
 ]
 
@@ -170,7 +170,7 @@ def main() -> int:
             cfg["log"] = str(Path(tempfile.gettempdir()) / f"agent_turns_{name}_r{rnd}.log")
             cpath = Path(tempfile.gettempdir()) / f"agent_turns_{name}.json"
             cpath.write_text(json.dumps(cfg, indent=1))
-            proc = subprocess.Popen([sys.executable, str(ROOT / "serve" / "server.py"), "--engine", "strata", "--config",
+            proc = subprocess.Popen([sys.executable, str(ROOT / "strata_server" / "server.py"), "--engine", "strata", "--config",
                                      str(cpath), "--port", str(a.port)], cwd=str(ROOT), env=dict(os.environ, **e),
                                     stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
             try:

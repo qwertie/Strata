@@ -73,7 +73,7 @@ class ApiHarness:
     def _argv(self) -> list[str]:
         # The worker's own spelling. `--profile` is the terminal launcher's flag, not this one, and
         # passing it made the worker exit 2 with a usage message before it ever bound a port.
-        return [self.python, "-m", "serve.server", "--engine", self.engine,
+        return [self.python, "-m", "strata_server.server", "--engine", self.engine,
                 "--config", str(self.config_path),
                 "--host", self.host, "--port", str(self.port)]
 

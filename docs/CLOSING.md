@@ -9,7 +9,7 @@ does not exit in time it is killed. After either, the port and the GPU memory ar
 
 | | Started by | Ends with | Stop it with |
 |---|---|---|---|
-| **Foreground** | `strata serve --profile NAME` (or `python serve/server.py`) | the terminal / the command | Ctrl+C, closing the window, `kill` |
+| **Foreground** | `strata serve --profile NAME` (or `python strata_server/server.py`) | the terminal / the command | Ctrl+C, closing the window, `kill` |
 | **Background service** (on purpose) | `strata runtime start --profile NAME` | nothing: it keeps serving after the terminal closes | `strata runtime stop --profile NAME` |
 | **The Desktop app's engines** | the app (profiles `app-1`, `app-2`, ...) | the app: its window, its process, its host | closing the app, or the app's unload |
 

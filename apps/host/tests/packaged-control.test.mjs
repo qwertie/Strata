@@ -16,10 +16,10 @@ function fakeControlDir() {
   const dir = mkdtempSync(join(tmpdir(), 'strata-control-dir-'));
   mkdirSync(join(dir, 'python', ...(isWin ? [] : ['bin'])), { recursive: true });
   mkdirSync(join(dir, 'strata_control'), { recursive: true });
-  mkdirSync(join(dir, 'serve'), { recursive: true });
+  mkdirSync(join(dir, 'strata_server'), { recursive: true });
   writeFileSync(bundledPython(dir), 'x');
   writeFileSync(join(dir, 'strata.py'), '# cli');
-  writeFileSync(join(dir, 'serve', 'server.py'), 'port\nparallel\n/v1/responses');
+  writeFileSync(join(dir, 'strata_server', 'server.py'), 'port\nparallel\n/v1/responses');
   writeFileSync(join(dir, 'BUNDLE.json'), JSON.stringify({ version: '0.1.45', python: '3.12.15' }));
   return dir;
 }

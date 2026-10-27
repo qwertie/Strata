@@ -207,7 +207,7 @@ existing code ([gemm.cu](../src/prefill/gemm.cu), [qsa_select.cu](../src/kernels
 
 ## AMD: building gfx906 and gfx1012
 
-Setup does not build these. Build by hand and run `serve/server.py` with a config, as on any other card.
+Setup does not build these. Build by hand and run `strata_server/server.py` with a config, as on any other card.
 
 - **gfx906** (MI50 / MI60 / Radeon VII, wave64): a separate opt-in build, `-DSTRATA_HIP_GFX906=ON
   -DCMAKE_HIP_ARCHITECTURES=gfx906` (not `STRATA_ENABLE_HIP`). Current ROCm no longer ships gfx906 libraries; the reporter used a

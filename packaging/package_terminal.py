@@ -16,7 +16,7 @@ What goes in
   `pip install --require-hashes --no-deps --only-binary=:all:` at BUILD time only: every package, direct or
   transitive, is named with an exact version and the SHA-256 of the wheel(s) accepted, so nothing else can land in
   the bundle. pip itself is the one the interpreter shipped with (not upgraded);
-* the application: `strata.py`, `strata_control`, `strata_cli`, `serve`, a `VERSION` file and the docs the CLI
+* the application: `strata.py`, `strata_control`, `strata_cli`, `strata_server`, a `VERSION` file and the docs the CLI
   references;
 * the read-only tooling under `tools/` that the terminal paths import. Everything else under `tools/` is engine
   installation and preparation work and is deliberately excluded: the serving import graph must not pull it in
@@ -95,7 +95,7 @@ PAYLOAD = (
     "strata_common",
     "strata_control",
     "strata_cli",
-    "serve",
+    "strata_server",
     "requirements.txt",
     "requirements-monitor.txt",
     "docs/MANAGEMENT_PROTOCOL.md",

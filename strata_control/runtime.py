@@ -863,7 +863,7 @@ class Host:
         try:
             with os.fdopen(descriptor, "ab") as stream:
                 if WINDOWS:
-                    self.child = subprocess.Popen([sys.executable, "-m", "serve.server", *server_args],
+                    self.child = subprocess.Popen([sys.executable, "-m", "strata_server.server", *server_args],
                                                   cwd=ROOT, stdin=subprocess.PIPE, stdout=stream,
                                                   stderr=subprocess.STDOUT, close_fds=True, env=child_env,
                                                   creationflags=subprocess.CREATE_NO_WINDOW)
@@ -871,7 +871,7 @@ class Host:
                     from strata_base import winjob
                     winjob.contain(self.child)
                 else:
-                    self.child = subprocess.Popen([sys.executable, "-m", "serve.server", *server_args],
+                    self.child = subprocess.Popen([sys.executable, "-m", "strata_server.server", *server_args],
                                                   cwd=ROOT, stdin=subprocess.DEVNULL, stdout=stream,
                                                   stderr=subprocess.STDOUT, close_fds=True,
                                                   pass_fds=(reader,), start_new_session=True, env=child_env)

@@ -8,7 +8,7 @@ on:
       - strata.py
       - strata_cli/**
       - strata_control/**
-      - serve/**
+      - strata_server/**
       - tests/terminal/test_runtime.py
       - tools/minimal_server_smoke.py
       - tools/strata_tokenizer.py
@@ -19,7 +19,7 @@ on:
       - strata.py
       - strata_cli/**
       - strata_control/**
-      - serve/**
+      - strata_server/**
       - tests/terminal/test_runtime.py
       - tools/minimal_server_smoke.py
       - tools/strata_tokenizer.py
@@ -62,4 +62,4 @@ jobs:
       - name: Run full server suite without terminal packages
         shell: bash
         run: |
-          "$RUNNER_TEMP/strata-runtime-venv/bin/python" -m unittest discover -s serve -p 'test_*.py'
+          "$RUNNER_TEMP/strata-runtime-venv/bin/python" -m unittest discover -s strata_server -p 'test_*.py'

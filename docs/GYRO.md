@@ -249,7 +249,7 @@ Save as `strata-gyro-s.json` at the repository root:
 ```
 
 ```sh
-.venv/bin/python -m serve.server --engine strata --config strata-gyro-s.json --port 8080
+.venv/bin/python -m strata_server.server --engine strata --config strata-gyro-s.json --port 8080
 ```
 
 The web interface is at `http://127.0.0.1:8080`. API clients use `http://127.0.0.1:8080/v1` (OpenAI) or `/v1/messages`

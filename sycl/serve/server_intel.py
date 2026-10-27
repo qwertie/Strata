@@ -1,9 +1,9 @@
-"""serve/server.py for an Intel Arc: the same server, with the Intel pieces added from outside.
+"""strata_server/server.py for an Intel Arc: the same server, with the Intel pieces added from outside.
 
     python sycl/serve/server_intel.py --engine strata --config strata-<model>.json --port 8080 [...]
 
-Every argument is serve/server.py's.  Nothing in serve/ is edited (the SYCL port keeps out of the shared files so
-upstream merges stay clean); this wrapper adds, at run time:
+Every argument is strata_server/server.py's.  Nothing in strata_server/ is edited (the SYCL port keeps out of the shared
+files so upstream merges stay clean); this wrapper adds, at run time:
 
   - the Monitor tab's GPU readings on an Intel Arc (sycl/serve/xe_telemetry.py) (also on a PC with an NVIDIA card: the engine runs on the Intel one);
   - a model menu in the web app's header, for a host that swaps models on one GPU: the config names the RPC that
@@ -29,7 +29,7 @@ ROOT = HERE.parent.parent
 sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(HERE))
 
-import serve.server as S  # noqa: E402
+import strata_server.server as S  # noqa: E402
 from strata_common import engine_client  # noqa: E402
 import strata_common.telemetry as T  # noqa: E402
 from xe_telemetry import _XeGpu  # noqa: E402
@@ -50,7 +50,7 @@ def install_xe_reader():
 
 def install_shared_embeddings():
     """Pictures: the engine runs in a container, and a request's image embeddings reach it as a file named on its GENI line.
-    serve/server.py writes that file to /dev/shm when that has room, and strata-sycl.sh shares the host's /dev/shm with the
+    strata_server/server.py writes that file to /dev/shm when that has room, and strata-sycl.sh shares the host's /dev/shm with the
     container, so the path means the same on both sides.  Anywhere else (a full /dev/shm) the container cannot see the file:
     said once, in the log, in plain words."""
     orig = S.combined_embeddings_path
@@ -128,7 +128,7 @@ def install_switcher(argv):
                     self._send(f.read_bytes(), types[f.suffix])
                     return
                 if path == "":
-                    page = (ROOT / "serve" / "web" / "index.html").read_text(encoding="utf-8")
+                    page = (ROOT / "strata_server" / "web" / "index.html").read_text(encoding="utf-8")
                     page = page.replace("</head>", '<link rel="stylesheet" href="sycl-web/switcher.css">\n</head>', 1)
                     page = page.replace("</body>", '<script src="sycl-web/switcher.js"></script>\n</body>', 1)
                     self._send(page.encode("utf-8"), "text/html; charset=utf-8")

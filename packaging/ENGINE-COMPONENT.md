@@ -123,7 +123,7 @@ An AMD package records the hipBLASLt it bundles (`hipblaslt_version` in BUILD.js
 for exactly that version and its `archs` as `tuning/<arch>-hipblaslt-<version>.txt`. They are ordinary files of the manifest (hashed and signed
 with the package). `packaging/stage_tuning.py` does it for the Linux build script, `tools/hip/package_windows.py` for the Windows zip, and
 `package_engine.py` refuses an AMD stage without `hipblaslt_version` or with a table for another version or architecture. The server's start
-(`serve/server.py with_component_engine`, rule in `strata_common/hipblaslt_tuning.py`) picks the table of the card and sets
+(`strata_server/server.py with_component_engine`, rule in `strata_common/hipblaslt_tuning.py`) picks the table of the card and sets
 `STRATA_HIPBLASLT_TUNING` for the engine; a version mismatch, an unreadable card or a missing version are one log line and plain hipBLAS.
 `STRATA_HIPBLASLT_TABLE=on|off` (or `"hipblaslt_table"` in the run config) overrides; unset it follows `AUTO_USES_TABLE`, which is off by default, because a table changes the rounding of the prompt's GEMMs (docs/AMD_HIP.md, Tuning table). Tests: `tests/terminal/test_hipblaslt_tuning.py`.
 

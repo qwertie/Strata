@@ -168,7 +168,7 @@ class ControlModeTests(unittest.TestCase):
 
 
 class InstallerServerTests(unittest.TestCase):
-    """tools/strata_mcp.py with its source (setup.py, serve/) apart from the install folder, as the app runs it."""
+    """tools/strata_mcp.py with its source (setup.py, strata_server/) apart from the install folder, as the app runs it."""
 
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()

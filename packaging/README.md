@@ -80,7 +80,7 @@ release PC ([UPDATES.md](UPDATES.md#releasing)).
 The installer carries Control, and on a Mac the Metal engine too. Neither fetches anything when it runs.
 
 **Control** (`<install>/control`, built by `apps/desktop/scripts/stage-control.py`) is the same bundle as the Terminal archive:
-the pinned CPython 3.12.15, the hash-locked wheels, `strata_control`, `strata_cli` and `serve`, plus a `BUNDLE.json` with the
+the pinned CPython 3.12.15, the hash-locked wheels, `strata_control`, `strata_cli` and `strata_server`, plus a `BUNDLE.json` with the
 interpreter and lock digests. The host finds it beside itself or through `STRATA_CONTROL_DIR`, runs it on its own interpreter
 (`PYTHONNOUSERSITE=1`, no `PYTHONHOME` or `PYTHONPATH`) and starts a model with `strata profile create|use-config` and
 `strata runtime start`. The engine then runs under the owner runtime (loopback TCP and a 256-bit token on Windows, a private

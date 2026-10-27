@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Metal serve regression probe (owner round 9, G6): one request of the first N token ids of a prompt through serve/server.py on the
+"""Metal serve regression probe (owner round 9, G6): one request of the first N token ids of a prompt through strata_server/server.py on the
 config in STRATA_CFG, with its default flags (expert cache auto, prefill auto).  95, 569, 1500 and 8213 ids used to end in
 "prefill: relayout needs borrowed buffers and a chunk of at most 0" or in a copy into device allocations that were given back.
 

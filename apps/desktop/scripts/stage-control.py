@@ -8,9 +8,10 @@
 
 What lands in `control/`: the pinned CPython 3.12.15 (python-build-standalone, digest-checked), the hash-locked wheels
 (`packaging/locks/runtime-<target>-cp312.txt`, installed with --require-hashes at build time), strata_control,
-strata_cli, strata_common, strata_base, serve, tools/strata_tokenizer.py and BUNDLE.json (version, interpreter and lock
-digests, the digest of the archive it came from). It is the same bundle as the Terminal archive (packaging/package_terminal.py):
-one Python runtime-core for both products. The app then never runs pip, npm, git or a compiler to start or serve.
+strata_cli, strata_common, strata_base, strata_server, tools/strata_tokenizer.py and BUNDLE.json (version, interpreter
+and lock digests, the digest of the archive it came from). It is the same bundle as the Terminal archive
+(packaging/package_terminal.py): one Python runtime-core for both products. The app then never runs pip, npm, git or
+a compiler to start or serve.
 
 This script is a BUILD step. It may download the interpreter and the wheels (verified); the app never does.
 """
@@ -146,7 +147,7 @@ def check(folder: Path) -> int:
     target = pt.host_target()
     python = folder / pt.PYTHON_PINS[target]["python"]
     problems = []
-    for need in (python, folder / "strata.py", folder / "strata_control", folder / "serve" / "server.py", folder / "BUNDLE.json",
+    for need in (python, folder / "strata.py", folder / "strata_control", folder / "strata_server" / "server.py", folder / "BUNDLE.json",
                  folder / "setup.py", folder / "tools" / "strata_mcp.py", folder / "tools" / "iq_pack.py", folder / "data" / "draft_vocab.bin"):
         if not need.exists():
             problems.append(f"missing {need}")

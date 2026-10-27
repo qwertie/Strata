@@ -1,7 +1,7 @@
 """Which drafter a model uses to guess ahead: MTP, DFlash2 or none. One place, read by the Terminal and the app.
 
 The choice is the person's, and it is saved in the model's run config as ``"drafting"``: ``auto`` (the default), ``mtp``, ``dflash2`` or
-``off``. ``strata launch --drafting ...`` writes it, the app's Models screen writes it, and ``serve/server.py`` applies it at every start
+``off``. ``strata launch --drafting ...`` writes it, the app's Models screen writes it, and ``strata_server/server.py`` applies it at every start
 (like ``"mtp": false``, strata_common/draft_layer.py), so a setup run that rewrites the engine arguments cannot undo it.
 
   mtp      the engine's default drafter, the model's own draft layer (no extra flags)

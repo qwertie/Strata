@@ -183,14 +183,14 @@ class Prompts(unittest.TestCase):
         cls.tk = load_tokenizer()
         if cls.tk is None:
             raise unittest.SkipTest("no tokenizer (set STRATA_TOKENIZER or STRATA_GGUF_PY)")
-        from serve.frontend import ChatTemplate
-        cls.template = ChatTemplate(ROOT / "serve" / "chat_template.jinja")
+        from strata_server.frontend import ChatTemplate
+        cls.template = ChatTemplate(ROOT / "strata_server" / "chat_template.jinja")
 
     def check(self, enc, text):
         self.assertEqual(enc.encode(text), self.tk.encode(text, parse_special=True))
 
     def test_chat_golden(self):
-        cases = json.loads((ROOT / "serve" / "chat_golden.json").read_text(encoding="utf-8"))
+        cases = json.loads((ROOT / "strata_server" / "chat_golden.json").read_text(encoding="utf-8"))
         enc = ST.PromptEncoder(self.tk)
         for c in cases + cases:                         # the second round finds its own earlier prompts
             if c.get("rendered"):

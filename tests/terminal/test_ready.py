@@ -37,7 +37,7 @@ class ReadyFileTests(unittest.TestCase):
             env = os.environ.copy()
             env.pop("STRATA_API_KEY", None)
             env.pop("STRATA_TELEMETRY_KEY", None)
-            process = subprocess.Popen([sys.executable, "-m", "serve.server", "--engine", "mock", "--port", "0",
+            process = subprocess.Popen([sys.executable, "-m", "strata_server.server", "--engine", "mock", "--port", "0",
                                         "--ready-file", str(path)], cwd=root, env=env,
                                        stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
             try:

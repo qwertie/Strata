@@ -388,7 +388,7 @@ def process_tree_peak_mib(pid: int) -> float | None:
 class EngineHarness:
     """Boot the engine once per candidate and measure the declared workload.
 
-    The engine is a subprocess speaking line protocol over stdout, exactly as `serve/server.py`
+    The engine is a subprocess speaking line protocol over stdout, exactly as `strata_server/server.py`
     drives it. One harness is created per candidate: a configuration that changes the expert cache
     or the KV layout cannot be assumed to take effect in a running engine.
     """

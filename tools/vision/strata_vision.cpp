@@ -150,7 +150,7 @@ int main(int argc, char** argv) {
     if (gpu) {
         // The AMD / Intel GPU reader: starting the backends prints the GPU line.  With --gpu and no GPU, mtmd would quietly use the CPU
         // (a second, slower CPU reader inside the HIP program), and a card the build has no code for would abort at its first
-        // kernel.  Both end here with a line the server reads: it then starts the CPU reader (serve/server.py, Vision._start).
+        // kernel.  Both end here with a line the server reads: it then starts the CPU reader (strata_server/server.py, Vision._start).
         bool have_gpu = false;
         for (size_t i = 0; i < ggml_backend_dev_count(); ++i) {
             const auto type = ggml_backend_dev_type(ggml_backend_dev_get(i));
@@ -177,7 +177,7 @@ int main(int argc, char** argv) {
     if (gpu) {
         // The Mac: the same program reads on the GPU (--gpu, ggml's Metal backend) or on the CPU.  With --gpu and no Metal device (a
         // virtual machine without a GPU, say), mtmd would quietly use the CPU, which reads a picture in ~50 s: say so instead, and
-        // the server starts the program again without --gpu (serve/server.py, Vision._start) with one log line.
+        // the server starts the program again without --gpu (strata_server/server.py, Vision._start) with one log line.
         bool have_gpu = false;
         for (size_t i = 0; i < ggml_backend_dev_count(); ++i) {
             const auto type = ggml_backend_dev_type(ggml_backend_dev_get(i));

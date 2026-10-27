@@ -9,7 +9,7 @@ bundle has one JSON file per scheduled request (the 22 required ones and the 12 
 listing of every other file). The SHA-256 of that manifest is the protocol's `corpus_sha256`.
 
 The prompts are synthetic. The two record counts (for about 4,096 and 16,384 tokens) are chosen with the pinned tokenizer and the
-chat template Strata ships (serve/chat_template.jinja), rendered the way the server renders a thinking request. Run it again
+chat template Strata ships (strata_server/chat_template.jinja), rendered the way the server renders a thinking request. Run it again
 and the bytes are identical; a change to anything the protocol freezes needs a new protocol ID.
 """
 from __future__ import annotations
@@ -114,7 +114,7 @@ class Counter:
 
     def __init__(self, tokenizer_dir: Path, template_path: Path):
         import strata_tokenizer as ST
-        from serve.frontend import ChatTemplate
+        from strata_server.frontend import ChatTemplate
         vocab = json.loads((tokenizer_dir / "vocab.json").read_text(encoding="utf-8"))
         tokens = [None] * len(vocab)
         for token, index in vocab.items():
@@ -230,6 +230,8 @@ def build(tokenizer_dir: Path, template_path: Path, out: Path) -> dict:
         "protocol_id": PROTOCOL_ID, "bundle": BUNDLE,
         "profile": "qwen3.8-flash-next-thinking",
         "tokenizer_files": tokenizer_files,
+        # The frozen v1 bundle records the template's path from before the package became strata_server/; keeping
+        # that label keeps a rebuild byte for byte the same.
         "template": {"path": "serve/chat_template.jinja", "sha256": sha256_bytes(template_path.read_bytes())},
         "template_kwargs": TEMPLATE_KWARGS,
         "record_format": RECORD, "short_task": SHORT_TASK, "summary_question": SUMMARY_QUESTION,
@@ -251,7 +253,7 @@ def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     ap.add_argument("--tokenizer", required=True, type=Path,
                     help="folder with vocab.json, merges.txt and token_type.json (a pack's tokenizer/ folder)")
-    ap.add_argument("--template", type=Path, default=ROOT / "serve" / "chat_template.jinja")
+    ap.add_argument("--template", type=Path, default=ROOT / "strata_server" / "chat_template.jinja")
     ap.add_argument("--out", type=Path, default=ROOT / "bench" / "prompts" / BUNDLE)
     a = ap.parse_args(argv)
     build(a.tokenizer, a.template, a.out)

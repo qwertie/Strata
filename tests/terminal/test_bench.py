@@ -15,8 +15,8 @@ from contextlib import redirect_stdout
 from pathlib import Path
 from unittest import mock
 
-from serve.frontend import ChatTemplate
-from serve.server import ByteTokenizer, IM_END, Service, serve
+from strata_server.frontend import ChatTemplate
+from strata_server.server import ByteTokenizer, IM_END, Service, serve
 from strata_common.engine_client import MockEngine
 from strata_control import bench
 from strata_cli.cli import main
@@ -51,7 +51,7 @@ class BenchTests(unittest.TestCase):
         self.addCleanup(patcher.stop)
         tok = ByteTokenizer()
         service = Service(MockEngine(tok, "Benchmark mock answer.", max_context=4096), tok,
-                          ChatTemplate(Path(__file__).resolve().parents[2] / "serve/chat_template.jinja"))
+                          ChatTemplate(Path(__file__).resolve().parents[2] / "strata_server/chat_template.jinja"))
         service.api_key = "inference-test-secret"
         service.telemetry_key = "monitor-test-secret"
         self.service = service

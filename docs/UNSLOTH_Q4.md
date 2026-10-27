@@ -135,7 +135,7 @@ implies `--mmap-experts`).
 ```
 
 ```sh
-.venv/bin/python -m serve.server --engine strata --config strata-ud-q4_k_xl.json --port 8080
+.venv/bin/python -m strata_server.server --engine strata --config strata-ud-q4_k_xl.json --port 8080
 ```
 
 `engine/strata.exe` is setup's engine on Windows; a self-built one is `build/strata`. The expert profile is the base

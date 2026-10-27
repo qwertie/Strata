@@ -17,7 +17,7 @@ from conversation_cache_parity import STATE_KEYS, engine_args, load_tokenizer, r
 from strata_common.gguf_reader import GGUFFile
 from gguf_writer import GGUFWriter
 from strata_common.engine_client import StrataEngine, child_env
-from serve.frontend import ChatTemplate
+from strata_server.frontend import ChatTemplate
 import numpy as np
 
 

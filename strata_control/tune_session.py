@@ -1,7 +1,7 @@
 """Running one engine configuration and measuring it, for the tuner.
 
 A *session* is what the tuner needs from the outside world: start an engine with these arguments and environment, run the
-fixed request set, report numbers, stop. The real session (`WorkerSession`) starts Strata's own worker (``serve.server``)
+fixed request set, report numbers, stop. The real session (`WorkerSession`) starts Strata's own worker (``strata_server.server``)
 on a **copy** of the user's run configuration and talks to it over HTTP, so the engine, the queueing and the prompt
 handling are exactly the ones the user gets. The numbers come from the engine's own clock (the ``timings`` block of the
 reply), not from this process's stopwatch. The stub session in the tests implements the same two methods.
@@ -419,7 +419,7 @@ def tune_engine_peak(pid: int) -> float | None:
 
 
 class WorkerSession:
-    """Starts ``serve.server`` on a copy of the run configuration for each configuration the tuner asks for."""
+    """Starts ``strata_server.server`` on a copy of the run configuration for each configuration the tuner asks for."""
 
     def __init__(self, *, base_config: dict[str, Any], python: str | os.PathLike[str] | None = None,
                  serve_dir: str | os.PathLike[str], workdir: str | os.PathLike[str] | None = None,
@@ -476,7 +476,7 @@ class WorkerSession:
             spawn_env["STRATA_NO_PRESET"] = "1"          # measure the configuration as given, not a saved tuning on top
             before = tune_machine.gpu_used_mib()
             wl = open(worker_log, "w")
-            argv = [self.python, "-m", "serve.server", "--engine", "strata", "--config", str(cfg_path),
+            argv = [self.python, "-m", "strata_server.server", "--engine", "strata", "--config", str(cfg_path),
                     "--host", "127.0.0.1", "--port", str(port)]
             t0 = time.time()
             try:

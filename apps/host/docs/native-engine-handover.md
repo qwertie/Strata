@@ -37,7 +37,7 @@ Preparing new native files unloads managed native instances because the installe
 
 ## Connecting the native installation
 
-Set `STRATA_NATIVE_REPO` to the absolute path to the official Strata checkout. It must contain `setup.py`, `tools/strata_mcp.py` and `serve/server.py`. Settings → Engine can connect a different existing installation. The source checkout is separate from this UI app.
+Set `STRATA_NATIVE_REPO` to the absolute path to the official Strata checkout. It must contain `setup.py`, `tools/strata_mcp.py` and `strata_server/server.py`. Settings → Engine can connect a different existing installation. The source checkout is separate from this UI app.
 
 The catalog adapter requires Python 3.10+. `STRATA_NATIVE_PYTHON` selects it explicitly; otherwise the installed virtual environment or an available system Python is used. The native installer creates the model's `.venv`. Loading uses that environment, rather than installing packages into a random system interpreter.
 
@@ -58,7 +58,7 @@ The native adapter works independently of `STRATA_REAL_ENGINE`. That flag contin
 | `src/components/NativeSettings.tsx`, `NativeMcpEditor.tsx` | Per-model parameters, JSON and tool server configuration. |
 | `src/components/NativeMonitor.tsx` | All-instance rates, per-instance details and shared host measurements. |
 
-Each instance runs `serve/server.py` on a distinct private loopback port with a random private API key and a configuration copy in the UI data directory. The public API URL remains the single URL shown in Serving. Its existing API key and local-network/tunnel access controls still apply. Private host controls are not exposed through the sharing proxy.
+Each instance runs `strata_server/server.py` on a distinct private loopback port with a random private API key and a configuration copy in the UI data directory. The public API URL remains the single URL shown in Serving. Its existing API key and local-network/tunnel access controls still apply. Private host controls are not exposed through the sharing proxy.
 
 The public ID is added to the private native config as an alias, including suffixes for repeated versions on different GPUs. Clients put that exact ID in `model`. Unknown and ambiguous IDs fail before streaming. Responses input, client tool schemas, tool results, reasoning fields and protocol events are preserved. Public clients cannot opt into the host’s configured MCP servers; only local chat's explicit Tools opt-in sends `strata_mcp: true`.
 

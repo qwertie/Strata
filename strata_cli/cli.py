@@ -831,7 +831,7 @@ def _serve(a: argparse.Namespace) -> int:
         raise
     if a.plan:
         return _success({"plan": plan}, machine=a.output == "json")
-    from serve.server import main as server_main
+    from strata_server.server import main as server_main
     if os.name not in ("posix", "nt"):
         return _serve_foreground(server_main, args, plan, output=a.output, quiet=a.quiet)
     from strata_control import runtime

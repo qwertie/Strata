@@ -12,7 +12,7 @@
  */
 import { NATIVE_FIELDS } from './native-settings.mjs';
 
-/** Every top-level key a run config may carry: what setup writes, what serve/server.py reads, the app's own fields. */
+/** Every top-level key a run config may carry: what setup writes, what strata_server/server.py reads, the app's own fields. */
 export const KNOWN_KEYS = new Set([
   ...NATIVE_FIELDS.map(f => f.id),
   'exe', 'args', 'cwd', 'tokenizer', 'model_name', 'model', 'arch', 'log', 'lib_dirs', 'port', 'host', 'api_key', 'cuda', 'backend', 'gpu', 'gpus_asked',

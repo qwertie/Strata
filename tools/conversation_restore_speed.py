@@ -105,7 +105,7 @@ def main():
               'snapshot); greedy, fixed residency. Use --run with the GPU free.')
         return
     from strata_common.engine_client import StrataEngine, child_env
-    from serve.frontend import ChatTemplate
+    from strata_server.frontend import ChatTemplate
     from conversation_cache_parity import load_tokenizer
     cfg = json.loads(a.config.read_text(encoding='utf-8'))
     p = Path(cfg['tokenizer'])

@@ -2,7 +2,7 @@
 progress and errors, and building its command line and environment from a run config.  Also reads the API keys a config
 names (key_list, api_key_of).
 
-Used by the API servers (serve/server.py, sycl/serve/server_intel.py), by the Terminal (strata_cli) and by its
+Used by the API servers (strata_server/server.py, sycl/serve/server_intel.py), by the Terminal (strata_cli) and by its
 calibration and readiness checks (strata_control).
 """
 from __future__ import annotations
@@ -691,7 +691,7 @@ class StrataEngine:
                 pass
         self.max_context = 0                             # before the new process is visible: never its predecessor's
         pin = {}
-        if cpus and hasattr(os, "sched_setaffinity"):    # replicas: this engine's own physical cores (serve/replicas.py)
+        if cpus and hasattr(os, "sched_setaffinity"):    # replicas: this engine's own physical cores (strata_server/replicas.py)
             pin["preexec_fn"] = lambda: os.sched_setaffinity(0, cpus)
         nice = engine_nice(env)                          # Linux with built-in Radeon graphics: the desktop keeps its share of the CPU
         if nice:

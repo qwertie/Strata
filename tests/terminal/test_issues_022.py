@@ -305,7 +305,7 @@ class Issue2971WebToolRowFitsPhones(unittest.TestCase):
 
     def test_the_rules_are_in_the_stylesheet(self):
         import re
-        css = (Path(__file__).resolve().parents[2] / "serve" / "web" / "app.css").read_text(encoding="utf-8")
+        css = (Path(__file__).resolve().parents[2] / "strata_server" / "web" / "app.css").read_text(encoding="utf-8")
 
         def rule(selector):
             m = re.search(r"(?m)^" + re.escape(selector) + r"\s*\{([^}]*)\}", css)

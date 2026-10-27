@@ -1,5 +1,5 @@
 """The picture reader choice for an AMD engine folder (strata_common/vision_reader.py) and the server's fallback from the GPU
-reader to the CPU reader (serve/server.py, Vision._start): hip present, hip missing, hip start failure, then cpu.
+reader to the CPU reader (strata_server/server.py, Vision._start): hip present, hip missing, hip start failure, then cpu.
 
     python -m unittest tools.test_vision_reader
 """
@@ -13,7 +13,7 @@ from types import SimpleNamespace
 from unittest import mock
 
 from strata_common import vision_reader as VR
-import serve.server as server
+import strata_server.server as server
 from strata_common import engine_client  # noqa: E402
 
 

@@ -163,7 +163,7 @@ class TestTheServerUsesThePolicy(unittest.TestCase):
     def setUp(self):
         root = Path(__file__).resolve().parents[2]
         self.source = "\n".join((root / name).read_text(encoding="utf-8")
-                                for name in ("serve/server.py", "strata_common/engine_client.py"))
+                                for name in ("strata_server/server.py", "strata_common/engine_client.py"))
 
     def test_the_image_path_consults_the_policy_or_the_flag(self):
         # The reviewed server already refuses a remote image URL when offline; what matters here is

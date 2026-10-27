@@ -1048,12 +1048,12 @@ class RealServerTests(unittest.TestCase):
     """The same request bodies against the real API server with its mock engine: every protocol setting is accepted."""
 
     def test_the_real_server_accepts_the_protocol_requests(self):
-        from serve.frontend import ChatTemplate
-        from serve.server import ByteTokenizer, Service, serve
+        from strata_server.frontend import ChatTemplate
+        from strata_server.server import ByteTokenizer, Service, serve
         from strata_common.engine_client import MockEngine
         with tempfile.TemporaryDirectory() as temp:
             tok = ByteTokenizer()
-            template = ChatTemplate(Path(__file__).resolve().parents[2] / "serve/chat_template.jinja")
+            template = ChatTemplate(Path(__file__).resolve().parents[2] / "strata_server/chat_template.jinja")
             service = Service(MockEngine(tok, "A hash table hashes the key.", max_context=400000), tok, template)
             service.api_key = "inference-test-secret"
             httpd = serve(service, port=0)

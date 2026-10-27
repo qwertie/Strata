@@ -187,7 +187,7 @@ class ComponentStart(unittest.TestCase):
         self.assertFalse((self.root / "ran.txt").exists(), "a changed package must not run")
 
     def test_the_package_folder_is_first_on_the_library_path(self):
-        from serve import server
+        from strata_server import server
         from strata_common import engine_client
         folder = install_fake_engine(self.components)
         cfg = server.with_component_engine({"exe": "component:strata-engine", "backend": "cuda", "lib_dirs": ["/other"]})
@@ -207,7 +207,7 @@ class ComponentStart(unittest.TestCase):
 
     def test_a_picture_reader_path_from_an_older_engine_folder_follows_the_installed_package(self):
         """After an engine update the folder name changes; the run config's absolute vision exe must not stop the server."""
-        from serve import server
+        from strata_server import server
         folder = install_fake_engine(self.components)
         reader = folder / "strata-vision"
         reader.write_text("x", encoding="utf-8")
@@ -224,7 +224,7 @@ class ComponentStart(unittest.TestCase):
 
     def test_the_build_json_lib_dirs_follow_the_package_folder(self):
         """The Windows HIP package keeps the ROCm DLLs in rocm/bin (BUILD.json lib_dirs): strata.exe does not load without them on PATH."""
-        from serve import server
+        from strata_server import server
         folder = install_fake_engine(self.components)
         (folder / "rocm" / "bin").mkdir(parents=True)
         (folder / "BUILD.json").write_text(json.dumps({"lib_dirs": ["rocm/bin", "../escape", "missing", "/abs"]}), encoding="utf-8")

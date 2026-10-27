@@ -100,7 +100,7 @@ else
 fi
 
 # Only the API server needs third-party packages. `--help`, `status`, `monitor`, `timeskip` and
-# `tune plan` are deliberately stdlib-only — the CLI imports `serve.*` lazily inside the functions
+# `tune plan` are deliberately stdlib-only — the CLI imports `strata_server.*` lazily inside the functions
 # that need it — so they must keep working on a bare interpreter. Checking them here anyway was a
 # real defect: it made `strata --help` refuse to run on an interpreter that could have answered it.
 #

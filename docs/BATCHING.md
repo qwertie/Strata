@@ -514,7 +514,7 @@ two long conversations alternating through the HTTP server: the first turns took
 
 ## Testing
 
-Four scripts drive a built engine or a running server; each exits non-zero on a failure. `serve/test_parallel.py`
+Four scripts drive a built engine or a running server; each exits non-zero on a failure. `strata_server/test_parallel.py`
 tests the server's side with a scripted engine (no GPU).
 
 | Script | What it checks |

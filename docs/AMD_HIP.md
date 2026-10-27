@@ -228,7 +228,7 @@ build-hip/strata --serve \
 directory:
 
 ```sh
-.venv/bin/python -m serve.server --engine strata --config strata-hip.json --port 8080
+.venv/bin/python -m strata_server.server --engine strata --config strata-hip.json --port 8080
 ```
 
 - Select the AMD device with `ROCR_VISIBLE_DEVICES` or `HIP_VISIBLE_DEVICES` if needed.
@@ -496,7 +496,7 @@ On Windows, setup's ready-made engine runs an RX 6800 beside a 780M iGPU (HIP nu
 
 gfx906 is wave64 and has no WMMA and no packed byte arithmetic, so the wave32 backend refuses it. A separate opt-in build
 compiles the CUDA sources as HIP through a small compat layer (`include/strata/platform/hip_compat/`), with a CUDA warp mapped
-to a logical half of the 64-lane wavefront. Setup does not build it: build by hand and run `serve/server.py` with a config as
+to a logical half of the 64-lane wavefront. Setup does not build it: build by hand and run `strata_server/server.py` with a config as
 on any other card.
 
 The gfx906 build is community-tested: the maintainers have no gfx906 card, and the engine here is checked to compile for

@@ -11,8 +11,8 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "tools"))
 import research_run  # noqa: E402
-from serve.frontend import ChatTemplate  # noqa: E402
-from serve.server import ByteTokenizer, Service, serve  # noqa: E402
+from strata_server.frontend import ChatTemplate  # noqa: E402
+from strata_server.server import ByteTokenizer, Service, serve  # noqa: E402
 from strata_common.engine_client import MockEngine
 
 
@@ -31,7 +31,7 @@ class ResearchRun(unittest.TestCase):
     def setUpClass(cls):
         tok = ByteTokenizer()
         cls.engine = Recorder(tok, "an answer", max_context=8192)
-        cls.svc = Service(cls.engine, tok, ChatTemplate(ROOT / "serve/chat_template.jinja"))
+        cls.svc = Service(cls.engine, tok, ChatTemplate(ROOT / "strata_server/chat_template.jinja"))
         cls.httpd = serve(cls.svc, port=0)
         cls.url = f"http://127.0.0.1:{cls.httpd.server_address[1]}"
         cls.dir = tempfile.TemporaryDirectory()

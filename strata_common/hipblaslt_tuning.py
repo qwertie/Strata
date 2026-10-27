@@ -9,7 +9,7 @@ Package side (packaging/stage_tuning.py, tools/hip/package_windows.py): ``tuning
 one per architecture of the package that has a table for the hipBLASLt version the package bundles, and ``hipblaslt_version`` in its BUILD.json.
 The files are listed (and hashed, and signed) in engine-component.json like every other file of the package.
 
-Start side (serve/server.py with_component_engine, setup.py in the app): ``resolve`` reads the package, the GPUs in this PC and the switch,
+Start side (strata_server/server.py with_component_engine, setup.py in the app): ``resolve`` reads the package, the GPUs in this PC and the switch,
 and returns the table to use or the reason there is none. Nobody sets STRATA_HIPBLASLT_TUNING by hand:
 
 * ``STRATA_HIPBLASLT_TABLE`` (or ``"hipblaslt_table"`` in the run config): ``off`` / false never uses the packaged table, ``on`` / true

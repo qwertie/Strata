@@ -2,7 +2,7 @@
 
 ``"mtp": false`` in a model's run config (strata-<model>.json) starts the engine without the draft layer.  The key is the
 person's: setup keeps it when it writes the file again (setup.carry_over), the app's Models settings and `strata launch --mtp off`
-write it, and every start applies it (serve/server.py engine_args), so a setup run that puts ``--mtp <folder>`` back into
+write it, and every start applies it (strata_server/server.py engine_args), so a setup run that puts ``--mtp <folder>`` back into
 the engine arguments cannot bring the draft layer back.
 
 What the draft layer costs, in plain words: about 1 GB of graphics memory.  Its weights are the files in the model data

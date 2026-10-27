@@ -54,7 +54,7 @@ class PersistenceTest(unittest.TestCase):
                   "gain_pct": 6.6, "pairs": 2, "faster_pairs": 2, "noise": {}}
         self.preset = presets.create(result, choices=presets.choices_from_config(self.cfg), identity=ident, name="IQ3_S 64K – Work")
 
-    CODE = ("import json,sys;sys.path.insert(0,'.');from serve import server;"
+    CODE = ("import json,sys;sys.path.insert(0,'.');from strata_server import server;"
             "c=json.load(open(%r));out=server.apply_saved_tuning(c,say=lambda l:None);"
             "print(json.dumps(out['args']))")
 

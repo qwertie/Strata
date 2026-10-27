@@ -73,7 +73,7 @@ from strata_common import user_args
 
 ROOT = Path(__file__).resolve().parent
 # The desktop app runs this installer under Strata Control (its bundled Python, STRATA_CONTROL_INSTALL=1). The source
-# (tools/, data/, serve/) stays in ROOT, inside the app; everything the install writes (run configs, logs, third_party,
+# (tools/, data/, strata_server/) stays in ROOT, inside the app; everything the install writes (run configs, logs, third_party,
 # the data folder beside it) goes to home(), a per-user folder (STRATA_INSTALL_DIR). In that mode it installs no Python
 # package and no engine and compiles nothing: it downloads the model files, prepares them with the bundled tools and
 # writes a run config whose engine is "component:strata-engine". Outside that mode home() is ROOT and nothing changes.
@@ -795,7 +795,7 @@ ESP_VECTOR = ROOT / "data" / "experimental-speed-projection" / "Qwen3.8-Flash-Ne
 # sizes its expert slots around it and the default reserve (700 MiB) is enough; engines before 0.1.2 need more
 VISION_GPU_SMALL_RESERVE_MIB = 1000    # the tip for images on a <= 12 GB card (the engine's LOW line asked ~1003)
 VISION = {"gpu": {"max_tokens": 1024, "reserve_mib": 700},
-          "cpu": {"max_tokens": 300, "reserve_mib": 0}}      # the CPU reader takes no VRAM: no reserve (serve/server.py adds 700 only for a GPU reader)
+          "cpu": {"max_tokens": 300, "reserve_mib": 0}}      # the CPU reader takes no VRAM: no reserve (strata_server/server.py adds 700 only for a GPU reader)
 EXE = "strata.exe" if WIN else "strata"
 VEXE = "strata-vision.exe" if WIN else "strata-vision"
 HVEXE = "strata-vision-hip.exe" if WIN else "strata-vision-hip"     # AMD: the picture reader on the GPU (tools/vision, STRATA_VISION_HIP)
@@ -4889,7 +4889,7 @@ def image_backend_choice(a, gpu: dict | None, hip: bool) -> tuple[str, str, floa
 
 def setup_images(a, gpu: dict, hip: bool, models_dir: Path) -> dict | None:
     """--images qwen-image: sd-cli for this GPU and Qwen-Image-2.1-Turbo's three files -> the run config's "images"
-    section (serve/images.py); None for --images no, or when not wanted after all."""
+    section (strata_server/images.py); None for --images no, or when not wanted after all."""
     if not a.images or a.images == "no":
         return None
     QI = _qimage()
@@ -6875,7 +6875,7 @@ def _start(cfg_path: Path, port: int | None, gpu: int | list | None = None, open
     cfg_path.touch()                                     # the most recently used model
     if "--mtp" in cfg["args"][:-1] and not own_path_config(cfg):
         refresh_draft_vocab(Path(cfg["args"][cfg["args"].index("--mtp") + 1]), cfg.get("draft_vocab", "cjk"))
-    cmd = [sys.executable, str(ROOT / "serve" / "server.py"), "--engine", "strata", "--config", str(cfg_path),
+    cmd = [sys.executable, str(ROOT / "strata_server" / "server.py"), "--engine", "strata", "--config", str(cfg_path),
            "--port", str(port or cfg.get("port", 8080))]
     if cfg.get("backend") == "hip":                    # AMD, numbered as HIP numbers them (setup's KFD order)
         if WIN:
@@ -7363,7 +7363,7 @@ def use_cuda12(cards, cfg_path: Path, cfg: dict, yes: bool) -> dict:
 
 def write_run_script(model, cfg_path, port, open_browser=True):
     """run-<model>.bat / .sh: the server with this config; `open_browser` False (#609: --no-browser) leaves --open out."""
-    serve = [sys.executable, str(ROOT / "serve" / "server.py"), "--engine", "strata", "--config", str(cfg_path),
+    serve = [sys.executable, str(ROOT / "strata_server" / "server.py"), "--engine", "strata", "--config", str(cfg_path),
              "--port", str(port)] + (["--open"] if open_browser else [])
     if WIN:
         script = home() / f"run-{model.lower()}.bat"
@@ -9775,7 +9775,7 @@ def main() -> int:
         cfg.pop("gpu_none", None)
         if isinstance(cfg.get("gpu"), list) and len(final) > 1:
             cfg["gpu_order"] = "as_given"
-    if a.replicas is not None and a.replicas >= 2:      # data-parallel replicas (serve/replicas.py), opt-in
+    if a.replicas is not None and a.replicas >= 2:      # data-parallel replicas (strata_server/replicas.py), opt-in
         cards = multi if multi else []
         if not cards or len(cards) % a.replicas:
             warn(f"--replicas {a.replicas}: needs the chosen GPUs ({cards or 'one'}) to divide into {a.replicas} equal "

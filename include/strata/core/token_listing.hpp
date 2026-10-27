@@ -1,4 +1,4 @@
-// --serve's LIST_CONVERSATIONS and GET_CONTEXT_WINDOWS (serve/server.py's API monitor shows them): the conversations
+// --serve's LIST_CONVERSATIONS and GET_CONTEXT_WINDOWS (strata_server/server.py's API monitor shows them): the conversations
 // the engine holds - in a session in VRAM, or parked in RAM or on disk - and the tokens of the ones asked for.  Each
 // engine path (generate.cpp, q36_engine.cu, ds4_main.cpp) describes what it holds as HeldConversation entries; the
 // commands are parsed and answered here, so the lines are the same on every path.

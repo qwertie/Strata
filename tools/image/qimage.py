@@ -1,7 +1,7 @@
 """tools/image/qimage.py - Qwen-Image-2.1-Turbo for Strata's image endpoint: stable-diffusion.cpp (sd-cli) at a pinned
 commit, built for this PC's GPU, and the model's three files at pinned Hugging Face revisions.
 
-setup.py (--images qwen-image) and tools/image/install.py use these pieces; serve/images.py runs the result.
+setup.py (--images qwen-image) and tools/image/install.py use these pieces; strata_server/images.py runs the result.
 
   backend   CUDA on an NVIDIA card, HIP on an AMD card with its own memory (Linux), Vulkan on an APU/iGPU (AMD's shared
             memory: the HIP path's queue evictions reset a 780M on current firmware, NEW-MODELS-PLAN.md section 4),
@@ -10,7 +10,7 @@ setup.py (--images qwen-image) and tools/image/install.py use these pieces; serv
             LPIPS vs bf16: 0.153 / 0.055 / 0.036); the VAE (bf16); the Qwen3-VL-8B text encoder UD-Q4_K_XL (the
             model card's choice).  Each file is checked against the SHA-256 the Hugging Face API lists for it at the
             pinned revision.
-  defaults  8 steps, CFG 1, euler, Turbo's own sigmas (serve/images.py), --diffusion-fa; on Vulkan also --vae-tiling
+  defaults  8 steps, CFG 1, euler, Turbo's own sigmas (strata_server/images.py), --diffusion-fa; on Vulkan also --vae-tiling
             (an untiled 1024x1024 VAE decode is one dispatch long enough to trip the amdgpu job timeout on a 780M)
             with --vae-tile-overlap 0.25.
 """
@@ -98,7 +98,7 @@ def pick_backend(gpu: dict | None, win: bool) -> str:
 
 
 def default_args(backend: str) -> list[str]:
-    """sd-cli's fixed arguments besides the ones serve/images.py writes per request."""
+    """sd-cli's fixed arguments besides the ones strata_server/images.py writes per request."""
     # Vulkan: 256-pixel tiles at a quarter's overlap, not sd.cpp's half: the 780M's 1024x1024 decode takes 23 s instead
     # of 45 s, at an LPIPS of 0.012 against the half-overlap image (Q8_0's own distance to bf16 is ~0.03)
     return ["--diffusion-fa"] + (["--vae-tiling", "--vae-tile-overlap", "0.25"] if backend == "vulkan" else [])
@@ -189,7 +189,7 @@ def build_stamp(backend: str, arch) -> dict:
 
 def image_config(backend: str, quant: str, exe: Path, models_dir: Path, *, uma: bool = False, gpu=None,
                  lib_dirs=(), policy: str = "auto", native: bool = False) -> dict:
-    """The run config's "images" section (serve/images.py reads it)."""
+    """The run config's "images" section (strata_server/images.py reads it)."""
     cfg = {"model_name": "qwen-image-2.1-turbo", "exe": str(exe), "backend": backend, "quant": quant,
            "diffusion_model": str(local_path(models_dir, quant)), "vae": str(local_path(models_dir, "vae")),
            "llm": str(local_path(models_dir, "llm")), "args": default_args(backend), "gpu_policy": policy,

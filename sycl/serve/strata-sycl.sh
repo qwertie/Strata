@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# strata-sycl.sh: the SYCL-built engine as a drop-in `exe` for serve/server.py (--engine strata). The port's binary
+# strata-sycl.sh: the SYCL-built engine as a drop-in `exe` for strata_server/server.py (--engine strata). The port's binary
 # needs the oneAPI runtime of the dev image, so this runs it there with stdin/stdout attached (the serve protocol is
 # lines on those pipes) and stderr going to the server's log. Paths in the config's args are the container's:
 # the data root is mounted at /work.

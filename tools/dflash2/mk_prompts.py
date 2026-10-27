@@ -6,7 +6,7 @@ REPO = Path(r"C:\Users\AI-Server\Desktop\Strata\GitHub\wt-022-dflash2")
 sys.path.insert(0, str(REPO / "tools"))
 sys.path.insert(0, str(REPO))
 import strata_tokenizer as ST
-from serve.frontend import ChatTemplate
+from strata_server.frontend import ChatTemplate
 
 tp = Path(r"C:\dflash2-work\tok")
 vocab = json.loads((tp / "vocab.json").read_text(encoding="utf-8"))

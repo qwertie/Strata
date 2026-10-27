@@ -129,7 +129,7 @@ changes use a separate schema version.
 
 `python tools/build_standard_corpus.py --tokenizer PACK/tokenizer` rebuilds the bundle byte for byte. It needs the
 tokenizer files (`vocab.json`, `merges.txt`, `token_type.json`) of a Flash-Next pack and the chat template Strata
-ships (`serve/chat_template.jinja`). The frozen counts are 211 records for `prompt-4k` (4,093 tokens) and 858
+ships (`strata_server/chat_template.jinja`). The frozen counts are 211 records for `prompt-4k` (4,093 tokens) and 858
 records for `prompt-16k` (16,386 tokens). Besides each request's token count, the bundle stores the longest token
 prefix the request shares with any other request (`max_shared_prefix_tokens`); that is the cache reuse the
 protocol allows.
@@ -517,7 +517,7 @@ Before removing draft status:
 
 - Verify against a real engine that the shipped chat template matches the pinned upstream behavior (tool
   formatting included), and pin the model-card and tokenizer revisions (`protocol.model_card_revision` is `null`
-  with a reason until then). The shipped `serve/chat_template.jinja` differs from the template inside the
+  with a reason until then). The shipped `strata_server/chat_template.jinja` differs from the template inside the
   NVFP4 pack the fixtures were counted with; the frozen token counts use the shipped one.
 - Test the cases the mock server cannot show: insufficient context, an error after a first delta on a real engine, and
   optional concurrency with queueing on a server that has fewer than four slots.

@@ -236,7 +236,7 @@ def case(name: str, install: Path, how: str) -> dict:
                 state = app.load("stub2", multiple=True)
             engine_ports = [i["port"] for i in state["instances"]]
             idents, _ = tree_of(app, slots)
-            kinds = sorted({("engine" if "engine" in " ".join(i.cmd) else "server" if "serve.server" in " ".join(i.cmd) else
+            kinds = sorted({("engine" if "engine" in " ".join(i.cmd) else "server" if "strata_server.server" in " ".join(i.cmd) else
                              "owner" if "strata_control.runtime" in " ".join(i.cmd) else "app" if "strata-desktop" in i.cmd[0].lower()
                              else "host" if "node" in i.cmd[0].lower() else "other") for i in idents})
             note = f"tree {len(idents)} processes: {', '.join(kinds)}; engine ports {engine_ports}"
@@ -281,7 +281,7 @@ def case(name: str, install: Path, how: str) -> dict:
             if how == "host-crash":
                 # the shell and its window stay (nothing here restarts a dead host); the host, Control's owner, the server and
                 # the engine must not
-                idents = [i for i in idents if any(k in " ".join(i.cmd) for k in ("strata_control.runtime", "serve.server", "engine", "node.exe"))]
+                idents = [i for i in idents if any(k in " ".join(i.cmd) for k in ("strata_control.runtime", "strata_server.server", "engine", "node.exe"))]
             left = wait_gone(idents, 90)
             if left:
                 problems.append(f"processes left: {left}")

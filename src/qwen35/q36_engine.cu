@@ -14,7 +14,7 @@
 //   * the prompt read in chunks of --chunk tokens through the same driver (batched matmuls, ncols <= 8 per launch);
 //   * decode one token at a time from a captured graph (positions on the device), or with --no-graph eagerly.
 //
-// Modes: --serve (serve/server.py's engine protocol: READY / GEN / T / DONE / STOP / PP), --tokens IDS [--n N]
+// Modes: --serve (strata_server/server.py's engine protocol: READY / GEN / T / DONE / STOP / PP), --tokens IDS [--n N]
 // [--force IDS] [--dump-full-logits F] (tools/qwen35/kl.py's reference interface), --bench-pp N / --bench-tg N.
 #include "strata/artifact/gguf_reader.hpp"
 #include "strata/core/family_layout.hpp"
@@ -3175,7 +3175,7 @@ struct Slot {
     long long offered = 0, accepted = 0;
 };
 
-/// The engine protocol (serve/server.py).  One request at a time on the control lines: GEN / GENI (alone: speculative
+/// The engine protocol (strata_server/server.py).  One request at a time on the control lines: GEN / GENI (alone: speculative
 /// steps with the MTP block), or with --batch N BGEN / BGENI <slot> (the request's prompt is read into that slot's
 /// session - the decode windows of the other slots go on between its chunks - then its tokens come as BT lines, one
 /// window for every slot decoding, until BDONE).  BSTOP <slot> ends a slot at its next window; STOP the request on the

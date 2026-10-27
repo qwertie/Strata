@@ -1,4 +1,4 @@
-"""Tests for serve/server.py's effort_end_args (#458): "effort_position": "end" is used when the engine binary knows
+"""Tests for strata_server/server.py's effort_end_args (#458): "effort_position": "end" is used when the engine binary knows
 --tail-role-token.  With the Intel launcher (sycl/serve/strata-sycl.sh) as the configured exe, the check reads the
 binary the launcher runs (STRATA_SYCL_BIN, default build-sycl-aot/strata), not the shell script, which never names
 the option.  Fake files in a temp repo - nothing is built or run.
@@ -18,7 +18,7 @@ from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
-from serve import server as S  # noqa: E402
+from strata_server import server as S  # noqa: E402
 
 
 class Tok:

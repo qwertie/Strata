@@ -2,7 +2,7 @@
 // found is one of them.  ggml-hip prints "  Device 0: AMD Radeon RX 9070 XT, gfx1201:sramecc-:xnack- (0x1201), ..." when it
 // starts; a card whose architecture is not in the build would fail at its first kernel ("no kernel image", an abort), so
 // the reader reads that line and refuses before any kernel runs.  The server then starts the CPU reader (see
-// serve/server.py, Vision._start).  Header only, so gpu_arch_test.cpp can check it without a GPU.
+// strata_server/server.py, Vision._start).  Header only, so gpu_arch_test.cpp can check it without a GPU.
 #pragma once
 
 #include <cctype>

@@ -11,7 +11,7 @@ What it does, each step skipped when it is already done:
   5. downloads the model (setup.py's downloader: resumable, the pinned revision)
   6. prepares the model: the native pack (tools/iq_pack.py) and the MTP draft layer (tools/mtp_fetch.py, mtp_pack.py)
   7. writes strata-<model>.json and run-<model>.sh with the Metal defaults (--spec 2, the Q8_0 hyper-connection
-     read) and starts the server (serve/server.py), the same as on a PC
+     read) and starts the server (strata_server/server.py), the same as on a PC
 
 Everything shared - the model table, the downloader, the config and run-script writers, the server - is setup.py's.
 """
@@ -300,7 +300,7 @@ def engine_pids(run=subprocess.run) -> list[int]:
 
 
 def start(cfg_path: Path, port: int | None, open_browser: bool = True) -> int:
-    """serve/server.py with this config (setup.py's start without the NVIDIA / AMD card checks)."""
+    """strata_server/server.py with this config (setup.py's start without the NVIDIA / AMD card checks)."""
     cfg = json.loads(cfg_path.read_text(encoding="utf-8-sig"))
     missing = [p for p in [cfg["exe"], *[a for a in cfg["args"] if a.endswith(".gguf")]] if not Path(p).exists()]
     if missing:
@@ -312,7 +312,7 @@ def start(cfg_path: Path, port: int | None, open_browser: bool = True) -> int:
     cfg_path.touch()
     if "--mtp" in cfg["args"][:-1]:
         S.refresh_draft_vocab(Path(cfg["args"][cfg["args"].index("--mtp") + 1]), cfg.get("draft_vocab", "cjk"))
-    cmd = [sys.executable, str(ROOT / "serve" / "server.py"), "--engine", "strata", "--config", str(cfg_path),
+    cmd = [sys.executable, str(ROOT / "strata_server" / "server.py"), "--engine", "strata", "--config", str(cfg_path),
            "--port", str(port or cfg.get("port", 8080))]
     if open_browser and cfg.get("open_browser") is not False:
         cmd.append("--open")

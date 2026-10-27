@@ -2394,7 +2394,7 @@ int main(int argc, char** argv) {
         // would otherwise silently lose to the flag).
         const char* envname = "CUDA_VISIBLE_DEVICES";
 #if defined(STRATA_USE_HIP) || defined(STRATA_HIP_GFX906)
-        envname = "HIP_VISIBLE_DEVICES";   // the AMD runtime ignores CUDA_VISIBLE_DEVICES (serve/server.py sets this one)
+        envname = "HIP_VISIBLE_DEVICES";   // the AMD runtime ignores CUDA_VISIBLE_DEVICES (strata_server/server.py sets this one)
 #endif
         const char* prev = std::getenv(envname);
         if (prev && prev[0] && std::string(prev) != argv[i + 1])

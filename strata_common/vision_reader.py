@@ -4,7 +4,7 @@ on a Mac) or the CPU one (`strata-vision`).
 An AMD engine package carries two programs for pictures.  `strata-vision` is the CPU reader: it needs nothing from the GPU
 runtime, so it starts on every PC.  `strata-vision-hip` is the same reader on the card (llama.cpp's HIP backend), a
 fraction of a second per picture instead of seconds.  Setup writes the run config with the GPU reader first and the CPU
-reader as its fallback (`vision.cpu_exe`); the server (serve/server.py, Vision) starts the CPU reader by itself, with one
+reader as its fallback (`vision.cpu_exe`); the server (strata_server/server.py, Vision) starts the CPU reader by itself, with one
 log line, when the GPU reader does not start: the HIP runtime does not load, the card is not one the build has code for
 (the reader says so before it runs a kernel), or the card is busy.  Nothing is asked of the user.
 

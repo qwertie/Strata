@@ -6,7 +6,7 @@
 //   maya-ds4 --pack ... --ids ... --dump-logits out.f32                every position's logits (the oracle's check)
 //   maya-ds4 --pack ... --serve                                       Maya's engine protocol on stdin / stdout
 //
-// --serve speaks what serve/server.py's StrataEngine expects: INFO lines, then `READY <context> stop`; per request
+// --serve speaks what strata_server/server.py's StrataEngine expects: INFO lines, then `READY <context> stop`; per request
 // `GEN <max_new> [key=value ...] <id,id,...>` answered by `T <id>` lines and `DONE <generated> <prompt> <prompt ms>
 // <decode ms> <stop|length|cancel> 0 0 <reused> 0 0`; `STOP` ends a request early, `QUIT` the engine.  A prompt that
 // continues the state (the conversation so far) reuses it; one that only shares the last prompt's start goes back to

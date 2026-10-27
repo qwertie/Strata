@@ -244,7 +244,7 @@ class InstalledModelsNeedNoNetwork(unittest.TestCase):
         harmless = ('MODEL_CARD_URL = "https://huggingface.co/Qwen/Qwen3.8-Flash-Next"',
                     'BASE_URL = f"https://huggingface.co/{REPO}/resolve/{REVISION}/"')
         found = []
-        for folder in ("strata_base", "strata_cli", "strata_common", "serve", "strata_control"):
+        for folder in ("strata_base", "strata_cli", "strata_common", "strata_control", "strata_server"):
             for p in (ROOT / folder).rglob("*.py"):
                 if "test" in p.name:
                     continue

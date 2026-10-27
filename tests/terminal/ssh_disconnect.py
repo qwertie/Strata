@@ -33,7 +33,7 @@ from strata_control import runtime
 port = %(port)d
 left = [r for r in procs.records() if procs.start_token(r["pid"]) == r["token"]]
 import psutil
-fam = [p.pid for p in psutil.process_iter(["cmdline"]) if any("sshrig" in c or "serve.server" in c or "strata.py" in c for c in (p.info["cmdline"] or [])) and p.pid != os.getpid()]
+fam = [p.pid for p in psutil.process_iter(["cmdline"]) if any("sshrig" in c or "strata_server.server" in c or "strata.py" in c for c in (p.info["cmdline"] or [])) and p.pid != os.getpid()]
 with socket.socket() as s:
     s.settimeout(0.5); open_ = s.connect_ex(("127.0.0.1", port)) == 0
 try:

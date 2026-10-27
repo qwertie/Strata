@@ -59,7 +59,7 @@ class OperatorProfileTests(unittest.TestCase):
                                      "--output", "json")
         self.assertEqual(code, 0)
         self.assertNotEqual(changed["revision"], created["revision"])
-        with mock.patch("serve.server.main", side_effect=AssertionError("server started")):
+        with mock.patch("strata_server.server.main", side_effect=AssertionError("server started")):
             code, planned = self.command("serve", "--profile", "four-gpu", "--plan", "--output", "json")
         self.assertEqual(code, 0)
         plan = planned["plan"]
@@ -79,7 +79,7 @@ class OperatorProfileTests(unittest.TestCase):
     def test_saved_profile_is_used_by_actual_foreground_serve_call(self):
         profiles.create("local", str(self.config))
         profiles.set_values("local", ["parallel=4", "max_queue=7"])
-        with mock.patch("serve.server.main", return_value=0) as server:
+        with mock.patch("strata_server.server.main", return_value=0) as server:
             self.assertEqual(main(["serve", "--profile", "local"]), 0)
         argv = server.call_args.args[0]
         self.assertEqual(server.call_args.kwargs["interrupt_exit_code"], 130)
@@ -92,7 +92,7 @@ class OperatorProfileTests(unittest.TestCase):
         self.assertEqual(code, 0)
         self.assertTrue(listed["ok"])
         self.assertEqual(listed["profiles"], [])
-        with mock.patch("serve.server.main", side_effect=AssertionError("server started")):
+        with mock.patch("strata_server.server.main", side_effect=AssertionError("server started")):
             code, planned = self.command("serve", "--profile", str(self.config), "--plan", "--json")
         self.assertEqual(code, 0)
         self.assertTrue(planned["ok"])
@@ -137,12 +137,12 @@ class OperatorProfileTests(unittest.TestCase):
 
     def test_quiet_foreground_serve_hides_human_banner(self):
         output = io.StringIO()
-        with mock.patch("serve.server.main", side_effect=lambda *_args, **_kwargs: print("ready banner") or 0):
+        with mock.patch("strata_server.server.main", side_effect=lambda *_args, **_kwargs: print("ready banner") or 0):
             with redirect_stdout(output):
                 self.assertEqual(main(["serve", "--profile", str(self.config), "--quiet"]), 0)
         self.assertEqual(output.getvalue(), "")
         output, diagnostics = io.StringIO(), io.StringIO()
-        with mock.patch("serve.server.main", return_value=8):
+        with mock.patch("strata_server.server.main", return_value=8):
             with redirect_stdout(output), redirect_stderr(diagnostics):
                 self.assertEqual(main(["serve", "--profile", str(self.config), "--quiet"]), 8)
         self.assertEqual(output.getvalue(), "")
@@ -162,7 +162,7 @@ class OperatorProfileTests(unittest.TestCase):
 
     def test_foreground_jsonl_reports_startup_failure_without_human_stdout(self):
         output, diagnostics = io.StringIO(), io.StringIO()
-        with mock.patch("serve.server.main", side_effect=SystemExit("engine refused to start")):
+        with mock.patch("strata_server.server.main", side_effect=SystemExit("engine refused to start")):
             with redirect_stdout(output), redirect_stderr(diagnostics):
                 code = main(["serve", "--profile", str(self.config), "--output", "jsonl"])
         rows = [json.loads(line) for line in output.getvalue().splitlines()]
@@ -181,7 +181,7 @@ class OperatorProfileTests(unittest.TestCase):
                 runtime.acquire_activity_lease(shared=False)
             return 0
 
-        with mock.patch("serve.server.main", side_effect=running_server):
+        with mock.patch("strata_server.server.main", side_effect=running_server):
             self.assertEqual(main(["serve", "--profile", "local"]), 0)
         exclusive = runtime.acquire_activity_lease(shared=False)
         os.close(exclusive)

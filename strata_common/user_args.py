@@ -5,7 +5,7 @@ hand (the control vector options, a --vram-reserve-mib of 0, --spec, ...) was go
 The run config now keeps what the person set apart from what was generated:
 
 * ``"user_args"``: the person's options, in the same form as ``"args"`` (``["--vram-reserve-mib", "0", ...]``).  Every start
-  (serve/server.py engine_args) and every setup run applies them on top of the generated ones; for the same flag the
+  (strata_server/server.py engine_args) and every setup run applies them on top of the generated ones; for the same flag the
   person's value wins.  The person can edit this list by hand; the app's settings window writes the options it shows here.
 * ``"args_written"``: the whole ``"args"`` as setup or the app last wrote it.  An option in ``"args"`` that is not in this
   copy was added or changed by hand since: ``capture`` moves it into ``"user_args"``.  A config without the copy (one an

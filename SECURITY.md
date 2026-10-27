@@ -16,7 +16,7 @@ Supported: the latest release. Fixes go into the next release, not into older on
 
 ## What the server exposes
 
-Strata runs a model on your PC and serves it over HTTP (`serve/server.py`). Out of the box it is reachable from
+Strata runs a model on your PC and serves it over HTTP (`strata_server/server.py`). Out of the box it is reachable from
 this PC only. The details and every setting are in [docs/DETAILS.md](docs/DETAILS.md) ("From other devices",
 "Host names", "Web pages without an API key", "Tools from MCP servers").
 

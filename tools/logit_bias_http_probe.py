@@ -7,9 +7,9 @@ for name in ['source','config','baseline','candidate','mtp','output']:
 a=ap.parse_args()
 source=a.source.resolve()
 sys.path[:0]=[str(source),str(source/'tools')]
-from serve.server import Service, serve
+from strata_server.server import Service, serve
 from strata_common.engine_client import StrataEngine, engine_args, child_env
-from serve.frontend import ChatTemplate
+from strata_server.frontend import ChatTemplate
 import strata_tokenizer as ST
 
 cfg=json.loads(a.config.read_text())

@@ -36,7 +36,7 @@ test('a mistake in the file holds the start back with its line; a typo’d key o
     assert.equal(done.state, 'error');
     assert.match(done.error, /^The settings file for this model has a mistake, so the model was not started\. Line \d+: The settings file is not valid JSON/);
     assert.equal(f.control.state().instances.length, 0, 'no engine was started');
-    assert.equal(f.calls.filter(c => /strata\.py|serve/.test(JSON.stringify(c.args))).length, 0);
+    assert.equal(f.calls.filter(c => /strata\.py|strata_server/.test(JSON.stringify(c.args))).length, 0);
     // 2. a bad value
     const config = JSON.parse(good); config.parallel = 99; config.lazy_load = 'yes';
     writeFileSync(path, JSON.stringify(config, null, 2));

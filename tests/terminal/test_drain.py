@@ -8,8 +8,8 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 
-from serve.frontend import ChatTemplate
-from serve.server import ByteTokenizer, Service, serve
+from strata_server.frontend import ChatTemplate
+from strata_server.server import ByteTokenizer, Service, serve
 from strata_common.engine_client import MockEngine
 from strata_common.client import Endpoint
 from strata_cli.render import render_view
@@ -19,7 +19,7 @@ class DrainTests(unittest.TestCase):
     def setUp(self):
         tok = ByteTokenizer()
         self.svc = Service(MockEngine(tok, "Hello.", max_context=4096), tok,
-                           ChatTemplate(Path(__file__).resolve().parents[2] / "serve/chat_template.jinja"))
+                           ChatTemplate(Path(__file__).resolve().parents[2] / "strata_server/chat_template.jinja"))
         self.httpd = serve(self.svc, port=0)
         self.addCleanup(self.httpd.server_close)
         self.addCleanup(self.httpd.shutdown)

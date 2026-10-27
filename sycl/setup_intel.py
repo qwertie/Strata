@@ -19,7 +19,7 @@ setup.py's, unchanged.  What is replaced:
   - the RAM rule: the CUDA engine keeps every expert in RAM, the SYCL port streams them from the GGUF into VRAM
     (--stream-experts), so RAM only bounds the KV streaming;
   - the config: the container's paths, the SYCL flags, backend "sycl"; the run script starts
-    sycl/serve/server_intel.py (serve/server.py plus the Intel Monitor readings and the model menu).
+    sycl/serve/server_intel.py (strata_server/server.py plus the Intel Monitor readings and the model menu).
 
 When setup.py changes the steps this relies on, this stops with a message rather than writing a wrong config.
 """
@@ -523,7 +523,7 @@ def install(argv) -> None:
                 S.say("  " + why)
         Path(cfg_path).write_text(json.dumps(cfg, indent=1), encoding="utf-8")
         script = write(model, cfg_path, port, open_browser)
-        script.write_text(script.read_text().replace(str(ROOT / "serve" / "server.py"), str(SERVER)))
+        script.write_text(script.read_text().replace(str(ROOT / "strata_server" / "server.py"), str(SERVER)))
         return script
     S.write_run_script = write_run_script
 

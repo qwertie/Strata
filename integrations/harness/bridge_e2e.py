@@ -88,7 +88,7 @@ def start_worker(python: Path, port: int, tmp: Path) -> tuple[subprocess.Popen, 
     logfile = tmp / "worker.log"
     handle = logfile.open("w")
     proc = subprocess.Popen(
-        [str(python), "-m", "serve.server", "--engine", "mock", "--port", str(port),
+        [str(python), "-m", "strata_server.server", "--engine", "mock", "--port", str(port),
          "--script", "I am a local Strata model."],
         cwd=str(REPO), stdout=handle, stderr=subprocess.STDOUT,
     )

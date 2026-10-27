@@ -43,7 +43,7 @@ const check = (ok, label, detail = '') => { console.log(`${ok ? 'ok  ' : 'FAIL'}
 // ------------------------------------------------------------------ the app folder: the real Control with a fake installer
 const control = join(work, 'control');
 mkdirSync(control, { recursive: true });
-for (const name of ['python', 'strata_base', 'strata_common', 'strata_control', 'strata_cli', 'serve']) symlinkSync(join(stagedControl, name), join(control, name), 'junction');
+for (const name of ['python', 'strata_base', 'strata_common', 'strata_control', 'strata_cli', 'strata_server']) symlinkSync(join(stagedControl, name), join(control, name), 'junction');
 for (const name of ['strata.py', 'VERSION', 'BUNDLE.json', 'requirements.txt']) copyFileSync(join(stagedControl, name), join(control, name));
 cpSync(join(stagedControl, 'tools'), join(control, 'tools'), { recursive: true });
 const python = isWin ? join(control, 'python', 'python.exe') : join(control, 'python', 'bin', 'python3');
@@ -715,7 +715,7 @@ await scenario('theme', {}, async ({ base, browser, shot }) => {
 });
 
 // the junctions into the staged Control go first (rmdir on a junction removes only the link)
-for (const name of ['python', 'strata_base', 'strata_common', 'strata_control', 'strata_cli', 'serve']) { try { rmdirSync(join(control, name)); } catch { /* already gone */ } }
+for (const name of ['python', 'strata_base', 'strata_common', 'strata_control', 'strata_cli', 'strata_server']) { try { rmdirSync(join(control, name)); } catch { /* already gone */ } }
 try { rmSync(work, { recursive: true, force: true, maxRetries: 3 }); } catch (e) { console.log('info  scratch folder left behind:', work); }
 console.log(`shots in ${shots}`);
 process.exit(failed ? 1 : 0);

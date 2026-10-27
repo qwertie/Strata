@@ -65,7 +65,7 @@ class NoBrowserByItself(unittest.TestCase):
 
 class StartMessage(unittest.TestCase):
     def narrate(self, opens: bool) -> str:
-        from serve import server
+        from strata_server import server
         from strata_common import engine_client
         d = tempfile.mkdtemp()
         log = Path(d) / "engine.log"

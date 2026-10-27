@@ -80,11 +80,11 @@ That is the full list found in the code. Some details:
 - **API keys** you save for outside services are kept in a file that only your user account can open. They are not
   encrypted. (`apps/host/server/model-providers.mjs`)
 - **The server listens on `127.0.0.1`**, this PC only. The app fixes that address (`STRATA_BIND=127.0.0.1`), and the engine
-  server's default is the same (`serve/server.py`, the `--host` option).
+  server's default is the same (`strata_server/server.py`, the `--host` option).
 - **Sharing needs a key.** The app's "Share with other devices" and the Cloudflare tunnel will not start without an API
   key, and the shared port answers only `/v1/models`, `/v1/chat/completions` and `/v1/messages`
   (`apps/host/server/local-share.mjs`, `cloudflare.mjs`). `strata launch` makes a key for you when you pick anything wider than
-  this computer. The bare engine server (`serve/server.py`) only prints a warning if you open it to your network without a key,
+  this computer. The bare engine server (`strata_server/server.py`) only prints a warning if you open it to your network without a key,
   so set one yourself in that case.
 - **When you use an outside model**, the conversation (and the instructions of skills you switched on) go to that service.
   The app says so in its privacy notes. The service's own rules then apply.

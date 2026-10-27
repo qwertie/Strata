@@ -17,7 +17,7 @@ from strata_cli.cli import main
 from strata_common.client import (ClientError, Endpoint, normalize_legacy, normalize_status_only,
                                sanitize_telemetry, server_url)
 from strata_cli.render import display_width, field, render_view, safe
-from serve.server import (configure_batch_telemetry_env, visible_device_order)
+from strata_server.server import (configure_batch_telemetry_env, visible_device_order)
 from strata_common.engine_client import (parse_batch_window_sample, parse_stage_in_flight_sample,
     parse_engine_stage_line, read_engine_stage_log)
 
@@ -580,11 +580,11 @@ class ContractTests(unittest.TestCase):
             self.assertEqual(main(["serve", "--profile", "missing.json", "--parallel", "0"]), 2)
 
     def test_offline_server_rejects_remote_image_before_fetch(self):
-        from serve.server import ByteTokenizer, ChatTemplate, Service
+        from strata_server.server import ByteTokenizer, ChatTemplate, Service
         from strata_common.engine_client import MockEngine
         tok = ByteTokenizer()
         svc = Service(MockEngine(tok, "ok"), tok,
-                      ChatTemplate(Path(__file__).resolve().parents[2] / "serve/chat_template.jinja"))
+                      ChatTemplate(Path(__file__).resolve().parents[2] / "strata_server/chat_template.jinja"))
         svc.offline = True
         messages = [{"role": "user", "content": [{"type": "image", "source": "https://example.com/p.png"}]}]
         with self.assertRaisesRegex(ValueError, "offline mode cannot download"):
@@ -592,7 +592,7 @@ class ContractTests(unittest.TestCase):
 
     def test_direct_server_remote_bind_without_key_reaches_engine_load(self):
         # no early exit over the key any more: every way of saying "no key" gets past the key check
-        import serve.server as server
+        import strata_server.server as server
         cases = [('{"args":[]}', []), ('{"args":[],"api_key":"none"}', []), ('{"args":[]}', ["--no-api-key"]),
                  ('{"args":[]}', ["--api-key", "none"])]
         for body, extra in cases:

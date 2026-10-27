@@ -44,8 +44,8 @@ class Pins(unittest.TestCase):
                          Path("m") / "qwen-image-2.1-turbo" / "qwen_image_2.1_vae_bf16.safetensors")
 
     def test_sigmas_are_the_models(self):
-        """serve/images.py's schedule is model_index.json's sample_sigmas plus the terminal 0."""
-        from serve import images
+        """strata_server/images.py's schedule is model_index.json's sample_sigmas plus the terminal 0."""
+        from strata_server import images
         sample = [1.0, 0.978453, 0.95418, 0.926626, 0.89508, 0.845148, 0.704534, 0.414568]
         self.assertEqual([float(x) for x in images.TURBO_SIGMAS.split(",")], sample + [0.0])
 
@@ -141,7 +141,7 @@ class Config(unittest.TestCase):
         self.assertEqual(c["args"], ["--diffusion-fa", "--vae-tiling", "--vae-tile-overlap", "0.25"])
         self.assertTrue(c["uma"])
         self.assertEqual(c["gpu_policy"], "auto")
-        from serve.images import ImageGen
+        from strata_server.images import ImageGen
         with tempfile.TemporaryDirectory() as d:
             ImageGen({**c, "out_dir": d})              # serve accepts what setup writes
 

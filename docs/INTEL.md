@@ -6,7 +6,7 @@ port. For the released Linux engine package, start with [INTEL_ARC.md](INTEL_ARC
 Strata's engine is CUDA. On an Intel Arc it runs as Strata's own engine ported to SYCL (`sycl/`), behind the same server:
 OpenAI and Anthropic APIs, streaming, tool calls, MCP and the web app are unchanged. Everything Intel-specific lives in `sycl/`;
 no shared upstream file is changed. `sycl/setup_intel.py` and `sycl/serve/server_intel.py` wrap upstream's `setup.py` and
-`serve/server.py` from outside. llama.cpp's SYCL backend runs the same GGUF at about a third of the speed.
+`strata_server/server.py` from outside. llama.cpp's SYCL backend runs the same GGUF at about a third of the speed.
 
 DeepSeek V4.1-Flash does not run on Intel. Pictures are on by default ([below](#pictures-on-an-arc)).
 
@@ -115,7 +115,7 @@ build-sycl/strata --pack <iq pack> --native <shard1> --ple-gguf <shard2> \
 With `--tokens-file` instead of `--tokens` for long prompts (80K ids exceed Linux's single-argument limit). With a native pack
 `--prefill-until N` skips the token loop, so compare output tokens between paths, never only timings.
 
-Serve the port with `serve/server.py --engine strata` and `sycl/serve/strata-sycl.sh` as the `exe`, which starts the binary inside
+Serve the port with `strata_server/server.py --engine strata` and `sycl/serve/strata-sycl.sh` as the `exe`, which starts the binary inside
 the oneAPI runtime image with the serve pipes attached. Paths in the config's `args` are the container's. A config:
 
 ```json

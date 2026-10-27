@@ -16,7 +16,7 @@ background processes this server starts itself; it keeps their process id and st
 ever stops a process it started (a Strata started elsewhere, e.g. from its own window, is only asked over its API to
 unload the model).
 
-Not to be confused with serve/mcp.py: that is Strata's MCP *client* (the model calling your tools from the chat page).
+Not to be confused with strata_server/mcp.py: that is Strata's MCP *client* (the model calling your tools from the chat page).
 This file is an MCP *server* for the AI assistant you already use.
 """
 from __future__ import annotations
@@ -495,7 +495,7 @@ class Strata:
 
     def __init__(self, root: Path | str = DEFAULT_ROOT, src: Path | str | None = None):
         self.root = Path(root).resolve()
-        # where setup.py, tools/ and serve/ are (the app: inside Strata Control); `root` is where the installs live
+        # where setup.py, tools/ and strata_server/ are (the app: inside Strata Control); `root` is where the installs live
         self.src = Path(src).resolve() if src else self.root
         self.state_dir = self.root / STATE_DIR
         self.lock = threading.Lock()                    # install / start / stop one at a time
@@ -2324,7 +2324,7 @@ class Tools:
             py = s.run_python()
             if not Path(py).exists():
                 raise ToolError("Strata's Python environment (.venv) is missing: run the install again")
-            cmd = [py, str(s.root / "serve" / "server.py"), "--engine", "strata", "--config", str(cfg_path),
+            cmd = [py, str(s.root / "strata_server" / "server.py"), "--engine", "strata", "--config", str(cfg_path),
                    "--port", str(port)]
             if gpu is not None:
                 cmd += ["--gpu", str(gpu)]
@@ -2706,7 +2706,7 @@ def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description="Strata's MCP server (stdio): install, start, check and stop Strata "
                                              "from an AI assistant. See docs/MCP_SERVER.md.")
     ap.add_argument("--root", help="the Strata folder (default: the one this file is in)")
-    ap.add_argument("--src", help="where setup.py, tools/ and serve/ are, when that is not the Strata folder (the app)")
+    ap.add_argument("--src", help="where setup.py, tools/ and strata_server/ are, when that is not the Strata folder (the app)")
     ap.add_argument("--install-job", help=argparse.SUPPRESS)
     a = ap.parse_args(argv)
     if a.install_job:
@@ -2716,8 +2716,8 @@ def main(argv=None) -> int:
         return 2
     root = Path(a.root).expanduser().resolve() if a.root else DEFAULT_ROOT
     src = Path(a.src).expanduser().resolve() if a.src else root
-    if not (src / "setup.py").is_file() or not (src / "serve" / "server.py").is_file():
-        log(f"{src} is not a Strata folder (no setup.py / serve/server.py)")
+    if not (src / "setup.py").is_file() or not (src / "strata_server" / "server.py").is_file():
+        log(f"{src} is not a Strata folder (no setup.py / strata_server/server.py)")
         return 2
     out = sys.stdout.buffer
     sys.stdout = sys.stderr                             # stray prints must never corrupt the protocol stream

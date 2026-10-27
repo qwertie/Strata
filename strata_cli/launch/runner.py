@@ -502,7 +502,7 @@ def derive_config(base: dict, s: S.LaunchSettings, *, bool_flags: frozenset[str]
         cfg["api_key"] = "none"                              # served without a key on purpose (the server warns once at start)
     else:
         cfg.pop("api_key", None)
-    if s.drafting:                                           # strata_common/drafting.py: serve/server.py applies it at every start
+    if s.drafting:                                           # strata_common/drafting.py: strata_server/server.py applies it at every start
         cfg["drafting"] = s.drafting
     cfg.setdefault("exe", "component:strata-engine")
     cfg["open_browser"] = False                              # strata launch never opens a browser by itself (only `--open` does, after the start)
@@ -513,7 +513,7 @@ def derive_config(base: dict, s: S.LaunchSettings, *, bool_flags: frozenset[str]
     apply_cards(cfg, gpus)
     from strata_common import drafting as _drafting
     drafting_off = _drafting.normalize(s.drafting if s.drafting is not None else cfg.get("drafting")) == "off"
-    if s.mtp == "off" or drafting_off:                       # no draft layer for this launch (serve/server.py applies "mtp": false at every start)
+    if s.mtp == "off" or drafting_off:                       # no draft layer for this launch (strata_server/server.py applies "mtp": false at every start)
         from strata_common import draft_layer              # --drafting off: the written file carries no --mtp either (it was left in before)
         cfg["mtp"] = False
         draft_layer.apply(cfg)

@@ -7,7 +7,7 @@
  *
  *   node scripts/context-e2e.mjs                       (needs STRATA_HARNESS_DIR; see the E2E_* names below)
  *
- * It starts serve/server.py as ITS OWN child (foreground: this script waits for it and stops it by PID at the end or on a memory alarm),
+ * It starts strata_server/server.py as ITS OWN child (foreground: this script waits for it and stops it by PID at the end or on a memory alarm),
  * runs four scenarios and prints one table. Exit code 0 when every expectation held.
  *
  *   A  a message that can never fit (about 60K tokens in a 64K window) is refused in seconds, before the engine reads it
@@ -75,7 +75,7 @@ const finish = async (code) => {
 };
 process.on('SIGINT', () => finish(130));
 
-if (!EXISTING) server = spawn(PYTHON, ['serve/server.py', '--engine', 'strata', '--config', configFile, '--port', String(PORT), '--no-api-key', '--ready-file', readyFile], {
+if (!EXISTING) server = spawn(PYTHON, ['strata_server/server.py', '--engine', 'strata', '--config', configFile, '--port', String(PORT), '--no-api-key', '--ready-file', readyFile], {
   cwd: REPO, env: { ...process.env, PATH: `${CUDA_BIN};${process.env.PATH}`, STRATA_DATA_DIR: join(scratch, 'data') }, stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true,
 });
 const sink = [];

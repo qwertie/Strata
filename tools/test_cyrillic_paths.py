@@ -33,7 +33,7 @@ class CyrillicFolder(unittest.TestCase):
 
     def test_a_child_python_gets_the_path_as_an_argument_and_prints_it_back(self):
         # the server starts the engine through strata_common.engine_client.popen; the child reads the argument and its own file listing
-        from serve import server
+        from strata_server import server
         from strata_common import engine_client
         (self.dir / "m.gguf").write_bytes(b"x")
         env = dict(os.environ, PYTHONUTF8="1", PYTHONIOENCODING="utf-8")

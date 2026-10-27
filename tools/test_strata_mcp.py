@@ -2,7 +2,7 @@
 
     python -m unittest tools/test_strata_mcp.py -v
 
-Setup and the model server are fakes (a temporary Strata folder with a stand-in setup.py and serve/server.py), so
+Setup and the model server are fakes (a temporary Strata folder with a stand-in setup.py and strata_server/server.py), so
 nothing is downloaded and no GPU is used: the JSON-RPC handshake, argument checks, install / start / stop with real
 background processes, status against a fake HTTP server, and that the built-in model table still matches setup.py.
 """
@@ -146,15 +146,15 @@ FAKE_HW = {"os": "TestOS 1", "ram_gb": 64.0, "cpu": {"name": "Fake CPU", "cores"
 
 
 class FakeRoot(unittest.TestCase):
-    """A temporary Strata folder: fake setup.py and serve/server.py, its own settings file (data folder)."""
+    """A temporary Strata folder: fake setup.py and strata_server/server.py, its own settings file (data folder)."""
 
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         base = Path(self.tmp.name)
         self.root = base / "Strata"
-        (self.root / "serve").mkdir(parents=True)
+        (self.root / "strata_server").mkdir(parents=True)
         (self.root / "setup.py").write_text(FAKE_SETUP)
-        (self.root / "serve" / "server.py").write_text(FAKE_SERVER)
+        (self.root / "strata_server" / "server.py").write_text(FAKE_SERVER)
         self.env_backup = {k: os.environ.get(k) for k in ("APPDATA", "XDG_CONFIG_HOME")}
         os.environ["APPDATA"] = os.environ["XDG_CONFIG_HOME"] = str(base / "config")
         self.strata = M.Strata(self.root)
@@ -515,7 +515,7 @@ class StartStop(FakeRoot):
     def test_external_server_is_only_unloaded(self):
         port = free_port()
         self.write_config("q2_0", port=port)
-        p = subprocess.Popen([sys.executable, str(self.root / "serve" / "server.py"), "--config",
+        p = subprocess.Popen([sys.executable, str(self.root / "strata_server" / "server.py"), "--config",
                               str(self.root / "strata-q2_0.json"), "--port", str(port)],
                              stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         self.extra.append(p)

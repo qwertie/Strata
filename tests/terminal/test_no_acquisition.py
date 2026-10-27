@@ -42,8 +42,8 @@ INSTALL_WORDS = {"pip", "pip3", "git", "cmake", "ninja", "npm", "npx", "pnpm", "
 
 #: (file, call) -> why a network call there is not an acquisition. Request-time and loopback only.
 NETWORK_ALLOWED = {
-    ("serve/server.py", "urlopen"): "an image_url a client sends in a chat request is fetched at request time",
-    ("serve/mcp.py", "urlopen"): "the MCP servers the user configured, at request time",
+    ("strata_server/server.py", "urlopen"): "an image_url a client sends in a chat request is fetched at request time",
+    ("strata_server/mcp.py", "urlopen"): "the MCP servers the user configured, at request time",
     ("strata_control/tune_api.py", "urlopen"): "the loopback engine/server of a tuning job the user started",
     ("strata_control/tune_session.py", "urlopen"): "the loopback engine (127.0.0.1) the auto-tuner a user started measures",
     ("strata_base/loopback.py", "urlopen"): "the one opener for this computer's own servers (no proxy); any other address is passed on unchanged",
@@ -56,7 +56,7 @@ INSTALLER_IMPORT_ALLOWED = {
     "strata_control/calibration.py": "`strata engine calibrate`: an explicit tuning command, imports setup lazily",
 }
 
-SERVING_DIRS = ("serve", "strata_base", "strata_cli", "strata_common", "strata_control")
+SERVING_DIRS = ("strata_base", "strata_cli", "strata_common", "strata_control", "strata_server")
 
 
 def _sources():
@@ -74,7 +74,7 @@ class ImportGraphTests(unittest.TestCase):
             "import sys, os, json\n"
             "sys.path.insert(0, os.getcwd())\n"
             "import strata_cli.cli as c\n"
-            "import serve.server\n"
+            "import strata_server.server\n"
             "from strata_control import runtime\n"
             "c.parser()\n"
             "root = os.getcwd()\n"

@@ -1,4 +1,4 @@
-// --serve's LIST_CONVERSATIONS and GET_CONTEXT_WINDOWS (token_listing.hpp): the lines serve/server.py reads.
+// --serve's LIST_CONVERSATIONS and GET_CONTEXT_WINDOWS (token_listing.hpp): the lines strata_server/server.py reads.
 #include "strata/core/token_listing.hpp"
 
 #include <cstdio>

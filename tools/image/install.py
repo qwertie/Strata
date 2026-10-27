@@ -7,7 +7,7 @@ the normal setup; this is the way to add it without running the whole setup agai
     python tools/image/install.py --backend vulkan --quant Q8_0 --models-dir ~/models --print
     python tools/image/install.py --backend hip --arch gfx1103 --build-only
 
---gpu-policy auto|keep|shrink|unload: what the text model does during an image job (serve/images.py).
+--gpu-policy auto|keep|shrink|unload: what the text model does during an image job (strata_server/images.py).
 """
 from __future__ import annotations
 

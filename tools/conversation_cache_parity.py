@@ -12,7 +12,7 @@ import threading
 ROOT = Path(__file__).resolve().parents[1]
 sys.path[:0] = [str(ROOT), str(ROOT / 'tools')]
 from strata_common.engine_client import StrataEngine, child_env
-from serve.frontend import ChatTemplate
+from strata_server.frontend import ChatTemplate
 import strata_tokenizer as ST
 
 # pooled: the completed indexer rows (the 0.1.29 extent); pooled_full: those plus the spare row
