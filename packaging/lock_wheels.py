@@ -17,7 +17,6 @@ Run it when a pin in requirements.txt changes, review the diff, commit. Building
 from __future__ import annotations
 
 import argparse
-import hashlib
 import re
 import subprocess
 import sys
@@ -25,6 +24,10 @@ import tempfile
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+
+from strata_base.hashing import sha256_file  # noqa: E402
+
 LOCKS = ROOT / "packaging" / "locks"
 INPUTS = ("requirements.txt", "requirements-monitor.txt")
 
@@ -45,14 +48,6 @@ ABI = "cp312"
 
 def lock_path(target: str) -> Path:
     return LOCKS / f"runtime-{target}-{ABI}.txt"
-
-
-def sha256(path: Path) -> str:
-    h = hashlib.sha256()
-    with path.open("rb") as fh:
-        for block in iter(lambda: fh.read(1 << 20), b""):
-            h.update(block)
-    return h.hexdigest()
 
 
 def norm(name: str) -> str:
@@ -100,7 +95,7 @@ def build_lock(target: str) -> str:
         wheels: dict[str, tuple[str, list[str]]] = {}
         for whl in sorted(Path(tmp).glob("*.whl")):
             name, version = whl.name.split("-")[:2]
-            wheels.setdefault(norm(name), (version, []))[1].append(sha256(whl))
+            wheels.setdefault(norm(name), (version, []))[1].append(sha256_file(whl))
     drop = _dropped_for_target(target)
     out = [
         "# Hash-pinned runtime packages for the " + target + " terminal archive (CPython 3.12, " + ABI + ").",

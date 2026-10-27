@@ -12,7 +12,8 @@ import threading
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path[:0] = [str(ROOT), str(ROOT / 'tools')]
-from conversation_cache_parity import STATE_KEYS, engine_args, load_tokenizer, require, state_hashes
+from conversation_cache_parity import STATE_KEYS, engine_args, require, state_hashes
+from strata_tokenizer import load_folder
 from strata_common.engine_client import StrataEngine, child_env
 from strata_server.frontend import ChatTemplate
 
@@ -80,7 +81,7 @@ def main():
         return
     cfg = json.loads(args.config.read_text(encoding='utf-8'))
     path = Path(cfg['tokenizer'])
-    tok = load_tokenizer(path)
+    tok = load_folder(path)
     template = ChatTemplate(path / 'chat_template.jinja')
     def encode(text):
         return tok.encode(text, parse_special=True)

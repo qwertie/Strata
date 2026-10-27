@@ -14,6 +14,8 @@ from pathlib import Path
 import argparse, json, os, shlex, struct, subprocess, sys
 import numpy as np
 
+from kl import log_softmax
+
 V = 248320
 QUESTIONS = {
     "shapes.png": ["What text is written in the image? Answer with the text only.",
@@ -51,12 +53,6 @@ def parse_dump(out):
         elif l.startswith("first:"):
             first = l
     return chunks, gen, first
-
-
-def log_softmax(x):
-    x = x.astype(np.float64)
-    m = x.max(axis=1, keepdims=True)
-    return x - m - np.log(np.exp(x - m).sum(axis=1, keepdims=True))
 
 
 def kl_stats(p_logits, q_logits):

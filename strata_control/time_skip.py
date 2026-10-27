@@ -40,6 +40,7 @@ from pathlib import Path
 from typing import Any, Callable, Iterable, Sequence
 
 from strata_base import atomic
+from strata_base.hashing import sha256_file
 
 SCHEMA_VERSION = 1
 
@@ -226,17 +227,6 @@ def summarise(results: Sequence[CheckResult]) -> dict[str, Any]:
 
 
 # --------------------------------------------------------------------------- digests and snapshots
-
-def sha256_file(path: Path, chunk: int = 1 << 20) -> str:
-    h = hashlib.sha256()
-    with path.open("rb") as fh:
-        while True:
-            block = fh.read(chunk)
-            if not block:
-                break
-            h.update(block)
-    return h.hexdigest()
-
 
 def inventory(root: Path, ignore: Iterable[str] = (".git", "__pycache__", ".strata")) -> list[dict[str, Any]]:
     """A sorted relative-path/digest inventory of a directory tree.

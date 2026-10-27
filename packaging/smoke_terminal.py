@@ -23,7 +23,6 @@ import argparse
 import json
 import os
 import shutil
-import socket
 import subprocess
 import sys
 import tarfile
@@ -33,11 +32,9 @@ import urllib.request
 import zipfile
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-def free_port() -> int:
-    with socket.socket() as s:
-        s.bind(("127.0.0.1", 0))
-        return s.getsockname()[1]
+from strata_base.loopback import free_port  # noqa: E402
 
 
 def extract(archive: Path, dest: Path) -> Path:

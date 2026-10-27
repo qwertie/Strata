@@ -20,25 +20,11 @@ import pathlib
 import struct
 import sys
 
-GGUF_TYPE_STRING = 8
+from ple_fp8_pack import gguf_string, kv_string, safetensors_header
+
 GGML_TYPE_BF16 = 30
 ALIGN = 32
 CHUNK = 64 << 20
-
-
-def safetensors_header(path):
-    with open(path, "rb") as f:
-        n = struct.unpack("<Q", f.read(8))[0]
-        return json.loads(f.read(n)), 8 + n
-
-
-def gguf_string(s):
-    b = s.encode("utf-8")
-    return struct.pack("<Q", len(b)) + b
-
-
-def kv_string(key, val):
-    return gguf_string(key) + struct.pack("<I", GGUF_TYPE_STRING) + gguf_string(val)
 
 
 def write_header(dim, vocab, source, what):

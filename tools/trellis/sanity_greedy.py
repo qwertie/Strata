@@ -14,8 +14,7 @@ import sys
 
 HERE = pathlib.Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE.parent))
-sys.path.insert(0, str(HERE))
-import make_corpus  # noqa: E402
+import strata_tokenizer as ST  # noqa: E402
 
 PROMPTS = [
     "What is the capital of Australia, and what is it known for? Answer in two sentences.",
@@ -33,7 +32,7 @@ def main() -> int:
     ap.add_argument("--new", type=int, default=80)
     a = ap.parse_args()
     cfg = json.load(open(a.config))
-    tok = make_corpus.load_tokenizer(cfg["tokenizer"])
+    tok = ST.load_folder(cfg["tokenizer"])
     env = dict(os.environ)
     env.update(cfg.get("env", {}))
     env["LD_LIBRARY_PATH"] = ":".join(cfg.get("lib_dirs", []) + [env.get("LD_LIBRARY_PATH", "")])

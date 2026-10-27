@@ -23,141 +23,35 @@ Exit codes:
 from __future__ import annotations
 
 import argparse
-import http.client
 import json
 import os
 import re
 import shutil
 import signal
-import subprocess
 import sys
 import tempfile
 import time
 from pathlib import Path
 
-HERE = Path(__file__).resolve().parent
-REPO = HERE.parent.parent
-PROFILE_PATCH = HERE / "profile" / "cordis.patch.yml"
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-DEFAULT_DSH = "/Applications/DeepSeek Harness.app/Contents/Resources/runtime/cli/bin/dsh"
-DEFAULT_PYTHON = REPO.parent / "python311" / "bin" / "python"
+from _bridge import (  # noqa: E402
+    DEFAULT_DSH,
+    DEFAULT_PYTHON,
+    PROFILE_PATCH,
+    WORKSPACE_MARKER,
+    BridgeError,
+    gateway_call,
+    http_json,
+    log,
+    read_session_events,
+    start_agent,
+    start_worker,
+    wait_for_agent_url,
+    wait_for_worker,
+)
 
-WORKSPACE_MARKER = "strata-bridge-e2e"
 PROMPT = "Say hello in exactly five words."
-
-
-class BridgeError(RuntimeError):
-    pass
-
-
-def log(msg: str) -> None:
-    print(f"  {msg}", flush=True)
-
-
-def http_json(method: str, host: str, port: int, path: str, body=None, cookie: str | None = None):
-    conn = http.client.HTTPConnection(host, port, timeout=30)
-    headers = {}
-    data = None
-    if body is not None:
-        data = json.dumps(body).encode()
-        headers["content-type"] = "application/json"
-    if cookie:
-        headers["cookie"] = cookie
-    conn.request(method, path, body=data, headers=headers)
-    resp = conn.getresponse()
-    raw = resp.read().decode("utf-8", "replace")
-    set_cookie = resp.getheader("set-cookie") or ""
-    conn.close()
-    return resp.status, raw, set_cookie
-
-
-def wait_for_worker(port: int, timeout=60.0) -> dict:
-    deadline = time.time() + timeout
-    while time.time() < deadline:
-        try:
-            status, raw, _ = http_json("GET", "127.0.0.1", port, "/health")
-            if status == 200:
-                return json.loads(raw)
-        except OSError:
-            pass
-        time.sleep(0.4)
-    raise BridgeError(f"the Strata worker did not answer /health on 127.0.0.1:{port} within {timeout}s")
-
-
-def start_worker(python: Path, port: int, tmp: Path) -> tuple[subprocess.Popen, Path]:
-    logfile = tmp / "worker.log"
-    handle = logfile.open("w")
-    proc = subprocess.Popen(
-        [str(python), "-m", "strata_server.server", "--engine", "mock", "--port", str(port),
-         "--script", "I am a local Strata model."],
-        cwd=str(REPO), stdout=handle, stderr=subprocess.STDOUT,
-    )
-    return proc, logfile
-
-
-def start_agent(dsh: Path, port: int, tmp: Path) -> tuple[subprocess.Popen, Path]:
-    logfile = tmp / "dsh.log"
-    handle = logfile.open("w")
-    proc = subprocess.Popen(
-        [str(dsh), "--profile", "web", "--patch", str(PROFILE_PATCH),
-         "--port", str(port), "--no-open"],
-        cwd=str(tmp / "ws"), stdout=handle, stderr=subprocess.STDOUT,
-    )
-    return proc, logfile
-
-
-def wait_for_agent_url(logfile: Path, proc: subprocess.Popen, timeout=120.0) -> str:
-    deadline = time.time() + timeout
-    pattern = re.compile(r"http://127\.0\.0\.1:(\d+)/\?token=([A-Za-z0-9_-]+)")
-    while time.time() < deadline:
-        if proc.poll() is not None:
-            raise BridgeError(f"the Harness exited early (code {proc.returncode}); log:\n"
-                              + logfile.read_text(errors="replace")[-2000:])
-        text = logfile.read_text(errors="replace") if logfile.exists() else ""
-        m = pattern.search(text)
-        if m:
-            return text
-        time.sleep(0.5)
-    raise BridgeError(f"the Harness did not print its URL within {timeout}s; log:\n"
-                      + (logfile.read_text(errors="replace")[-2000:] if logfile.exists() else "(none)"))
-
-
-def gateway_call(host: str, port: int, cookie: str, rpc_id: str, method: str, args: dict):
-    body = {"type": "client-request", "rpcId": rpc_id, "method": method, "payload": {"args": args}}
-    status, raw, _ = http_json("POST", host, port, f"/api/{method}", body, cookie=cookie)
-    try:
-        parsed = json.loads(raw)
-    except json.JSONDecodeError as e:
-        raise BridgeError(f"{method}: the gateway returned non-JSON ({status}): {raw[:300]}") from e
-    result = parsed.get("result") or {}
-    if not result.get("ok"):
-        raise BridgeError(f"{method} was refused: {json.dumps(result.get('error'))[:400]}")
-    return result.get("value")
-
-
-def read_session_events(session_id: str) -> list[dict]:
-    """Read the durable session file, across every concatenated zstd frame."""
-    root = Path(os.environ.get("DSH_HOME", Path.home() / ".dsh")) / "sessions"
-    matches = list(root.glob(f"*/{session_id}/session.v*.jsonl*"))
-    if not matches:
-        return []
-    path = matches[0]
-    if not path.name.endswith(".zstd"):
-        return [json.loads(l) for l in path.read_text(errors="replace").splitlines() if l.strip()]
-    # zstd frames are concatenated as the session is appended to; `zstd -d` reads them all.
-    try:
-        raw = subprocess.run(["zstd", "-d", "-c", "--long=27", str(path)],
-                             capture_output=True, check=True).stdout
-    except (FileNotFoundError, subprocess.CalledProcessError):
-        return []
-    out = []
-    for line in raw.decode("utf-8", "replace").splitlines():
-        if line.strip():
-            try:
-                out.append(json.loads(line))
-            except json.JSONDecodeError:
-                pass
-    return out
 
 
 def main() -> int:

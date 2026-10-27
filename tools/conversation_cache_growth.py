@@ -13,7 +13,8 @@ import threading
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path[:0] = [str(ROOT), str(ROOT / 'tools')]
-from conversation_cache_parity import STATE_KEYS, load_tokenizer, require, state_hashes
+from conversation_cache_parity import STATE_KEYS, require, state_hashes
+from strata_tokenizer import load_folder
 from conversation_cache_disabled import SETTINGS, common_args
 from conversation_cache_soak import answer_text
 from strata_server.frontend import ChatTemplate
@@ -78,7 +79,7 @@ def main():
         return
     cfg = json.loads(a.config.read_text(encoding='utf-8'))
     tok_path = Path(cfg['tokenizer'])
-    tok = load_tokenizer(tok_path)
+    tok = load_folder(tok_path)
     template = ChatTemplate(tok_path / 'chat_template.jinja')
     def encode(text):
         return tok.encode(text, parse_special=True)

@@ -23,15 +23,6 @@ def require(condition, message):
         raise AssertionError(message)
 
 
-def load_tokenizer(path):
-    vocab = json.loads((path / 'vocab.json').read_text(encoding='utf-8'))
-    tokens = [None] * len(vocab)
-    for token, index in vocab.items():
-        tokens[index] = token
-    return ST.Tokenizer(tokens, (path / 'merges.txt').read_text(encoding='utf-8').split('\n'),
-                        json.loads((path / 'token_type.json').read_text(encoding='utf-8')))
-
-
 def state_hashes(text):
     # Padding and the drafter's final uncomputed cell aren't main-model state.
     hashes = []
@@ -173,7 +164,7 @@ def main():
         return
     cfg = json.loads(a.config.read_text(encoding='utf-8'))
     p = Path(cfg['tokenizer'])
-    tok = load_tokenizer(p)
+    tok = ST.load_folder(p)
     tpl = ChatTemplate(p / 'chat_template.jinja')
     def encode(text):
         return tok.encode(text, parse_special=True)

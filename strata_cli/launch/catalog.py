@@ -18,44 +18,23 @@ from pathlib import Path
 from typing import Any
 
 from strata_cli.launch import settings as S
+from strata_common import gpu_fit
 
 
 class CatalogUnavailable(RuntimeError):
     """The installer files (setup.py, tools/strata_mcp.py) are not there; the message is for the user."""
 
 
-# --- apps/host/src/lib/native-fit.ts, ported (same constants, same rules) ------------------------------------------------
-DENSE_GB = 5.0
-SYSTEM_ROOM_GB = 10.0
-DENSE_EXTRA_GB = 1.0
-
-
 def _round1(n: float) -> float:
     return round(n * 10) / 10
 
 
-def memory_needed(v: dict) -> float:
-    if isinstance(v.get("memory_gb"), (int, float)):
-        return float(v["memory_gb"])
-    if v.get("mem_total") and isinstance(v.get("ram_needed_gb"), (int, float)):
-        return float(v["ram_needed_gb"])
-    return _round1(float(v.get("experts_gb") or v.get("ram_needed_gb") or 0) + DENSE_EXTRA_GB)
-
-
 def fit_on(v: dict, ram_gb: float | None, vram_gb: float | None) -> dict[str, Any]:
     """native-fit.ts `fitOn`: where the weights go on this computer. Returns memoryGb, vramUseGb, ramUseGb, spillGb, known."""
-    memory = memory_needed(v)
-    vram = float(vram_gb or 0)
-    if not ram_gb or ram_gb <= 0:
-        return {"memoryGb": memory, "vramUseGb": 0.0, "ramUseGb": 0.0, "spillGb": 0.0, "known": False}
-    experts = max(0.0, memory - DENSE_EXTRA_GB)
-    on_gpu = max(0.0, min(experts, vram - DENSE_GB))
-    ram_room = max(0.0, float(ram_gb) - SYSTEM_ROOM_GB)
-    spill = max(0.0, experts - on_gpu - ram_room)
-    in_ram = max(0.0, experts - on_gpu - spill)
-    vram_use = min(vram, DENSE_GB + on_gpu) if vram > 0 else 0.0
-    return {"memoryGb": memory, "vramUseGb": _round1(vram_use),
-            "ramUseGb": _round1(in_ram + (DENSE_EXTRA_GB if vram <= 0 else 0)), "spillGb": _round1(spill), "known": True}
+    memory = gpu_fit.memory_needed(v)
+    f = gpu_fit.fit(memory, ram_gb, vram_gb)
+    return {"memoryGb": memory, "vramUseGb": f["vram_use_gb"], "ramUseGb": f["ram_use_gb"], "spillGb": f["spill_gb"],
+            "known": f["known"]}
 
 
 # --- the verdict words ---------------------------------------------------------------------------------------------------
@@ -125,26 +104,22 @@ class Computer:
     def usable_gpus(self) -> list[dict]:
         """The cards that count and the engine can drive (strata_common/gpu_fit.py: an integrated chip, a tiny card or a card of another
         make is left out), the largest first. One engine drives one make, so a model is never split across makes."""
-        from strata_common import gpu_fit
         return gpu_fit.usable_cards(gpu_fit.for_vendor(self.gpus, self.engine_vendor)[0])[0]
 
     @property
     def ignored_gpus(self) -> list[dict]:
-        from strata_common import gpu_fit
         mine, others = gpu_fit.for_vendor(self.gpus, self.engine_vendor)
         return gpu_fit.usable_cards(mine)[1] + [{**c, "why_ignored": "another make of card than this engine drives"} for c in others]
 
     @property
     def other_vendor_note(self) -> str | None:
         """One plain line when a card of another make is the bigger one (None otherwise)."""
-        from strata_common import gpu_fit
         return gpu_fit.other_vendor_note(self.gpus, self.engine_vendor)
 
     @property
     def new_card_note(self) -> tuple[str, str] | None:
         """(what, what to do) when a usable card is an Intel Arc B-series (Battlemage): allowed, but new to Strata and untested by the maintainers."""
         import re
-        from strata_common import gpu_fit
         for c in gpu_fit.usable_cards(gpu_fit.for_vendor(self.gpus, self.engine_vendor)[0])[0]:
             if c.get("vendor") == "intel" and re.search(r"Arc (?:Pro )?B\d", str(c.get("name", ""))):
                 return (f"The {str(c['name']).replace('Intel ', '')} is a B-series Arc card. It is new to Strata and we have not tested it ourselves, so pictures or long answers may fail on it.",
@@ -304,7 +279,6 @@ class Catalog:
     def engine_vendor(self, hw: dict | None = None) -> str | None:
         """The make of card the engine drives: the installed engine's; with none installed, the engine setup would fetch (NVIDIA first when the
         computer has several makes)."""
-        from strata_common import gpu_fit
         hw = hw if hw is not None else self.hardware()
         return gpu_fit.pick_vendor(list(hw.get("gpus") or []), self.installed_backend())
 

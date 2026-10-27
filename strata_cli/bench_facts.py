@@ -18,6 +18,8 @@ import sys
 import tempfile
 from pathlib import Path
 
+from strata_base.hashing import sha256_file
+
 ROOT = Path(__file__).resolve().parents[1]
 LOOPBACK = frozenset({"localhost", "127.0.0.1", "::1"})
 HEX40 = re.compile(r"^[0-9a-f]{40}$")
@@ -37,8 +39,9 @@ def pointer(*parts) -> str:
 
 
 # ------------------------------------------------------------------------------------------------------------ redaction
-def redactor(key: str = ""):
-    """text -> text with this machine's home folders, user and host names, the Strata folder, private IP addresses and the API key replaced."""
+def redactor(key: str = "", extra=()):
+    """text -> text with this machine's home folders, user and host names, the Strata folder, private IP addresses and the API key replaced.
+    `extra` lists more private words (whole words only) to replace."""
     subs: list[tuple[re.Pattern, str]] = []
 
     def add(value, label, word=False):
@@ -57,6 +60,8 @@ def redactor(key: str = ""):
         pass
     add(socket.gethostname(), "<host>", True)
     add(platform.node(), "<host>", True)
+    for word in extra:
+        add(word, "<private>", True)
     add(key, "<key>")
     subs.sort(key=lambda item: -len(item[0].pattern))
     path_user = re.compile(r"(?i)([A-Za-z]:)?([\\/])(Users|home)([\\/])(?!<)[^\\/\s\"':;,]+")
@@ -94,14 +99,6 @@ def run_cmd(cmd: list[str], timeout: float = 15) -> str:
 
 def powershell(script: str, timeout: float = 20) -> str:
     return run_cmd(["powershell", "-NoProfile", "-NonInteractive", "-Command", script], timeout)
-
-
-def sha256_file(path: Path, chunk: int = 8 << 20) -> str:
-    digest = hashlib.sha256()
-    with open(path, "rb") as stream:
-        while block := stream.read(chunk):
-            digest.update(block)
-    return digest.hexdigest()
 
 
 def sha256_text(text: str) -> str:

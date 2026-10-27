@@ -398,12 +398,12 @@ class Issue3488IntegrityRetry(unittest.TestCase):
         from unittest import mock
         from strata_common import engine_component as ec
         path = Path("x")
-        with mock.patch.object(ec, "_sha256", side_effect=["bad", "good"]) as sha, mock.patch.object(ec.time, "sleep"):
+        with mock.patch.object(ec, "sha256_file", side_effect=["bad", "good"]) as sha, mock.patch.object(ec.time, "sleep"):
             self.assertEqual(ec._hash_settled(path, "good"), "good")
             self.assertEqual(sha.call_count, 2)
-        with mock.patch.object(ec, "_sha256", side_effect=[PermissionError(), "good"]), mock.patch.object(ec.time, "sleep"):
+        with mock.patch.object(ec, "sha256_file", side_effect=[PermissionError(), "good"]), mock.patch.object(ec.time, "sleep"):
             self.assertEqual(ec._hash_settled(path, "good"), "good")
-        with mock.patch.object(ec, "_sha256", return_value="bad"), mock.patch.object(ec.time, "sleep"):
+        with mock.patch.object(ec, "sha256_file", return_value="bad"), mock.patch.object(ec.time, "sleep"):
             self.assertEqual(ec._hash_settled(path, "good"), "bad")      # still wrong after the retry: refuse
 
 

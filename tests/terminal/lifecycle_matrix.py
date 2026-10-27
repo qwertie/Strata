@@ -33,6 +33,7 @@ import psutil  # noqa: E402
 
 from strata_control import components, runtime  # noqa: E402
 from strata_common import engine_component as ec, procs, profiles  # noqa: E402
+from strata_base.loopback import free_port  # noqa: E402
 
 WINDOWS = os.name == "nt"
 LINUX = sys.platform.startswith("linux")
@@ -86,12 +87,6 @@ while True:
 if WINDOWS:   # a parent that ignores Ctrl+C hands that to its children; the matrix must start servers that do not
     import ctypes
     ctypes.windll.kernel32.SetConsoleCtrlHandler(None, False)
-
-
-def free_port() -> int:
-    with socket.socket() as s:
-        s.bind(("127.0.0.1", 0))
-        return s.getsockname()[1]
 
 
 def port_open(port: int) -> bool:

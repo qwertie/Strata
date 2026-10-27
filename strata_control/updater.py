@@ -29,7 +29,6 @@ import json
 import os
 import re
 import shutil
-import socket
 import subprocess
 import sys
 import tarfile
@@ -44,7 +43,8 @@ from typing import Callable
 
 from strata_common import acquisition, engine_component as ec, signing
 from strata_control import components, feed as feedmod, preset_marks
-from strata_base import longpath, transfer
+from strata_base import longpath, loopback, transfer
+from strata_base.file_lock import try_lock_file, unlock_file
 from strata_common.targets import host_platform
 from strata_base import atomic as _atomic_mod
 
@@ -145,26 +145,14 @@ def update_lock(root: Path):
     directory.mkdir(parents=True, exist_ok=True)
     handle = open(directory / "update.lock", "a+b")
     try:
-        if os.name == "nt":
-            import msvcrt
-            handle.seek(0)
-            try:
-                msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
-            except OSError:
-                raise UpdateError("another update is already running for this component folder", 7) from None
-        else:
-            import fcntl
-            try:
-                fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
-            except OSError:
-                raise UpdateError("another update is already running for this component folder", 7) from None
+        try:
+            try_lock_file(handle.fileno())
+        except OSError:
+            raise UpdateError("another update is already running for this component folder", 7) from None
         yield
     finally:
         try:
-            if os.name == "nt":
-                import msvcrt
-                handle.seek(0)
-                msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
+            unlock_file(handle.fileno())
         except OSError:
             pass
         handle.close()
@@ -727,12 +715,6 @@ def discover_run_config(environ=None) -> Path | None:
     return Path(ready[0]["source_config"])
 
 
-def _free_port() -> int:
-    with socket.socket() as probe:
-        probe.bind(("127.0.0.1", 0))
-        return probe.getsockname()[1]
-
-
 @contextlib.contextmanager
 def _patched_environ(values: dict):
     old = {key: os.environ.get(key) for key in values}
@@ -899,7 +881,7 @@ def default_test_start(stage_root: Path, component: ec.EngineComponent, ctx: Con
         if isinstance(cfg.get("args"), list):
             cfg["args"] = light_test_args(cfg["args"])
         cfg["host"] = "127.0.0.1"
-        cfg["port"] = _free_port()
+        cfg["port"] = loopback.free_port()
         cfg["log"] = str(sandbox / "engine.log")
         config_path = sandbox / "run.json"
         config_path.write_text(json.dumps(cfg, indent=1), encoding="utf-8")

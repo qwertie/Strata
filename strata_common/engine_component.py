@@ -38,7 +38,6 @@ Nothing here imports anything outside the standard library and `strata_control`.
 
 from __future__ import annotations
 
-import hashlib
 import json
 import os
 import time
@@ -51,6 +50,7 @@ from pathlib import Path, PurePosixPath, PureWindowsPath
 
 from strata_common import acquisition
 from strata_base import longpath
+from strata_base.hashing import sha256_file
 from strata_common.targets import BACKEND_MATRIX, backend_supported, host_platform
 
 SCHEMA_VERSION = 2
@@ -376,21 +376,13 @@ def verify_signature(component: "EngineComponent", environ=None) -> str:
     return "verified"
 
 
-def _sha256(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as stream:
-        for block in iter(lambda: stream.read(1 << 20), b""):
-            digest.update(block)
-    return digest.hexdigest()
-
-
 def _hash_settled(path: Path, digest: str) -> str | None:
     """The file's SHA-256, read again once when the first read fails or differs: a file that was just unpacked or is
     being scanned by a virus checker can read short or locked for a moment, and a failure must not be kept (#3488)."""
     actual = None
     for attempt in range(2):
         try:
-            actual = _sha256(path)
+            actual = sha256_file(path)
         except OSError:
             actual = None
         if actual == digest:

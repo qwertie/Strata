@@ -11,7 +11,6 @@ by `resolve_ref`, which refuses a reference that leaves the source.
 
 from __future__ import annotations
 
-import hashlib
 import http.client
 import ipaddress
 import os
@@ -26,6 +25,7 @@ from pathlib import Path
 from typing import Callable
 
 from strata_base import tls
+from strata_base.hashing import sha256_file
 
 tls.install()      # #3722: the operating system's certificates, like the browser
 
@@ -203,14 +203,6 @@ def read_small(location: str, *, limit: int = SMALL_LIMIT, timeout: float = 30) 
     if len(data) > limit:
         raise TransferError(f"{location} is larger than {limit} bytes")
     return data
-
-
-def sha256_file(path: Path) -> str:
-    digest = hashlib.sha256()
-    with Path(path).open("rb") as stream:
-        for block in iter(lambda: stream.read(CHUNK), b""):
-            digest.update(block)
-    return digest.hexdigest()
 
 
 def download(location: str, partial: Path, *, size: int, sha256: str,

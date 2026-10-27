@@ -16,6 +16,7 @@ from strata_control import calibration, journal
 from strata_common import profiles
 from strata_common.profiles import ProfileError
 from strata_base import posix_owner
+from strata_base.file_lock import try_lock_file, unlock_file
 
 
 KINDS = {"measure": "engine.calibrate.measure", "apply": "engine.calibrate.apply",
@@ -51,26 +52,6 @@ def _open_lease(profile: str, *, create: bool) -> int | None:
     return descriptor
 
 
-def _try_lock(descriptor: int) -> None:
-    if os.name == "nt":
-        import msvcrt
-        os.lseek(descriptor, WINDOWS_LOCK_OFFSET, os.SEEK_SET)
-        msvcrt.locking(descriptor, msvcrt.LK_NBLCK, 1)
-    else:
-        import fcntl
-        fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
-
-
-def _unlock(descriptor: int) -> None:
-    if os.name == "nt":
-        import msvcrt
-        os.lseek(descriptor, WINDOWS_LOCK_OFFSET, os.SEEK_SET)
-        msvcrt.locking(descriptor, msvcrt.LK_UNLCK, 1)
-    else:
-        import fcntl
-        fcntl.flock(descriptor, fcntl.LOCK_UN)
-
-
 @contextmanager
 def _worker_lease(profile: str, job_id: str):
     descriptor = _open_lease(profile, create=True)
@@ -78,7 +59,7 @@ def _worker_lease(profile: str, job_id: str):
         raise ProfileError("calibration worker lease directory is unavailable", 5)
     try:
         try:
-            _try_lock(descriptor)
+            try_lock_file(descriptor, WINDOWS_LOCK_OFFSET)
         except OSError as exc:
             if exc.errno in (errno.EAGAIN, errno.EACCES) or getattr(exc, "winerror", None) == 33:
                 raise ProfileError("another calibration worker is running for this profile", 6) from None
@@ -91,7 +72,7 @@ def _worker_lease(profile: str, job_id: str):
             os.fsync(descriptor)
             yield
         finally:
-            _unlock(descriptor)
+            unlock_file(descriptor, WINDOWS_LOCK_OFFSET)
     finally:
         os.close(descriptor)
 
@@ -102,7 +83,7 @@ def _activity(profile: str, job_id: str) -> str:
         return "untracked"
     try:
         try:
-            _try_lock(descriptor)
+            try_lock_file(descriptor, WINDOWS_LOCK_OFFSET)
         except OSError as exc:
             if exc.errno not in (errno.EAGAIN, errno.EACCES) and getattr(exc, "winerror", None) != 33:
                 raise
@@ -114,7 +95,7 @@ def _activity(profile: str, job_id: str) -> str:
                 os.lseek(descriptor, 0, os.SEEK_SET)
                 return "ended" if os.read(descriptor, 32) == job_id.encode("ascii") else "untracked"
             finally:
-                _unlock(descriptor)
+                unlock_file(descriptor, WINDOWS_LOCK_OFFSET)
     finally:
         os.close(descriptor)
 

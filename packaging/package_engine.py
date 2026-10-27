@@ -25,7 +25,6 @@ from __future__ import annotations
 
 import argparse
 import fnmatch
-import hashlib
 import json
 import os
 import re
@@ -40,19 +39,12 @@ sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import binary_deps  # noqa: E402
+from strata_base.hashing import sha256_file  # noqa: E402
 from strata_common import engine_component as ec  # noqa: E402
 from strata_control.components import BACKEND_MATRIX, host_platform  # noqa: E402
 
 
 DSV41_EXE = "strata-dsv41"
-
-
-def sha256(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as stream:
-        for block in iter(lambda: stream.read(1 << 20), b""):
-            digest.update(block)
-    return digest.hexdigest()
 
 
 def wanted(path: Path) -> bool:
@@ -208,7 +200,7 @@ def build(src: Path, backend: str, version: str, target: str, out: Path, *, entr
             destination = staging / rel
             destination.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(src / rel, destination)
-            files.append({"path": rel, "sha256": sha256(destination), "bytes": destination.stat().st_size})
+            files.append({"path": rel, "sha256": sha256_file(destination), "bytes": destination.stat().st_size})
         files += _bundle_missing_libraries(staging, target, [f["path"] for f in files], search or [], allow_libs or [])
         manifest = {"schema_version": ec.SCHEMA_VERSION, "id": ec.COMPONENT_ID, "name": ec.COMPONENT_ID,
                     "version": version, "platform": target, "backend": backend, "archs": list(archs),
@@ -266,7 +258,7 @@ def _bundle_missing_libraries(staging: Path, target: str, rels: list[str], searc
             if hit is None or (staging / hit.name).exists():
                 continue
             shutil.copy2(hit, staging / hit.name)
-            added.append({"path": hit.name, "sha256": sha256(staging / hit.name), "bytes": (staging / hit.name).stat().st_size})
+            added.append({"path": hit.name, "sha256": sha256_file(staging / hit.name), "bytes": (staging / hit.name).stat().st_size})
             progressed = True
             print(f"bundled {hit.name} (imported by the engine; from {hit.parent})")
         if not progressed:
@@ -281,7 +273,7 @@ def _bundle_missing_libraries(staging: Path, target: str, rels: list[str], searc
 
 def package_sha256(folder: Path) -> str:
     """One digest for the whole package: SHA-256 of the manifest file (it holds every file's hash)."""
-    return sha256(folder / ec.MANIFEST)
+    return sha256_file(folder / ec.MANIFEST)
 
 
 def main(argv: list[str] | None = None) -> int:

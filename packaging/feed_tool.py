@@ -25,7 +25,6 @@ from __future__ import annotations
 
 import argparse
 import datetime as dt
-import hashlib
 import json
 import os
 import stat
@@ -37,6 +36,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
+from strata_base.hashing import sha256_file  # noqa: E402
 from strata_common import engine_component as ec, signing  # noqa: E402
 from strata_control import feed as feedmod  # noqa: E402
 
@@ -46,14 +46,6 @@ def _inside_git(path: Path) -> bool:
         if (parent / ".git").exists():
             return True
     return False
-
-
-def _sha256(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as stream:
-        for block in iter(lambda: stream.read(1 << 20), b""):
-            digest.update(block)
-    return digest.hexdigest()
 
 
 def _load_key(path: Path) -> dict:
@@ -92,7 +84,7 @@ def sign_package(folder: Path, key: dict) -> str:
     path.write_text(json.dumps(manifest, indent=1) + "\n", encoding="utf-8")
     ec.read_manifest(Path(folder))                      # still a valid manifest
     signing.verify_bytes({key["key_id"]: __import__("base64").b64decode(key["public"])}, payload, manifest["signature"])
-    return _sha256(path)
+    return sha256_file(path)
 
 
 _NATIVE_MAGIC = (b"\x7fELF", b"\xcf\xfa\xed\xfe", b"\xca\xfe\xba\xbe", b"\xfe\xed\xfa\xcf", b"#!")      # ELF, Mach-O (64-bit, fat), script
@@ -169,8 +161,8 @@ def pack_engine(folder: Path, out: Path, fmt: str = "tar.gz", *, url_prefix: str
     entry = {"version": component.version, "platform": component.platform, "backend": component.backend,
              "variant": component.variant, "archs": list(component.archs), "min_driver": dict(component.min_driver),
              "min_runtime": component.min_runtime, "build_id": component.build_id, "format": fmt,
-             "url": f"{url_prefix}{name}", "size": archive.stat().st_size, "sha256": _sha256(archive),
-             "manifest_sha256": _sha256(folder / ec.MANIFEST), "installed_bytes": installed, "notes": component.notes}
+             "url": f"{url_prefix}{name}", "size": archive.stat().st_size, "sha256": sha256_file(archive),
+             "manifest_sha256": sha256_file(folder / ec.MANIFEST), "installed_bytes": installed, "notes": component.notes}
     (Path(out) / (name + ".entry.json")).write_text(json.dumps(entry, indent=1) + "\n", encoding="utf-8")
     return entry
 
@@ -184,7 +176,7 @@ def pack_control(folder: Path, out: Path, *, version: str, platform: str, fmt: s
     archive = Path(out) / name
     _write_archive(files, archive, fmt, entry_file)
     entry = {"platform": platform, "format": fmt, "url": f"{url_prefix}{name}", "size": archive.stat().st_size,
-             "sha256": _sha256(archive), "installed_bytes": installed, "entry": entry_file, "version": version}
+             "sha256": sha256_file(archive), "installed_bytes": installed, "entry": entry_file, "version": version}
     (Path(out) / (name + ".entry.json")).write_text(json.dumps(entry, indent=1) + "\n", encoding="utf-8")
     return entry
 
@@ -292,7 +284,7 @@ def set_app_platform(app_json: Path, *, target: str, archive: Path, signature_fi
     if notes:
         document["notes"] = notes
     document["pub_date"] = pub_date or document.get("pub_date") or (now or dt.datetime.now(dt.timezone.utc)).strftime("%Y-%m-%dT%H:%M:%SZ")
-    document.setdefault("platforms", {})[target] = {"url": url, "signature": signature, "sha256": _sha256(archive),
+    document.setdefault("platforms", {})[target] = {"url": url, "signature": signature, "sha256": sha256_file(archive),
                                                     "size": archive.stat().st_size}
     Path(app_json).write_text(json.dumps(document, indent=1) + "\n", encoding="utf-8")
     return document["platforms"][target]

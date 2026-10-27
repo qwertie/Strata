@@ -25,6 +25,7 @@ from strata_common.profiles import ProfileError
 from strata_control import launch_plan
 from strata_common.client import ClientError, Endpoint
 from strata_cli import monitor_commands, tune_commands
+from strata_cli.monitor_commands import _error, _file_words
 
 
 class _VersionAction(argparse.Action):
@@ -514,22 +515,6 @@ def parser() -> argparse.ArgumentParser:
         one_shot.add_argument("--quiet", action="store_true", default=argparse.SUPPRESS,
                               help="suppress human informational output")
     return ap
-
-
-def _file_words(exc: BaseException) -> str:
-    try:
-        from strata_base import longpath
-    except ImportError:
-        return f"local file operation failed ({type(exc).__name__})"
-    return longpath.file_words(exc)
-
-
-def _error(message: str, code: int, machine: bool = False) -> int:
-    if machine:
-        print(json.dumps({"schema_version": 1, "ok": False, "error": {"code": code, "message": message}}))
-    else:
-        print(f"strata: {message}", file=sys.stderr)
-    return code
 
 
 def _success(payload: dict, *, machine: bool, human: str | None = None) -> int:

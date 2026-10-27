@@ -232,15 +232,7 @@ def _managed_exclusive():
 def _write_new(path: Path, payload: bytes) -> None:
     if not path.parent.is_dir():
         raise ProfileError("report output directory does not exist", 5)
-    descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-    try:
-        with os.fdopen(descriptor, "wb") as stream:
-            stream.write(payload)
-            stream.flush()
-            os.fsync(stream.fileno())
-    except BaseException:
-        path.unlink(missing_ok=True)
-        raise
+    _atomic_mod.write_new(path, payload)
 
 
 def _report_bytes(report: dict) -> bytes:

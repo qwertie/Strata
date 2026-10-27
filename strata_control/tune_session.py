@@ -18,7 +18,6 @@ import os
 import random
 import re
 import secrets
-import socket
 import statistics
 import subprocess
 import sys
@@ -32,6 +31,7 @@ from pathlib import Path
 from typing import Any, Callable, Iterator, Protocol
 
 from strata_base import loopback
+from strata_base.file_lock import try_lock_file, unlock_file
 from strata_common import tune_machine
 
 # --------------------------------------------------------------------------- the contract
@@ -241,13 +241,7 @@ class FileLock:
         told = False
         while True:
             try:
-                if os.name == "nt":
-                    import msvcrt
-                    self._fh.seek(0)
-                    msvcrt.locking(self._fh.fileno(), msvcrt.LK_NBLCK, 1)
-                else:
-                    import fcntl
-                    fcntl.flock(self._fh.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                try_lock_file(self._fh.fileno())
                 return self
             except OSError:
                 if time.time() > deadline:
@@ -260,13 +254,7 @@ class FileLock:
 
     def __exit__(self, *exc: object) -> None:
         try:
-            if os.name == "nt":
-                import msvcrt
-                self._fh.seek(0)
-                msvcrt.locking(self._fh.fileno(), msvcrt.LK_UNLCK, 1)
-            else:
-                import fcntl
-                fcntl.flock(self._fh.fileno(), fcntl.LOCK_UN)
+            unlock_file(self._fh.fileno())
         except OSError:
             pass
         finally:
@@ -275,12 +263,6 @@ class FileLock:
 
 
 # --------------------------------------------------------------------------- the real session
-
-def _free_port() -> int:
-    with socket.socket() as s:
-        s.bind(("127.0.0.1", 0))
-        return s.getsockname()[1]
-
 
 class WorkerEngine:
     """One running worker and the requests that measure it."""
@@ -460,7 +442,7 @@ class WorkerSession:
                     cenv[k] = str(v)
             cfg["env"] = cenv
             key = secrets.token_hex(16)
-            port = _free_port()
+            port = loopback.free_port()
             engine_log = self.workdir / f"engine-{n}.log"
             worker_log = self.workdir / f"worker-{n}.log"
             engine_log.write_text("")

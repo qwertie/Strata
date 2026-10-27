@@ -28,16 +28,6 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import strata_tokenizer as ST  # noqa: E402
 
 
-def load_tokenizer(tdir):
-    tdir = Path(tdir)
-    vocab = json.loads((tdir / "vocab.json").read_text(encoding="utf-8"))
-    toks = [None] * len(vocab)
-    for t, i in vocab.items():
-        toks[i] = t
-    return ST.Tokenizer(toks, (tdir / "merges.txt").read_text(encoding="utf-8").split("\n"),
-                        json.loads((tdir / "token_type.json").read_text()))
-
-
 def drop(args, flag, with_value=False):
     args = list(args)
     while flag in args:
@@ -56,7 +46,7 @@ def main():
     ap.add_argument("--only", help="comma-separated prompt numbers (default all)")
     a = ap.parse_args()
     cfg = json.load(open(a.config, encoding="utf-8-sig"))
-    tok = load_tokenizer(cfg["tokenizer"])
+    tok = ST.load_folder(cfg["tokenizer"])
     corpus = json.load(open(a.corpus, encoding="utf-8"))
     out = Path(a.outdir)
     out.mkdir(parents=True, exist_ok=True)

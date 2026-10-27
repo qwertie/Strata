@@ -8,9 +8,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
-sys.path.insert(0, str(ROOT / "packaging"))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-import binary_deps  # noqa: E402
 from strata_common import loader_diag  # noqa: E402
 from strata_common.engine_client import start_exit_note  # noqa: E402
 from test_engine_deps import make_pe  # noqa: E402
@@ -25,11 +23,6 @@ class MissingFiles(unittest.TestCase):
             (d / "cublas64_13.dll").write_bytes(make_pe(["cublasLt64_13.dll", "KERNEL32.dll"]))
             (d / "cublasLt64_13.dll").write_bytes(make_pe(["KERNEL32.dll"]))
         return d / "strata.exe"
-
-    def test_reader_matches_the_packaging_reader(self):
-        with tempfile.TemporaryDirectory() as d:
-            exe = self.folder(d, with_cublas=True)
-            self.assertEqual(loader_diag.pe_imports(exe), binary_deps.pe_imports(exe))
 
     def test_names_the_missing_dll(self):
         with tempfile.TemporaryDirectory() as d, tempfile.TemporaryDirectory() as sysdir:

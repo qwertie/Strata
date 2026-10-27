@@ -31,6 +31,8 @@ import urllib.request
 
 import numpy as np
 
+from drafter_pack import shard
+
 HERE = pathlib.Path(__file__).resolve().parent
 MANIFEST = HERE / "download_gguf.json"
 HF = "https://huggingface.co/{repo}/resolve/{revision}/{path}"
@@ -118,14 +120,6 @@ def fetch_marks(url: str, marks: dict, tries: int = TRIES) -> dict:
                 time.sleep(2)
     raise SystemExit(f"vision: the picture markers (30 KB of {marks['file']}) could not be read: {why}.  Nothing large "
                      "was downloaded.  Check the connection and run the setup again (or --no-vision: text only).")
-
-
-def shard(path: pathlib.Path):
-    raw = np.memmap(path, np.uint8, mode="r")
-    n = struct.unpack("<Q", bytes(raw[:8]))[0]
-    head = json.loads(bytes(raw[8:8 + n]))
-    head.pop("__metadata__", None)
-    return raw, head, 8 + n
 
 
 def geometry(cfg: dict) -> dict:

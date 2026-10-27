@@ -40,3 +40,17 @@ def write_text(path: PathLike, text: str, *, encoding: str = "utf-8") -> None:
     tmp = target.with_suffix(target.suffix + ".tmp") if target.suffix else target.with_name(target.name + ".tmp")
     tmp.write_text(text, encoding=encoding)
     replace(tmp, target)
+
+
+def write_new(path: Path, data: bytes) -> None:
+    """Creates the file (mode 0600 on POSIX) and writes `data` through to the disk. Raises FileExistsError when the
+    file is already there, and removes a half-written file when the write fails."""
+    descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    try:
+        with os.fdopen(descriptor, "wb") as stream:
+            stream.write(data)
+            stream.flush()
+            os.fsync(stream.fileno())
+    except BaseException:
+        path.unlink(missing_ok=True)
+        raise

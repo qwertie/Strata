@@ -32,19 +32,10 @@ sys.path.insert(0, str(HERE))
 import engram_hash as EH  # noqa: E402
 import exl3_torch as ET  # noqa: E402
 from st import SafeTensors  # noqa: E402
+from dspark_ref import fp8_round, rms  # noqa: E402
 
 
 # ------------------------------------------------------------------ the reference kernels' roundings
-def fp8_round(x: torch.Tensor, block: int = 32) -> torch.Tensor:
-    """act_quant(..., scale_fmt='ue8m0', inplace=True): per `block` values a power-of-two scale, E4M3 values."""
-    sh = x.shape
-    v = x.float().reshape(*sh[:-1], sh[-1] // block, block)
-    amax = v.abs().amax(-1, keepdim=True).clamp_min(1e-4)
-    s = torch.exp2(torch.ceil(torch.log2(amax / 448.0)))
-    y = (v / s).clamp(-448.0, 448.0).to(torch.float8_e4m3fn).float() * s
-    return y.reshape(sh)
-
-
 _FP4 = torch.tensor([0.0, 0.5, 1.0, 1.5, 2.0, 3.0, 4.0, 6.0])
 
 
@@ -77,12 +68,6 @@ def fp4_round(x: torch.Tensor, block: int, e4m3_scale: bool) -> torch.Tensor:
         s = torch.exp2(torch.ceil(torch.log2(amax / 6.0)))
     y = _e2m1((v / s).clamp(-6.0, 6.0)) * s
     return y.reshape(sh)
-
-
-def rms(x: torch.Tensor, w: torch.Tensor | None, eps: float) -> torch.Tensor:
-    x = x.float()
-    y = x * torch.rsqrt(x.square().mean(-1, keepdim=True) + eps)
-    return y * w if w is not None else y
 
 
 def freqs_cis(dim, seqlen, original_seq_len, base, factor, beta_fast, beta_slow, dev) -> torch.Tensor:

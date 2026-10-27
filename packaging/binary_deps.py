@@ -19,6 +19,10 @@ import struct
 import sys
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
+from strata_common.loader_diag import pe_imports  # noqa: E402
+
 # ---- Windows ---------------------------------------------------------------------------------------------------------------
 # Libraries Windows itself ships (a clean Windows 10/11 has them) or the GPU driver installs in System32. Anything else an
 # engine file imports (the Visual C++ runtime, CUDA, HIP, SYCL/Level Zero loaders, OpenMP...) must travel in the package.
@@ -64,57 +68,6 @@ def _match(name: str, patterns: tuple[str, ...], fold: bool) -> bool:
 
 
 # ---- readers ---------------------------------------------------------------------------------------------------------------
-def pe_imports(path: Path) -> list[str]:
-    """DLL names a PE file imports at load time (import table) plus delay-load imports (loaded at first call)."""
-    data = path.read_bytes()
-    if data[:2] != b"MZ":
-        raise ValueError(f"{path}: not a PE file")
-    pe = struct.unpack_from("<I", data, 0x3C)[0]
-    if data[pe:pe + 4] != b"PE\0\0":
-        raise ValueError(f"{path}: bad PE header")
-    nsec, = struct.unpack_from("<H", data, pe + 6)
-    opt_size, = struct.unpack_from("<H", data, pe + 20)
-    opt = pe + 24
-    magic, = struct.unpack_from("<H", data, opt)
-    dd = opt + (112 if magic == 0x20B else 96)
-    sections = []
-    sec = opt + opt_size
-    for i in range(nsec):
-        vsize, va, rsize, raw = struct.unpack_from("<IIII", data, sec + i * 40 + 8)
-        sections.append((va, max(vsize, rsize), raw))
-
-    def off(rva: int) -> int:
-        for va, size, raw in sections:
-            if va <= rva < va + size:
-                return raw + rva - va
-        raise ValueError(f"{path}: RVA {rva:#x} is outside every section")
-
-    def cstr(o: int) -> str:
-        end = data.index(b"\0", o)
-        return data[o:end].decode("ascii", "replace")
-
-    names: list[str] = []
-    imp_rva, imp_size = struct.unpack_from("<II", data, dd + 8)
-    if imp_rva and imp_size:
-        o = off(imp_rva)
-        while True:
-            _, _, _, name_rva, _ = struct.unpack_from("<IIIII", data, o)
-            if not name_rva:
-                break
-            names.append(cstr(off(name_rva)))
-            o += 20
-    delay_rva, delay_size = struct.unpack_from("<II", data, dd + 13 * 8)
-    if delay_rva and delay_size:
-        o = off(delay_rva)
-        while True:
-            attrs, name_rva = struct.unpack_from("<II", data, o)
-            if not name_rva:
-                break
-            names.append(cstr(off(name_rva)))
-            o += 32
-    return names
-
-
 def elf_needed(path: Path) -> list[str]:
     """DT_NEEDED sonames of an ELF file (what ldd lists); libraries opened with dlopen are not visible here."""
     data = path.read_bytes()

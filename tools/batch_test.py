@@ -33,17 +33,6 @@ QUESTIONS = [
 QUESTIONS = QUESTIONS + [q + " Answer in German." for q in QUESTIONS]
 
 
-def tokenizer(path):
-    t = Path(path)
-    vocab = json.loads((t / "vocab.json").read_text(encoding="utf-8"))
-    tokens = [None] * len(vocab)
-    for s, i in vocab.items():
-        tokens[i] = s
-    merges = (t / "merges.txt").read_text(encoding="utf-8").split("\n")
-    types = json.loads((t / "token_type.json").read_text())
-    return ST.Tokenizer(tokens, merges, types)
-
-
 class Engine:
     def __init__(self, exe, cfg, batch, extra_env, extra_args):
         args = list(cfg["args"])
@@ -91,7 +80,7 @@ def main():
     ap.add_argument("--mt-min", default="1", help="STRATA_IQ_MT_MIN for the engine (1: exact; empty: the default)")
     a = ap.parse_args()
     cfg = json.loads(Path(a.config).read_text())
-    tok = tokenizer(cfg["tokenizer"])
+    tok = ST.load_folder(cfg["tokenizer"])
     prompts = []
     for q in QUESTIONS[: a.n]:
         text = f"<|im_start|>user\n{q}<|im_end|>\n<|im_start|>assistant\n<think>\n\n</think>\n\n"

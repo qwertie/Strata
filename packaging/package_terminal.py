@@ -42,7 +42,6 @@ only there. `packaging/smoke_terminal.py <archive>` extracts one into a clean en
 from __future__ import annotations
 
 import argparse
-import hashlib
 import json
 import os
 import platform
@@ -57,6 +56,10 @@ import zipfile
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+
+from strata_base.hashing import sha256_file  # noqa: E402
+
 LOCKS = ROOT / "packaging" / "locks"
 
 PBS_RELEASE = "20261009"
@@ -144,14 +147,6 @@ def host_target() -> str:
     raise SystemExit(f"no terminal target for {sys.platform}/{machine}")
 
 
-def sha256(path: Path) -> str:
-    h = hashlib.sha256()
-    with path.open("rb") as fh:
-        for block in iter(lambda: fh.read(1 << 20), b""):
-            h.update(block)
-    return h.hexdigest()
-
-
 def fetch_python(target: str, cache: Path) -> Path:
     """Download the pinned interpreter once (build time), verifying the digest before it is used."""
     pin = PYTHON_PINS[target]
@@ -161,7 +156,7 @@ def fetch_python(target: str, cache: Path) -> Path:
         part = archive.with_suffix(archive.suffix + ".part")
         urllib.request.urlretrieve(pin["url"], part)
         part.replace(archive)
-    got = sha256(archive)
+    got = sha256_file(archive)
     if got != pin["sha256"]:
         archive.unlink(missing_ok=True)
         raise SystemExit(
@@ -292,7 +287,7 @@ def add_installer(folder: Path, source: Path = ROOT) -> dict:
     if (folder / INSTALLER_DATA).exists():
         shutil.rmtree(folder / INSTALLER_DATA)
     shutil.copytree(source / INSTALLER_DATA, folder / INSTALLER_DATA, ignore=shutil.ignore_patterns("__pycache__"))
-    return {"files": copied, "data": INSTALLER_DATA, "setup_sha256": sha256(folder / "setup.py"),
+    return {"files": copied, "data": INSTALLER_DATA, "setup_sha256": sha256_file(folder / "setup.py"),
             "mode": "STRATA_CONTROL_INSTALL=1: downloads the chosen model, prepares it, installs no package and no engine"}
 
 
@@ -436,7 +431,7 @@ def main() -> int:
         (root / "README.txt").write_text(_readme(version, target), encoding="utf-8")
 
         archive_path = write_archive(root, name, out_dir, pin["archive"])
-        digest = sha256(archive_path)
+        digest = sha256_file(archive_path)
         size = archive_path.stat().st_size
         print(f"\n{archive_path}")
         print(f"  bytes  {size}")
@@ -452,7 +447,7 @@ def main() -> int:
             "sha256": digest,
             "python": {"version": PYTHON_VERSION, "build": PBS_RELEASE, "url": pin["url"], "sha256": pin["sha256"],
                        "target": target},
-            "lock": {"file": lock.relative_to(ROOT).as_posix(), "sha256": sha256(lock),
+            "lock": {"file": lock.relative_to(ROOT).as_posix(), "sha256": sha256_file(lock),
                      "install": "pip install --require-hashes --no-deps --only-binary=:all: (build time only)"},
             "installed": installed,
             "launchers_removed": removed,

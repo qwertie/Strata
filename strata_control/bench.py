@@ -665,28 +665,16 @@ def _phase(endpoint: Endpoint, telemetry: Endpoint, *, kind: str, count: int,
                         "peak_admission_rejected": peaks.get("admission_rejected")}}
 
 
-def _write_new(path: Path, data: bytes) -> None:
-    descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-    try:
-        with os.fdopen(descriptor, "wb") as stream:
-            stream.write(data)
-            stream.flush()
-            os.fsync(stream.fileno())
-    except BaseException:
-        path.unlink(missing_ok=True)
-        raise
-
-
 def _progress_write(path: Path, record: dict, *, first: bool = False) -> None:
     encoded = (json.dumps(record, ensure_ascii=False, sort_keys=True, allow_nan=False) + "\n").encode("utf-8")
     if len(encoded) > 4096:
         raise ProfileError("benchmark progress record exceeded 4 KiB", 6)
     if first:
-        _write_new(path, encoded)
+        _atomic_mod.write_new(path, encoded)
         return
     temporary = path.with_name(".progress-" + uuid.uuid4().hex + ".tmp")
     try:
-        _write_new(temporary, encoded)
+        _atomic_mod.write_new(temporary, encoded)
         _atomic_mod.replace(temporary, path)
     finally:
         temporary.unlink(missing_ok=True)
@@ -881,7 +869,7 @@ def run(endpoint: Endpoint, telemetry: Endpoint, out: Path, *, suite: str = "ser
             encoded = (json.dumps(report, ensure_ascii=False, indent=2, allow_nan=False) + "\n").encode("utf-8")
             if len(encoded) > MAX_REPORT_BYTES:
                 raise ProfileError("benchmark report exceeded 4 MiB", 6)
-            _write_new(out / "results.json", encoded)
+            _atomic_mod.write_new(out / "results.json", encoded)
             progress_record.update({"state": "cancelled" if cancelled else "report_saved", "successful": success,
                                     "current_phase": None, "updated_at": _utc_now()})
             _progress_write(progress_path, progress_record)
@@ -1305,4 +1293,4 @@ def write_markdown(path: Path, content: str) -> None:
         raise ProfileError("Markdown benchmark report exceeded 64 KiB", 6)
     if path.exists() or path.is_symlink():
         raise ProfileError("Markdown output file already exists", 2)
-    _write_new(path, encoded)
+    _atomic_mod.write_new(path, encoded)

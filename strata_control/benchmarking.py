@@ -17,6 +17,7 @@ from strata_control import bench, journal, launch_plan, runtime
 from strata_common import profiles
 from strata_common.profiles import ProfileError
 from strata_base import posix_owner
+from strata_base.file_lock import try_lock_file, unlock_file
 
 
 #: Windows byte-range locks are mandatory: a locked byte cannot be read through any other handle. The lock
@@ -55,23 +56,7 @@ def _lock(descriptor: int, *, initialize: bool = False) -> None:
     if initialize and os.fstat(descriptor).st_size == 0:
         os.lseek(descriptor, 0, os.SEEK_SET)
         os.write(descriptor, b"0")
-    if os.name == "nt":
-        import msvcrt
-        os.lseek(descriptor, WINDOWS_LOCK_OFFSET, os.SEEK_SET)
-        msvcrt.locking(descriptor, msvcrt.LK_NBLCK, 1)
-    else:
-        import fcntl
-        fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
-
-
-def _unlock(descriptor: int) -> None:
-    if os.name == "nt":
-        import msvcrt
-        os.lseek(descriptor, WINDOWS_LOCK_OFFSET, os.SEEK_SET)
-        msvcrt.locking(descriptor, msvcrt.LK_UNLCK, 1)
-    else:
-        import fcntl
-        fcntl.flock(descriptor, fcntl.LOCK_UN)
+    try_lock_file(descriptor, WINDOWS_LOCK_OFFSET)
 
 
 def _path_digest(path: Path) -> bytes:
@@ -96,7 +81,7 @@ def benchmark_lease(profile: str, path: Path | None = None):
             os.fsync(descriptor)
             yield
         finally:
-            _unlock(descriptor)
+            unlock_file(descriptor, WINDOWS_LOCK_OFFSET)
     finally:
         os.close(descriptor)
 
@@ -129,7 +114,7 @@ def benchmark_activity(profile: str, path: Path) -> str:
                 recorded = os.read(descriptor, 65)
                 return "ended" if recorded == _path_digest(path) else "untracked"
             finally:
-                _unlock(descriptor)
+                unlock_file(descriptor, WINDOWS_LOCK_OFFSET)
     finally:
         os.close(descriptor)
 

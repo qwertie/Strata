@@ -19,7 +19,6 @@ Content-Range is the range asked for, and every tensor of the pinned revision is
 import argparse
 import collections
 import concurrent.futures
-import hashlib
 import json
 import os
 import struct
@@ -31,6 +30,7 @@ import urllib.request
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from strata_base import tls  # noqa: E402
+from strata_base.hashing import sha256_file  # noqa: E402
 
 tls.install()       # #3722: the operating system's certificates
 
@@ -296,14 +296,6 @@ def pinned():
     return REPO == PINNED
 
 
-def sha256_of(path):
-    h = hashlib.sha256()
-    with open(path, "rb") as f:
-        for block in iter(lambda: f.read(1 << 24), b""):
-            h.update(block)
-    return h.hexdigest()
-
-
 def resolve_repo():
     """REPO.  When the pinned revision is gone from the repository (a 404 on its index) it stops, unless
     STRATA_ALLOW_UNPINNED=1: then the current files are read (their tensors are still checked against the pinned SHA256)."""
@@ -394,7 +386,7 @@ def fetch(out, only):
         path = os.path.join(tdir, r["name"] + ".bin")
         want = SHA256.get(r["name"]) if pinned() else None
         if os.path.exists(path) and not same and (
-                want is None or os.path.getsize(path) != r["bytes"] or sha256_of(path) != want):
+                want is None or os.path.getsize(path) != r["bytes"] or sha256_file(path) != want):
             os.remove(path)
         attempt, net_fails = 0, 0
         while attempt < 2:
@@ -422,7 +414,7 @@ def fetch(out, only):
                 continue
             if os.path.getsize(path) != r["bytes"]:
                 sys.exit("%s: size %d != %d" % (path, os.path.getsize(path), r["bytes"]))
-            digest = sha256_of(path)
+            digest = sha256_file(path)
             if want is None or digest == want:
                 break
             progress.done -= os.path.getsize(path)
@@ -460,7 +452,7 @@ def verify(out):
             continue
         st = os.stat(path)
         key = [st.st_size, st.st_mtime_ns, want]
-        if stamps.get(name) != key and sha256_of(path) != want:
+        if stamps.get(name) != key and sha256_file(path) != want:
             bad.append(name)
             continue
         good[name] = key

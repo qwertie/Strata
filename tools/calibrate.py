@@ -232,13 +232,7 @@ def run(cfg: dict, say=print, start_engine=None, *, progress=None, cancel_event=
             e.update(env or {})
             return StrataEngine(cfg["exe"], args, cwd=cfg.get("cwd"), log=cfg.get("log"), env=e)
     import strata_tokenizer as ST
-    tpath = Path(cfg["tokenizer"])
-    vocab = json.loads((tpath / "vocab.json").read_text(encoding="utf-8"))
-    toks = [None] * len(vocab)
-    for t, i in vocab.items():
-        toks[i] = t
-    tok = ST.Tokenizer(toks, (tpath / "merges.txt").read_text(encoding="utf-8").split("\n"),
-                       json.loads((tpath / "token_type.json").read_text()))
+    tok = ST.load_folder(cfg["tokenizer"])
     ids_list = [chat_ids(tok, p) for p in PROMPTS]
     if progress is None and cancel_event is None:
         return measure(engine_args(cfg), ids_list, start_engine, say, host_worker_extras(), doc_prompt(tok),

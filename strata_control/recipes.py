@@ -239,15 +239,7 @@ def save(profile: str, name: str, proposed: dict, expected_revision: str) -> tup
 
 def history(profile: str, name: str) -> list[dict]:
     _, current = load(profile, name)
-    directory = _history_dir(profile, name)
-    entries = []
-    if directory.exists():
-        for path in directory.glob("*.json"):
-            if re.fullmatch(r"[0-9a-f]{16}", path.stem) and path.is_file() and not path.is_symlink():
-                entries.append({"revision": path.stem, "saved_at": path.stat().st_mtime})
-    return [{"revision": current, "current": True},
-            *sorted((item for item in entries if item["revision"] != current),
-                    key=lambda item: item["saved_at"], reverse=True)]
+    return profiles.revision_history(_history_dir(profile, name), current)
 
 
 def rollback(profile: str, name: str, target_revision: str) -> tuple[dict, str, str]:

@@ -13,7 +13,8 @@ import threading
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path[:0] = [str(ROOT), str(ROOT / 'tools')]
-from conversation_cache_parity import STATE_KEYS, engine_args, load_tokenizer, require, state_hashes
+from conversation_cache_parity import STATE_KEYS, engine_args, require, state_hashes
+from strata_tokenizer import load_folder
 from strata_common.gguf_reader import GGUFFile
 from gguf_writer import GGUFWriter
 from strata_common.engine_client import StrataEngine, child_env
@@ -86,7 +87,7 @@ def main():
     width = geometry['qwen4exp.embedding_length']
     require(geometry['qwen4exp.block_count'] > 20, 'fixture requires layers 1 and 20')
     p = Path(cfg['tokenizer'])
-    tok = load_tokenizer(p)
+    tok = load_folder(p)
     tpl = ChatTemplate(p / 'chat_template.jinja')
     def encode(text):
         return tok.encode(tpl.render([{'role': 'user', 'content': text}], enable_thinking=False), parse_special=True)

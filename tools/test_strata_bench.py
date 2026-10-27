@@ -188,7 +188,7 @@ class RedactionTests(unittest.TestCase):
 
     def test_objects_are_redacted_deeply(self):
         red = B.redactor()
-        out = B.redact_obj({"a": [{"p": r"D:\Users\zed\x"}], "n": 3}, red)
+        out = B.redact_object({"a": [{"p": r"D:\Users\zed\x"}], "n": 3}, red)
         self.assertNotIn("zed", json.dumps(out))
         self.assertEqual(out["n"], 3)
 

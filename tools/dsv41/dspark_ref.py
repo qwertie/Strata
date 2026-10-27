@@ -18,7 +18,6 @@ it prints how far the engine's hidden rows and confidences are from it, and with
 from __future__ import annotations
 
 import argparse
-import json
 import math
 import pathlib
 import struct
@@ -28,19 +27,8 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 
-SHARDS = ("model-00044-of-00048.safetensors", "model-00045-of-00048.safetensors", "model-00046-of-00048.safetensors")
+from drafter_pack import E4M3, SHARDS, shard
 
-
-def e4m3_table() -> np.ndarray:
-    t = np.zeros(256, np.float32)
-    for c in range(256):
-        s, e, m = c >> 7, (c >> 3) & 15, c & 7
-        v = np.nan if (e == 15 and m == 7) else (m / 8.0) * 2.0 ** -6 if e == 0 else (1 + m / 8.0) * 2.0 ** (e - 7)
-        t[c] = -v if s else v
-    return t
-
-
-E4M3 = e4m3_table()
 E2M1 = np.array([0, 0.5, 1, 1.5, 2, 3, 4, 6, -0.0, -0.5, -1, -1.5, -2, -3, -4, -6], np.float32)
 
 
@@ -51,12 +39,9 @@ class Ckpt:
     def __init__(self, d: pathlib.Path):
         self.t = {}
         for name in SHARDS:
-            raw = np.memmap(d / name, np.uint8, mode="r")
-            n = struct.unpack("<Q", bytes(raw[:8]))[0]
-            head = json.loads(bytes(raw[8:8 + n]))
-            head.pop("__metadata__", None)
+            raw, head, base = shard(d / name)
             for k, e in head.items():
-                self.t[k] = (raw, 8 + n, e)
+                self.t[k] = (raw, base, e)
 
     def raw(self, k):
         raw, base, e = self.t[k]
@@ -89,6 +74,7 @@ class Ckpt:
 
 
 def fp8_round(x: torch.Tensor, block: int = 32) -> torch.Tensor:
+    """act_quant(..., scale_fmt='ue8m0', inplace=True): per `block` values a power-of-two scale, E4M3 values."""
     sh = x.shape
     v = x.float().reshape(*sh[:-1], sh[-1] // block, block)
     amax = v.abs().amax(-1, keepdim=True).clamp_min(1e-4)
@@ -97,7 +83,7 @@ def fp8_round(x: torch.Tensor, block: int = 32) -> torch.Tensor:
     return y.reshape(sh)
 
 
-def rms(x, w, eps):
+def rms(x: torch.Tensor, w: torch.Tensor | None, eps: float) -> torch.Tensor:
     x = x.float()
     y = x * torch.rsqrt(x.square().mean(-1, keepdim=True) + eps)
     return y * w if w is not None else y

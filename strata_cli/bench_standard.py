@@ -32,7 +32,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from strata_cli import bench_facts as facts
-from strata_control.bench import _private_mkdir, _write_new
+from strata_base.atomic import write_new
+from strata_control.bench import _private_mkdir
 from strata_common.profiles import ProfileError
 
 FORMAT = "strata-standard-benchmark"
@@ -902,7 +903,7 @@ def run(target: Target, out: Path | None, *, out_root: Path | None = None, optio
     def put(kind: str, relative: str, data: bytes) -> None:
         path = out / relative
         path.parent.mkdir(parents=True, exist_ok=True)
-        _write_new(path, data)
+        write_new(path, data)
         artifacts.append({"kind": kind, "path": relative, "sha256": hashlib.sha256(data).hexdigest()})
     lines = [json.dumps(facts.redact_object(row, redact), ensure_ascii=False, allow_nan=False) for row in evidence]
     put("outputs", "outputs.jsonl", ("\n".join(lines) + "\n").encode("utf-8"))
@@ -956,8 +957,8 @@ def run(target: Target, out: Path | None, *, out_root: Path | None = None, optio
     if problems:
         raise ProfileError("the benchmark report failed its own validation: " + problems[0], 6)
     encoded = (json.dumps(doc, ensure_ascii=False, indent=2, allow_nan=False) + "\n").encode("utf-8")
-    _write_new(out / "results.json", encoded)
-    _write_new(out / "README.md", report_markdown(doc, redact).encode("utf-8"))
+    write_new(out / "results.json", encoded)
+    write_new(out / "README.md", report_markdown(doc, redact).encode("utf-8"))
     return doc, out
 
 

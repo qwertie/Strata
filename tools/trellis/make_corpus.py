@@ -26,16 +26,6 @@ import strata_tokenizer as ST  # noqa: E402
 LANGS = ["en", "de", "fr", "es", "ru", "zh", "ja", "pt", "it", "ar", "ko", "tr", "pl", "nl", "hi", "vi"]
 
 
-def load_tokenizer(path):
-    tp = pathlib.Path(path)
-    vocab = json.loads((tp / "vocab.json").read_text(encoding="utf-8"))
-    toks = [None] * len(vocab)
-    for t, i in vocab.items():
-        toks[i] = t
-    return ST.Tokenizer(toks, (tp / "merges.txt").read_text(encoding="utf-8").split("\n"),
-                        json.loads((tp / "token_type.json").read_text()))
-
-
 def wiki_article(lang: str, seed: int):
     url = ("https://%s.wikipedia.org/w/api.php?action=query&format=json&generator=random&grnnamespace=0&grnlimit=1"
            "&prop=extracts&explaintext=1&redirects=1&grnfilterredir=nonredirects" % lang)
@@ -160,7 +150,7 @@ def main() -> int:
     ap.add_argument("--cal-md", nargs="+", default=["/data/llama.cpp/docs"])
     ap.add_argument("--eval-md", nargs="+", default=["/data/llama.cpp/tools", "/data/llama.cpp/examples"])
     a = ap.parse_args()
-    tok = load_tokenizer(a.tokenizer)
+    tok = ST.load_folder(a.tokenizer)
     out = pathlib.Path(a.out)
     out.mkdir(parents=True, exist_ok=True)
     cal = build(tok, "cal", a.cal, a.seg, random.Random(11), 1, a.cal_code, a.cal_md)

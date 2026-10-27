@@ -106,10 +106,10 @@ def main():
         return
     from strata_common.engine_client import StrataEngine, child_env
     from strata_server.frontend import ChatTemplate
-    from conversation_cache_parity import load_tokenizer
+    import strata_tokenizer as ST
     cfg = json.loads(a.config.read_text(encoding='utf-8'))
     p = Path(cfg['tokenizer'])
-    tok = load_tokenizer(p)
+    tok = ST.load_folder(p)
     tpl = ChatTemplate(p / 'chat_template.jinja')
     enc = lambda text: tok.encode(text, parse_special=True)
     colors = ('blue', 'green', 'red', 'amber', 'violet', 'teal', 'grey', 'white')

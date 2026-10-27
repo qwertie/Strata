@@ -311,13 +311,18 @@ def propose_values(name: str, assignments: list[str]) -> tuple[dict, str]:
 
 def history(name: str) -> list[dict]:
     _name(name)
-    directory = profile_dir() / ".history" / name
+    _, current = load(name)
+    return revision_history(profile_dir() / ".history" / name, current)
+
+
+def revision_history(directory: Path, current: str) -> list[dict]:
+    """Lists the current revision and then the older ones kept in `directory` (one `<revision>.json` file each), newest
+    first. Profiles and strata_control/recipes.py keep their history this way."""
     entries = []
     if directory.exists():
         for path in directory.glob("*.json"):
             if re.fullmatch(r"[0-9a-f]{16}", path.stem) and path.is_file() and not path.is_symlink():
                 entries.append({"revision": path.stem, "saved_at": path.stat().st_mtime})
-    _, current = load(name)
     return [{"revision": current, "current": True},
             *sorted((item for item in entries if item["revision"] != current),
                     key=lambda item: item["saved_at"], reverse=True)]

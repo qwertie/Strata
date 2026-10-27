@@ -358,6 +358,17 @@ class Tokenizer:
         return b"".join(self.token_bytes(i) for i in ids).decode("utf-8", errors=errors)
 
 
+def load_folder(folder) -> Tokenizer:
+    """Builds the tokenizer from a pack's tokenizer folder: vocab.json, merges.txt and token_type.json."""
+    folder = pathlib.Path(folder)
+    vocab = json.loads((folder / "vocab.json").read_text(encoding="utf-8"))
+    tokens = [None] * len(vocab)
+    for token, index in vocab.items():
+        tokens[index] = token
+    return Tokenizer(tokens, (folder / "merges.txt").read_text(encoding="utf-8").split("\n"),
+                     json.loads((folder / "token_type.json").read_text(encoding="utf-8")))
+
+
 # ------------------------------------------------------------------ incremental prompts (#567)
 def common_prefix_len(a: str, b: str) -> int:
     """Length of the longest common prefix, by slices (C speed) rather than a loop over characters."""

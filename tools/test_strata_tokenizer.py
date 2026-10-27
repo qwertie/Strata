@@ -38,13 +38,7 @@ def vocab_gguf() -> Path | None:
 def load_tokenizer():
     pack = os.environ.get("STRATA_TOKENIZER")
     if pack and (Path(pack) / "vocab.json").is_file():
-        t = Path(pack)
-        vocab = json.loads((t / "vocab.json").read_text(encoding="utf-8"))
-        tokens = [None] * len(vocab)
-        for s, i in vocab.items():
-            tokens[i] = s
-        return ST.Tokenizer(tokens, (t / "merges.txt").read_text(encoding="utf-8").split("\n"),
-                            json.loads((t / "token_type.json").read_text()))
+        return ST.load_folder(pack)
     path = vocab_gguf()
     return None if path is None else gguf_tokenizer(path)
 

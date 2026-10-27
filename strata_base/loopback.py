@@ -7,6 +7,7 @@ Everything that talks to a local server uses `urlopen` below; any other address 
 
 from __future__ import annotations
 
+import socket
 import urllib.request
 from urllib.parse import urlsplit
 
@@ -26,3 +27,10 @@ def urlopen(request, timeout: float | None = None):
     if is_loopback(url):
         return _OPENER.open(request, timeout=timeout)
     return urllib.request.urlopen(request, timeout=timeout)
+
+
+def free_port() -> int:
+    """Gets a TCP port on 127.0.0.1 that no program is listening on at the moment (another may take it before use)."""
+    with socket.socket() as probe:
+        probe.bind(("127.0.0.1", 0))
+        return probe.getsockname()[1]

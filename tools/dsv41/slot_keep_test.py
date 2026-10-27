@@ -30,7 +30,6 @@ prompts could not be made.
 from __future__ import annotations
 
 import argparse
-import json
 import os
 import queue
 import shlex
@@ -74,13 +73,7 @@ def text_tokens(tok, text: str, salt: str, n: int) -> list[int]:
 def make_tokenizer(pack: str):
     sys.path.insert(0, str(ROOT / "tools"))
     import strata_tokenizer as ST   # noqa: E402
-    t = Path(pack) / "tokenizer"
-    vocab = json.loads((t / "vocab.json").read_text(encoding="utf-8"))
-    tokens = [None] * len(vocab)
-    for s, i in vocab.items():
-        tokens[i] = s
-    return ST.Tokenizer(tokens, (t / "merges.txt").read_text(encoding="utf-8").split("\n"),
-                        json.loads((t / "token_type.json").read_text(encoding="utf-8")))
+    return ST.load_folder(Path(pack) / "tokenizer")
 
 
 def prompts(ids_dir: Path, pack: str, n_sys: int, n_task: int, n_turn: int, turns: int) -> dict[str, list[int]]:

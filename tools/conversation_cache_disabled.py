@@ -14,9 +14,10 @@ import time
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path[:0] = [str(ROOT), str(ROOT / 'tools')]
-from conversation_cache_parity import load_tokenizer, require
+from conversation_cache_parity import require
 from conversation_cache_soak import answer_text
 from strata_server.frontend import ChatTemplate
+import strata_tokenizer as ST
 from strata_common.engine_client import StrataEngine, child_env
 
 NAMES = ('short', 'A', 'A-live', 'A-checkpoint', 'B', 'A-return', 'B-return', 'A-return-again')
@@ -112,7 +113,7 @@ def main():
         return
     cfg = json.loads(a.config.read_text(encoding='utf-8'))
     tok_path = Path(cfg['tokenizer'])
-    tok = load_tokenizer(tok_path)
+    tok = ST.load_folder(tok_path)
     tpl_path = tok_path / 'chat_template.jinja'
     tpl = ChatTemplate(tpl_path if tpl_path.exists() else ROOT / 'strata_server/chat_template.jinja')
     def encode(text):

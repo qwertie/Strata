@@ -1,9 +1,9 @@
 """strata_common/loader_diag.py - name the file a Windows engine could not load.
 
 A Windows program that imports a DLL which is not there ends with exit code 0xC0000135 and prints nothing. The person only sees
-"the engine stopped". This reads the engine's import table (the same reader as packaging/binary_deps.py, copied because the
-packaging folder does not travel with Control) and lists the DLLs that are neither beside the engine, nor in the Windows
-folders, nor part of the GPU driver, so the start error can say which file is missing.
+"the engine stopped". This reads the engine's import table (packaging/binary_deps.py uses the same reader) and lists
+the DLLs that are neither beside the engine, nor in the Windows folders, nor part of the GPU driver, so the start error
+can say which file is missing.
 """
 
 from __future__ import annotations
@@ -15,13 +15,13 @@ from pathlib import Path
 LOADER_FAILURE_CODES = (0xC0000135,)          # STATUS_DLL_NOT_FOUND
 
 def pe_imports(path: Path) -> list[str]:
-    """DLL names a PE file imports at load time (import table) plus delay-load imports."""
+    """DLL names a PE file imports at load time (import table) plus delay-load imports (loaded at first call)."""
     data = path.read_bytes()
     if data[:2] != b"MZ":
-        raise ValueError("not a PE file")
+        raise ValueError(f"{path}: not a PE file")
     pe = struct.unpack_from("<I", data, 0x3C)[0]
     if data[pe:pe + 4] != b"PE\0\0":
-        raise ValueError("bad PE header")
+        raise ValueError(f"{path}: bad PE header")
     nsec, = struct.unpack_from("<H", data, pe + 6)
     opt_size, = struct.unpack_from("<H", data, pe + 20)
     opt = pe + 24
@@ -37,7 +37,7 @@ def pe_imports(path: Path) -> list[str]:
         for va, size, raw in sections:
             if va <= rva < va + size:
                 return raw + rva - va
-        raise ValueError("RVA outside every section")
+        raise ValueError(f"{path}: RVA {rva:#x} is outside every section")
 
     def cstr(o: int) -> str:
         return data[o:data.index(b"\0", o)].decode("ascii", "replace")

@@ -22,7 +22,6 @@ construction - architecture §3.2 fixes the blob at exactly 1,382,400 bytes and 
 from __future__ import annotations
 
 import argparse
-import hashlib
 import json
 import pathlib
 import struct
@@ -35,6 +34,7 @@ sys.path.insert(0, str(HERE))
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))   # the repository: strata_common
 sys.path.insert(0, str(HERE.parent / "ref"))
 
+from strata_base.hashing import sha256_file                                                  # noqa: E402
 from strata_common import gguf_reader as G                                                    # noqa: E402
 import pack_layer as PL                                                    # noqa: E402
 from canonical_xcheck import (MAPPINGS, KV_IQ4NL, open_shard,             # noqa: E402
@@ -193,17 +193,6 @@ def decode_entry(head: bytes, ent: dict) -> np.ndarray:
     return out.reshape(-1)
 
 
-def sha256(path: pathlib.Path, chunk: int = 1 << 24) -> str:
-    h = hashlib.sha256()
-    with open(path, "rb") as f:
-        while True:
-            b = f.read(chunk)
-            if not b:
-                break
-            h.update(b)
-    return h.hexdigest()
-
-
 # The files the engine reads a pack's identity from (src/core/expert_source.cpp, the fingerprint): one of them in
 # --out means the directory already holds a pack, this tool's or iq_pack.py's.  experts.bin on its own does not:
 # build writes manifest.json last, so experts.bin without it is a build that did not finish, and is rebuilt.
@@ -294,8 +283,8 @@ def build(gguf: pathlib.Path, out_dir: pathlib.Path, n_layers: int | None, skip_
                     "embd.bin": (out_dir / "embd.bin").stat().st_size}
     if not skip_hash:
         print("hashing shards (this is the slow part)...")
-        man["source"]["shard1_sha256"] = sha256(gguf)
-        man["source"]["shard2_sha256"] = sha256(shard2) if shard2.exists() else None
+        man["source"]["shard1_sha256"] = sha256_file(gguf)
+        man["source"]["shard2_sha256"] = sha256_file(shard2) if shard2.exists() else None
     # shard 2 is NOT copied: the PLE table stays where it is and the manifest records how to find it
     if shard2.exists():
         g2 = G.GGUFFile(shard2)
@@ -371,7 +360,7 @@ def verify(gguf: pathlib.Path, out_dir: pathlib.Path, limit: int | None, expert_
     # builds): a pack compared against a different shard than it was built from is a mismatch, not a decode bug.
     want = (man.get("source") or {}).get("shard1_sha256")
     if want and limit is None:
-        got = sha256(gguf)
+        got = sha256_file(gguf)
         if got != want:
             print("%s: sha256 %s, but the pack was built from %s" % (gguf.name, got, want))
             print("tools/strata_pack.py verify FAIL")

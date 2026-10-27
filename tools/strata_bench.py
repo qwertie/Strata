@@ -31,13 +31,11 @@ from __future__ import annotations
 
 import argparse
 import datetime
-import getpass
 import json
 import os
 import platform
 import re
 import shutil
-import socket
 import statistics
 import subprocess
 import sys
@@ -49,10 +47,12 @@ import urllib.request
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from ab_engine import PROMPTS, long_prompt          # noqa: E402  the same three short questions and word list
 from agent_turns_bench import SYSTEM, TOOLS         # noqa: E402  the same agent system prompt and tool list
 import serve_load                                   # noqa: E402  the burst client for --clients
+from strata_cli.bench_facts import SECRET_KEY, base_if_path, redact_object, redactor, run_cmd  # noqa: E402
 
 SCHEMA = 1
 CHAT_MAX_TOKENS = 100
@@ -62,55 +62,6 @@ AGENT_TURNS = 5
 AGENT_WORDS = 1500
 AGENT_MIN_CONTEXT = 10240      # the last turn of the session holds about 10K tokens
 BURST_MAX_TOKENS = 128
-
-
-# --------------------------------------------------------------------------------------------------------- redaction
-def redactor(extra: list[str] = (), key: str = ""):
-    """-> f(text) -> text with this machine's home folders, user and host names, the Strata folder, IP addresses and the
-    API key replaced.  Applied to everything that is written or printed from the server's or the machine's own text."""
-    subs: list[tuple[re.Pattern, str]] = []
-
-    def add(value, label, word=False):
-        if value and len(str(value)) >= 4:
-            v = str(value)
-            for form in sorted({v, v.replace("\\", "/"), v.replace("/", "\\")}, key=len, reverse=True):
-                pat = re.escape(form)
-                subs.append((re.compile(r"(?<![\w-])" + pat + r"(?![\w-])" if word else pat, re.I), label))
-
-    add(ROOT, "<strata>")
-    add(Path.home(), "<home>")
-    add(tempfile.gettempdir(), "<tmp>")
-    try:
-        add(getpass.getuser(), "<user>", True)
-    except Exception:                                   # noqa: BLE001
-        pass
-    add(socket.gethostname(), "<host>", True)
-    add(platform.node(), "<host>", True)
-    for x in extra:
-        add(x, "<private>", True)
-    add(key, "<key>")
-    subs.sort(key=lambda p: -len(p[0].pattern))
-    path_user = re.compile(r"(?i)([A-Za-z]:)?([\\/])(Users|home)([\\/])(?!<)[^\\/\s\"':;,]+")
-    ip4 = re.compile(r"\b(?:192\.168|10\.\d{1,3}|172\.(?:1[6-9]|2\d|3[01])|100\.(?:6[4-9]|[7-9]\d|1[01]\d|12[0-7])|169\.254)\.\d{1,3}\.\d{1,3}\b")
-    bearer = re.compile(r"(?i)(bearer\s+)[A-Za-z0-9._~+/=-]{8,}")
-
-    def f(text):
-        if not isinstance(text, str):
-            return text
-        for pat, label in subs:
-            text = pat.sub(label, text)
-        text = path_user.sub(lambda m: f"{m.group(1) or ''}{m.group(2)}{m.group(3)}{m.group(4)}<user>", text)
-        text = bearer.sub(r"\1<key>", text)
-        return ip4.sub("<ip>", text)
-    return f
-
-
-def redact_obj(obj, red):
-    if isinstance(obj, dict):
-        return {red(k) if isinstance(k, str) else k: redact_obj(v, red) for k, v in obj.items()}
-    if isinstance(obj, list):
-        return [redact_obj(v, red) for v in obj]
-    return red(obj) if isinstance(obj, str) else obj
 
 
 # ---------------------------------------------------------------------------------------------------------- HTTP
@@ -432,14 +383,6 @@ def summary_metrics(out: dict) -> dict:
 
 
 # -------------------------------------------------------------------------------------------------- the machine
-def run_cmd(cmd, timeout=15) -> str:
-    try:
-        r = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout, encoding="utf-8", errors="replace")
-        return r.stdout if r.returncode == 0 else ""
-    except (OSError, subprocess.SubprocessError):
-        return ""
-
-
 def total_ram_gib() -> float | None:
     try:
         import psutil
@@ -517,13 +460,6 @@ def gpu_info_local() -> dict:
 
 
 QUANT = re.compile(r"(?i)(?:^|[-_.])((?:UD-)?(?:IQ\d_[A-Z]+|Q\d_[A-Z0-9_]+|Q\d_K(?:_[A-Z]+)?|IQ\d_?[A-Z]*|BF16|F16|Q\d))(?=[-_.]|$)")
-SECRET_KEY = re.compile(r"(?i)key|token|secret|password|auth")
-
-
-def base_if_path(v):
-    if isinstance(v, str) and (("/" in v or "\\" in v) or re.search(r"\.(gguf|bin|json|pack|txt|jinja|so|dll|exe)$", v, re.I)):
-        return re.split(r"[\\/]", v.rstrip("\\/"))[-1]
-    return v
 
 
 def config_view(cfg: dict) -> dict:
@@ -910,7 +846,7 @@ def short_table(res: dict) -> str:
 def write_results(res: dict, parent: Path, red, log_lines: list[str]) -> Path:
     d = unique_dir(parent, results_dir_name(res["machine"], res["date"]))
     d.mkdir(parents=True)
-    clean = redact_obj(res, red)
+    clean = redact_object(res, red)
     (d / "results.json").write_text(json.dumps(clean, indent=1, ensure_ascii=False), encoding="utf-8")
     (d / "README.md").write_text(red(render_readme(res)), encoding="utf-8")
     if log_lines:
@@ -1022,7 +958,7 @@ def main(argv=None) -> int:
             say(f"  ({len(out['failures'])} failed request(s), {len(out['skipped'])} skipped test(s): see the report)")
         if a.compare:
             say("\nCompared with " + a.compare + ":")
-            say(red(compare_table(load_results(Path(a.compare)), redact_obj(res, lambda s: s))))
+            say(red(compare_table(load_results(Path(a.compare)), redact_object(res, lambda s: s))))
         try:
             shown = d.relative_to(ROOT)
         except ValueError:

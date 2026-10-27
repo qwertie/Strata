@@ -307,22 +307,17 @@ class Calibrate(unittest.TestCase):
         self.assertEqual(CAL.engine_args({"args": own, "gpu": [0, 1]}), own)
 
     def test_run_measures_with_the_servers_args(self):
-        with tempfile.TemporaryDirectory() as d:
-            tok = Path(d)
-            (tok / "vocab.json").write_text(json.dumps({"a": 0, "b": 1}))
-            (tok / "merges.txt").write_text("")
-            (tok / "token_type.json").write_text(json.dumps([1, 1]))
-            seen = []
-            saved = CAL.measure
-            CAL.measure = lambda args, ids_list, start_engine, say=print, extra=(), long_prompt=None, hip=False: (
-                seen.append((args, hip)) or {})
-            fake = type("ST", (), {"Tokenizer": lambda *a: type("T", (), {"encode": lambda s, t, **k: [0]})()})
-            try:
-                with mock.patch.dict(sys.modules, {"strata_tokenizer": fake}):
-                    CAL.run({"tokenizer": d, "args": list(BASE), "gpu": [0]}, start_engine=lambda a: None)
-                    CAL.run({"tokenizer": d, "args": list(BASE), "gpu": [0], "backend": "hip"}, start_engine=lambda a: None)
-            finally:
-                CAL.measure = saved
+        seen = []
+        saved = CAL.measure
+        CAL.measure = lambda args, ids_list, start_engine, say=print, extra=(), long_prompt=None, hip=False: (
+            seen.append((args, hip)) or {})
+        fake = type("ST", (), {"load_folder": lambda *a: type("T", (), {"encode": lambda s, t, **k: [0]})()})
+        try:
+            with mock.patch.dict(sys.modules, {"strata_tokenizer": fake}):
+                CAL.run({"tokenizer": "tok", "args": list(BASE), "gpu": [0]}, start_engine=lambda a: None)
+                CAL.run({"tokenizer": "tok", "args": list(BASE), "gpu": [0], "backend": "hip"}, start_engine=lambda a: None)
+        finally:
+            CAL.measure = saved
         self.assertEqual(seen, [(BASE, False), (BASE, True)])         # the shared-expert step runs on AMD only
 
     def test_engine_error(self):

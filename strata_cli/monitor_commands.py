@@ -121,7 +121,7 @@ def _file_words(exc: BaseException) -> str:
     return longpath.file_words(exc)
 
 
-def _error(message: str, code: int, machine: bool) -> int:
+def _error(message: str, code: int, machine: bool = False) -> int:
     if machine:
         print(json.dumps({"schema_version": 1, "ok": False, "error": {"code": code, "message": message}}))
     else:
