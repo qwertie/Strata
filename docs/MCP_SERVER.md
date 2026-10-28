@@ -127,8 +127,8 @@ Every result is JSON with a one-line `summary`. It is sent both as text and as M
 
 ## How it works
 
-**Install.** `strata_install` uses setup's own logic and tables (it imports `setup.py`'s `MODELS`, `FAMILIES`,
-`CONTEXTS` and RAM checks) to fill in what you left out:
+**Install.** `strata_install` uses setup's own logic and tables (the catalog's `MODELS`, `FAMILIES` and `CONTEXTS`
+in `strata_common/catalog.py`, and `setup.py`'s RAM checks) to fill in what you left out:
 
 - the size setup itself would pick: IQ3_XXS from 60 GB of RAM, Q2_0 from about 44 GB, the Coder from about 28 GB,
   and the Coder in the low-RAM mode below that when the GPU makes up for the RAM;

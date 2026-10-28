@@ -53,7 +53,7 @@ Inside `src/common/`, the subfolders may use each other as long as they do not f
 | Layer | Package | What belongs here | May import |
 |---|---|---|---|
 | 0 | `strata_base/` | All-purpose code: processes, files, HTTP, hashing, downloads | nothing of Strata's |
-| 1 | `strata_common/` | Strata-wide code: GPU detection, installing and finding engines, the model family catalog, the GGUF reader, the engine protocol client, the client of the server's status API | `strata_base` |
+| 1 | `strata_common/` | Strata-wide code: GPU detection, installing and finding engines, the model family catalog (`catalog.py`: the families, sizes, contexts and file pins), the GGUF reader, the engine protocol client, the client of the server's status API | `strata_base` |
 | 2 | `strata_server/` | The API server (OpenAI and Anthropic compatible) and its web page | layers 0–1 |
 | 2 | `strata_control/` | The Terminal's library: launch, status, connect, benchmarks | layers 0–1 |
 | 3 | `strata_cli/` | The `strata` command's interface | layers 0–2 |
@@ -87,8 +87,9 @@ These replace practices that the old code has, and that new code must not copy:
 - **Model-specific code does not go in a folder called `core` or `common`.**
 - **`main()` parses its arguments and calls a library.** It is not the engine itself (as the 14,800-line
   `main()` in `src/program/generate.cpp` is).
-- **No import or include cycles,** and no reaching up a layer. `tests/architecture/test_layering.py` checks the
-  new folders.
+- **No import or include cycles,** and no reaching up a layer, also not at run time (loading `setup.py` or a
+  `tools/` script through `importlib` or `sys.path`). `tests/architecture/test_layering.py` checks the new folders;
+  its `KNOWN_UPWARD_LOADS` lists the files that still do it.
 
 ## Old folders
 

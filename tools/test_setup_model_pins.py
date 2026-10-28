@@ -234,8 +234,9 @@ class InstalledModelsNeedNoNetwork(unittest.TestCase):
                 quiet(setup.download, pinned_url("Q2_0/x.gguf"), Path(d) / "x.gguf")
 
     def test_the_runtime_has_no_model_host_in_it(self):
-        """strata launch, serve, the monitor and the API reach no model host: the names are in setup.py and the install
-        tools only (and strata_common.acquisition refuses a download under STRATA_NO_ACQUIRE=1)."""
+        """strata launch, serve, the monitor and the API reach no model host: the names are in setup.py, the install
+        tools and the catalog's pinned addresses (strata_common/catalog.py, which only setup.py downloads from) only (and
+        strata_common.acquisition refuses a download under STRATA_NO_ACQUIRE=1)."""
         hosts = re.compile(r"huggingface\.co|hf-mirror|HF_ENDPOINT|modelscope|hf_hub_download", re.I)
         # The harmless mentions: the model-card link a benchmark result file names (nothing opens it), and the pinned
         # DFlash2 drafter address, which only `strata drafting fetch` downloads from, behind acquisition.require (refused
@@ -246,7 +247,7 @@ class InstalledModelsNeedNoNetwork(unittest.TestCase):
         found = []
         for folder in ("strata_base", "strata_cli", "strata_common", "strata_control", "strata_server"):
             for p in (ROOT / folder).rglob("*.py"):
-                if "test" in p.name:
+                if "test" in p.name or p == ROOT / "strata_common" / "catalog.py":
                     continue
                 text = p.read_text(encoding="utf-8", errors="replace")
                 for line in harmless:

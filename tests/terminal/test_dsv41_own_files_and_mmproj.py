@@ -84,26 +84,25 @@ class OwnDeepSeekFiles(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             d = Path(d)
             self.touch_set(d / "a", new)
-            self.assertEqual(Runner.deepseek_set_in(setup, d / "a")[0], "IST-DAS-2.00bpw")
+            self.assertEqual(Runner.deepseek_set_in(d / "a")[0], "IST-DAS-2.00bpw")
             old = ["model-2.25bpw-%05d-of-00004.gguf" % i for i in range(1, 5)]
             self.touch_set(d / "b" / "2.25bpw", old)
-            m, _entry, folder = Runner.deepseek_set_in(setup, d / "b")
+            m, _entry, folder = Runner.deepseek_set_in(d / "b")
             self.assertEqual((m, folder), ("IST-DAS-2.25bpw", d / "b" / "2.25bpw"))
             ud = [setup.DSV41_SHARD.format(i=i) for i in range(1, 10)]
             self.touch_set(d / "c" / "UD-Q8_K_XL", ud)
-            self.assertEqual(Runner.deepseek_set_in(setup, d / "c")[0], "UD-Q8_K_XL")
+            self.assertEqual(Runner.deepseek_set_in(d / "c")[0], "UD-Q8_K_XL")
 
     def test_other_models_files_are_not_deepseeks(self):
         from strata_cli.launch.runner import Runner
         with tempfile.TemporaryDirectory() as d:
             self.touch_set(Path(d), ["Qwen3.8-Flash-Next-GSQ-RCO-Q2_0-00001-of-00002.gguf"])
-            self.assertIsNone(Runner.deepseek_set_in(setup, Path(d)))
+            self.assertIsNone(Runner.deepseek_set_in(Path(d)))
 
     def screen(self, settings):
         from strata_cli.launch.screens import ModelScreen
         f = mock.MagicMock()
         f.ctx.settings = settings
-        f.ctx.catalog.strata.setup_module.return_value = setup
         said = []
         f.say = lambda text, err=False: said.append(text)
         return ModelScreen, f, said

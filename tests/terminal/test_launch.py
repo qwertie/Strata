@@ -107,7 +107,7 @@ class CatalogRules(unittest.TestCase):
             ids = {(r.family, r.model) for r in rows}
             self.assertIn(("qwen", "IQ3_XXS"), ids)
             models, families, contexts, source = cat.tables()
-            self.assertEqual(source, "setup.py")                       # the same tables setup.py and the app read
+            self.assertEqual(source, "strata_common/catalog.py")       # the same tables setup.py and the app read
             for r in rows:
                 if r.family == "deepseek41":                           # its sizes are in MULTI_FILE_FAMILIES (shards + shared files), not in MODELS
                     self.assertAlmostEqual(r.download_gb, {"UD-Q8_K_XL": 508.4, "IST-DAS-2.00bpw": 256.8, "IST-DAS-2.25bpw": 273.8, "IST-DAS-1.75bpw": 239.3}[r.model], delta=0.1)

@@ -551,15 +551,13 @@ class ModelScreen(Base):
         the generic file check, which does not know DeepSeek and said "could not be read" for its n-gram shard (#3914).  True when it answered."""
         from strata_cli.launch.runner import Runner
         try:
-            mod = self.ctx.catalog.strata.setup_module()
-            found = Runner.deepseek_set_in(mod, path, self.ctx.settings.model)
+            found = Runner.deepseek_set_in(path, self.ctx.settings.model)
         except Exception:                                    # noqa: BLE001 - not DeepSeek's: the usual check goes on
             return False
         if found is None:
             return False
         model, d, folder = found
-        legacy = getattr(mod, "DSV41_LEGACY_NAMES", {})
-        missing = [n for n in d["shards"] if not (folder / n).exists() and not (legacy.get(n) and (folder / legacy[n]).exists())]
+        missing = Runner.missing_deepseek_parts(d, folder)
         if missing:
             self.say(f"These are DeepSeek-V4.1-Flash {d.get('label', model)} files, but {len(missing)} of {len(d['shards'])} parts are not in {folder} "
                      f"(first missing: {missing[0]}). Put every part in the folder, or pick a model from the list.", True)

@@ -41,6 +41,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from strata_base.memory import read_ram                             # noqa: E402
 from strata_base.path_compare import nearest_existing               # noqa: E402
+from strata_common import catalog                                  # noqa: E402
 from strata_control.discovery import config_files, own_settings_file  # noqa: E402
 
 PROTOCOL = "2025-06-18"
@@ -54,79 +55,11 @@ CONTROL = os.environ.get("STRATA_CONTROL_INSTALL") == "1"
 DEFAULT_PORT = 8080
 STATE_DIR = ".strata-mcp"                             # in the Strata folder (git-ignored)
 
-# What setup.py offers, used only when setup.py cannot be imported (the numbers are setup's MODELS / FAMILIES /
-# CONTEXTS; tools/test_strata_mcp.py checks they still match).
-FALLBACK_MODELS = {
-    "Q2_0": {"about": "2-bit, the fastest", "download_gb": 66.4, "ram_gb": 48, "arena_gb": 34.0, "families": ("qwen",)},
-    "IQ2_XS": {"about": "2-bit i-quant, a little better quality, close in speed", "download_gb": 68.0, "ram_gb": 48,
-               "arena_gb": 35.5},
-    "IQ3_XXS": {"about": "3-bit i-quant, better quality, slower (more CPU work per token)", "download_gb": 75.8,
-                "ram_gb": 60, "arena_gb": 42.9},
-    "IQ3_S": {"about": "3.5-bit i-quant, the best quality (matches the full model), the slowest; needs a 64 GB PC "
-                       "with little else running", "download_gb": 83.6, "ram_gb": 62, "arena_gb": 50.3},
-    "IQ1_M": {"about": "the Coder's only size: half the experts, stored like IQ3_S (3.5 bits)", "download_gb": 58.4,
-              "ram_gb": 32, "arena_gb": 23.4, "families": ("coder",)},
-    "UD-IQ4_XS": {"about": "~4-bit i-quant (Unsloth Dynamic), between IQ3_S and UD-Q4_K_XL in quality; on a PC with "
-                           "less than ~80 GB of RAM part of its experts are read from the SSD",
-                  "download_gb": 93.7, "ram_gb": 48, "arena_gb": 59.5, "families": ("unsloth",), "budget": True,
-                  "vision": True},
-    "UD-Q4_K_XL": {"about": "4-bit (Unsloth Dynamic): K-quant experts, between UD-IQ4_XS and UD-Q5_K_XL in quality",
-                   "download_gb": 111.3, "ram_gb": 48, "arena_gb": 77.0, "families": ("unsloth",), "budget": True,
-                   "vision": True},                       # #967: images allowed (setup warns: untested with this file)
-    "UD-Q5_K_XL": {"about": "5-bit (Unsloth Dynamic): Q5_K experts with Q8_0 downs, close to Q8_0 in quality",
-                   "download_gb": 158.3, "ram_gb": 108, "arena_gb": 98.4, "families": ("unsloth",), "budget": True,
-                   "vision": True},
-    "UD-Q6_K_XL": {"about": "6-bit (Unsloth Dynamic): Q6_K experts with Q8_0 downs",
-                   "download_gb": 169.2, "ram_gb": 118, "arena_gb": 109.2, "families": ("unsloth",), "budget": True,
-                   "vision": True},
-    "Q8_0": {"about": "8-bit, the reference quality (every expert Q8_0); for a 192 GB PC",
-             "download_gb": 188.2, "ram_gb": 136, "arena_gb": 128.3, "families": ("unsloth",), "budget": True,
-             "vision": True},
-    "Gyro-S": {"about": "the smallest option, for PCs with little memory (27.6 GB of VRAM + RAM together); lower quality "
-                        "than the 2-3-bit sizes, and the 2-bit Q2_0 decodes faster",
-               "engine": (0, 1, 45, 1),
-               "download_gb": 58.5, "ram_gb": 27.6, "arena_gb": 25.8, "families": ("gyro",), "mem_total": True,
-               "vision": True},
-    "Gyro-M": {"about": "about IQ3_XXS quality with about 20% less GPU memory (35 GB of VRAM + RAM together); decodes "
-                        "about 16-21% slower than Q2_0 on 12 GB cards",
-               "engine": (0, 1, 45, 1),
-               "download_gb": 92.0, "ram_gb": 35.0, "arena_gb": 32.1, "families": ("gyro",), "mem_total": True,
-               "vision": True},
-    "NVFP4": {"about": "4-bit NVFP4 experts, GPTQ (sergqwer's strata-nvfp4 pack); RTX 50 has FP4 tensor cores, other "
-                       "NVIDIA cards run it at 8-bit precision", "download_gb": 128.0, "ram_gb": 80, "arena_gb": 68.0,
-              "families": ("nvfp4",), "vision": True},
-    "NVFP4-NVIDIA": {"about": "NVIDIA's own NVFP4 checkpoint (plain rounding), converted by sergqwer; the same size "
-                              "and speed as NVFP4", "download_gb": 128.0, "ram_gb": 80, "arena_gb": 68.0,
-                     "families": ("nvfp4",), "vision": True},
-    "NVFP4-QAD": {"about": "NVIDIA's FP4, trained for FP4 - slightly faster on short prompts; a 102 GB download "
-                           "that this PC turns into a Strata pack once; it reads pictures",
-                  "download_gb": 102.2, "ram_gb": 80, "arena_gb": 68.0, "families": ("nvfp4",), "vision": True},
-}
-FALLBACK_FAMILIES = {
-    "qwen": {"title": "Qwen3.8-Flash-Next", "about": "the original model", "tag": ""},
-    "swift": {"title": "Swift 1.5", "about": "thinks much shorter (-63% thinking tokens, 1.8x sooner answers by its "
-                                             "authors' numbers)", "tag": "swift-"},
-    "coder": {"title": "Qwen3.8-Flash-Next Coder", "about": "half the experts (code, tools, images kept): needs ~32 GB "
-                                                            "of RAM, faster; weaker outside coding", "tag": "coder-"},
-    "unsloth": {"title": "Qwen3.8-Flash-Next (Unsloth)", "about": "UD-IQ4_XS, UD-Q4_K_XL, UD-Q5_K_XL, UD-Q6_K_XL or Q8_0 "
-                                                                  "(94 to 188 GB downloads): every expert in RAM from "
-                                                                  "~80 GB (UD-IQ4_XS) to ~136 GB (Q8_0) of RAM, else "
-                                                                  "part of them read from the SSD",
-                "tag": "unsloth-", "vision": True},
-    "gyro": {"title": "Qwen3.8-Flash-Next (Gyro)", "about": "Gyro-S (27.6 GB of memory) and Gyro-M (35 GB): the smallest "
-                                                              "sizes, for PCs with little memory; 58 and 92 GB "
-                                                              "downloads (the files include the n-gram table)",
-             "tag": "gyro-"},
-    "nvfp4": {"title": "Qwen3.8-Flash-Next (NVFP4)", "about": "4-bit NVFP4 experts, NVIDIA cards; a 128 GB download, "
-                                                              "~80 GB of RAM to keep every expert in RAM",
-              "tag": "nvfp4-"},
-}
 OWN_PATH_ENGINE = (0, 1, 45)   # the first engine that runs Qwen3.6-35B-A3B with pictures and parallel requests (setup.py MIN_ENGINE note)
 MEMORY_TIERS = ((62.0, "qwen", "IQ3_S"), (46.0, "qwen", "IQ3_XXS"), (38.0, "swift", "IQ2_XS"))   # as setup.py's: RAM + VRAM floors of the owner's 64 / 48 / 40 GB tiers
 # #3425 (owner's rule, same as setup.py's TIER_SYSTEM_RESERVE_GB): the floors count RAM + VRAM less the 5 GB Windows and the system keep
 TIER_SYSTEM_RESERVE_GB = 5.0
 GYRO_ROOM_GB = 4.0     # recommend() suggests a Gyro size only when VRAM + RAM exceed its memory figure by this much
-FALLBACK_CONTEXTS = [8192, 32768, 65536, 131072, 204800, 262144, 393216, 524288]
 BENCH_PROMPT = ("Write a short story (about 300 words) about a lighthouse keeper who finds a message in a bottle. "
                 "Plain prose, no title.")
 
@@ -512,9 +445,9 @@ class Strata:
         self.python_override: str | None = sys.executable if CONTROL else None
         self.health_timeout = 2.0
 
-    # ---- setup.py's own tables and logic
+    # ---- the catalog and setup.py's logic
     def setup_module(self):
-        """setup.py imported as a module (its tables and its pure checks), or None.  Its command runner is replaced
+        """setup.py imported as a module (its pure checks), or None.  Its command runner is replaced
         by one without console windows; nothing of its install path runs."""
         if not self._setup_tried:
             self._setup_tried = True
@@ -532,42 +465,39 @@ class Strata:
                 if all(hasattr(mod, a) for a in ("MODELS", "FAMILIES", "CONTEXTS")):
                     mod.out = lambda cmd: run_quiet(cmd, 60)
                     self._setup = mod
-            except (Exception, SystemExit) as e:        # noqa: BLE001 - any failure: the built-in tables
-                log(f"setup.py could not be imported ({e}); using the built-in model table")
+            except (Exception, SystemExit) as e:        # noqa: BLE001 - any failure: the checks needing it are left out
+                log(f"setup.py could not be imported ({e}); its checks are left out")
         return self._setup
 
     def tables(self):
-        s = self.setup_module()
-        if s is not None:
-            return s.MODELS, {**s.FAMILIES, **self.own_families()}, list(s.CONTEXTS), "setup.py"
-        return FALLBACK_MODELS, FALLBACK_FAMILIES, FALLBACK_CONTEXTS, "built-in table (setup.py not importable)"
+        """Gets the catalog's sizes, families (the own-path ones included) and contexts, and where they come from."""
+        families = {**catalog.FAMILIES, **self.own_families()}
+        return catalog.MODELS, families, list(catalog.CONTEXTS), "strata_common/catalog.py"
 
     def own_families(self) -> dict:
-        """setup.py's OWN_PATH_FAMILIES (Qwen3.6-35B-A3B): families with an engine path of their own.  They are not in FAMILIES
+        """The catalog's OWN_PATH_FAMILIES (Qwen3.6-35B-A3B): families with an engine path of their own.  They are not in FAMILIES
         (whose entries are Flash-Next files with packs), so the model list used to leave them out and the app's Qwen3.6 page
         showed no versions at all.  Each is returned as a family entry (title, about, tag, license) of this server's table."""
-        s = self.setup_module()
         out = {}
-        for f, d in (getattr(s, "OWN_PATH_FAMILIES", None) or {}).items():
+        for f, d in catalog.OWN_PATH_FAMILIES.items():
             out[f] = {"title": d["title"], "about": d.get("about"), "tag": d["tag"], "license": d.get("license"),
                       "vision": bool(d.get("vision", True)), "own_path": True}
-        for f, d in (getattr(s, "MULTI_FILE_FAMILIES", None) or {}).items():     # DeepSeek-V4.1-Flash: nine shards, its own engine
+        for f, d in catalog.MULTI_FILE_FAMILIES.items():     # DeepSeek-V4.1-Flash: nine shards, its own engine
             out[f] = {"title": d["title"], "about": d.get("about"), "tag": d["tag"], "license": d.get("license"),
                       "vision": bool(d.get("vision", False)), "own_path": True, "multi_file": True}
         return out
 
     def own_size_names(self) -> list:
         """The size names of the families that have an engine path of their own (Qwen3.6, DeepSeek-V4.1-Flash): the install tool accepts them as `model`."""
-        s = self.setup_module()
         names = []
-        for table in ("OWN_PATH_FAMILIES", "MULTI_FILE_FAMILIES"):
-            for fam in (getattr(s, table, None) or {}).values():
+        for table in (catalog.OWN_PATH_FAMILIES, catalog.MULTI_FILE_FAMILIES):
+            for fam in table.values():
                 names.extend(n for n in fam.get("models", {}) if n not in names)
         return names
 
     def multi_family(self, family) -> dict | None:
-        """setup.py's MULTI_FILE_FAMILIES entry (DeepSeek-V4.1-Flash), else None."""
-        return (getattr(self.setup_module(), "MULTI_FILE_FAMILIES", None) or {}).get(family)
+        """The catalog's MULTI_FILE_FAMILIES entry (DeepSeek-V4.1-Flash), else None."""
+        return catalog.MULTI_FILE_FAMILIES.get(family)
 
     def own_size(self, family, model) -> dict | None:
         """One size of an own-path family as a model-table row for install_plan / model_table (None: not an own-path size).
@@ -579,7 +509,7 @@ class Strata:
             return {"about": big["models"][model]["about"], "download_gb": round(gb, 1), "ram_gb": big["models"][model]["ram_gb"],
                     "arena_gb": round(float(big["models"][model]["ram_gb"]) - 17.0, 1), "mem_total": True, "vision": False,
                     "engine": None, "families": (family,), "multi_file": True}
-        d = (getattr(self.setup_module(), "OWN_PATH_FAMILIES", None) or {}).get(family)
+        d = catalog.OWN_PATH_FAMILIES.get(family)
         if not d or model not in d["models"]:
             return None
         size_gb = d["sha256"][d["file"].format(q=model)][0] / 1e9
@@ -590,7 +520,7 @@ class Strata:
 
     def sizes_of(self, models, family) -> list:
         """The family's sizes as setup lists them: an experimental one last (never the default)."""
-        own = (getattr(self.setup_module(), "OWN_PATH_FAMILIES", None) or {}).get(family) or self.multi_family(family)
+        own = catalog.OWN_PATH_FAMILIES.get(family) or self.multi_family(family)
         if own:
             return list(own["models"])
         return sorted((m for m in models if family in models[m].get("families", ("qwen", "swift"))),
@@ -2161,7 +2091,7 @@ class Tools:
             gpu = gpus = kv = low_ram = None
             context = context or (s.mac().recommend_context(hw.get("ram_gb") or 0) if s.mac() else 32768)
         if context is None and md.get("multi_file"):
-            context = getattr(s.setup_module(), "DSV41_CONTEXT", 8192)      # the context the engine was checked at
+            context = catalog.DSV41_CONTEXT
         if context is None:
             usable = s.engine_gpus(hw)
             vram = max((g["vram_gb"] for g in usable), default=12)

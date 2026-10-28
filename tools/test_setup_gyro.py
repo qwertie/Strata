@@ -50,12 +50,6 @@ class GyroCatalog(unittest.TestCase):
         self.assertEqual(setup.recommended_size("gyro", names, 16.0, 12.0), "Gyro-S")     # 28 GB
         self.assertEqual(setup.recommended_size("gyro", names, 8.0, 8.0), "Gyro-S")       # nothing fits: the first
 
-    def test_mcp_table_matches(self):
-        for m in ("Gyro-S", "Gyro-M"):
-            for k in ("download_gb", "ram_gb", "arena_gb", "mem_total", "vision", "engine"):
-                self.assertEqual(setup.MODELS[m][k], M.FALLBACK_MODELS[m][k], (m, k))
-        self.assertEqual(setup.FAMILIES["gyro"]["tag"], M.FALLBACK_FAMILIES["gyro"]["tag"])
-
     def test_mcp_recommends_gyro_only_where_nothing_else_fits(self):
         s = M.Strata(ROOT)
         for ram, vram, family in ((64.0, 12.0, "qwen"), (48.0, 12.0, "qwen"), (32.0, 12.0, "swift"), (28.0, 8.0, "coder")):
@@ -101,10 +95,6 @@ class GyroEngineVersionTest(unittest.TestCase):
         sizes = [m for m in setup.MODELS.values() if "gyro" in str(m.get("file", "")).lower()]
         self.assertEqual(len(sizes), 2)
         self.assertTrue(all(m["engine"] == (0, 1, 45, 1) for m in sizes))
-
-    def test_every_catalog_agrees(self):
-        for m in ("Gyro-S", "Gyro-M"):
-            self.assertEqual(setup.MODELS[m]["engine"], M.FALLBACK_MODELS[m]["engine"], m)
 
     def test_the_catalog_tells_the_app_the_minimum(self):
         table = M.Strata(ROOT).model_table(hardware(64.0, 12.0))

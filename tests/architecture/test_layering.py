@@ -3,8 +3,8 @@
     python -m pytest tests/architecture
 
 C++ is checked by its `#include "strata/..."` lines (not by includes relative to the file), Python by its absolute
-imports (not in tests, which may set up any part of the system). Includes of the old folders that the refactor is still
-emptying (OLD_CPP_FOLDERS) are allowed until they are gone.
+imports and by what it loads at run time (not in tests, which may set up any part of the system). Includes of the old
+folders that the refactor is still emptying (OLD_CPP_FOLDERS) are allowed until they are gone.
 """
 from __future__ import annotations
 
@@ -30,6 +30,19 @@ PY_LAYERS = {"strata_base": 0, "strata_common": 1, "strata_server": 2, "strata_c
              "setup": 4, "tools": 4}
 # The packages whose imports are checked
 CHECKED_PY_PACKAGES = ("strata_base", "strata_common", "strata_control", "strata_server", "strata_cli")
+# Calls that load a module or run a file at run time; a scope (function or module) that makes one and names setup.py or
+# a tools/ module in a string loads that layer
+PY_RUNTIME_LOADERS = {"import_module", "__import__", "spec_from_file_location", "find_spec", "run_path", "run_module"}
+# The scripts in tools/ by the name an import uses (some callers put tools/ on sys.path)
+TOOL_MODULES = {path.stem for path in (ROOT / "tools").glob("*.py")}
+# Files of the checked packages that still load setup.py or tools/ at run time, and why. Remove an entry once its
+# file no longer does.
+KNOWN_UPWARD_LOADS = {
+    "strata_cli/launch/catalog.py": "runs tools/strata_mcp.py's Strata object, the app's model list and fit code",
+    "strata_control/calibration.py": "calls setup.py's hardware_key, runs tools/calibrate.py and strata_tokenizer.py",
+    "strata_control/drafting_fetch.py": "runs tools/dflash2_pack.py to pack the downloaded drafter",
+    "strata_server/server.py": "imports tools/strata_tokenizer.py, the tokenizer",
+}
 
 
 def test_cpp_includes_follow_layers():
@@ -42,12 +55,19 @@ def test_cpp_includes_follow_layers():
 
 def test_python_imports_follow_layers():
     problems = []
-    for package in CHECKED_PY_PACKAGES:
-        for path in sorted(p for p in (ROOT / package).rglob("*.py") if not p.name.startswith("test_")):
-            for target in find_imported_packages(path):
-                if problem := find_python_problem(package, target):
-                    problems.append(f"{path.relative_to(ROOT).as_posix()}: {problem}")
+    for package, path in find_checked_py_files():
+        name = path.relative_to(ROOT).as_posix()
+        for target in find_imported_packages(path.read_bytes(), name):
+            if (problem := find_python_problem(package, target)) and name not in KNOWN_UPWARD_LOADS:
+                problems.append(f"{name}: {problem}")
     assert not problems, "\n".join(problems)
+
+
+def test_known_upward_loads_are_still_there():
+    upward = {path.relative_to(ROOT).as_posix() for package, path in find_checked_py_files()
+              if any(find_python_problem(package, target)
+                     for target in find_imported_packages(path.read_bytes(), str(path)))}
+    assert not set(KNOWN_UPWARD_LOADS) - upward, "remove these from KNOWN_UPWARD_LOADS"
 
 
 def test_rules_catch_violations():
@@ -68,6 +88,19 @@ def test_rules_catch_violations():
     assert find_python_problem("strata_server", "strata_control")
     assert find_python_problem("strata_control", "strata_server")
     assert find_python_problem("strata_control", "tools")
+    assert find_python_problem("strata_control", "setup")
+    loads = {
+        'import importlib\ndef f():\n    return importlib.import_module("setup")': {"importlib", "setup"},
+        'import importlib.util\nspec = importlib.util.spec_from_file_location("x", ROOT / "setup.py")':
+            {"importlib", "setup"},
+        'def f():\n    return __import__("tools.calibrate")': {"tools"},
+        'import runpy\nrunpy.run_path(str(ROOT / "tools" / "x.py"))': {"runpy", "tools"},
+        'import strata_tokenizer': {"tools"},
+        'import importlib\nimportlib.import_module("json")': {"importlib"},
+        'def f():\n    return "setup.py"\ndef g(importlib):\n    return importlib.import_module(name)': set(),
+    }
+    for code, expected in loads.items():
+        assert set(find_imported_packages(code, "<rule test>")) == expected, code
 
 
 def find_cpp_files():
@@ -104,13 +137,57 @@ def get_cpp_folder(path: str) -> str | None:
     return max((folder for folder in CPP_LAYERS if path.startswith(folder + "/")), key=len, default=None)
 
 
-def find_imported_packages(path: Path):
-    """Yields the top-level package of each import in a Python file."""
-    for node in ast.walk(ast.parse(path.read_bytes(), str(path))):
+def find_checked_py_files():
+    """Yields (package, path) for each Python file of CHECKED_PY_PACKAGES that is not a test."""
+    for package in CHECKED_PY_PACKAGES:
+        for path in sorted(p for p in (ROOT / package).rglob("*.py") if not p.name.startswith("test_")):
+            yield package, path
+
+
+def find_imported_packages(source: bytes | str, name: str):
+    """Yields the top-level package of each import in Python source, and "setup" or "tools" for each scope that loads
+    setup.py or a tools/ module at run time (PY_RUNTIME_LOADERS). A tools/ script imported by its own name counts as
+    "tools"."""
+    tree = ast.parse(source, name)
+    for node in ast.walk(tree):
         if isinstance(node, ast.Import):
-            yield from (alias.name.split(".")[0] for alias in node.names)
+            yield from (get_import_layer_name(alias.name) for alias in node.names)
         elif isinstance(node, ast.ImportFrom) and node.module and node.level == 0:
-            yield node.module.split(".")[0]
+            yield get_import_layer_name(node.module)
+    for scope in [tree, *(n for n in ast.walk(tree) if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef)))]:
+        nodes = list(iter_scope_nodes(scope))
+        if any(isinstance(n, ast.Call) and get_called_name(n.func) in PY_RUNTIME_LOADERS for n in nodes):
+            yield from {layer for n in nodes if isinstance(n, ast.Constant) and isinstance(n.value, str)
+                        if (layer := get_named_upper_layer(n.value))}
+
+
+def get_import_layer_name(module: str) -> str:
+    """Gets the PY_LAYERS name an import of `module` belongs to: its top-level package, or "tools" for a tools/
+    script."""
+    top = module.split(".")[0]
+    return "tools" if top in TOOL_MODULES else top
+
+
+def iter_scope_nodes(scope: ast.AST):
+    """Yields the nodes of a module or function, leaving out the functions defined inside it (they are scopes too)."""
+    for child in ast.iter_child_nodes(scope):
+        if not isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)):
+            yield child
+            yield from iter_scope_nodes(child)
+
+
+def get_called_name(func: ast.expr) -> str | None:
+    """Gets the last name of a called expression: `import_module` for `importlib.import_module(...)`."""
+    return func.attr if isinstance(func, ast.Attribute) else func.id if isinstance(func, ast.Name) else None
+
+
+def get_named_upper_layer(text: str) -> str | None:
+    """Gets "setup" or "tools" when a string names setup.py or something in tools/ (a module, a script, the folder)."""
+    if text in ("setup", "setup.py"):
+        return "setup"
+    if text == "tools" or text.startswith(("tools.", "tools/")) or (text.endswith(".py") and text[:-3] in TOOL_MODULES):
+        return "tools"
+    return None
 
 
 def find_python_problem(package: str, target: str) -> str | None:

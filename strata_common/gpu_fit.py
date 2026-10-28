@@ -24,8 +24,11 @@ DENSE_GB = 5.0                 # = native-fit.ts DENSE_GB
 SYSTEM_ROOM_GB = 10.0          # = native-fit.ts SYSTEM_ROOM_GB
 DENSE_EXTRA_GB = 1.0           # = native-fit.ts DENSE_EXTRA_GB
 SPLIT_CARD_OVERHEAD_GB = 2.0   # each extra card of a split: its own dense layers and prompt buffers
-SPLIT_MIN_VRAM_GB = 8.0        # setup.py SPLIT_MIN_VRAM_GB: a card sharing a model needs this much
-SPLIT_PROMPT_VRAM_GB = 12.0    # setup.py SPLIT_PROMPT_VRAM_GB (#448): a smaller second card caps the prompt chunk
+SPLIT_MIN_VRAM_GB = 8          # a card sharing a model holds the dense weights and its own prompt buffers too
+                               # (docs/MULTI_GPU.md)
+SPLIT_PROMPT_VRAM_GB = 12      # #448: a split stage lends a prompt chunk's buffers from its own cache; below this one
+                               # cannot fund a 4096-token chunk (a 10 GB RTX 3080 beside a 32 GB card: 512 tokens,
+                               # prompts 6.2x slower), while the big card alone could
 MIN_CARD_GB = 4.0              # under this a card cannot hold the dense weights: ignored (an iGPU, a display card)
 FITS_SPARE_RAM_GB = 4.0        # RAM left beyond the experts below which "fits" becomes "tight"
 SPLIT_PROMPT_GAIN = "about 20% faster"   # setup.py's own words for prompts read on two cards (docs/MULTI_GPU.md)

@@ -180,12 +180,12 @@ class InstallerServerTests(unittest.TestCase):
         with mock.patch.dict(os.environ, {"STRATA_CONTROL_INSTALL": "1", "STRATA_INSTALL_DIR": str(self.root)}):
             spec.loader.exec_module(self.mcp)
 
-    def test_the_catalog_comes_from_setup_py_in_the_bundle(self):
+    def test_the_catalog_comes_from_strata_common_in_the_bundle(self):
         s = self.mcp.Strata(self.root, ROOT)
         self.assertEqual(s.root, self.root.resolve())
         self.assertEqual(s.src, ROOT)
         models, families, contexts, source = s.tables()
-        self.assertEqual(source, "setup.py")
+        self.assertEqual(source, "strata_common/catalog.py")
         self.assertIn("qwen", families)
         self.assertIn("IQ3_XXS", models)
         self.assertEqual(s.python_override, sys.executable)               # Control's own Python runs the install

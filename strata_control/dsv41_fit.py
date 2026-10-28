@@ -1,7 +1,7 @@
 """Where DeepSeek-V4.1-Flash goes on a computer: the real numbers of the model and its engine, in one place.
 
 The model is 40 layers of 384 routed experts (top 6) beside dense attention weights.  Unsloth's UD-Q8_K_XL (the
-file Strata runs, pinned in setup.py) is 508.4 GB in nine shards:
+file Strata runs, pinned in strata_common/catalog.py) is 508.4 GB in nine shards:
 
   routed experts, MXFP4      288.8 GB   15,360 experts of 18.8 MB (40 layers x 384)
   dense weights, BF16 / F32   16.8 GB   attention, router, shared experts, the head (the embedding table stays on the CPU)
@@ -21,12 +21,13 @@ from __future__ import annotations
 
 from typing import Any
 
-from strata_common import gpu_fit
+from strata_common import catalog, gpu_fit
 
 GB = 1e9
 GIB = 2 ** 30
-MAIN_BYTES = 508_376_763_197          # the nine shards of UD-Q8_K_XL (setup.py DSV41_FILES)
-ENGRAM_BYTES = 202_758_032_592        # shard 8: the n-gram table
+_UD_SHARDS = [catalog.DSV41_SHARD.format(i=i) for i in range(1, 10)]   # UD-Q8_K_XL's shard names, 1 to 9
+MAIN_BYTES = sum(catalog.DSV41_FILES[n][0] for n in _UD_SHARDS)   # the nine shards of UD-Q8_K_XL
+ENGRAM_BYTES = catalog.DSV41_FILES[_UD_SHARDS[7]][0]               # shard 8: the n-gram table
 EXPERT_BYTES = 288_777_830_400        # MXFP4: 543,581,798,400 values x 17/32 bytes
 LAYERS = 40
 EXPERTS_PER_LAYER = 384
@@ -48,26 +49,34 @@ MEASURED = ("4 x Radeon AI PRO R9700 (32 GB) with 251 GB of RAM: prompts of 3,00
             "at 25-31 tokens a second (--tp 2); one answer at a time")
 
 
-# The two official IST-DAS sets (ISTA-DASLab/DeepSeek-V4.1-Flash-1017-GSQ-RCO-GGUF, setup.py DSV41_ISTA_FILES): 4 shards each (the experts as IQ1_M / IQ2 / IQ3 types, the
+# The two official IST-DAS sets (ISTA-DASLab/DeepSeek-V4.1-Flash-1017-GSQ-RCO-GGUF, catalog.DSV41_ISTA_FILES): 4 shards each (the experts as IQ1_M / IQ2 / IQ3 types, the
 # dense weights Q8_0 / Q5_K), plus ONE Engram (110.6 GB, IQ4_NL, shared by both sets, stays on the SSD) and the DSpark drafter (8.0 GB).
 # Measured 2026-10-23 (f-dsv41-rel): quality against the original model (final files, 4,995 positions: ppl +15.5% for 2.00 [code +8.6%, agent +5.3%], +7.3% for 2.25 [code +3.2%, agent +2.2%]
 # on 2.25); speed on the owner PC (RTX 5070 12 GB, 64 GB RAM, 3.6 GB/s NVMe): answers ~4.7 tokens a second, prompts 121 tokens a second at 4K and
 # 231 tokens a second at 8K; RTX 3060 12 GB with 46 GB of RAM (the engine held to 36 GB): answers ~7.2 tokens a second on 2.00; 4 x Radeon AI PRO
 # R9700: answers ~31 tokens a second, prompts 330-373 tokens a second at 8K.
-ISTA_ENGRAM_BYTES = 110_595_290_816
-ISTA_DSPARK_BYTES = 7_976_914_240
-ISTA_META_BYTES = 5_780_589          # the first shard of Unsloth's UD-Q8_K_XL: only the metadata --engram-meta reads
+ISTA_ENGRAM_BYTES = catalog.DSV41_ISTA_FILES[catalog.DSV41_ISTA_ENGRAM][0]
+ISTA_DSPARK_BYTES = catalog.DSV41_FILES[catalog.DSV41_DSPARK][0]
+ISTA_META_BYTES = catalog.DSV41_FILES[_UD_SHARDS[0]][0]   # the first shard of UD-Q8_K_XL: only the metadata --engram-meta reads
+
+
+def _ista_set_bytes(model: str) -> int:
+    """Adds up the pinned sizes of an official set's four shards.  Defined above its callers: ISTA_SETS calls it."""
+    shards = catalog.MULTI_FILE_FAMILIES["deepseek41"]["models"][model]["shards"]
+    return sum(catalog.DSV41_ISTA_FILES[n][0] for n in shards)
+
+
 ISTA_SETS = {
-    "IST-DAS-2.00bpw": {"title": "IST-DAS 2.00 bpw", "set_bytes": 138_238_893_056, "experts_gb": 132.07, "profile": "profile-2.00.bin",
+    "IST-DAS-2.00bpw": {"title": "IST-DAS 2.00 bpw", "set_bytes": _ista_set_bytes("IST-DAS-2.00bpw"), "experts_gb": 132.07, "profile": "profile-2.00.bin",
                         "ppl": "15.5%", "ram_ok_gb": 40.0, "ram_great_gb": 160.0, "disk_total": 257.0,
                         "quality": "about 15.5% above the original model's perplexity (code and agent work about 5-9% above)"},
     # IQ1_M (1.75 bpw): 120,721,120,256 bytes of shards; experts = the shards minus the 6.16 GB of dense weights.  RAM class from the experts' size against
     # the 2.00 set's measured 40 GB (not measured on a computer yet); quality: the H100's 4,995-position score (KL 0.217, ppl 3.80, +21%; code +8.9%, agent +10.2%, English prose +53%).
-    "IST-DAS-1.75bpw": {"title": "IST-DAS 1.75 bpw", "set_bytes": 120_721_120_256, "experts_gb": 114.56, "profile": "profile-2.00.bin",
+    "IST-DAS-1.75bpw": {"title": "IST-DAS 1.75 bpw", "set_bytes": _ista_set_bytes("IST-DAS-1.75bpw"), "experts_gb": 114.56, "profile": "profile-2.00.bin",
                         "ppl": "21%", "ram_ok_gb": 34.0, "disk_total": 239.0,
                         "quality": "about 21% above the original model's perplexity: the smallest, fine for code and agent work, noticeably weaker "
                                    "on plain prose; pick 2.00 if it fits"},
-    "IST-DAS-2.25bpw": {"title": "IST-DAS 2.25 bpw", "set_bytes": 155_225_824_256, "experts_gb": 149.06, "profile": "profile-2.25.bin",
+    "IST-DAS-2.25bpw": {"title": "IST-DAS 2.25 bpw", "set_bytes": _ista_set_bytes("IST-DAS-2.25bpw"), "experts_gb": 149.06, "profile": "profile-2.25.bin",
                         "ppl": "7.3%", "ram_ok_gb": 44.0, "ram_great_gb": 176.0, "disk_total": 274.0,
                         "quality": "about 7.3% above the original model's perplexity (code and agent work about 2-3% above), "
                                    "the better of the two, 17 GB more disk"},

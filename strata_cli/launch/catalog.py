@@ -1,9 +1,9 @@
 """The model catalog, the computer's figures and the fit words for `strata launch`.
 
-There is ONE catalog: setup.py's MODELS / FAMILIES / CONTEXTS, which the desktop app reads through tools/strata_mcp.py
-(`Strata.model_table`, `Strata.hardware`, `Strata.recommend`; the app page's own fit arithmetic is
-apps/host/src/lib/native-fit.ts `fitOn`). This module loads that same file from the installer folder and ports `fitOn` line by
-line; it holds no table of its own. Without the installer files (a Terminal bundle made before launch existed) it says so in
+There is ONE catalog: strata_common/catalog.py's MODELS / FAMILIES / CONTEXTS, which the desktop app reads through
+tools/strata_mcp.py (`Strata.model_table`, `Strata.hardware`, `Strata.recommend`; the app page's own fit arithmetic is
+apps/host/src/lib/native-fit.ts `fitOn`). This module loads that same strata_mcp.py from the installer folder and ports `fitOn` line
+by line; it holds no table of its own. Without the installer files (a Terminal bundle made before launch existed) it says so in
 words instead of guessing.
 """
 
@@ -19,6 +19,7 @@ from typing import Any
 
 from strata_cli.launch import settings as S
 from strata_common import gpu_fit
+from strata_common.catalog import DSV41_CONTEXT
 
 
 class CatalogUnavailable(RuntimeError):
@@ -193,7 +194,7 @@ def intel_arc_cards(root: str = "/sys/class/drm") -> list[dict]:
 
 
 class Catalog:
-    """setup.py's tables through strata_mcp's `Strata` object (the app's own catalog code)."""
+    """The catalog's tables through strata_mcp's `Strata` object (the app's own catalog code)."""
 
     def __init__(self, src: str | os.PathLike | None = None, root: str | os.PathLike | None = None,
                  hardware: dict | None = None):
@@ -361,7 +362,7 @@ class Catalog:
         """The recommended context for this computer and model (setup.py: VRAM rule, then the RAM rule)."""
         hw = hw or self.hardware()
         if self.strata.multi_family(family):                   # DeepSeek-V4.1-Flash: the context the engine was checked at
-            return int(getattr(self.strata.setup_module(), "DSV41_CONTEXT", 8192))
+            return DSV41_CONTEXT
         if hw.get("mac") and hw.get("ram_gb"):                 # a Mac: the context by unified memory (strata_control/mac_fit.py)
             mac = self.strata.mac()
             if mac is not None:

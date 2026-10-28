@@ -10,6 +10,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from strata_common.catalog import MMPROJ
 from strata_control import discovery
 from strata_control.discovery import MMPROJ_GB, MTP_FETCH_GB
 
@@ -92,14 +93,9 @@ def mmproj_name(catalog, family: str | None) -> str:
     try:
         _m, families, _c, _s = catalog.tables()
         name = (families.get(family or "") or {}).get("mmproj")
-        if name:
-            return str(name)
-        mod = catalog.strata.setup_module()
-        if mod is not None and getattr(mod, "MMPROJ", None):
-            return str(mod.MMPROJ)
     except Exception:                                        # noqa: BLE001
-        pass
-    return "mmproj-Qwen3.8-Flash-Next-BF16.gguf"
+        name = None
+    return str(name or MMPROJ)
 
 
 def assess(catalog, family: str | None, model: str | None, *, vision: str = "off", model_path: str | None = None,

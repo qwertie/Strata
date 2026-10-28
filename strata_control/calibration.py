@@ -24,6 +24,7 @@ from contextlib import contextmanager
 from pathlib import Path
 
 from strata_common import profiles
+from strata_control.discovery import own_settings_file
 from strata_control.doctor import inspect as inspect_components
 from strata_common.profiles import ProfileError
 from strata_base import atomic as _atomic_mod
@@ -416,7 +417,7 @@ def _replace_bytes(path: Path, payload: bytes) -> None:
 
 def _settings_candidate(hardware_key: str, result: dict) -> tuple[Path, bytes | None, bytes]:
     """Prepare setup's remembered calibration without accepting a corrupt store."""
-    target = _full_folder("setup").settings_path()
+    target = own_settings_file()
     try:
         previous = target.read_bytes()
         settings = json.loads(previous.decode("utf-8"))

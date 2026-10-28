@@ -129,7 +129,7 @@ size stops it before the download starts.
 - The app installs these models by running the same setup, so it has the same checks. The app's host also keeps a short
   starter list of its own (`apps/host/server/real-model-catalog.mjs`). It is for display only. The host refuses to download
   from it, because its files have no hash, and says that models come from the Models screen.
-  (`setup.py`: `REPO_PINS`, `download`, `verify_sha256`; `tools/mtp_fetch.py`; `apps/host/server/image-models.mjs`.)
+  (`strata_common/catalog.py`: `REPO_PINS`; `setup.py`: `download`, `verify_sha256`; `tools/mtp_fetch.py`; `apps/host/server/image-models.mjs`.)
 
 **Engine in the source route.** `setup.py` checks the engine zip against the SHA-256 that GitHub's API publishes for that
 release file. If GitHub cannot say (offline, rate limit), setup warns and installs anyway. `STRATA_SKIP_SHA256=1` switches the

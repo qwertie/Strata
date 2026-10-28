@@ -24,6 +24,7 @@ from pathlib import Path
 from strata_control import discovery
 from strata_control.doctor import inspect as inspect_components
 from strata_control.gguf_preflight import inspect_metadata, real_model_file
+from strata_common import catalog
 from strata_common.profiles import ProfileError
 
 
@@ -426,9 +427,10 @@ def problem_words(issues: list, limit: int = 3, missing: list | None = None) -> 
 UNSUPPORTED_MODEL_TYPE = ("This model type isn't supported by the Strata engine. "
                           "Add it as a Custom model API (llama-server) instead.")
 # The picture readers Strata ships a pinned copy of (setup downloads and checks one of these next to the model).
-# (name, size in bytes) as setup.py pins them: setup would delete a file of that name with another size, so only an exact
-# match is called "the official one".
-PINNED_PROJECTORS = {"mmproj-qwen3.8-flash-next-bf16.gguf": 907543008, "mmproj-f16.gguf": 899283584}
+# (lower-case name, size in bytes) as the catalog pins them: setup would delete a file of that name with another
+# size, so only an exact match is called "the official one".
+PINNED_PROJECTORS = {name.lower(): files[name][0] for name, files in (
+    (catalog.MMPROJ, catalog.ISTA_FILES), (catalog.OWN_PATH_FAMILIES["qwen36"]["mmproj"], catalog.QWEN36_FILES))}
 OUR_PROJECTOR_TYPES = {"qwen3vl_merger"}
 
 
@@ -628,8 +630,6 @@ def _dsv41_plan(path: Path, details) -> dict | None:
     from strata_control import dsv41_sets
     picked = path if stat.S_ISREG(details.st_mode) else None
     if picked is not None and not picked.name.lower().endswith(".gguf"):
-        return None
-    if dsv41_sets.tables() is None:
         return None
     places = [path.parent] if picked is not None else [path]
     found: list[tuple[Path, dict]] = []
