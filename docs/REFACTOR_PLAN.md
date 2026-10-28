@@ -155,3 +155,13 @@ Found during the work; each needs a decision or a later step.
 | A1 | `d757595f` | 493,367 | +219 | the layering test |
 | A2 | `f743b698` | 493,434 | +286 | moves only: imports split where some names moved |
 | A2 | `6333ec2a` | 493,526 | +378 | the engine client moved out of `serve/server.py` (8,901 → about 6,100 lines) |
+| A2 | `27d2e2eb` | 493,565 | +417 | last upward Python imports removed (launch plan, bench, status client, gguf_reader) |
+| A2 | `5d272302` | 493,565 | +417 | `serve/` renamed `strata_server/` |
+| A2 | `f63a0488` | 493,170 | +22 | one copy of each duplicated Python helper (−395) |
+| A2 | `4e991378` | 493,009 | −139 | setup.py uses the shared settings, file, RAM and DeepSeek helpers |
+| A2 | `906b00b2` | 492,982 | −166 | model catalog moved to `strata_common/catalog.py` |
+| A2 | `87d20a5c` | 492,885 | −263 | setup.py's AMD detection built on `engine_component` |
+| A3 | `d1b2c555` | 492,894 | −254 | whole C++ folders moved (moves only) |
+| A3 | `0bb91482` | 492,909 | −239 | 98 files moved out of `src/core` (moves only) |
+| A4 | `874ed84c` | 492,906 | −242 | DeepSeek's OS helpers moved to `base/platform`; pools not merged (see open issues) |
+| A6 | `89a96beb` | 491,154 | −1,994 | 8 SYCL copies replaced by the shared sources (−1,752) |
