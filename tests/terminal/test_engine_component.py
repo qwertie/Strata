@@ -8,7 +8,6 @@ import json
 import os
 import socket
 import subprocess
-import sys
 import tempfile
 import unittest
 import urllib.request
@@ -262,11 +261,11 @@ class WindowsAmd(unittest.TestCase):
     def test_a_removed_nvidia_card_left_in_the_registry_does_not_win(self):      # #3892
         old = {"vendor": "10de", "device": 0x2684, "name": "NVIDIA GeForce RTX 4090", "vram_gb": 24.0}
         new = self.TESTER_A[0]
-        with mock.patch.object(ec, "_windows_display_adapters_registry", return_value=[old, new]),                 mock.patch.object(ec, "_windows_adapters_cim", return_value=[dict(new)]):
+        with mock.patch.object(ec, "windows_registry_adapters", return_value=[old, new]),                 mock.patch.object(ec, "windows_present_adapters", return_value=[dict(new)]):
             self.assertEqual(ec._windows_vendor_backend(), "hip")
-        with mock.patch.object(ec, "_windows_display_adapters_registry", return_value=[old, new]),                 mock.patch.object(ec, "_windows_adapters_cim", return_value=[dict(old), dict(new)]):
+        with mock.patch.object(ec, "windows_registry_adapters", return_value=[old, new]),                 mock.patch.object(ec, "windows_present_adapters", return_value=[dict(old), dict(new)]):
             self.assertEqual(ec._windows_vendor_backend(), "cuda")                  # both really there: NVIDIA first, as before
-        with mock.patch.object(ec, "_windows_display_adapters_registry", return_value=[old, new]),                 mock.patch.object(ec, "_windows_adapters_cim", return_value=[]):
+        with mock.patch.object(ec, "windows_registry_adapters", return_value=[old, new]),                 mock.patch.object(ec, "windows_present_adapters", return_value=[]):
             self.assertEqual(ec._windows_vendor_backend(), "cuda")                  # Windows could not say: nothing is dropped
 
     def test_nvidia_wins_and_an_integrated_radeon_is_not_a_card(self):
@@ -292,16 +291,6 @@ class WindowsAmd(unittest.TestCase):
     def test_detect_backend_on_windows_uses_the_adapters_when_no_tool_answers(self):
         with mock.patch.object(ec.shutil, "which", lambda name: None), mock.patch.object(ec.os, "name", "nt"),                 mock.patch.object(ec, "host_platform", return_value="windows-x86_64"),                 mock.patch.object(ec, "windows_display_adapters", return_value=self.TESTER_A):
             self.assertEqual(ec.detect_backend({}), ("hip", "display adapters"))
-
-    def test_the_arch_table_is_the_one_setup_uses(self):
-        sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
-        import setup as strata_setup
-        self.assertEqual({k: v for k, v in strata_setup._WIN_AMD_DID.items() if k not in strata_setup.AMD_IGPU_PCI},
-                         ec.WIN_AMD_DEVICE_ARCH)
-        self.assertEqual({k: v for k, v in strata_setup.AMD_IGPU_PCI.items() if v == strata_setup.STRIX_HALO_ARCH}, ec.WIN_AMD_UMA_IDS)
-        for device in strata_setup.AMD_IGPU_PCI:
-            if device not in ec.WIN_AMD_UMA_IDS:
-                self.assertIn(device, ec.WIN_AMD_IGPU_IDS)
 
 
 class WrongCardFamily(unittest.TestCase):

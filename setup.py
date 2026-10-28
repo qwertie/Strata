@@ -68,6 +68,8 @@ from strata_base import tls
 tls.install()      # #3722: HTTPS checks the server against the operating system's certificates (what Chrome and curl.exe do)
 from strata_base import atomic, transfer
 from strata_common import draft_layer
+from strata_common import engine_component as EC
+from strata_common.engine_component import AMD_IGPU_PCI
 from strata_base.memory import read_ram, windows_memory_status
 from strata_base.path_compare import same_drive, same_folder
 from strata_control.discovery import config_files, in_app_mode, in_trash, own_settings_file as settings_path
@@ -3004,18 +3006,11 @@ def rocm_wanted(index, listing=None):
     return version, note
 
 
-# Strix Halo (Ryzen AI Max 380 / 385 / 390 / 395 + PRO: Radeon 8040S / 8050S / 8060S, RDNA 3.5, gfx1151) and the other
-# integrated Radeons it must never be taken for.  pci.ids lists ONE device id for the whole Strix Halo family
-# ("1586  Strix Halo [Radeon Graphics / Radeon 8050S Graphics / Radeon 8060S Graphics]"; the 8040S shares it: the
-# three differ by their CU count, 40 / 32 / 16, not by id).  Aurora's real answers (tools/test_setup_strix_halo.py):
-# KFD gfx_target_version 110501, vendor_id 4098, device_id 5510 (0x1586), simd_count 80.
+# Strix Halo (RDNA 3.5, gfx1151) and the other integrated Radeons it must never be taken for: AMD_IGPU_PCI.  Aurora's
+# real answers (tools/test_setup_strix_halo.py): KFD gfx_target_version 110501, vendor_id 4098, device_id 5510
+# (0x1586), simd_count 80.
 STRIX_HALO_ARCH = "gfx1151"
 STRIX_HALO_PCI_IDS = frozenset({0x1586})
-AMD_IGPU_PCI = {0x1586: "gfx1151",                                    # Strix Halo
-                0x150E: "gfx1150",                                    # Strix Point: Radeon 880M / 890M
-                0x1114: "gfx1152", 0x1902: "gfx1152",                 # Krackan Point (Krackan2): Radeon 840M / 860M
-                0x15BF: "gfx1103", 0x15C8: "gfx1103", 0x164F: "gfx1103",   # Phoenix: Radeon 740M / 760M / 780M
-                0x1900: "gfx1103", 0x1901: "gfx1103"}                 # Hawk Point
 STRIX_HALO_BY_SIMDS = {80: "8060S", 64: "8050S", 32: "8040S"}   # KFD simd_count (2 per CU): 40 / 32 / 16 CUs
 UMA_OS_LEFT_GB = 6             # the share of the unified memory kept for the OS: what the engine's device_free_bytes() leaves
 
@@ -3489,121 +3484,29 @@ def amd_parse_gpus(text, amd) -> list:
 WIN_HIP_ASSET = "strata-windows-x64-hip.zip"   # releases up to 0.1.45; 0.2 releases publish per-card packages in the signed feed (engine_from_feed)
 WIN_HIP_MIN_ENGINE = max(MIN_ENGINE, (0, 1, 33))         # the first release with a Windows HIP engine
 WIN_AMD_DRIVER = "https://www.amd.com/en/support/download/drivers.html"
-# PCI device ids (VEN_1002) of the cards the AMD backend knows; the names below cover a card whose id is not listed
-_WIN_AMD_DID = {0x744C: "gfx1100", 0x7448: "gfx1100", 0x745E: "gfx1100",            # RX 7900 XTX/XT/GRE, W7900, W7800
-                0x747E: "gfx1101",                                                  # RX 7800 XT / 7700 XT
-                0x7480: "gfx1102",                                                  # RX 7600 / 7600 XT
-                0x7590: "gfx1200",                                                  # RX 9060 XT
-                0x7550: "gfx1201", 0x7551: "gfx1201",                               # RX 9070 / 9070 XT, AI PRO R9700
-                0x73BF: "gfx1030", 0x73AF: "gfx1030", 0x73A5: "gfx1030",            # RX 6800 / 6800 XT / 6900 XT / 6950 XT
-                0x73DF: "gfx1031",                                                  # RX 6700 XT / 6750 XT / 6800M (#881)
-                **AMD_IGPU_PCI}                                                     # Ryzen APUs: 0x1586 = Strix Halo (gfx1151)
-_WIN_AMD_NAME = ((re.compile(r"\b80[456]0S\b", re.I), "gfx1151"),                   # Radeon 8060S / 8050S / 8040S
-                 (re.compile(r"\b8[89]0M\b", re.I), "gfx1150"),                     # Radeon 890M / 880M
-                 (re.compile(r"\b8[46]0M\b", re.I), "gfx1152"),                     # Radeon 860M / 840M
-                 (re.compile(r"\b7[468]0M\b", re.I), "gfx1103"),                    # Radeon 780M / 760M / 740M
-                 (re.compile(r"\b9070\b|R9700", re.I), "gfx1201"),
-                 (re.compile(r"\b9060\b", re.I), "gfx1200"),
-                 (re.compile(r"RX\s*7900|W7900|W7800", re.I), "gfx1100"),
-                 (re.compile(r"RX\s*7800|RX\s*7700(?!\s*S)|W7700", re.I), "gfx1101"),
-                 (re.compile(r"RX\s*7600|W7600|W7500", re.I), "gfx1102"),
-                 (re.compile(r"RX\s*6800(?!\s*[MS])|RX\s*6900|RX\s*6950|W6800", re.I), "gfx1030"))
-_DISPLAY_CLASS = r"SYSTEM\CurrentControlSet\Control\Class\{4d36e968-e325-11ce-bfc1-08002be10318}"
 
 
-def _win_display_adapters() -> list[dict]:
-    """The display adapters present ({"name", "pnp"}), from Win32_VideoController."""
-    ps = ("Get-CimInstance Win32_VideoController | ForEach-Object { $_.Name + '|' + $_.PNPDeviceID + '|' + "
-          "$_.AdapterRAM }")
-    text = out(["powershell", "-NoProfile", "-NonInteractive", "-Command", ps])
-    found = []
-    for line in text.splitlines():
-        parts = line.strip().split("|")
-        if len(parts) >= 2 and parts[1]:
-            ram = parts[2] if len(parts) > 2 else ""
-            found.append({"name": parts[0].strip(), "pnp": parts[1].strip(),
-                          "ram": int(ram) if ram.strip().isdigit() else 0})
-    return found
-
-
-def _win_display_registry() -> list[dict]:
-    """Each display driver instance's description, matching PCI id and VRAM size (the 64-bit value; the WMI one stops
-    at 4 GB), from the display-class registry key - readable without admin."""
-    found = []
-    try:
-        import winreg
-        cls = winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, _DISPLAY_CLASS)
-    except (ImportError, OSError):
-        return found
-    i = 0
-    while True:
-        try:
-            sub = winreg.EnumKey(cls, i)
-        except OSError:
-            break
-        i += 1
-        if not sub.isdigit():
-            continue
-        try:
-            key = winreg.OpenKey(cls, sub)
-        except OSError:
-            continue
-        vals = {}
-        for name in ("DriverDesc", "MatchingDeviceId", "HardwareInformation.qwMemorySize", "DriverVersion"):
-            try:
-                vals[name] = winreg.QueryValueEx(key, name)[0]
-            except OSError:
-                pass
-        found.append(vals)
-    return found
-
-
-def _pci_device_id(text: str) -> int | None:
-    m = re.search(r"VEN_1002&DEV_([0-9A-F]{4})", str(text or ""), re.I)
-    return int(m.group(1), 16) if m else None
-
-
-def win_amd_arch(device_id: int | None, name: str) -> str:
-    """A Windows AMD adapter's architecture from its PCI device id, else its name; "" when it is none Strata knows
-    (an integrated Radeon, an older card)."""
-    if device_id in _WIN_AMD_DID:
-        return _WIN_AMD_DID[device_id]
-    return next((a for rx, a in _WIN_AMD_NAME if rx.search(name or "")), "")
-
-
-def amd_gpus_windows(adapters=None, registry=None) -> list[dict]:
+def amd_gpus_windows(present=None, registry=None) -> list[dict]:
     """The AMD display adapters present, in display-adapter order (setup's numbering until the HIP engine is
-    installed), with the arch Strata would run them as ("" = unknown: listed, not supported).  adapters / registry:
-    tools/test_setup_amd.py passes mocked ones."""
-    adapters = _win_display_adapters() if adapters is None else adapters
-    registry = _win_display_registry() if registry is None else registry
-    if not adapters:                                   # no WMI answer: the registry alone (it can list removed cards)
-        adapters = [{"name": r.get("DriverDesc", ""), "pnp": r.get("MatchingDeviceId", ""), "ram": 0} for r in registry]
-    used = set()
+    installed), with the arch Strata would run them as ("" = unknown: listed, not supported).  Integrated Radeons are
+    listed too, so that amd_problem can say why one cannot be used.  present / registry: rows as
+    EC.windows_present_adapters / EC.windows_registry_adapters give them (tools/test_setup_amd.py passes mocked
+    ones)."""
+    present = EC.windows_present_adapters() if present is None else present
+    unmatched = [r for r in (EC.windows_registry_adapters() if registry is None else registry) if r["vendor"] == "1002"]
     found = []
-    for ad in adapters:
-        did = _pci_device_id(ad.get("pnp"))
-        if did is None:
-            continue                                   # not an AMD (VEN_1002) PCI device
-        vram, driver = 0.0, ""
-        for k, r in enumerate(registry):               # the same card's driver instance: its 64-bit VRAM size
-            if k in used or _pci_device_id(r.get("MatchingDeviceId")) != did:
-                continue
-            if r.get("DriverDesc") and ad.get("name") and r["DriverDesc"].strip() != ad["name"].strip():
-                continue
-            used.add(k)
-            mem = r.get("HardwareInformation.qwMemorySize")
-            if isinstance(mem, bytes):
-                mem = int.from_bytes(mem[:8], "little")
-            vram = int(mem) / 2 ** 30 if isinstance(mem, int) and mem > 0 else 0.0
-            driver = str(r.get("DriverVersion") or "")
-            break
-        if vram == 0.0 and ad.get("ram", 0) > 0:
-            vram = ad["ram"] / 2 ** 30                 # WMI's 32-bit figure (at most 4 GB)
-        arch = win_amd_arch(did, ad.get("name", ""))
-        name = ad.get("name") or AMD_NAMES.get(arch, f"AMD Radeon (device {did:04X})")
-        g = {"index": len(found), "name": name, "vram_gb": vram, "arch": arch or f"unknown (PCI {did:04X})",
-             "driver": driver or "amd", "vendor": "amd", "pci_id": did}
+    for ad in present or list(unmatched):             # no WMI answer: the registry alone (it can list removed cards)
+        if ad["vendor"] != "1002":
+            continue
+        did, name = ad["device"], ad.get("name", "").strip()
+        reg = next((r for r in unmatched                # the same card's driver instance: its 64-bit VRAM size
+                    if r["device"] == did and (not r["name"] or not name or r["name"].strip() == name)), {})
+        if reg:
+            unmatched.remove(reg)
+        arch = EC.get_amd_arch(did, name)
+        g = {"index": len(found), "name": name or AMD_NAMES.get(arch, f"AMD Radeon (device {did:04X})"),
+             "vram_gb": reg.get("vram_gb") or ad.get("vram_gb") or 0.0, "arch": arch or f"unknown (PCI {did:04X})",
+             "driver": reg.get("driver") or "amd", "vendor": "amd", "pci_id": did}
         found.append(amd_apply_uma(g))                 # Strix Halo: the registry's figure is the BIOS carve-out only
     return found
 
@@ -3628,7 +3531,6 @@ def hip_probe_path() -> Path:
     if own.exists():
         return own
     try:
-        from strata_common import engine_component as EC
         found = EC.resolve(backend="hip", full=False)
         return Path(found.root) / name
     except Exception:                                  # noqa: BLE001 - no component, a damaged one: the old answer
@@ -6789,7 +6691,6 @@ def control_engine_step(gpu, vision):
     there and never fetched or built. A model can be downloaded and prepared before the engine is installed; the run config
     names "component:strata-engine" and the engine is looked up when the model is loaded. llama.cpp's source zip is fetched
     for gguf-py only (the preparation tools), as setup always did: no git, no compiler."""
-    from strata_common import engine_component as EC
     llama = get_llama_cpp()
     ok(f"llama.cpp {LLAMA_CPP_COMMIT[:7]} (gguf-py for the preparation tools)")
     try:
@@ -7710,7 +7611,6 @@ def mac_control_setup(a) -> int:
     stream = MF.streams(model, ram)
 
     step(4, "the Strata engine (Metal)")
-    from strata_common import engine_component as EC
     llama = get_llama_cpp()                            # gguf-py for the preparation tools only: no git, no compiler
     ok(f"llama.cpp {LLAMA_CPP_COMMIT[:7]} (gguf-py for the preparation tools)")
     reader = None

@@ -225,18 +225,7 @@ class State:
 # ---------------------------------------------------------------------------------------------- hardware
 
 def _gfx_names() -> list[str]:
-    found: list[str] = []
-    kfd = Path("/sys/class/kfd/kfd/topology/nodes")
-    if kfd.is_dir():
-        for node in sorted(kfd.iterdir()):
-            try:
-                text = (node / "properties").read_text()
-            except OSError:
-                continue
-            match = re.search(r"^gfx_target_version\s+(\d+)", text, re.MULTILINE)
-            if match and int(match.group(1)) > 0:
-                value = int(match.group(1))
-                found.append(f"gfx{value // 10000}{(value // 100) % 100:x}{value % 100:x}")
+    found = ec.hip_archs_present("/sys/class/kfd/kfd/topology/nodes")
     if not found:
         tool = shutil.which("rocminfo") if os.name != "nt" else shutil.which("hipInfo")
         if tool:

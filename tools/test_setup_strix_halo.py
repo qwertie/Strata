@@ -166,7 +166,7 @@ class PciIds(unittest.TestCase):
         self.assertEqual([a for a in setup.AMD_IGPU_PCI.values() if a == "gfx1151"], ["gfx1151"])
 
     def test_windows_id_then_name(self):
-        f = setup.win_amd_arch
+        f = setup.EC.get_amd_arch
         self.assertEqual(f(0x1586, ""), "gfx1151")
         self.assertEqual(f(0x1586, "AMD Radeon(TM) Graphics"), "gfx1151")           # the generic name Windows may show
         for name in ("AMD Radeon(TM) 8060S Graphics", "AMD Radeon(TM) 8050S Graphics", "AMD Radeon(TM) 8040S Graphics"):
@@ -337,11 +337,9 @@ class WindowsDetection(unittest.TestCase):
         self.addCleanup(lambda: setattr(setup, "WIN", self.win))
 
     def adapters(self):
-        return ([{"name": "AMD Radeon(TM) 8060S Graphics", "pnp": r"PCI\VEN_1002&DEV_1586&SUBSYS_1C3E1D05&REV_C1\4&2",
-                  "ram": 4294967295}],
-                [{"DriverDesc": "AMD Radeon(TM) 8060S Graphics",
-                  "MatchingDeviceId": r"PCI\VEN_1002&DEV_1586&REV_C1", "HardwareInformation.qwMemorySize": 4 * GIB,
-                  "DriverVersion": "32.0.21013.1000"}])
+        return ([{"vendor": "1002", "device": 0x1586, "name": "AMD Radeon(TM) 8060S Graphics", "vram_gb": 4.0}],
+                [{"vendor": "1002", "device": 0x1586, "name": "AMD Radeon(TM) 8060S Graphics", "vram_gb": 4.0,
+                  "driver": "32.0.21013.1000"}])
 
     def test_strix_halo(self):
         ad, reg = self.adapters()
@@ -357,9 +355,9 @@ class WindowsDetection(unittest.TestCase):
 
     def test_strix_halo_and_a_7900_xtx(self):
         ad, reg = self.adapters()
-        ad.append({"name": "AMD Radeon RX 7900 XTX", "pnp": r"PCI\VEN_1002&DEV_744C&SUBSYS_1&REV_C8\4&3", "ram": 0})
-        reg.append({"DriverDesc": "AMD Radeon RX 7900 XTX", "MatchingDeviceId": r"PCI\VEN_1002&DEV_744C&REV_C8",
-                    "HardwareInformation.qwMemorySize": 24 * GIB, "DriverVersion": "32.0.21013.1000"})
+        ad.append({"vendor": "1002", "device": 0x744C, "name": "AMD Radeon RX 7900 XTX", "vram_gb": 0.0})
+        reg.append({"vendor": "1002", "device": 0x744C, "name": "AMD Radeon RX 7900 XTX", "vram_gb": 24.0,
+                    "driver": "32.0.21013.1000"})
         g = setup.amd_gpus_windows(ad, reg)
         self.assertEqual([x["arch"] for x in g], ["gfx1151", "gfx1100"])
         self.assertTrue(g[0]["uma"] and not g[1].get("uma"))
@@ -369,7 +367,7 @@ class WindowsDetection(unittest.TestCase):
         for did, name, arch in ((0x150E, "AMD Radeon(TM) 890M Graphics", "gfx1150"),
                                 (0x1114, "AMD Radeon(TM) 860M Graphics", "gfx1152"),
                                 (0x15BF, "AMD Radeon(TM) 780M Graphics", "gfx1103")):
-            ad = [{"name": name, "pnp": rf"PCI\VEN_1002&DEV_{did:04X}&REV_C1\4&2", "ram": 512 << 20}]
+            ad = [{"vendor": "1002", "device": did, "name": name, "vram_gb": 0.5}]
             g = setup.amd_gpus_windows(ad, [])[0]
             self.assertEqual(g["arch"], arch)
             self.assertFalse(g.get("uma"))

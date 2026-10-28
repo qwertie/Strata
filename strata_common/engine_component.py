@@ -556,14 +556,28 @@ def _drm_vendor_backend(root: str = "/sys/class/drm") -> str | None:
     return None
 
 
-#: Windows AMD cards by PCI device id (VEN_1002), the same table as setup.py's _WIN_AMD_DID (tests/terminal/test_engine_component.py
-#: keeps the two equal): the architecture Strata runs the card as. Integrated Radeons are not in it (the one APU that is supported,
-#: Strix Halo, 0x1586, is in WIN_AMD_UMA_IDS), so an integrated Radeon beside a card never counts as "the GPU".
-WIN_AMD_DEVICE_ARCH = {0x744C: "gfx1100", 0x7448: "gfx1100", 0x745E: "gfx1100", 0x747E: "gfx1101", 0x7480: "gfx1102",
-                       0x7590: "gfx1200", 0x7550: "gfx1201", 0x7551: "gfx1201",
-                       0x73BF: "gfx1030", 0x73AF: "gfx1030", 0x73A5: "gfx1030", 0x73DF: "gfx1031"}
-WIN_AMD_UMA_IDS = {0x1586: "gfx1151"}                                   # Strix Halo: unified memory, supported
-WIN_AMD_IGPU_IDS = {0x150E, 0x1114, 0x1902, 0x15BF, 0x15C8, 0x164F, 0x1900, 0x1901, 0x1681, 0x1638, 0x1636, 0x15D8, 0x15E7}
+#: AMD graphics cards by PCI device id (VEN_1002): the architecture Strata runs the card as. Integrated Radeons are in
+#: AMD_IGPU_PCI instead; get_amd_arch reads both.
+WIN_AMD_DEVICE_ARCH = {0x744C: "gfx1100", 0x7448: "gfx1100", 0x745E: "gfx1100",   # RX 7900 XTX/XT/GRE, W7900, W7800
+                       0x747E: "gfx1101",                                         # RX 7800 XT / 7700 XT
+                       0x7480: "gfx1102",                                         # RX 7600 / 7600 XT
+                       0x7590: "gfx1200",                                         # RX 9060 XT
+                       0x7550: "gfx1201", 0x7551: "gfx1201",                      # RX 9070 / 9070 XT, AI PRO R9700
+                       0x73BF: "gfx1030", 0x73AF: "gfx1030", 0x73A5: "gfx1030",   # RX 6800 / 6800 XT / 6900 XT / 6950
+                       0x73DF: "gfx1031"}                                         # RX 6700 XT / 6750 XT / 6800M (#881)
+#: Integrated Radeons (Ryzen APUs) by PCI device id, on Linux and Windows. Strix Halo (Ryzen AI Max 380 / 385 / 390 /
+#: 395 + PRO: Radeon 8040S / 8050S / 8060S, gfx1151, unified memory) is the one Strata supports by default. pci.ids
+#: lists ONE device id for the whole Strix Halo family ("1586  Strix Halo [Radeon Graphics / Radeon 8050S Graphics /
+#: Radeon 8060S Graphics]"; the 8040S shares it: the three differ by their CU count, 40 / 32 / 16, not by id).
+AMD_IGPU_PCI = {0x1586: "gfx1151",                                    # Strix Halo
+                0x150E: "gfx1150",                                    # Strix Point: Radeon 880M / 890M
+                0x1114: "gfx1152", 0x1902: "gfx1152",                 # Krackan Point (Krackan2): Radeon 840M / 860M
+                0x15BF: "gfx1103", 0x15C8: "gfx1103", 0x164F: "gfx1103",   # Phoenix: Radeon 740M / 760M / 780M
+                0x1900: "gfx1103", 0x1901: "gfx1103"}                 # Hawk Point
+#: The integrated Radeons that never count as "the GPU" when picking an engine: every one in AMD_IGPU_PCI but Strix
+#: Halo, and older ones with no architecture there.
+WIN_AMD_IGPU_IDS = ({d for d, arch in AMD_IGPU_PCI.items() if arch != "gfx1151"}
+                    | {0x1681, 0x1638, 0x1636, 0x15D8, 0x15E7})
 _WIN_DISPLAY_CLASS = r"SYSTEM\CurrentControlSet\Control\Class\{4d36e968-e325-11ce-bfc1-08002be10318}"
 
 
@@ -574,13 +588,15 @@ def gfx_from_name(name: str) -> str:
     text = re.sub(r"\s+", " ", str(name or "")).upper()
     if "AMD" not in text and "RADEON" not in text and "RYZEN" not in text:
         return ""
-    if re.search(r"\b(?:8060S|8050S)\b", text) or "RYZEN AI MAX" in text:
+    if re.search(r"\b80[456]0S\b", text) or "RYZEN AI MAX" in text:
         return "gfx1151"
     if re.search(r"\bR9700\b|\bR97\d\d\b|\bAI PRO R97", text) or re.search(r"\bRX 9070\b", text):
         return "gfx1201"
     if re.search(r"\bRX 906\d\b|\bR96\d\d\b|\bAI PRO R96", text):
         return "gfx1200"
-    found = re.search(r"\b(?:RX |W)(7[5-9]\d\d)\b", text)
+    if re.search(r"\bW7800\b", text):                                   # a Navi 31 like the W7900, not a 7800 XT
+        return "gfx1100"
+    found = re.search(r"\b(?:RX |W)(7[5-9]\d\d)M?\b", text)
     if found:
         series = int(found.group(1)) // 100
         return {79: "gfx1100", 78: "gfx1101", 77: "gfx1101", 76: "gfx1102", 75: "gfx1102"}[series]
@@ -588,9 +604,9 @@ def gfx_from_name(name: str) -> str:
         return "gfx1103"
     if re.search(r"\b(?:880M|890M)\b", text):
         return "gfx1150"
-    if re.search(r"\b860M\b", text):
+    if re.search(r"\b8[46]0M\b", text):
         return "gfx1152"
-    found = re.search(r"\bRX (6\d{3})\b", text)
+    found = re.search(r"\b(?:RX |W)(6\d{3})\b", text)
     if found:
         number = int(found.group(1))
         if number >= 6800:
@@ -604,9 +620,10 @@ def gfx_from_name(name: str) -> str:
     return ""
 
 
-def _windows_adapters_cim() -> list[dict]:
-    """Second source when the registry key lists nothing: PowerShell's Win32_VideoController (PNPDeviceID has VEN_/DEV_). It can fail for
-    a limited account, so every failure is an empty answer."""
+def windows_present_adapters() -> list[dict]:
+    """Lists the display adapters that are in the PC now, in Win32_VideoController's order (PowerShell; PNPDeviceID
+    has VEN_/DEV_), described as in windows_display_adapters; vram_gb is WMI's 32-bit figure (at most 4 GB). It can
+    fail for a limited account, so every failure is an empty answer."""
     if os.name != "nt":
         return []
     shell = shutil.which("powershell") or shutil.which("pwsh")
@@ -635,19 +652,21 @@ def _windows_adapters_cim() -> list[dict]:
 def windows_display_adapters() -> list[dict]:
     """The display adapters Windows has a driver for: the display-class registry key (readable without admin and without running
     anything), then Win32_VideoController when the key lists nothing: {"vendor": "10de"|"1002"|"8086"|..., "device": int, "name",
-    "vram_gb"}. Empty off Windows or when neither can be read."""
-    found = _windows_display_adapters_registry()
+    "vram_gb"}, plus "driver" (the driver version) from the registry. Empty off Windows or when neither can be read."""
+    found = windows_registry_adapters()
     if len({a.get("vendor") for a in found} & {"10de", "1002"}) > 1:
         # The registry keeps the driver entry of a card that was taken out (an NVIDIA card swapped for a Radeon, #3892): when two makes are
         # listed, only the adapters Windows reports as present now count.
-        present = {(a["vendor"], a["device"]) for a in _windows_adapters_cim()}
+        present = {(a["vendor"], a["device"]) for a in windows_present_adapters()}
         now = [a for a in found if (a["vendor"], a["device"]) in present]
         if now:
             return now
-    return found or _windows_adapters_cim()
+    return found or windows_present_adapters()
 
 
-def _windows_display_adapters_registry() -> list[dict]:
+def windows_registry_adapters() -> list[dict]:
+    """Lists the display driver instances in the display-class registry key, which can include a card that was taken
+    out, with each one's 64-bit VRAM size (the WMI figure stops at 4 GB) and driver version."""
     found: list[dict] = []
     try:
         import winreg
@@ -668,7 +687,7 @@ def _windows_display_adapters_registry() -> list[dict]:
         except OSError:
             continue
         values = {}
-        for name in ("DriverDesc", "MatchingDeviceId", "HardwareInformation.qwMemorySize"):
+        for name in ("DriverDesc", "MatchingDeviceId", "HardwareInformation.qwMemorySize", "DriverVersion"):
             try:
                 values[name] = winreg.QueryValueEx(key, name)[0]
             except OSError:
@@ -680,7 +699,7 @@ def _windows_display_adapters_registry() -> list[dict]:
         if isinstance(memory, bytes):
             memory = int.from_bytes(memory[:8], "little")
         found.append({"vendor": match.group(1).lower(), "device": int(match.group(2), 16),
-                      "name": str(values.get("DriverDesc") or ""),
+                      "name": str(values.get("DriverDesc") or ""), "driver": str(values.get("DriverVersion") or ""),
                       "vram_gb": (int(memory) / 2 ** 30) if isinstance(memory, int) and memory > 0 else 0.0})
     return found
 
@@ -693,16 +712,22 @@ def windows_amd_cards(adapters: list[dict] | None = None) -> list[dict]:
         if adapter.get("vendor") != "1002":
             continue
         device = adapter.get("device")
-        arch = WIN_AMD_DEVICE_ARCH.get(device) or WIN_AMD_UMA_IDS.get(device) or ""
-        if not arch and device not in WIN_AMD_IGPU_IDS:
-            guess = gfx_from_name(adapter.get("name", ""))              # a card whose id is not in the table: its name says
-            if guess in ("gfx1103", "gfx1150", "gfx1152"):               # (those are integrated Radeons)
-                continue
-            arch = guess
-        if not arch and (device in WIN_AMD_IGPU_IDS or float(adapter.get("vram_gb") or 0) < 3.0):
+        arch = get_amd_arch(device, adapter.get("name", ""))
+        if (device in WIN_AMD_IGPU_IDS or arch in _AMD_IGPU_ONLY_ARCHS
+                or not arch and float(adapter.get("vram_gb") or 0) < 3.0):
             continue                                                    # an integrated Radeon (512 MB of carve-out)
         cards.append({"arch": arch, "name": adapter.get("name", ""), "device": device})
     return cards
+
+
+def get_amd_arch(device: int | None, name: str) -> str:
+    """Gets the architecture an AMD display adapter is, from its PCI device id (a card or an integrated Radeon), else
+    from its marketing name; "" when neither says."""
+    return WIN_AMD_DEVICE_ARCH.get(device) or AMD_IGPU_PCI.get(device) or gfx_from_name(name)
+
+
+#: The architectures only integrated Radeons have, which windows_amd_cards leaves out (Strix Halo's gfx1151 is not one).
+_AMD_IGPU_ONLY_ARCHS = set(AMD_IGPU_PCI.values()) - {"gfx1151"}
 
 
 def _windows_vendor_backend(adapters: list[dict] | None = None) -> str | None:

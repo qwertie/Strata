@@ -110,9 +110,9 @@ class Rx6000Detection(KfdDetection):
 
     def test_windows_ids_and_names(self):
         for device, arch in ((0x73BF, "gfx1030"), (0x73AF, "gfx1030"), (0x73A5, "gfx1030"), (0x73DF, "gfx1031")):
-            self.assertEqual(setup.win_amd_arch(device, ""), arch)
-        self.assertEqual(setup.win_amd_arch(None, "AMD Radeon RX 6900 XT"), "gfx1030")
-        self.assertEqual(setup.win_amd_arch(0x744C, "AMD Radeon RX 7900 XTX"), "gfx1100")      # an RX 7000 card is not RDNA2
+            self.assertEqual(setup.EC.get_amd_arch(device, ""), arch)
+        self.assertEqual(setup.EC.get_amd_arch(None, "AMD Radeon RX 6900 XT"), "gfx1030")
+        self.assertEqual(setup.EC.get_amd_arch(0x744C, "AMD Radeon RX 7900 XTX"), "gfx1100")   # not RDNA2
 
 
 class GpuLists(unittest.TestCase):
@@ -248,23 +248,19 @@ class WindowsDetection(unittest.TestCase):
     """Windows: the AMD cards from the display adapters (mocked Win32_VideoController rows and display-class registry
     values), the HIP runtime's numbering from `strata-device --list-devices`, and the card setup chose matched to its
     HIP ordinal (#325: an integrated Radeon is HIP's device 0)."""
-    ADAPTERS = [  # Win32_VideoController: name, PNPDeviceID, AdapterRAM (32-bit: at most 4 GB)
-        {"name": "NVIDIA GeForce RTX 5070", "pnp": r"PCI\VEN_10DE&DEV_2F04&SUBSYS_1234&REV_A1\4&1", "ram": 4293918720},
-        {"name": "AMD Radeon RX 9070 XT", "pnp": r"PCI\VEN_1002&DEV_7550&SUBSYS_0E3B1002&REV_C0\6&2", "ram": 4293918720},
-        {"name": "AMD Radeon(TM) Graphics", "pnp": r"PCI\VEN_1002&DEV_164E&SUBSYS_88771043&REV_C1\4&3", "ram": 536870912},
-        {"name": "AMD Radeon RX 7800 XT", "pnp": r"PCI\VEN_1002&DEV_7499&SUBSYS_0000&REV_C8\6&4", "ram": 4293918720},
+    ADAPTERS = [  # Win32_VideoController (EC.windows_present_adapters): its VRAM figure is 32-bit, at most 4 GB
+        {"vendor": "10de", "device": 0x2F04, "name": "NVIDIA GeForce RTX 5070", "vram_gb": 4.0},
+        {"vendor": "1002", "device": 0x7550, "name": "AMD Radeon RX 9070 XT", "vram_gb": 4.0},
+        {"vendor": "1002", "device": 0x164E, "name": "AMD Radeon(TM) Graphics", "vram_gb": 0.5},
+        {"vendor": "1002", "device": 0x7499, "name": "AMD Radeon RX 7800 XT", "vram_gb": 4.0},
     ]
-    REGISTRY = [  # the display class's driver instances: 64-bit VRAM size (as int, or as bytes)
-        {"DriverDesc": "NVIDIA GeForce RTX 5070", "MatchingDeviceId": r"PCI\VEN_10DE&DEV_2F04",
-         "HardwareInformation.qwMemorySize": 12 << 30},
-        {"DriverDesc": "AMD Radeon RX 6600", "MatchingDeviceId": r"PCI\VEN_1002&DEV_73FF",     # a removed card
-         "HardwareInformation.qwMemorySize": 8 << 30},
-        {"DriverDesc": "AMD Radeon RX 9070 XT", "MatchingDeviceId": r"PCI\VEN_1002&DEV_7550&REV_C0",
-         "HardwareInformation.qwMemorySize": (16 << 30).to_bytes(8, "little"), "DriverVersion": "32.0.21013.1000"},
-        {"DriverDesc": "AMD Radeon(TM) Graphics", "MatchingDeviceId": r"PCI\VEN_1002&DEV_164E&REV_C1",
-         "HardwareInformation.qwMemorySize": 512 << 20},
-        {"DriverDesc": "AMD Radeon RX 7800 XT", "MatchingDeviceId": r"PCI\VEN_1002&DEV_7499",
-         "HardwareInformation.qwMemorySize": 16 << 30},
+    REGISTRY = [  # the display class's driver instances (EC.windows_registry_adapters): the 64-bit VRAM size
+        {"vendor": "10de", "device": 0x2F04, "name": "NVIDIA GeForce RTX 5070", "vram_gb": 12.0, "driver": ""},
+        {"vendor": "1002", "device": 0x73FF, "name": "AMD Radeon RX 6600", "vram_gb": 8.0, "driver": ""},  # removed
+        {"vendor": "1002", "device": 0x7550, "name": "AMD Radeon RX 9070 XT", "vram_gb": 16.0,
+         "driver": "32.0.21013.1000"},
+        {"vendor": "1002", "device": 0x164E, "name": "AMD Radeon(TM) Graphics", "vram_gb": 0.5, "driver": ""},
+        {"vendor": "1002", "device": 0x7499, "name": "AMD Radeon RX 7800 XT", "vram_gb": 16.0, "driver": ""},
     ]
     LIST = ("device 0: AMD Radeon(TM) Graphics\n  arch gfx1036, 28.1 GiB, wave32\n"
             "  cannot run: GPU 0 (AMD Radeon(TM) Graphics, gfx1036) is not an architecture this Strata engine was "
@@ -286,7 +282,7 @@ class WindowsDetection(unittest.TestCase):
 
     def test_rx_6800m_is_gfx1031(self):
         """#881: PCI 73DF (RX 6700 XT / 6750 XT / 6800M) is gfx1031, not an unknown id."""
-        self.assertEqual(setup.win_amd_arch(0x73DF, "AMD Radeon RX 6800M"), "gfx1031")
+        self.assertEqual(setup.EC.get_amd_arch(0x73DF, "AMD Radeon RX 6800M"), "gfx1031")
         self.assertIsNone(setup.amd_problem({"arch": "gfx1031"}))
 
     def test_cpu_vision_build_uses_the_visual_studio_environment(self):
@@ -303,7 +299,8 @@ class WindowsDetection(unittest.TestCase):
     def test_registry_alone(self):
         """No WMI answer: the registry's own list (which can hold a removed card)."""
         g = setup.amd_gpus_windows([], self.REGISTRY)
-        self.assertEqual([x["arch"] for x in g if not x["arch"].startswith("unknown")], ["gfx1201", "gfx1101"])
+        self.assertEqual([x["arch"] for x in g if not x["arch"].startswith("unknown")],
+                         ["gfx1032", "gfx1201", "gfx1101"])
 
     def test_arch_names(self):
         for name, arch in (("AMD Radeon RX 9070 GRE", "gfx1201"), ("AMD Radeon AI PRO R9700", "gfx1201"),
@@ -311,8 +308,8 @@ class WindowsDetection(unittest.TestCase):
                            ("AMD Radeon PRO W7800", "gfx1100"), ("AMD Radeon RX 7700 XT", "gfx1101"),
                            ("AMD Radeon RX 7600", "gfx1102"), ("AMD Radeon RX 6950 XT", "gfx1030"),
                            ("AMD Radeon RX 6800M", ""), ("AMD Radeon 780M Graphics", "gfx1103"), ("AMD Radeon RX 7700S", "")):
-            self.assertEqual(setup.win_amd_arch(None, name), arch, name)
-        self.assertEqual(setup.win_amd_arch(0x744C, "whatever"), "gfx1100")
+            self.assertEqual(setup.EC.get_amd_arch(None, name), arch, name)
+        self.assertEqual(setup.EC.get_amd_arch(0x744C, "whatever"), "gfx1100")
 
     def test_list_devices(self):
         h = setup.hip_devices(text=self.LIST)
@@ -354,11 +351,11 @@ class WindowsDetection(unittest.TestCase):
         """amd_gpus() on Windows: HIP's numbering once the HIP engine answers, the display adapters before."""
         with mock.patch.object(setup, "WIN", True), \
                 mock.patch.object(setup, "hip_devices", lambda probe=None, text=None: None), \
-                mock.patch.object(setup, "amd_gpus_windows", lambda adapters=None, registry=None: ["display"]):
+                mock.patch.object(setup, "amd_gpus_windows", lambda present=None, registry=None: ["display"]):
             self.assertEqual(setup.amd_gpus(), ["display"])
         with mock.patch.object(setup, "WIN", True), \
                 mock.patch.object(setup, "hip_devices", lambda probe=None, text=None: ["hip"]), \
-                mock.patch.object(setup, "amd_gpus_windows", lambda adapters=None, registry=None: ["display"]):
+                mock.patch.object(setup, "amd_gpus_windows", lambda present=None, registry=None: ["display"]):
             self.assertEqual(setup.amd_gpus(), ["hip"])
 
     def test_probe_in_the_component_folder(self):
