@@ -29,7 +29,10 @@ a change over.
 ## Special cases
 
 - **A change to a file and its SYCL copy** (`src/X` and `sycl/src/X`): where the two are now one shared file,
-  apply it once. Where the SYCL copy is still separate, apply it to both, as upstream did.
+  apply it once. Where the SYCL copy is still separate, apply it to both, as upstream did. The files shared since A6
+  are listed in `sycl/tools/normalize.sh` (`shared`): apply upstream's change to `src/X` or `include/strata/X` only,
+  drop the hunks for the `sycl/` copy, and build SYCL. If the change uses a CUDA name the SYCL build lacks, add the
+  name to `sycl/include/sycl_compat/cuda_runtime.h`; do not bring the copy back.
 - **A change to only the SYCL copy** of a file that is now shared: decide whether it is a SYCL-only difference.
   If it is, it goes behind the SYCL side of the shared interface; otherwise apply it to the shared file.
 - **A change to code that this fork merged** (for example DeepSeek's own sampler header, replaced by the shared
@@ -94,7 +97,7 @@ code updates its rows here. Rows are grouped by step; `{a,b}` lists several file
 | the protocol code in `src/program/generate.cpp`, `src/qwen35/q36_engine.cu`, `src/dsv41/ds4_main.cpp` | `src/common/serve/` | A5 | planned |
 | DeepSeek's conversation slots (`src/dsv41/ds4_main.cpp`, `ds4_slotmeta.hpp`) | `src/common/state/` | A5 | planned |
 | the generic parts of `src/core/{expert_cache,expert_source}.cpp`, `src/dsv41/ds4_store.hpp` | `src/common/experts/` | A5 | planned |
-| 7 SYCL copies that are 95%+ the same as `src/` (listed in the A6 commit) | the shared `src/` file | A6 | planned |
+| 7 SYCL copies that are 95%+ the same as `src/` (listed in the A6 commit) | 8 copies deleted: `sycl/include/strata/{base/gpu/graph.hpp,kernels/f16_bits.hpp,kernels/bf16_bits.hpp,kernels/rope.hpp,kernels/rope_scaling.hpp,models/qwen38/session.hpp}`, `sycl/src/{base/platform/direct_file.cpp,models/qwen38/ngram/ple_reader.cpp}`; the SYCL build compiles the shared `include/strata/X` and `src/X`. The CUDA types the two headers name come from `sycl/include/sycl_compat/cuda_runtime.h`; the SYCL build's 64 reading threads in `direct_file.cpp` are `STRATA_DIRECT_FILE_PREAD_THREADS=64` in `sycl/CMakeLists.txt` | A6 | done |
 | `src/kernels/`, `include/strata/kernels/` | split: `src/common/kernels/`, `src/models/common/`, `src/models/qwen38/` (one row per file once B1 decides) | B1 | planned |
 | `src/prefill/`, `include/strata/prefill/` | split: `src/common/kernels/`, `src/models/qwen38/` | B1 | planned |
 | `src/dsv41/{ds4_iq,ds4_gguf,ds4_tq}*` | deleted; the shared quant kernels are used | B2 | planned |

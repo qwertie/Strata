@@ -141,16 +141,10 @@ bool CapturedGraph::launch(void *stream, std::string &err) const try {
     */
     if (e != 0) return fail(err, "cudaGraphLaunch", e);
     /*
-    DPCT1012: Detected kernel execution time measurement pattern and
-    generated an initial code for time measurements in SYCL. You can change the
-    way time is measured depending on your goals.
-    */
-    /*
     DPCT1024: The original code returned the error code that was further
     consumed by the program logic. This original code was replaced with 0. You
     may need to rewrite the program logic consuming the error code.
     */
-    done__ct1 = std::chrono::steady_clock::now();
     e = DPCT_CHECK_ERROR(*done_ = strata::q_of(stream)
                                       ->ext_oneapi_submit_barrier());
     /*

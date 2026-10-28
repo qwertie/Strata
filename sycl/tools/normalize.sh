@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # normalize.sh <dpct-out-dir> <upstream-commit>: a fresh migrate.sh output in the port's shape, for a 3-way merge.
 #   - dpct's `X.cpp.dp.cpp` becomes `X.cpp` (the .cu -> .dp.cpp names stay), its .yaml/report files go
-#   - files dpct left byte-identical to the upstream original go too (sycl/CMakeLists.txt falls back to them)
+#   - files dpct left byte-identical to the upstream original go too (sycl/CMakeLists.txt falls back to them), and so
+#     do the files the port compiles from src/ and include/ unchanged (`shared` below)
 #   - the DPCTnnnn:<serial> message numbers are dropped (they renumber on every run and would be pure noise)
 #   - fixups.py runs on the result
 # Updating the port after an upstream merge (docs/INTEL.md "Keeping up with upstream"):
@@ -19,6 +20,12 @@ while read -r f; do
     rm "$f"; n=$((n+1))
   fi
 done < <(find src include third_party -type f 2>/dev/null)
+# shared: the SYCL build compiles the original; a SYCL-only difference goes in sycl/include/sycl_compat, the SYCL CMake
+# or a SYCL-only file, never in a copy (docs/UPSTREAM_PORTING.md "Special cases")
+shared=(include/strata/base/gpu/graph.hpp include/strata/kernels/bf16_bits.hpp include/strata/kernels/f16_bits.hpp
+        include/strata/kernels/rope.hpp include/strata/kernels/rope_scaling.hpp include/strata/models/qwen38/session.hpp
+        src/base/platform/direct_file.cpp src/models/qwen38/ngram/ple_reader.cpp)
+rm -f "${shared[@]}"
 find . -type d -empty -delete
 find src include -type f -exec sed -i -E 's/DPCT([0-9]{4}):[0-9]+:/DPCT\1:/' {} +
 mkdir -p tools && cp "$repo/sycl/tools/fixups.py" tools/

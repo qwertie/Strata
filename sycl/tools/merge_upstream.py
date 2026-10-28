@@ -8,7 +8,7 @@ def hashes(t):
     for a, h in pat.findall(t): m.setdefault(a, set()).add(h)
     return {a: next(iter(v)) for a, v in m.items() if len(v) == 1}
 changed = subprocess.check_output(["git", "diff", "--name-only", old, new, "--", "src", "include"], text=True).split()
-HAND = {"src/models/qwen38/mtp.cpp", "src/models/qwen38/verify.cpp", "src/models/qwen38/ngram/ple_reader.cpp", "src/kernels/native_expert_parity.cpp"}
+HAND = {"src/models/qwen38/mtp.cpp", "src/models/qwen38/verify.cpp", "src/kernels/native_expert_parity.cpp"}
 for f in changed:
     rel = f[:-3] + ".dp.cpp" if f.endswith(".cu") else f
     pf = "sycl/" + rel

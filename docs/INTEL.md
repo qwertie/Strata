@@ -325,7 +325,8 @@ and text requests after the pictures all answered, with no GPU fault in the kern
 ## The SYCL port (`sycl/`)
 
 **Layout.** `sycl/src` and `sycl/include` mirror the tree and hold only the files the port changes; `sycl/CMakeLists.txt` takes every
-other source from the original location. `sycl/include/dpct/` is the vendored SYCLomatic helper library.
+other source from the original location. `sycl/include/sycl_compat/cuda_runtime.h` gives the CUDA handle types that a shared header
+names their SYCL types, so such a header needs no copy. `sycl/include/dpct/` is the vendored SYCLomatic helper library.
 
 **How it is made, so it can be redone.**
 

@@ -46,7 +46,8 @@ Inside `src/common/`, the subfolders may use each other as long as they do not f
   `metal/include/metal_compat`; its kernels are `.metal` files.
 - `sycl/` is the Intel engine. It is mostly translated copies of `src/` files. It takes the same layout as
   `src/`, and its copies become shared sources only where that can be tested ([REFACTOR_PLAN.md](REFACTOR_PLAN.md),
-  steps A6 and C1).
+  steps A6 and C1). Like Metal, it compiles a shared file unchanged where it can: `sycl/include/sycl_compat` goes
+  first on its include path and gives the CUDA names a shared header uses their SYCL types.
 
 ## The Python layers
 

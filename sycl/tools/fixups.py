@@ -303,9 +303,9 @@ edit("src/models/qwen38/verify.cpp", verify)
 edit("src/core/remote_experts.cpp", lambda s: s.replace(
     "    if (!(spin && spin[0] == '0'))\n        cudaInitDevice(device, cudaDeviceScheduleSpin | cudaDeviceMapHost, 0);",
     "    (void) spin;   // SYCL: no cudaInitDevice scheduling flags; the runtime picks its own wait policy"))
-# 16. graph.hpp: the event's timestamp is written from a const launch(); dpct added the member without `mutable`.
-edit("include/strata/base/gpu/graph.hpp", lambda s: s.replace(
-    "    std::chrono::time_point<std::chrono::steady_clock> done__ct1;", "    mutable std::chrono::time_point<std::chrono::steady_clock> done__ct1;"))
+# 16. graph.cpp: dpct times the graph's done event through a member it adds to graph.hpp; nothing reads the time, and
+#     the port compiles the original graph.hpp, which has no such member.
+edit("src/base/gpu/graph.cpp", sub(r"\n *done__ct1 = std::chrono::steady_clock::now\(\);", ""))
 print("files changed:", changed)
 
 # 0.1.29: a stream cast dpct leaves as cudaStream_t (sampler's capture check): the port's queue lookup.

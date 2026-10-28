@@ -38,7 +38,7 @@ session on an NVIDIA machine. Changes nobody can test come last.
 | A3 | Move every whole file whose new place is already clear, without changing it: the folders `src/platform`, `src/artifact`, `src/spec`, `src/dsv41`, `src/qwen35`, `src/ngram`, `src/plan`; from `src/core/`, the runtime files to `src/base/gpu`, the conversation files to `src/common/state` and the Qwen3.8-only files to `src/models/qwen38`; the matching files in `sycl/`. Files that must be split wait for their step. | 0 | |
 | A4 | DeepSeek's own copies of host code: `ds4_os.hpp`, `ds4_pool.hpp`, `include/strata/models/deepseekv41/sampler.hpp` | ~1K | `ds4_os.hpp` done; the pool and the sampler wait (open issues) |
 | A5 | The `src/base/gpu` runtime interface (the shared code must not call the CUDA runtime directly), then `src/common/state`, `src/common/serve`, `src/common/spec` and the one-GPU parts of `src/common/experts`. These are also the base for the planned paged-KV engine. | 3–7K | |
-| A6 | SYCL: the 7 files that are 95% or more the same as their `src/` original become shared | ~2.4K | |
+| A6 | SYCL: the 7 files that are 95% or more the same as their `src/` original become shared | ~2.4K | done: 8 files (see [UPSTREAM_PORTING.md](UPSTREAM_PORTING.md)) |
 
 ### Phase B: changes NVIDIA-only code; one batched test session on an NVIDIA machine
 

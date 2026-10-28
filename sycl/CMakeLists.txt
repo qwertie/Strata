@@ -128,7 +128,8 @@ endfunction()
 
 add_library(strata_includes INTERFACE)
 target_include_directories(strata_includes INTERFACE
-  ${CMAKE_CURRENT_SOURCE_DIR}/include      # migrated headers + dpct/ helpers, first
+  ${CMAKE_CURRENT_SOURCE_DIR}/include/sycl_compat   # the CUDA names shared headers use (cuda_runtime.h), first
+  ${CMAKE_CURRENT_SOURCE_DIR}/include      # migrated headers + dpct/ helpers
   ${STRATA_ROOT}/include)
 target_compile_options(strata_includes INTERFACE -Wall -Wextra)
 
@@ -245,6 +246,10 @@ foreach(k IN LISTS _kernel_cu)
 endforeach()
 strata_resolve(_kernels ${_kernel_files} src/kernels/ngram.cpp src/models/qwen38/ngram/ple_reader.cpp
                          src/base/platform/direct_file.cpp)
+# The B70 box (2026-09-30): the PLE rows of a 2,184-token prompt are ~27k random 4 KB O_DIRECT reads; with 16 reading
+# threads they took 466 ms (p50 1.0 ms per read), with 64 332 ms (0.7 ms). STRATA_IO_THREADS still overrides.
+set_property(SOURCE ${STRATA_ROOT}/src/base/platform/direct_file.cpp APPEND PROPERTY COMPILE_DEFINITIONS
+             STRATA_DIRECT_FILE_PREAD_THREADS=64)
 list(APPEND _kernels ${CMAKE_CURRENT_SOURCE_DIR}/src/kernels/cuda/qsa_prompt_attn_xmx.dp.cpp)   # port-only: the XMX prompt attention
 add_library(strata_kernels STATIC ${_kernels})
 target_include_directories(strata_kernels PRIVATE ${STRATA_ROOT}/third_party/ggml)

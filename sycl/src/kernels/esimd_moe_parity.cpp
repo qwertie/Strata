@@ -7,6 +7,7 @@
 //   esimd_moe_parity [mean_rows=80] [experts=16] [reps=10] [seed=1] [gate_up_type down_type]
 //   types: gate/up 21 IQ3_S, 18 IQ3_XXS, 22 IQ2_S; down 20 IQ4_NL, 42 Q2_0.
 // Exit status 1 when (c) is off by more than 2e-5 of the largest value or (b) exceeds the int8 activation error budget.
+#define DPCT_PROFILING_ENABLED
 #include "strata/kernels/iq_kernels.hpp"
 #include "strata/kernels/iq_dequant_expert.hpp"
 #include "strata/prefill/esimd_moe.hpp"

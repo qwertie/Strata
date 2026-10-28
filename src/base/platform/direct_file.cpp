@@ -59,14 +59,19 @@ struct Pending {
     uint64_t tag;
 };
 
-/// The number of issuing threads: STRATA_IO_THREADS, else 4 (Windows: overlapped submits) / 16 (Linux: each
-/// thread does one blocking pread, so the thread count is the queue depth).
+/// The number of issuing threads: STRATA_IO_THREADS, else 4 (Windows: overlapped submits) /
+/// STRATA_DIRECT_FILE_PREAD_THREADS (Linux, macOS: each thread does one blocking pread, so the thread count is the
+/// queue depth).
 int io_threads(int dflt) {
     const char* v = std::getenv("STRATA_IO_THREADS");
     const int n = v ? std::atoi(v) : dflt;
     return std::clamp(n, 1, 64);
 }
 }  // namespace
+
+#if !defined(STRATA_DIRECT_FILE_PREAD_THREADS)   // the SYCL build sets 64 (sycl/CMakeLists.txt)
+#define STRATA_DIRECT_FILE_PREAD_THREADS 16
+#endif
 
 #if defined(_WIN32)
 // ------------------------------------------------------------------------------------------------ Windows
@@ -315,7 +320,7 @@ bool DirectFile::open(const std::string& path, std::string& err) {
     struct stat st;
     if (fstat(impl_->fd, &st) != 0) { err = "DirectFile: cannot size " + path; close(); return false; }
     impl_->size = (uint64_t) st.st_size;
-    const int n = io_threads(16);
+    const int n = io_threads(STRATA_DIRECT_FILE_PREAD_THREADS);
     for (int i = 0; i < n; ++i) impl_->pool.emplace_back([this] { strata::aux_cpus::pin_current_thread(); impl_->worker(); });
     return true;
 }
