@@ -791,7 +791,8 @@ if(STRATA_ENABLE_CUDA OR STRATA_ENABLE_HIP)
   if(NOT STRATA_HIP_GFX906)
   add_library(strata_qwen35 STATIC src/models/qwen36/q36_engine.cu)
   target_include_directories(strata_qwen35 PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include PRIVATE ${_strata_gpu_include_directories})
-  target_link_libraries(strata_qwen35 PRIVATE strata_prefill strata_kernels strata_warnings ${_strata_gpu_runtime_target})
+  target_link_libraries(strata_qwen35 PRIVATE strata_prefill strata_kernels strata_serve strata_warnings
+                        ${_strata_gpu_runtime_target})
   if(STRATA_NATIVE_EXPERTS)
     # the hybrid mode (experts that do not all fit in VRAM): the CPU expert pool on ggml-cpu's arithmetic
     target_link_libraries(strata_qwen35 PRIVATE strata_kernels_cpu)
