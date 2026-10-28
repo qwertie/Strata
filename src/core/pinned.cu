@@ -1,6 +1,6 @@
 // src/core/pinned.cu - P2.S1: the pinned host arena and the parallel expert load.
 #include "strata/core/pinned.hpp"
-#include "strata/platform/memory.hpp"
+#include "strata/base/platform/memory.hpp"
 #include "strata/core/pin_budget.hpp"
 
 #include <cuda_runtime.h>

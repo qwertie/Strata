@@ -4,7 +4,7 @@
 #include <cmath>
 
 #include "strata/kernels/f16_bits.hpp"
-#include "strata/platform/memory.hpp"
+#include "strata/base/platform/memory.hpp"
 
 #include <cinttypes>
 #include <cuda_runtime.h>

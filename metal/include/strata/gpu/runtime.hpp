@@ -1,7 +1,7 @@
 // metal/include/strata/gpu/runtime.hpp - the device runtime of the Metal build (MAC-PLAN Phase 1, compat design).
 //
 // The shared host files keep calling the CUDA runtime names; on Metal those names come from
-// metal/include/metal_compat/cuda_runtime.h (first on the include path, as include/strata/hip_compat is on HIP), which
+// metal/include/metal_compat/cuda_runtime.h (first on the include path, as include/strata/base/gpu/hip_compat is on HIP), which
 // forwards every one to the functions declared here.  metal/src/gpu/runtime.cpp implements them on metal-cpp:
 //   - a device pointer is the MTLBuffer's gpuAddress (the host never dereferences it; kernels take it from their
 //     argument struct); host_alloc returns contents() and host_device_pointer maps it to its gpuAddress; every buffer is

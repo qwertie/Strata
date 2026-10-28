@@ -44,7 +44,7 @@ from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
 ROOT = HERE.parent.parent
-META_MAGIC = 0x324154454D345344   # "DS4META2" (little endian): a slot's .meta, as src/dsv41/ds4_slotmeta.hpp writes it
+META_MAGIC = 0x324154454D345344   # "DS4META2" (little endian): a slot's .meta, as src/models/deepseekv41/ds4_slotmeta.hpp writes it
 
 
 # ------------------------------------------------------------------------------------------------- prompts

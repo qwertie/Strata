@@ -1,4 +1,4 @@
-// Strata. The experts-per-word rule of the DeepSeek V4.1 engine (src/dsv41/ds4_experts_rule.hpp): 5 on a card with 16 GiB or less, 6
+// Strata. The experts-per-word rule of the DeepSeek V4.1 engine (src/models/deepseekv41/ds4_experts_rule.hpp): 5 on a card with 16 GiB or less, 6
 // elsewhere, --experts overrides, DS4_TOPK over both.  No GPU needed.
 #include "ds4_experts_rule.hpp"
 

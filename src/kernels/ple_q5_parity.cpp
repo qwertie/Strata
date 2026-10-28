@@ -1,7 +1,7 @@
 // Real-artifact Q5_0 / Q5_1 / Q8_0 PLE rows against ggml's reference dequantizer, through both readers (the mapped
 // one and the direct SSD reader).
 #define NOMINMAX
-#include "strata/artifact/gguf_reader.hpp"
+#include "strata/common/artifact/gguf_reader.hpp"
 #include "strata/kernels/ngram.hpp"
 #include "ggml.h"
 

@@ -1,7 +1,7 @@
 // src/kernels/cpu/pool.cpp - P2.S3: the CPU expert pool.  Read pool.hpp first; it explains the protocol.
 #include "strata/kernels/cpu/pool.hpp"
 #include "strata/core/progress.hpp"
-#include "strata/platform/aux_cpus.hpp"
+#include "strata/base/platform/aux_cpus.hpp"
 #include "strata/kernels/cpu/expert_layout.hpp"
 #include "strata/kernels/cpu/numa_pool.hpp"
 
@@ -1449,7 +1449,7 @@ void ExpertPool::run(ExpertJob* jobs, int n) {
 }  // namespace strata::kernels::cpu
 
 #if defined(_WIN32)
-// strata/platform/thread_name.hpp: the Windows half lives here, where <windows.h> is already included.  SetThreadDescription
+// strata/base/platform/thread_name.hpp: the Windows half lives here, where <windows.h> is already included.  SetThreadDescription
 // (Windows 10 1607 and later) is looked up, not linked: older SDKs and toolchains lack the import.
 namespace strata::platform {
 void name_this_thread(const char* base, int index) {

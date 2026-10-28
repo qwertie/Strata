@@ -3,7 +3,7 @@
 #include <sycl/sycl.hpp>
 #include <dpct/dpct.hpp>
 #include "strata/core/pinned.hpp"
-#include "strata/platform/memory.hpp"
+#include "strata/base/platform/memory.hpp"
 
 #include <atomic>
 #include <climits>

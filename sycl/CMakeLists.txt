@@ -133,8 +133,8 @@ target_include_directories(strata_includes INTERFACE
 target_compile_options(strata_includes INTERFACE -Wall -Wextra)
 
 # --- CPU-side pieces, identical to the top-level build ------------------------------------------------------------
-strata_resolve(_spec src/spec/suffix_drafter.cpp src/spec/controller.cpp src/spec/draft_policy.cpp
-                    src/spec/draft_source.cpp)
+strata_resolve(_spec src/common/spec/suffix_drafter.cpp src/common/spec/controller.cpp
+                    src/common/spec/draft_policy.cpp src/common/spec/draft_source.cpp)
 add_library(strata_spec STATIC ${_spec})
 target_link_libraries(strata_spec PUBLIC strata_includes)
 
@@ -224,7 +224,7 @@ if(STRATA_NATIVE_EXPERTS)
 endif()
 
 # --- the GPU engine ------------------------------------------------------------------------------------------------
-strata_resolve(_core src/core/device.cu src/core/pinned.cu src/platform/memory.cpp src/core/graph.cpp
+strata_resolve(_core src/core/device.cu src/core/pinned.cu src/base/platform/memory.cpp src/core/graph.cpp
                      src/core/weights.cpp src/core/layout.cpp)
 add_library(strata_core STATIC ${_core})
 target_link_libraries(strata_core PUBLIC strata_includes)
@@ -243,7 +243,8 @@ set(_kernel_files "")
 foreach(k IN LISTS _kernel_cu)
   list(APPEND _kernel_files src/kernels/cuda/${k}.cu)
 endforeach()
-strata_resolve(_kernels ${_kernel_files} src/kernels/ngram.cpp src/ngram/ple_reader.cpp src/platform/direct_file.cpp)
+strata_resolve(_kernels ${_kernel_files} src/kernels/ngram.cpp src/models/qwen38/ngram/ple_reader.cpp
+                         src/base/platform/direct_file.cpp)
 list(APPEND _kernels ${CMAKE_CURRENT_SOURCE_DIR}/src/kernels/cuda/qsa_prompt_attn_xmx.dp.cpp)   # port-only: the XMX prompt attention
 add_library(strata_kernels STATIC ${_kernels})
 target_include_directories(strata_kernels PRIVATE ${STRATA_ROOT}/third_party/ggml)

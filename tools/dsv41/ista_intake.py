@@ -51,7 +51,7 @@ ENGRAM_META = pathlib.Path("/data/dsv41/source/UD-Q8_K_XL/DeepSeek-V4.1-Flash-10
 MMPROJ = pathlib.Path("/data/dsv41/source/mmproj-BF16.gguf")
 DSPARK_NOISE = "128799"     # dspark_noise_token_id for this model (see the h225 pack)
 DSPARK_RANK = "256"         # dspark_markov_rank
-# ggml type ids the device kernels take (src/dsv41/ds4_iq.cu's supported() plus MXFP4); kept in sync with --pack-info
+# ggml type ids the device kernels take (src/models/deepseekv41/ds4_iq.cu's supported() plus MXFP4); kept in sync with --pack-info
 DEVICE_TYPES = {0, 1, 2, 3, 8, 10, 11, 12, 13, 14, 16, 17, 18, 19, 20, 21, 22, 23, 29, 39}
 TYPE_NAMES = {0: "F32", 1: "F16", 2: "Q4_0", 3: "Q4_1", 6: "Q5_0", 7: "Q5_1", 8: "Q8_0", 9: "Q8_1",
               10: "Q2_K", 11: "Q3_K", 12: "Q4_K", 13: "Q5_K", 14: "Q6_K", 15: "Q8_K",

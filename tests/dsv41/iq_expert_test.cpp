@@ -4,10 +4,10 @@
 // bit pattern with a sane F16 scale is one.  This is the H2 gate for a new type (IQ2_XS first): the kernel's integer sums
 // must equal ggml's weights times the same activations.
 //   iq_expert_test [--type 16,17,18,21,22,23,29] [--bench] [--iq256 0|1]
-#include "../../src/dsv41/ds4_gguf_cpu.hpp"
-#include "../../src/dsv41/ds4_iq.cuh"
+#include "../../src/models/deepseekv41/ds4_gguf_cpu.hpp"
+#include "../../src/models/deepseekv41/ds4_iq.cuh"
 
-#include "strata/dsv41/hip_or_cuda.h"   // HIP names on a HIP build, the CUDA runtime otherwise
+#include "strata/models/deepseekv41/hip_or_cuda.h"   // HIP names on a HIP build, the CUDA runtime otherwise
 
 #include "ggml.h"   // ggml_get_type_traits(type)->to_float: ggml's decode of the same blocks
 

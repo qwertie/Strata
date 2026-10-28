@@ -1,10 +1,10 @@
-// tools/dsv41_lab/ds4_lab.cu - parity + speed of the DeepSeek-V4.1 device kernels (src/dsv41/ds4_kernels.cu, the file the port
+// tools/dsv41_lab/ds4_lab.cu - parity + speed of the DeepSeek-V4.1 device kernels (src/models/deepseekv41/ds4_kernels.cu, the file the port
 // ports, linked unmodified) on synthetic tensors at the real shapes: dim 5120, hc 4 (mHC 24 x 20480, 20 Sinkhorn iterations),
 // 64 heads x 512 (MQA, K = V), 128-row window + sink, top-512 compressed rows (E2M1 + E4M3 scales), indexer 32 x 128,
 // router 384 / 6, Engram rows 256 (FP8 + E8M0).  References are plain double-precision C++ written from the kernels' documented
 // math (DeepSeek model.py), not from the kernels.
 //   ds4_lab [--tokens 1,2,3,4,5] [--only name,name] [--ctx 8192] [--reps 100]
-#include "../../src/dsv41/ds4_kernels.cuh"
+#include "../../src/models/deepseekv41/ds4_kernels.cuh"
 #include "attn_split.cuh"
 
 #include <algorithm>
@@ -373,7 +373,7 @@ int main(int argc, char** argv) {
         else if (a == "--dev" && i + 1 < argc) CK(cudaSetDevice(std::atoi(argv[++i])));
     }
     cudaDeviceProp prop; int dev; CK(cudaGetDevice(&dev)); CK(cudaGetDeviceProperties(&prop, dev));
-    std::printf("device %s sm_%d%d; kernels: src/dsv41/ds4_kernels.cu unmodified; graph-replayed timings (no launch gaps)\n", prop.name, prop.major, prop.minor);
+    std::printf("device %s sm_%d%d; kernels: src/models/deepseekv41/ds4_kernels.cu unmodified; graph-replayed timings (no launch gaps)\n", prop.name, prop.major, prop.minor);
     CK(cudaStreamCreate(&g_s));
     const int ncache = ctx / 4;   // compressed rows at ratio 4
     auto want = [&](const char* n) { return only.empty() || only.find(std::string(",") + n + ",") != std::string::npos; };

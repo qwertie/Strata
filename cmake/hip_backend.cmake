@@ -91,7 +91,7 @@ endif()
 # HIP's link step produces a PIE; make Strata and ggml objects PIC for the ROCm linker.
 set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 
-set(STRATA_HIP_COMPAT_INCLUDE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/include/strata/hip_compat")
+set(STRATA_HIP_COMPAT_INCLUDE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/include/strata/base/gpu/hip_compat")
 add_library(strata_hip_runtime INTERFACE)
 target_include_directories(strata_hip_runtime BEFORE INTERFACE
   "${STRATA_HIP_COMPAT_INCLUDE_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}/include")

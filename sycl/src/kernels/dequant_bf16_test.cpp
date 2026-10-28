@@ -1,5 +1,5 @@
 // src/kernels/dequant_bf16_test.cpp - plan v0.3 P5: the device dequantizers against the artifact's validated CPU
-// dequantizers (`strata/artifact/dequant.hpp`), on one real tensor of every type the model uses.
+// dequantizers (`strata/common/artifact/dequant.hpp`), on one real tensor of every type the model uses.
 //
 //     dequant_bf16_test SHARD1.gguf [SHARD2.gguf]
 //
@@ -8,8 +8,8 @@
 #define DPCT_PROFILING_ENABLED
 #include <sycl/sycl.hpp>
 #include <dpct/dpct.hpp>
-#include "strata/artifact/dequant.hpp"
-#include "strata/artifact/gguf_reader.hpp"
+#include "strata/common/artifact/dequant.hpp"
+#include "strata/common/artifact/gguf_reader.hpp"
 #include "strata/kernels/dequant_bf16.hpp"
 
 #include <cmath>

@@ -9,7 +9,7 @@
 
 #include "strata/core/native_head.hpp"
 #include "strata/core/peer_experts.hpp"
-#include "strata/platform/memory.hpp"
+#include "strata/base/platform/memory.hpp"
 #include "strata/kernels/bf16_gemv.hpp"
 #include "strata/kernels/cpu/expert.hpp"
 #include "strata/kernels/elementwise.hpp"

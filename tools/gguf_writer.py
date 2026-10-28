@@ -6,7 +6,7 @@ P1.S1 of the plan says the tiny synthetic model is "written as a real GGUF via `
 "at least `Q2_0`". That does not work: `gguf-py` has no `GGMLQuantizationType` member for type 42, so
 `GGMLQuantizationType(42)` raises `ValueError`. Verified in round 39 and again here.
 
-`src/artifact/` needs a writer regardless - P1.S2 requires a reader with no ggml dependency, and the
+`src/common/artifact/` needs a writer regardless - P1.S2 requires a reader with no ggml dependency, and the
 writer is its companion - so this is that writer in Python, where it can be validated immediately
 against `strata_common/gguf_reader.py` and against llama.cpp.
 

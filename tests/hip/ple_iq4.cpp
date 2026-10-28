@@ -3,7 +3,7 @@
 #include <hip/hip_runtime.h>
 
 #include "ggml.h"
-#include "strata/artifact/gguf_reader.hpp"
+#include "strata/common/artifact/gguf_reader.hpp"
 #include "strata/kernels/f16_bits.hpp"
 #include "strata/kernels/native_mmvq.hpp"
 

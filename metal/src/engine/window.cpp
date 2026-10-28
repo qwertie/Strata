@@ -457,7 +457,7 @@ bool Window::init(const strata::core::ModelGeometry& g, strata::core::SessionSta
         if (!st_->open(f_, err)) return false;
     } else {
         {   // read ahead the weights, not the n-gram table: in a Gyro file it is 28.8 GB in the middle of the one file, read by the host from
-            // the SSD a few rows at a time (src/ngram/ple_reader.cpp), and must not fill the page cache
+            // the SSD a few rows at a time (src/models/qwen38/ngram/ple_reader.cpp), and must not fill the page cache
             const gguf::Tensor* ple = f_.find("per_layer_token_embd.weight");
             if (ple == nullptr) {
                 madvise(f_.map, f_.map_bytes, MADV_WILLNEED);

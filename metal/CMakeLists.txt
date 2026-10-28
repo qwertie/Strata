@@ -5,8 +5,8 @@
 #   * the kernel tree (mac-kern): the runtime face src/mtl_rt.*, the MSL kernels kernels/*.metal (compiled at run time),
 #     CPU references src/ref_*.cpp and the parity / bench programs tests/*.cpp;
 #   * the engine (mac-design): the shared host sources from ../src, UNCHANGED - include/metal_compat goes first on the
-#     include path and gives them the CUDA runtime names on Metal, as include/strata/hip_compat does on HIP - over
-#     the Metal device runtime src/gpu/runtime.cpp (metal-cpp) and the kernel library src/engine/*.
+#     include path and gives them the CUDA runtime names on Metal, as include/strata/base/gpu/hip_compat does on HIP -
+#     over the Metal device runtime src/gpu/runtime.cpp (metal-cpp) and the kernel library src/engine/*.
 #
 #   cmake -S metal -B build-metal -G Ninja -DCMAKE_BUILD_TYPE=Release -DMETAL_CPP_DIR=... [-DSTRATA_GGML_DIR=...]
 #   ninja -C build-metal
@@ -89,14 +89,16 @@ add_subdirectory(${STRATA_GGML_DIR}/ggml ${CMAKE_BINARY_DIR}/ggml EXCLUDE_FROM_A
 
 set(S ${STRATA_ROOT}/src)
 set(STRATA_METAL_HOST_SOURCES
-  ${S}/core/device.cu ${S}/core/pinned.cu ${S}/platform/memory.cpp ${S}/core/graph.cpp ${S}/core/weights.cpp ${S}/core/layout.cpp
+  ${S}/core/device.cu ${S}/core/pinned.cu ${S}/base/platform/memory.cpp ${S}/core/graph.cpp ${S}/core/weights.cpp
+  ${S}/core/layout.cpp
   ${S}/core/layer.cpp ${S}/core/session.cpp ${S}/core/expert_source.cpp ${S}/core/remote_experts.cpp ${S}/core/expert_cache.cpp
   ${S}/core/native_head.cpp ${S}/core/native_dense.cpp ${S}/core/verify.cpp ${S}/core/mtp.cpp
   ${S}/core/conversation_snapshot.cpp ${S}/core/conversation_state.cpp ${S}/core/conversation_memory.cpp
   ${S}/core/peer_experts.cpp ${S}/core/arch_defaults.cpp ${S}/core/vmm.cpp ${S}/core/conversation_file.cpp
-  ${S}/kernels/ngram.cpp ${S}/ngram/ple_reader.cpp ${S}/platform/direct_file.cpp
+  ${S}/kernels/ngram.cpp ${S}/models/qwen38/ngram/ple_reader.cpp ${S}/base/platform/direct_file.cpp
   ${S}/prefill/prefill.cpp
-  ${S}/spec/suffix_drafter.cpp ${S}/spec/controller.cpp ${S}/spec/draft_policy.cpp ${S}/spec/draft_source.cpp
+  ${S}/common/spec/suffix_drafter.cpp ${S}/common/spec/controller.cpp ${S}/common/spec/draft_policy.cpp
+  ${S}/common/spec/draft_source.cpp
   ${S}/kernels/cpu/pool.cpp ${S}/kernels/cpu/expert_layout.cpp ${S}/kernels/cpu/native_expert.cpp
   ${S}/kernels/cpu/hadamard.cpp ${S}/kernels/cpu/tq_cpu.cpp)   # Gyro: the Hadamard rotation, the scalar trellis rows
 set_source_files_properties(${S}/core/device.cu ${S}/core/pinned.cu PROPERTIES LANGUAGE CXX)

@@ -1,4 +1,4 @@
-// The kept conversations' bookkeeping without a GPU (src/dsv41/ds4_slotmeta.hpp): the .meta file's round trip and
+// The kept conversations' bookkeeping without a GPU (src/models/deepseekv41/ds4_slotmeta.hpp): the .meta file's round trip and
 // every way it is refused, and which kept conversation a prompt continues, and from where.
 //   ds4_slot_test            exit 0: all passed
 #include "ds4_slotmeta.hpp"

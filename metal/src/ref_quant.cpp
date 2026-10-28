@@ -1,6 +1,6 @@
 // metal/src/ref_quant.cpp - see ref_quant.h.  The i-quant loops are transcribed from ggml-quants.c
 // (dequantize_row_iq2_xxs / iq2_xs / iq2_s / iq3_xxs / iq3_s / iq4_nl / iq4_xs) at 3cf03257; the K-quants and the
-// 32-blocks from Strata's include/strata/artifact/dequant.hpp (themselves transcribed from the same commit).
+// 32-blocks from Strata's include/strata/common/artifact/dequant.hpp (themselves transcribed from the same commit).
 #include "ref_quant.h"
 
 #include <algorithm>

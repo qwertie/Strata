@@ -4,7 +4,7 @@ Written because the `gguf` PyPI package cannot open this artifact: its `GGMLQuan
 enum has no member for type 42 (`Q2_0`), which is newer than the library. That is itself a P0.S6
 finding - the format this engine is specialized for is ahead of the standard tooling.
 
-This is the reference implementation for `src/artifact/` (architecture §15: "GGUF v3 reader (mmap,
+This is the reference implementation for `src/common/artifact/` (architecture §15: "GGUF v3 reader (mmap,
 no ggml dependency)"). It parses the header only; tensor data is never read.
 """
 from __future__ import annotations

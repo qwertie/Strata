@@ -1,4 +1,4 @@
-// Strata. ExpertStore (src/dsv41/ds4_store.hpp) on real expert files, no device: the bytes a slot holds equal the file's, the
+// Strata. ExpertStore (src/models/deepseekv41/ds4_store.hpp) on real expert files, no device: the bytes a slot holds equal the file's, the
 // unbuffered reads' rate, the policy's hits on a skewed random access stream.
 //   ds4_store_test <gguf> <layer0 gate off> <layer0 up off> <layer0 down off> <expert bytes (gate/up/down)> [budget GB] [policy 0|1|2] [accesses]
 // (offsets from the GGUF's tensor directory: tools/dsv41 header scan; the three tensors of a layer are [384][...] so expert e of

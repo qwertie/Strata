@@ -9,7 +9,7 @@
 #include "strata/kernels/quantize_act.hpp"
 #include "strata/kernels/s2_expert_grouped.hpp"
 #include "strata/kernels/cpu/pool.hpp"
-#include "strata/platform/aux_cpus.hpp"
+#include "strata/base/platform/aux_cpus.hpp"
 #include "strata/kernels/ngram.hpp"
 
 #include <cuda_runtime.h>

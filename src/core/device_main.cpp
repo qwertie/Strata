@@ -4,7 +4,7 @@
 // without the model.  It is also the run-time half of the sm_120 policy: CMake refuses to COMPILE for another
 // architecture, and this refuses to RUN on one.
 #include "strata/core/device.hpp"
-#include "strata/plan/plan.hpp"
+#include "strata/models/qwen38/plan/plan.hpp"
 
 #include <cstdio>
 #include <cstring>

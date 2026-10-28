@@ -76,9 +76,9 @@ namespace strata::prefill { void set_nonresident_share(double share); }   // SYC
 #include "strata/program/logits_selection.hpp"
 #include "strata/program/conv_cache.hpp"
 #include "strata/program/message_boundary.hpp"
-#include "strata/spec/draft_policy.hpp"
-#include "strata/spec/draft_source.hpp"
-#include "strata/spec/suffix_drafter.hpp"
+#include "strata/common/spec/draft_policy.hpp"
+#include "strata/common/spec/draft_source.hpp"
+#include "strata/common/spec/suffix_drafter.hpp"
 #include "strata/kernels/cvec.hpp"
 #include "strata/core/progress.hpp"
 #include "strata/core/device.hpp"
@@ -86,7 +86,7 @@ namespace strata::prefill { void set_nonresident_share(double share); }   // SYC
 #ifndef NOMINMAX
 #define NOMINMAX   // gguf_reader.hpp includes windows.h
 #endif
-#include "strata/artifact/gguf_reader.hpp"
+#include "strata/common/artifact/gguf_reader.hpp"
 #include "strata/core/family_layout.hpp"
 #if defined(_WIN32)
 #include <windows.h>
@@ -711,7 +711,7 @@ struct Options {
     /// The suffix drafter (prompt lookup): when the text being written repeats an earlier stretch of the context (code
     /// edits, quoted input, tool-call JSON) by at least this many tokens, the window may be filled with what followed
     /// it there instead of the MTP's drafts, where the MTP's own first guess agrees and the draft policy expects it to
-    /// pay (strata/spec/draft_policy.hpp).  On by default; 0 = MTP only.
+    /// pay (strata/common/spec/draft_policy.hpp).  On by default; 0 = MTP only.
     int suffix_draft = 3;
     /// The MTP's own window cap (0 = --spec): with --spec 6 --mtp-max-t 4 the long windows come from suffix matches.
     int mtp_max_t = 0;
@@ -969,7 +969,7 @@ int chain_tail(const strata::spec::SuffixDrafter& sfx, const int32_t* pending, i
     return (int) tail.size();
 }
 
-// --lookup-chain: the registered extra draft sources (strata/spec/draft_source.hpp) see the committed context too
+// --lookup-chain: the registered extra draft sources (strata/common/spec/draft_source.hpp) see the committed context too
 void extra_sources_reset() {
     for (auto& src : strata::spec::extra_draft_sources()) src->reset();
 }
@@ -2382,7 +2382,7 @@ int main(int argc, char **argv) try {
     }
     strata::core::qsa_set_kv_resident(o.kv_resident);
     // Prompt lookup (the suffix drafter, on by default): the MTP keeps its --spec windows and a lookup window may be
-    // up to 2 tokens longer; the draft policy (strata/spec/draft_policy.hpp) takes one only where it pays. Code
+    // up to 2 tokens longer; the draft policy (strata/common/spec/draft_policy.hpp) takes one only where it pays. Code
     // edits +6-11%, ordinary text unchanged (bench/results/2026-09-27-spec). --suffix-draft 0 turns it off.
     if (o.suffix_draft > 0 && o.spec >= 2 && o.mtp_max_t == 0) {
         o.mtp_max_t = o.spec;

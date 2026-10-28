@@ -1,5 +1,5 @@
 // metal/src/ref_quant.h - CPU reference dequantizers for the parity programs, transcribed from ggml's
-// dequantize_row_* (ggml-quants.c at the pinned 3cf03257) and Strata's src/artifact/dequant.hpp (Q2_0), plus a
+// dequantize_row_* (ggml-quants.c at the pinned 3cf03257) and Strata's src/common/artifact/dequant.hpp (Q2_0), plus a
 // deterministic generator of random-but-valid blocks for synthetic weights.
 #pragma once
 

@@ -19,7 +19,7 @@ class Gfx906CMake(unittest.TestCase):
 
     def test_every_use_of_qwen35_in_the_engine_is_guarded(self):
         text = (ROOT / "src" / "program" / "generate.cpp").read_text(encoding="utf-8").replace("\r\n", "\n")
-        for match in re.finditer(r"qwen35::|strata/qwen35/engine\.hpp", text):
+        for match in re.finditer(r"qwen35::|strata/models/qwen36/engine\.hpp", text):
             before = text[:match.start()]
             self.assertGreater(before.rfind("#if defined(STRATA_HAVE_QWEN35)"), before.rfind("#endif"), match.group(0))
 

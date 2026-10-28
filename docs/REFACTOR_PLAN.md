@@ -36,7 +36,7 @@ session on an NVIDIA machine. Changes nobody can test come last.
 | A1 | Skeleton: the new folders with a README each, [ARCHITECTURE.md](ARCHITECTURE.md), [UPSTREAM_PORTING.md](UPSTREAM_PORTING.md), the layering test | — | done |
 | A2 | Python: `strata_base/`, `strata_common/`; `serve/` becomes `strata_server/`; remove the import cycles between `serve/`, `strata_control/` and `strata_cli/`; one copy of the helpers repeated in `setup.py` and `tools/` | 2–5K | |
 | A3 | Move every whole file whose new place is already clear, without changing it: the folders `src/platform`, `src/artifact`, `src/spec`, `src/dsv41`, `src/qwen35`, `src/ngram`, `src/plan`; from `src/core/`, the runtime files to `src/base/gpu`, the conversation files to `src/common/state` and the Qwen3.8-only files to `src/models/qwen38`; the matching files in `sycl/`. Files that must be split wait for their step. | 0 | |
-| A4 | DeepSeek's own copies of host code: `ds4_os.hpp`, `ds4_pool.hpp`, `include/strata/dsv41/sampler.hpp` | ~1K | |
+| A4 | DeepSeek's own copies of host code: `ds4_os.hpp`, `ds4_pool.hpp`, `include/strata/models/deepseekv41/sampler.hpp` | ~1K | |
 | A5 | The `src/base/gpu` runtime interface (the shared code must not call the CUDA runtime directly), then `src/common/state`, `src/common/serve`, `src/common/spec` and the one-GPU parts of `src/common/experts`. These are also the base for the planned paged-KV engine. | 3–7K | |
 | A6 | SYCL: the 7 files that are 95% or more the same as their `src/` original become shared | ~2.4K | |
 
@@ -113,6 +113,13 @@ Found during the work; each needs a decision or a later step.
   `setup.py` still downloads GitHub zips into `engine/` and keeps `engine/.previous`, while the Terminal and the app use
   the signed feed and the per-user components folder. Unifying them would remove about 600–850 lines, but drops
   `setup.py --prebuilt <mirror or dist folder>` and may affect the CUDA 12 engine.
+- **A test that downloads for real.** `tools/test_setup_dsv41.py::*::test_no_engine_stops_before_the_download` (4
+  tests) reaches the live signed feed; since a DeepSeek engine 0.1.52 package for Windows AMD appeared there, each run
+  downloads it (137 MB) and the tests fail, at the baseline commit too. The test needs a local fake feed.
+- **A third AMD reader.** `strata_common/telemetry.py` has its own Windows display-adapter reader, which works
+  differently from `engine_component`'s (it keeps cards with 2 GB or more and reads the vendor from the provider name).
+- **SYCL's upstream merge script.** `sycl/tools/merge_upstream.py` maps upstream paths straight onto `sycl/`; after the
+  A3 moves the paths no longer line up, so a merge needs the path map in [UPSTREAM_PORTING.md](UPSTREAM_PORTING.md).
 
 ## Results
 

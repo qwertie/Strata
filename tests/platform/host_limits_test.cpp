@@ -1,7 +1,7 @@
 // Windows HIP auto-chunk cap (#1630) and the commit-limit verdict (#1607): no GPU, no Windows needed.
 #include <cstdio>
 
-#include "strata/platform/host_limits.hpp"
+#include "strata/base/platform/host_limits.hpp"
 
 using namespace strata::platform::host_limits;
 

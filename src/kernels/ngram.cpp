@@ -2,11 +2,11 @@
 //
 // See include/strata/kernels/ngram.hpp for the semantics, the rival readings, and the note on MADV_RANDOM.
 #include "strata/kernels/ngram.hpp"
-#include "strata/artifact/gguf_reader.hpp"
-#include "strata/artifact/dequant.hpp"
+#include "strata/common/artifact/gguf_reader.hpp"
+#include "strata/common/artifact/dequant.hpp"
 #include "strata/kernels/f16_bits.hpp"
-#include "strata/ngram/ple_reader.hpp"
-#include "strata/platform/memory.hpp"
+#include "strata/models/qwen38/ngram/ple_reader.hpp"
+#include "strata/base/platform/memory.hpp"
 
 #include <cerrno>
 #include <cmath>

@@ -8,7 +8,7 @@ file Strata runs, pinned in strata_common/catalog.py) is 508.4 GB in nine shards
   the n-gram table (Engram)  202.8 GB   MXFP8, shard 8: read from the SSD, a few rows a token, never held in memory
 
 so the memory the model needs is the experts and the dense weights, 305.6 GB, with the n-gram table left out.  strata-dsv41
-(src/dsv41) puts the dense weights and as many experts as the cards hold in graphics memory, one block of layers on each
+(src/models/deepseekv41) puts the dense weights and as many experts as the cards hold in graphics memory, one block of layers on each
 card, and computes the rest of the experts on the CPU, reading them in place from the model's files (the page cache).
 
 Measured (r9700, 4 x Radeon AI PRO R9700 32 GB, 251 GB RAM, 2026-10-20, f-dsv41-port 01389205e): per card 3.4-4.7 GB of dense

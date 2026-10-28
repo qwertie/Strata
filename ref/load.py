@@ -32,7 +32,7 @@ from gguf_writer import dequantize_q2_0              # noqa: E402
 _GGUF_PY_NAME = {"Q4_0": "Q4_0", "Q8_0": "Q8_0", "Q4_K": "Q4_K", "Q5_K": "Q5_K", "Q6_K": "Q6_K",
                  "Q3_K": "Q3_K", "IQ4_NL": "IQ4_NL", "IQ4_XS": "IQ4_XS", "Q5_0": "Q5_0"}
 
-# (elements per block, bytes per block) - mirrors block_geometry() in src/artifact/gguf_reader.cpp
+# (elements per block, bytes per block) - mirrors block_geometry() in src/common/artifact/gguf_reader.cpp
 GEOM = {"F32": (1, 4), "F16": (1, 2), "BF16": (1, 2),
         "Q4_0": (32, 18), "Q5_0": (32, 22), "Q8_0": (32, 34), "IQ4_NL": (32, 18),
         "Q3_K": (256, 110), "Q4_K": (256, 144), "Q5_K": (256, 176), "Q6_K": (256, 210),

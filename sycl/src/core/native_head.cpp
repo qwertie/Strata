@@ -3,10 +3,10 @@
 #include <dpct/dpct.hpp>
 #include "strata/sycl_queue.hpp"
 #include "strata/core/native_head.hpp"
-#include "strata/artifact/gguf_reader.hpp"
+#include "strata/common/artifact/gguf_reader.hpp"
 #include "strata/kernels/iq_kernels.hpp"
 #include "strata/kernels/native_mmvq.hpp"
-#include "strata/platform/memory.hpp"
+#include "strata/base/platform/memory.hpp"
 
 #include <climits>
 #include <cstdio>

@@ -26,7 +26,7 @@ MTP_MODES = ("on", "off")
 #: strata_common/drafting.py MODES (tests/terminal/test_drafting.py keeps the two the same)
 DRAFTING_MODES = ("auto", "mtp", "dflash2", "off")
 SPEED_MODES = ("faster", "full")             # DeepSeek: 5 experts per word (Faster) or all 6 (Full quality)
-FASTER_VRAM_GIB = 16.0                        # the engine's rule (src/dsv41/ds4_experts_rule.hpp): `--experts auto` is 5 when the cards used total 16 GiB or less
+FASTER_VRAM_GIB = 16.0                        # the engine's rule (src/models/deepseekv41/ds4_experts_rule.hpp): `--experts auto` is 5 when the cards used total 16 GiB or less
 FASTER_NOTE = "Faster uses 5 of 6 experts per word: a small quality change, usually not noticeable."
 
 

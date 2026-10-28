@@ -1,6 +1,6 @@
 // metal/include/metal_compat/cuda_runtime.h - the CUDA runtime names the host files use, on Metal.
 //
-// The HIP build's approach (include/strata/hip_compat/cuda_runtime.h maps every cudaX the host code calls to hipX),
+// The HIP build's approach (include/strata/base/gpu/hip_compat/cuda_runtime.h maps every cudaX the host code calls to hipX),
 // applied to Metal: this directory goes first on the Metal build's include path, so the shared host files compile for
 // Metal UNCHANGED, and the CUDA / HIP builds never see this file (their objects stay byte-identical by construction).
 // Every name forwards to strata::gpu's Metal implementation (metal/src/gpu/runtime.cpp), whose semantics are the

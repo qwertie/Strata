@@ -15,7 +15,7 @@
 // AND IT IS PHASE 2, so hit rate is `h = 0` and the number it prints is slow on purpose
 // (`phase-2-correct-engine.md:5-9`).  What it is FOR is the honest tok/s figure and the logit dump.
 
-#include "strata/platform/memory.hpp"
+#include "strata/base/platform/memory.hpp"
 #include "strata/core/adapt_async_default.hpp"
 #include "strata/core/arch_defaults.hpp"
 #include "strata/core/nv_defaults.hpp"
@@ -46,7 +46,7 @@
 #include "strata/kernels/gfx_arch.hpp"
 #include "strata/kernels/cpu/expert.hpp"
 #include "strata/kernels/cpu/pool.hpp"
-#include "strata/platform/aux_cpus.hpp"
+#include "strata/base/platform/aux_cpus.hpp"
 #include "strata/kernels/cpu/expert_layout.hpp"
 #include "strata/kernels/cpu/hadamard.hpp"
 #include "strata/kernels/ngram.hpp"
@@ -82,15 +82,15 @@
 #include "strata/program/conv_cache.hpp"
 #include "strata/program/split_rules.hpp"
 #include "strata/prefill/share_rules.hpp"
-#include "strata/platform/host_limits.hpp"
+#include "strata/base/platform/host_limits.hpp"
 #include "strata/program/split_ring.hpp"
 #include "strata/program/prefill_plan.hpp"
 #include "strata/program/draft_kv_plan.hpp"
 #include "strata/program/message_boundary.hpp"
-#include "strata/spec/draft_policy.hpp"
-#include "strata/spec/draft_source.hpp"
-#include "strata/spec/suffix_drafter.hpp"
-#include "strata/spec/spec_start.hpp"
+#include "strata/common/spec/draft_policy.hpp"
+#include "strata/common/spec/draft_source.hpp"
+#include "strata/common/spec/suffix_drafter.hpp"
+#include "strata/common/spec/spec_start.hpp"
 #include "strata/program/batch_groups.hpp"
 #include "strata/kernels/cvec.hpp"
 #include "strata/core/progress.hpp"
@@ -99,10 +99,10 @@
 #ifndef NOMINMAX
 #define NOMINMAX   // gguf_reader.hpp includes windows.h
 #endif
-#include "strata/artifact/gguf_reader.hpp"
+#include "strata/common/artifact/gguf_reader.hpp"
 #include "strata/core/family_layout.hpp"
 #if defined(STRATA_HAVE_QWEN35)
-#include "strata/qwen35/engine.hpp"
+#include "strata/models/qwen36/engine.hpp"
 #endif
 #if defined(_WIN32)
 #include <windows.h>
@@ -528,7 +528,7 @@ struct Options {
     std::string host_core;
     /// --pool-cores LIST (STRATA_POOL_CORES; experimental, off by default): the logical processors the pool's workers are pinned to
     std::string pool_cores;
-    /// --aux-cpus off|auto|LIST (STRATA_AUX_CPUS): where the non-pool, non-host threads run (strata/platform/aux_cpus.hpp)
+    /// --aux-cpus off|auto|LIST (STRATA_AUX_CPUS): where the non-pool, non-host threads run (strata/base/platform/aux_cpus.hpp)
     std::string aux_cpus;
     /// R2.2's first half, as an A/B arm.  **ON by default**, because the measurement that justifies it is the
     /// pool's own drain: 33.7 GB/s against 5/6 x 44.14 = 36.8 for five workers, on a machine whose sixth core
@@ -777,7 +777,7 @@ struct Options {
     /// The suffix drafter (prompt lookup): when the text being written repeats an earlier stretch of the context (code
     /// edits, quoted input, tool-call JSON) by at least this many tokens, the window may be filled with what followed
     /// it there instead of the MTP's drafts, where the MTP's own first guess agrees and the draft policy expects it to
-    /// pay (strata/spec/draft_policy.hpp).  On by default; 0 = MTP only.
+    /// pay (strata/common/spec/draft_policy.hpp).  On by default; 0 = MTP only.
     int suffix_draft = 3;
     /// The MTP's own window cap (0 = --spec): with --spec 6 --mtp-max-t 4 the long windows come from suffix matches.
     int mtp_max_t = 0;
@@ -1092,7 +1092,7 @@ int chain_tail(const strata::spec::SuffixDrafter& sfx, const int32_t* pending, i
     return (int) tail.size();
 }
 
-// --lookup-chain: the registered extra draft sources (strata/spec/draft_source.hpp) see the committed context too
+// --lookup-chain: the registered extra draft sources (strata/common/spec/draft_source.hpp) see the committed context too
 void extra_sources_reset() {
     for (auto& src : strata::spec::extra_draft_sources()) src->reset();
 }
@@ -2410,7 +2410,7 @@ int main(int argc, char** argv) {
     }
 #if defined(STRATA_HAVE_QWEN35)
     // **THE FAMILY SWITCH.**  A Qwen3.6-35B-A3B file (GGUF architecture qwen35moe) runs on its own engine path
-    // (src/qwen35), decided here from the file's header before any of this engine's state exists; every other file
+    // (src/models/qwen36), decided here from the file's header before any of this engine's state exists; every other file
     // goes on below exactly as before.  Only the architecture string is read (the header of --native's shard).
     for (int i = 1; i + 1 < argc; ++i) {
         if (std::strcmp(argv[i], "--native") != 0 && std::strcmp(argv[i], "--model") != 0) continue;
@@ -3212,7 +3212,7 @@ int main(int argc, char** argv) {
     }
     strata::core::qsa_set_kv_resident(o.kv_resident);
     // Prompt lookup (the suffix drafter, on by default): the MTP keeps its --spec windows and a lookup window may be
-    // up to 2 tokens longer; the draft policy (strata/spec/draft_policy.hpp) takes one only where it pays. Code
+    // up to 2 tokens longer; the draft policy (strata/common/spec/draft_policy.hpp) takes one only where it pays. Code
     // edits +6-11%, ordinary text unchanged (bench/results/2026-09-27-spec). --suffix-draft 0 turns it off.
     if (o.suffix_draft > 0 && o.spec >= 2 && o.mtp_max_t == 0) {
         o.mtp_max_t = o.spec;
@@ -6040,7 +6040,7 @@ int main(int argc, char** argv) {
         // the same facts in plain words, and whether each worker has a physical core of its own
         std::fprintf(stderr, "strata generate: %s\n", pool.placement_line().c_str());
         // --aux-cpus: the plan, now the workers' CPUs are known; the threads that exist already (the CUDA driver's) move
-        // now when it is on, the ones created later pin themselves (strata/platform/aux_cpus.hpp)
+        // now when it is on, the ones created later pin themselves (strata/base/platform/aux_cpus.hpp)
         const size_t nw = std::min<size_t>((size_t) pool.workers(), wc.size());
         std::fprintf(stderr, "%s\n",
                      strata::aux_cpus::set_topology(ht.host_core, std::vector<int>(wc.begin(), wc.begin() + (long) nw)).c_str());

@@ -12,7 +12,7 @@
 #define DPCT_PROFILING_ENABLED
 #include <sycl/sycl.hpp>
 #include <dpct/dpct.hpp>
-#include "strata/artifact/dequant.hpp"
+#include "strata/common/artifact/dequant.hpp"
 #include "strata/kernels/s2_gemv.hpp"
 
 #include <cmath>

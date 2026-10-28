@@ -101,12 +101,5 @@ each file goes is listed in [UPSTREAM_PORTING.md](UPSTREAM_PORTING.md#path-map).
 | `src/core/` | split: `src/base/gpu/`, `src/common/state/`, `src/common/experts/`, `src/models/common/`, `src/models/qwen38/` |
 | `src/kernels/` | split: `src/common/kernels/`, `src/models/common/`, `src/models/qwen38/` |
 | `src/prefill/` | split: `src/common/kernels/`, `src/models/qwen38/` |
-| `src/platform/` | `src/base/platform/`; its `hip_compat/` headers to `src/base/gpu/` |
-| `include/strata/hip_compat/` | `include/strata/base/gpu/hip_compat/` |
-| `src/artifact/` | `src/common/artifact/` |
-| `src/spec/` | `src/common/spec/` |
-| `src/dsv41/` | `src/models/deepseekv41/` |
-| `src/qwen35/` | `src/models/qwen36/` |
-| `src/ngram/`, `src/plan/` | `src/models/qwen38/` |
 | `serve/` | `strata_server/`; its all-purpose modules to `strata_base/` |
 | parts of `strata_control/`, `setup.py`, `tools/` | `strata_base/`, `strata_common/` |

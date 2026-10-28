@@ -1,4 +1,4 @@
-// Strata. The DeepSeek-V4.1 CPU lane's ggml-type rows (src/dsv41/ds4_gg_cpu.cpp): ggml-cpu's row dot against Strata's AVX2
+// Strata. The DeepSeek-V4.1 CPU lane's ggml-type rows (src/models/deepseekv41/ds4_gg_cpu.cpp): ggml-cpu's row dot against Strata's AVX2
 // multi-token i-quant rows, on random blocks of IQ2_XXS / IQ3_XXS.
 //   ds4_gg_bench [--type 16|18] [--threads N] [--mb M] [--nt 1..8] [--reps R]
 // Checks first (every row, every token): the two paths' results agree to a few float ulps (the integer sums are the same;

@@ -5,9 +5,9 @@
 #include "strata/core/native_dense.hpp"
 #include <cstdlib>
 #include "strata/core/weights.hpp"
-#include "strata/artifact/gguf_reader.hpp"
+#include "strata/common/artifact/gguf_reader.hpp"
 #include "strata/kernels/native_mmvq.hpp"
-#include "strata/platform/memory.hpp"
+#include "strata/base/platform/memory.hpp"
 
 #include <algorithm>
 #include <climits>

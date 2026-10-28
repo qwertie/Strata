@@ -495,7 +495,7 @@ On Windows, setup's ready-made engine runs an RX 6800 beside a 780M iGPU (HIP nu
 ## gfx906 (Instinct MI50 / MI60, Radeon VII): wave64, built from source
 
 gfx906 is wave64 and has no WMMA and no packed byte arithmetic, so the wave32 backend refuses it. A separate opt-in build
-compiles the CUDA sources as HIP through a small compat layer (`include/strata/platform/hip_compat/`), with a CUDA warp mapped
+compiles the CUDA sources as HIP through a small compat layer (`include/strata/base/gpu/hip_compat_gfx906/`), with a CUDA warp mapped
 to a logical half of the 64-lane wavefront. Setup does not build it: build by hand and run `strata_server/server.py` with a config as
 on any other card.
 

@@ -14,7 +14,7 @@
 // integer and float operations (the int8 codebook, the q8_1 blocks and the h the device produced are read back, the
 // lane-strided sums and the xor tree are replayed); the prompt-path dequantizers (iq_dequant_f32 / _f16) against the
 // fp16 codebook, bit for bit.  Exit 0 only if all hold.
-#include "strata/artifact/gguf_reader.hpp"
+#include "strata/common/artifact/gguf_reader.hpp"
 #include "strata/kernels/cpu/native_expert.hpp"
 #include "strata/kernels/cpu/expert_layout.hpp"
 #include "strata/kernels/cpu/hadamard.hpp"

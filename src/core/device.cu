@@ -113,7 +113,7 @@ bool device_summary(int ordinal, std::string& name, std::string& detail) {
 }  // namespace strata::core
 
 #if defined(STRATA_USE_HIP) && defined(_WIN32)
-// The free VRAM figure on Windows HIP (include/strata/hip_compat/cuda_runtime.h maps cudaMemGetInfo here).
+// The free VRAM figure on Windows HIP (include/strata/base/gpu/hip_compat/cuda_runtime.h maps cudaMemGetInfo here).
 //
 // hipMemGetInfo (ROCclr's PAL backend, Device::globalFreeMemory) is the card's size minus this process's own
 // allocations: it asks Windows for this process's usage only, never for what the desktop and other programs hold.

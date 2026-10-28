@@ -11,7 +11,7 @@
 // Dependency-free on purpose: the kernels include it.
 #pragma once
 
-#include "strata/artifact/model_family.hpp"
+#include "strata/common/artifact/model_family.hpp"
 
 #include <cstdint>
 

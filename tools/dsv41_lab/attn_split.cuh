@@ -9,8 +9,8 @@
 //   phase 2: block (head, query): merge the chunks and the sink.
 // Plain C++ (no PTX), shuffles and shared memory only: the HIP port is a rename.
 #pragma once
-#include "../../src/dsv41/ds4_kernels.cuh"
-#include "../../src/dsv41/ds4_numerics.cuh"
+#include "../../src/models/deepseekv41/ds4_kernels.cuh"
+#include "../../src/models/deepseekv41/ds4_numerics.cuh"
 #include <cuda_fp16.h>
 
 namespace strata::ds4lab {

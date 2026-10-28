@@ -17,8 +17,7 @@ ROOT = Path(__file__).resolve().parents[2]
 CPP_SUFFIXES = {".cpp", ".cc", ".c", ".hpp", ".h", ".inc", ".inl", ".cu", ".cuh"}
 CPP_INCLUDE = re.compile(r'^\s*#\s*include\s*"strata/([^"]+)"', re.MULTILINE)
 # Folders under src/ and include/strata/ that the refactor empties and deletes (docs/ARCHITECTURE.md#old-folders)
-OLD_CPP_FOLDERS = {"artifact", "core", "dsv41", "hip_compat", "kernels", "ngram", "plan", "platform", "prefill",
-                   "qwen35", "spec"}
+OLD_CPP_FOLDERS = {"core", "kernels", "prefill"}
 # The new C++ folders (relative to src/ or include/strata/) by layer. Files in one folder, including its subfolders,
 # may include each other; folders in one layer may not, except as CPP_SAME_LAYER_USES allows. A new model family
 # is added here.

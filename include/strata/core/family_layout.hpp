@@ -14,8 +14,8 @@
 //     size; and, for a family whose table is complete (qwen35moe), no blk.* tensor the table does not name.
 #pragma once
 
-#include "strata/artifact/gguf_reader.hpp"
-#include "strata/artifact/model_family.hpp"
+#include "strata/common/artifact/gguf_reader.hpp"
+#include "strata/common/artifact/model_family.hpp"
 #include "strata/core/geometry.hpp"
 
 #include <cstdint>

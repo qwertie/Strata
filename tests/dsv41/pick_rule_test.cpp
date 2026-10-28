@@ -1,4 +1,4 @@
-// Strata. The DeepSeek V4.1 engine's prompt-path rule (src/dsv41/ds4_pick_rule.hpp): by length only, one number, DS4_PICK_MIN moves it.
+// Strata. The DeepSeek V4.1 engine's prompt-path rule (src/models/deepseekv41/ds4_pick_rule.hpp): by length only, one number, DS4_PICK_MIN moves it.
 #include "ds4_pick_rule.hpp"
 
 #include <cstdio>

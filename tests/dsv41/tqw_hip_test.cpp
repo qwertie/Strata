@@ -1,9 +1,9 @@
-// Strata. Parity + speed of the gfx12 WMMA trellis GEMV (src/dsv41/ds4_tqw.cuh) on a R9700 (gfx1201):
+// Strata. Parity + speed of the gfx12 WMMA trellis GEMV (src/models/deepseekv41/ds4_tqw.cuh) on a R9700 (gfx1201):
 //   tqw_hip_test [--k 4,5,6,7] [--code 0|1] [--bench]
 // Parity: random legal streams (any bit pattern is one), host-decoded weights (tqenc::decode_blocks: the table codebook, or the
 // computed code when TQE_CODE=3single, with --code 1) against the kernel's y, relative to sum|w x| per output.
 // --bench: the DeepSeek decode shape (12 gate/up matrices of 2304 x 5120), GB/s of weight bytes.
-#include "../../src/dsv41/ds4_tqw.cuh"
+#include "../../src/models/deepseekv41/ds4_tqw.cuh"
 #include "../../tools/dsv41_lab/wmma_emu.hpp"
 #include "../../tools/trellis/tqenc.hpp"
 

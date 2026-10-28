@@ -1,7 +1,7 @@
-// dequantize_q5_1 (strata/artifact/dequant.hpp: the PLE table of a Q5_1 GGUF) against ggml's dequantize_row_q5_1,
+// dequantize_q5_1 (strata/common/artifact/dequant.hpp: the PLE table of a Q5_1 GGUF) against ggml's dequantize_row_q5_1,
 // on synthetic blocks: random codes, high bits and scales, plus the edge codes 0 and 31 and a negative minimum.
 // No model, no GPU.
-#include "strata/artifact/dequant.hpp"
+#include "strata/common/artifact/dequant.hpp"
 #include "ggml.h"
 
 #include <cmath>

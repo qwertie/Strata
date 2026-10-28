@@ -1,6 +1,6 @@
 // src/kernels/dequant_s2_parity.cpp - P2.S2's parity test for the S2 decode.
 //
-// THE REFERENCE IS THE CHAIN, NOT A SECOND OPINION.  `strata::dequantize_q2_0` (include/strata/artifact/
+// THE REFERENCE IS THE CHAIN, NOT A SECOND OPINION.  `strata::dequantize_q2_0` (include/strata/common/artifact/
 // dequant.hpp) is a scalar transcription that `bench/micro/dequant_xcheck` checks against **ggml's own**
 // dequantizer on real block bytes; and `tools/canonical_xcheck.py --full` checks that the canonical form
 // decodes to the same values on every block of the artifact.  So this compares "GPU canonical decode" against
@@ -9,7 +9,7 @@
 #define DPCT_PROFILING_ENABLED
 #include <sycl/sycl.hpp>
 #include <dpct/dpct.hpp>
-#include "strata/artifact/dequant.hpp"
+#include "strata/common/artifact/dequant.hpp"
 #include "strata/kernels/dequant_s2.hpp"
 
 #include <cstdint>

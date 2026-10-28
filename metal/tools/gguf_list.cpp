@@ -1,6 +1,6 @@
 // metal/tools/gguf_list.cpp - tensor directory and scalar metadata of a GGUF (name type shape offset), for the
 // Metal window's wiring.   clang++ -std=c++20 -I include metal/tools/gguf_list.cpp -o gguf_list
-#include "strata/artifact/gguf_reader.hpp"
+#include "strata/common/artifact/gguf_reader.hpp"
 
 #include <cstdio>
 #include <string>
