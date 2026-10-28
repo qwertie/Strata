@@ -1,6 +1,6 @@
 // The elastic K/V's VMM ranges (vmm.hpp): chunks map readable and writable, a chunk unmapped from one range and mapped
 // into another keeps its bytes (what the expert cache hands the K/V), and a range releases what it holds.
-#include "strata/core/vmm.hpp"
+#include "strata/base/gpu/vmm.hpp"
 
 #include <cuda_runtime.h>
 

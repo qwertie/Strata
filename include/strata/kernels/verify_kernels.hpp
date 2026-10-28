@@ -142,7 +142,7 @@ void res_patch(int32_t* table, const int32_t* pairs, int n, void* stream);
 /// ptr[k] = base + k * blob_bytes for k < *n (the staged copies `fetch_blobs` made).
 void rebase_ptrs(unsigned long long* ptr, const int32_t* n, uint8_t* base, int64_t blob_bytes, void* stream);
 
-// ---- the MTP draft layer (src/core/mtp.cpp)
+// ---- the MTP draft layer (src/models/qwen38/mtp.cpp)
 /// R[t][c][:] = h[t][c][:] + e[t][:]  (the embedding branch added to every stream).
 void add_streams_broadcast(const float* h, const float* e, float* R, int64_t n_embd, int hc, int n_tok, void* stream);
 /// Every routed expert is resident (slot = expert id): slot[i] = ids[i], dst[i] = i, *count = n.

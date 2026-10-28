@@ -4,7 +4,7 @@
 #include <hip/hip_fp16.h>
 
 #include "wmma_gemm.h"
-#include "strata/kernels/gfx_arch.hpp"
+#include "strata/base/gpu/gfx_arch.hpp"
 
 #include <algorithm>
 #include <cmath>

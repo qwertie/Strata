@@ -224,7 +224,7 @@ if(STRATA_NATIVE_EXPERTS)
 endif()
 
 # --- the GPU engine ------------------------------------------------------------------------------------------------
-strata_resolve(_core src/core/device.cu src/core/pinned.cu src/base/platform/memory.cpp src/core/graph.cpp
+strata_resolve(_core src/base/gpu/device.cu src/base/gpu/pinned.cu src/base/gpu/graph.cpp src/base/platform/memory.cpp
                      src/core/weights.cpp src/core/layout.cpp)
 add_library(strata_core STATIC ${_core})
 target_link_libraries(strata_core PUBLIC strata_includes)
@@ -250,16 +250,19 @@ add_library(strata_kernels STATIC ${_kernels})
 target_include_directories(strata_kernels PRIVATE ${STRATA_ROOT}/third_party/ggml)
 target_link_libraries(strata_kernels PUBLIC strata_core)
 
-strata_resolve(_engine src/core/layer.cpp src/core/session.cpp src/core/expert_source.cpp src/core/remote_experts.cpp
-                       src/core/expert_cache.cpp src/core/native_head.cpp src/core/native_dense.cpp src/core/verify.cpp
-                       src/core/mtp.cpp src/core/conversation_snapshot.cpp src/core/conversation_state.cpp
-                       src/core/conversation_memory.cpp   # 0.1.31: the conversation snapshots (#216)
-                       src/core/arch_defaults.cpp src/core/vmm.cpp   # vmm.cpp is the port's stub: no driver VMM on Level Zero
-                       src/core/conversation_file.cpp
+strata_resolve(_engine src/models/qwen38/layer.cpp src/models/qwen38/session.cpp src/core/expert_source.cpp
+                       src/core/remote_experts.cpp src/core/expert_cache.cpp src/models/qwen38/native_head.cpp
+                       src/models/qwen38/native_dense.cpp src/models/qwen38/verify.cpp src/models/qwen38/mtp.cpp
+                       src/models/qwen38/conversation_snapshot.cpp src/models/qwen38/conversation_state.cpp
+                       src/common/state/conversation_memory.cpp   # 0.1.31: the conversation snapshots (#216)
+                       src/core/arch_defaults.cpp
+                       src/base/gpu/vmm.cpp   # the port's stub: no driver VMM on Level Zero
+                       src/common/state/conversation_file.cpp
                        src/core/peer_experts.cpp src/core/remote_expert_opt_stub.cpp)         # 0.1.36+: --peer-device (a stub in the port: no second GPU tier yet)
 add_library(strata_engine STATIC ${_engine} ${CMAKE_CURRENT_SOURCE_DIR}/src/core/gguf_expert_source.cpp
-            ${CMAKE_CURRENT_SOURCE_DIR}/src/core/copy_queue.cpp)   # 0.1.43: a queue on the copy engine
-target_include_directories(strata_engine PRIVATE ${STRATA_ROOT}/src/core)   # conversation_checked.hpp (#include "...")
+            ${CMAKE_CURRENT_SOURCE_DIR}/src/base/gpu/copy_queue.cpp)   # 0.1.43: a queue on the copy engine
+# conversation_checked.hpp (#include "...")
+target_include_directories(strata_engine PRIVATE ${STRATA_ROOT}/src/models/qwen38)
 target_link_libraries(strata_engine PUBLIC strata_core strata_kernels strata_kernels_cpu)
 
 # cuBLAS -> oneMKL through dpct::blas (needs the MKL SYCL BLAS domain)
@@ -369,7 +372,7 @@ if(STRATA_SYCL_PARITY)
   # (upstream PR #413's gdn_rec_parity is an SM-holding NVIDIA bench - PTX timers, __nanosleep - not built here; the
   # key-head kernel is checked through the engine: output hashes with STRATA_GDN_KEYHEAD=1 and without)
   # the conversation snapshots (#216) against the engine, as upstream's STRATA_BUILD_CONVERSATION_TESTS
-  strata_resolve(_src src/core/conversation_snapshot_test.cpp)
+  strata_resolve(_src src/models/qwen38/conversation_snapshot_test.cpp)
   add_executable(conversation_snapshot_test ${_src})
   target_link_libraries(conversation_snapshot_test PRIVATE strata_engine)
   add_test(NAME conversation_snapshot_test COMMAND conversation_snapshot_test)

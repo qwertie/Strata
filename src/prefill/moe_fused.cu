@@ -18,8 +18,8 @@
 // for the k of a half-block: mma k index 16h + 4t + j stands for weight (and activation) 16h + t + 4j.  The
 // activations are stored in it (perm32), and a lane's two B registers (h = 0 and 1) are adjacent: one 8-byte load.
 #include "strata/prefill/moe_fused.hpp"
-#include "strata/kernels/gfx_arch.hpp"
-#include "strata/core/emulate.hpp"
+#include "strata/base/gpu/gfx_arch.hpp"
+#include "strata/base/gpu/emulate.hpp"
 
 #include <cuda_fp16.h>
 #include <cuda_runtime.h>

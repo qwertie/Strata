@@ -23,7 +23,7 @@
 #include <hip/hip_bfloat16.h>
 
 #include <cstdlib>
-#include "strata/kernels/gfx_arch.hpp"
+#include "strata/base/gpu/gfx_arch.hpp"
 
 #include <atomic>
 #include <cstring>

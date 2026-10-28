@@ -1,6 +1,6 @@
-// The batch window's row layout (include/strata/core/batch_rows.hpp): plain one-row slots, a slot's contiguous group of
-// proposed rows (--batch-mtp), and the hand-off capacity of a layer split's stages.  Header-only, CPU.
-#include "strata/core/batch_rows.hpp"
+// The batch window's row layout (include/strata/models/qwen38/batch_rows.hpp): plain one-row slots, a slot's contiguous
+// group of proposed rows (--batch-mtp), and the hand-off capacity of a layer split's stages.  Header-only, CPU.
+#include "strata/models/qwen38/batch_rows.hpp"
 
 #include <cstdio>
 #include <cstdlib>

@@ -43,7 +43,7 @@ from gguf import GGUFReader, GGMLQuantizationType as QT  # noqa: E402
 from gguf.quants import dequantize, quantize  # noqa: E402
 from gguf_writer import dequantize_q2_0  # noqa: E402
 
-# what src/core/native_dense.cpp serves natively (eligible()), and the head
+# what src/models/qwen38/native_dense.cpp serves natively (eligible()), and the head
 SUFFIXES = (".attn_qkv.weight", ".attn_gate.weight", ".ssm_out.weight", ".attn_q.weight", ".attn_k.weight",
             ".attn_v.weight", ".attn_output.weight", ".ffn_gate_shexp.weight", ".ffn_up_shexp.weight",
             ".ffn_down_shexp.weight")

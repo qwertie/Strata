@@ -129,22 +129,25 @@ option(STRATA_NATIVE_EXPERTS "Native (IQ) expert support through ggml-cpu" ON)
 
 if(STRATA_BUILD_CONVERSATION_TESTS)
   enable_testing()
-  add_executable(conversation_cache_test src/core/conversation_cache_test.cpp)
+  add_executable(conversation_cache_test src/common/state/conversation_cache_test.cpp)
   target_include_directories(conversation_cache_test PRIVATE include)
   add_test(NAME conversation_cache_test COMMAND conversation_cache_test)
-  add_executable(conversation_split_failure_test src/core/conversation_split_failure_test.cpp)
+  add_executable(conversation_split_failure_test src/common/state/conversation_split_failure_test.cpp)
   target_include_directories(conversation_split_failure_test PRIVATE include)
   add_test(NAME conversation_split_failure_test COMMAND conversation_split_failure_test)
-  add_executable(conversation_memory_test src/core/conversation_memory_test.cpp src/core/conversation_memory.cpp)
+  add_executable(conversation_memory_test src/common/state/conversation_memory_test.cpp
+                 src/common/state/conversation_memory.cpp)
   target_include_directories(conversation_memory_test PRIVATE include)
   add_test(NAME conversation_memory_test COMMAND conversation_memory_test)
-  add_executable(conversation_file_test src/core/conversation_file_test.cpp src/core/conversation_file.cpp)
+  add_executable(conversation_file_test src/common/state/conversation_file_test.cpp
+                 src/common/state/conversation_file.cpp)
   target_include_directories(conversation_file_test PRIVATE include)
   add_test(NAME conversation_file_test COMMAND conversation_file_test)
-  add_executable(session_save_reclaim_test src/core/session_save_reclaim_test.cpp src/core/conversation_file.cpp)
+  add_executable(session_save_reclaim_test src/common/state/session_save_reclaim_test.cpp
+                 src/common/state/conversation_file.cpp)
   target_include_directories(session_save_reclaim_test PRIVATE include)
   add_test(NAME session_save_reclaim_test COMMAND session_save_reclaim_test)
-  add_executable(token_listing_test src/core/token_listing_test.cpp)
+  add_executable(token_listing_test src/common/state/token_listing_test.cpp)
   target_include_directories(token_listing_test PRIVATE include)
   add_test(NAME token_listing_test COMMAND token_listing_test)
 endif()
@@ -270,10 +273,10 @@ target_link_libraries(strata-dequant PRIVATE strata_artifact)
 # this file is now nothing but the CLI entry point, and its inherited guard spells that as a "selftest"
 target_compile_definitions(strata-dequant PRIVATE STRATA_DEQUANT_SELFTEST)
 if(STRATA_BUILD_TESTS)
-  add_executable(batch_telemetry_test src/core/batch_telemetry_test.cpp)
+  add_executable(batch_telemetry_test src/models/qwen38/batch_telemetry_test.cpp)
   target_include_directories(batch_telemetry_test PRIVATE include)
   add_test(NAME batch_telemetry_test COMMAND batch_telemetry_test)
-  add_executable(logit_bias_test src/core/logit_bias_test.cpp)
+  add_executable(logit_bias_test src/common/sample/logit_bias_test.cpp)
   target_include_directories(logit_bias_test PRIVATE include)
   add_test(NAME logit_bias_test COMMAND logit_bias_test)
   # the reader refuses a duplicate tensor name at open, naming it (a synthetic GGUF: no model, no GPU)
@@ -337,13 +340,13 @@ target_link_libraries(strata-plan PRIVATE strata_plan)
 # ---- strata_core (GPU runtime) ---------------------------------------------
 # Only built when a GPU backend is on, so the Phase 1 targets keep working without a toolkit.
 if(STRATA_ENABLE_CUDA OR STRATA_ENABLE_HIP)
-  add_library(strata_core STATIC src/core/device.cu src/core/pinned.cu src/base/platform/memory.cpp src/core/graph.cpp
-                               src/core/weights.cpp src/core/layout.cpp)
+  add_library(strata_core STATIC src/base/gpu/device.cu src/base/gpu/pinned.cu src/base/gpu/graph.cpp
+                               src/base/platform/memory.cpp src/core/weights.cpp src/core/layout.cpp)
   target_include_directories(strata_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
-  # the DFlash2 drafter (src/core/dflash2.cpp, src/kernels/cuda/dflash2.cu) exists in the CUDA and HIP builds; the Metal and SYCL builds compile without it
+  # the DFlash2 drafter (src/models/qwen38/dflash2.cpp, src/kernels/cuda/dflash2.cu) exists in the CUDA and HIP builds; the Metal and SYCL builds compile without it
   target_compile_definitions(strata_core PUBLIC STRATA_HAVE_DFLASH2=1)
   if(STRATA_ENABLE_CUDA AND STRATA_EXPERIMENTAL_SM60)
-    # the runtime device check (src/core/device.cu) admits the cards this build was made for (#236)
+    # the runtime device check (src/base/gpu/device.cu) admits the cards this build was made for (#236)
     target_compile_definitions(strata_core PRIVATE STRATA_EXPERIMENTAL_SM60=1)
   endif()
   # The selected runtime is PUBLIC because graph.cpp is a HOST translation unit that calls cudaGraphLaunch and
@@ -351,17 +354,17 @@ if(STRATA_ENABLE_CUDA OR STRATA_ENABLE_HIP)
   # linker error ("unresolved external symbol cudaGraphInstantiate") names the function rather than the cause.
   target_link_libraries(strata_core PUBLIC strata_plan strata_warnings ${_strata_gpu_runtime_target})
 
-  add_executable(strata-device src/core/device_main.cpp)
+  add_executable(strata-device src/program/device_main.cpp)
   target_link_libraries(strata-device PRIVATE strata_core)
 
-  add_executable(strata-load src/core/load_main.cpp)
+  add_executable(strata-load src/program/load_main.cpp)
   target_link_libraries(strata-load PRIVATE strata_core strata_kernels)
 
-  add_executable(strata-concurrent src/core/concurrent_main.cpp)
+  add_executable(strata-concurrent src/program/concurrent_main.cpp)
   target_include_directories(strata-concurrent PRIVATE ${_strata_gpu_include_directories})
   target_link_libraries(strata-concurrent PRIVATE strata_core strata_kernels ${_strata_gpu_runtime_target})
 
-  add_executable(strata-overlap src/core/overlap_main.cpp)
+  add_executable(strata-overlap src/program/overlap_main.cpp)
   # a .cpp that calls cudaMemcpyAsync itself needs the toolkit headers and cudart explicitly
   target_include_directories(strata-overlap PRIVATE ${_strata_gpu_include_directories})
   target_link_libraries(strata-overlap PRIVATE strata_core strata_kernels ${_strata_gpu_runtime_target})
@@ -584,11 +587,13 @@ if(STRATA_ENABLE_CUDA OR STRATA_ENABLE_HIP)
   # already links `strata_core` - putting `gdn_layer` in core would make the two mutually dependent.  A third
   # library is the honest shape of the dependency graph: core knows about devices and weights, kernels know
   # about arithmetic, and this one knows the ORDER the arithmetic happens in.
-  add_library(strata_engine STATIC src/core/layer.cpp src/core/session.cpp src/core/expert_source.cpp src/core/remote_experts.cpp
-    src/core/remote_expert_opt.cu
-    src/core/expert_cache.cpp src/core/native_head.cpp src/core/native_dense.cpp src/core/verify.cpp src/core/mtp.cpp src/core/dflash2.cpp
-    src/core/conversation_snapshot.cpp src/core/conversation_state.cpp src/core/conversation_memory.cpp src/core/peer_experts.cpp
-    src/core/arch_defaults.cpp src/core/nv_defaults.cpp src/core/vmm.cpp src/core/conversation_file.cpp)
+  add_library(strata_engine STATIC src/base/gpu/vmm.cpp
+    src/common/state/conversation_memory.cpp src/common/state/conversation_file.cpp
+    src/core/expert_source.cpp src/core/remote_experts.cpp src/core/remote_expert_opt.cu src/core/expert_cache.cpp
+    src/core/peer_experts.cpp src/core/arch_defaults.cpp src/core/nv_defaults.cpp
+    src/models/qwen38/layer.cpp src/models/qwen38/session.cpp src/models/qwen38/native_head.cpp
+    src/models/qwen38/native_dense.cpp src/models/qwen38/verify.cpp src/models/qwen38/mtp.cpp
+    src/models/qwen38/dflash2.cpp src/models/qwen38/conversation_snapshot.cpp src/models/qwen38/conversation_state.cpp)
   target_include_directories(strata_engine PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
   target_link_libraries(strata_engine PUBLIC strata_core strata_kernels strata_kernels_cpu ${_strata_gpu_runtime_target})
   if(STRATA_BUILD_TESTS AND STRATA_ENABLE_CUDA AND NOT STRATA_HIP_GFX906)
@@ -609,7 +614,7 @@ if(STRATA_ENABLE_CUDA OR STRATA_ENABLE_HIP)
   # available_host_bytes(): MemAvailable, cgroup limits and the operator's --memory-limit-mib cap on fixture directories
   # - no GPU, no CUDA
   if(STRATA_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/core/memory_guard_test.cpp")
-    add_executable(memory_guard_test tests/core/memory_guard_test.cpp src/core/conversation_memory.cpp)
+    add_executable(memory_guard_test tests/core/memory_guard_test.cpp src/common/state/conversation_memory.cpp)
     target_include_directories(memory_guard_test PRIVATE include)
     add_test(NAME memory_guard_test COMMAND memory_guard_test)
     set_tests_properties(memory_guard_test PROPERTIES TIMEOUT 60)
@@ -686,16 +691,16 @@ if(STRATA_ENABLE_CUDA OR STRATA_ENABLE_HIP)
     set_tests_properties(expert_cache_slot_guard_test PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 60)
   endif()
   if(STRATA_BUILD_CONVERSATION_TESTS)
-    add_executable(conversation_snapshot_test src/core/conversation_snapshot_test.cpp)
+    add_executable(conversation_snapshot_test src/models/qwen38/conversation_snapshot_test.cpp)
     target_link_libraries(conversation_snapshot_test PRIVATE strata_engine)
     add_test(NAME conversation_snapshot_test COMMAND conversation_snapshot_test)
     set_tests_properties(conversation_snapshot_test PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 120)
-    add_executable(conversation_validation_test src/core/conversation_validation_test.cpp)
+    add_executable(conversation_validation_test src/models/qwen38/conversation_validation_test.cpp)
     target_link_libraries(conversation_validation_test PRIVATE strata_engine)
     add_test(NAME conversation_validation_test COMMAND conversation_validation_test)
     set_tests_properties(conversation_validation_test PROPERTIES ENVIRONMENT "CUDA_VISIBLE_DEVICES=-1" TIMEOUT 120)
     if(NOT STRATA_ENABLE_HIP AND UNIX AND NOT APPLE AND CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
-      add_executable(conversation_transfer_test src/core/conversation_validation_test.cpp)
+      add_executable(conversation_transfer_test src/models/qwen38/conversation_validation_test.cpp)
       target_compile_definitions(conversation_transfer_test PRIVATE CONVERSATION_TEST_TRANSFERS)
       target_link_options(conversation_transfer_test PRIVATE
         -Wl,--wrap=cudaMemcpy -Wl,--wrap=cudaMemcpyAsync -Wl,--wrap=cudaStreamSynchronize
@@ -741,22 +746,22 @@ if(STRATA_ENABLE_CUDA OR STRATA_ENABLE_HIP)
 
   # DFlash2 drafter tools (not built by default: cmake --build <dir> --target dflash2_parity dflash2_gemm_bench dflash2_attn_bench): the drafter against
   # the torch port on a synthetic case (needs the pack and a case file, tools/dflash2/mk_parity_case.py), and the timing of its Q8 GEMM and attention
-  add_executable(dflash2_parity EXCLUDE_FROM_ALL src/core/dflash2_parity.cpp)
+  add_executable(dflash2_parity EXCLUDE_FROM_ALL src/models/qwen38/dflash2_parity.cpp)
   target_include_directories(dflash2_parity PRIVATE ${_strata_gpu_include_directories})
   target_link_libraries(dflash2_parity PRIVATE strata_engine strata_kernels ${_strata_gpu_runtime_target})
-  add_executable(dflash2_gemm_bench EXCLUDE_FROM_ALL src/core/dflash2_gemm_bench.cpp)
+  add_executable(dflash2_gemm_bench EXCLUDE_FROM_ALL src/models/qwen38/dflash2_gemm_bench.cpp)
   target_include_directories(dflash2_gemm_bench PRIVATE ${_strata_gpu_include_directories})
   target_link_libraries(dflash2_gemm_bench PRIVATE strata_kernels ${_strata_gpu_runtime_target})
-  add_executable(dflash2_launch_bench EXCLUDE_FROM_ALL src/core/dflash2_launch_bench.cu)
+  add_executable(dflash2_launch_bench EXCLUDE_FROM_ALL src/models/qwen38/dflash2_launch_bench.cu)
   target_include_directories(dflash2_launch_bench PRIVATE ${_strata_gpu_include_directories})
   target_link_libraries(dflash2_launch_bench PRIVATE ${_strata_gpu_runtime_target})
-  add_executable(dflash2_bw_bench EXCLUDE_FROM_ALL src/core/dflash2_bw_bench.cu)
+  add_executable(dflash2_bw_bench EXCLUDE_FROM_ALL src/models/qwen38/dflash2_bw_bench.cu)
   target_include_directories(dflash2_bw_bench PRIVATE ${_strata_gpu_include_directories})
   target_link_libraries(dflash2_bw_bench PRIVATE ${_strata_gpu_runtime_target})
-  add_executable(dflash2_small_bench EXCLUDE_FROM_ALL src/core/dflash2_small_bench.cpp)
+  add_executable(dflash2_small_bench EXCLUDE_FROM_ALL src/models/qwen38/dflash2_small_bench.cpp)
   target_include_directories(dflash2_small_bench PRIVATE ${_strata_gpu_include_directories})
   target_link_libraries(dflash2_small_bench PRIVATE strata_kernels ${_strata_gpu_runtime_target})
-  add_executable(dflash2_attn_bench EXCLUDE_FROM_ALL src/core/dflash2_attn_bench.cpp)
+  add_executable(dflash2_attn_bench EXCLUDE_FROM_ALL src/models/qwen38/dflash2_attn_bench.cpp)
   target_include_directories(dflash2_attn_bench PRIVATE ${_strata_gpu_include_directories})
   target_link_libraries(dflash2_attn_bench PRIVATE strata_kernels ${_strata_gpu_runtime_target})
 
@@ -835,7 +840,7 @@ if(STRATA_ENABLE_CUDA OR STRATA_ENABLE_HIP)
     target_link_libraries(strata-dsv41 PRIVATE strata_dsv41_kernels ${_strata_gpu_runtime_target} ${_strata_gpu_blas_target})
     find_package(Threads REQUIRED)
     target_link_libraries(strata-dsv41 PRIVATE Threads::Threads)
-    if(WIN32 AND STRATA_ENABLE_HIP)   # cudaMemGetInfo is the DXGI-budgeted hip_compat::mem_get_info (src/core/device.cu): on a Strix Halo the
+    if(WIN32 AND STRATA_ENABLE_HIP)   # cudaMemGetInfo is the DXGI-budgeted hip_compat::mem_get_info (src/base/gpu/device.cu): on a Strix Halo the
       # carve-out is not all the GPU may use, and the engine sizes its expert tiers by what the budget says is free
       target_link_libraries(strata-dsv41 PRIVATE strata_core)
     endif()
@@ -1480,12 +1485,12 @@ if(STRATA_ENABLE_CUDA OR STRATA_ENABLE_HIP)
   add_test(NAME platform_memory_test COMMAND platform_memory_test)
 
   # The pinned-memory headroom (pin_budget.hpp) against a simulated ceiling; skips without a GPU.
-  add_executable(pin_budget_test src/core/pin_budget_test.cpp)
+  add_executable(pin_budget_test src/base/gpu/pin_budget_test.cpp)
   target_link_libraries(pin_budget_test PRIVATE strata_core ${_strata_gpu_runtime_target})
   add_test(NAME pin_budget_test COMMAND pin_budget_test)
 
   if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
-    add_executable(pinned_shared_test src/core/pinned_shared_test.cpp)
+    add_executable(pinned_shared_test src/base/gpu/pinned_shared_test.cpp)
     target_link_libraries(pinned_shared_test PRIVATE strata_core ${_strata_gpu_runtime_target})
     add_test(NAME pinned_shared_test COMMAND pinned_shared_test)
   endif()
@@ -1553,7 +1558,7 @@ if(STRATA_BUILD_TESTS)
   add_executable(arch_defaults_test src/core/arch_defaults_test.cpp src/core/arch_defaults.cpp)
   target_include_directories(arch_defaults_test PRIVATE include)
   add_test(NAME arch_defaults_test COMMAND arch_defaults_test)
-  add_executable(adapt_async_default_test src/core/adapt_async_default_test.cpp)
+  add_executable(adapt_async_default_test src/models/qwen38/adapt_async_default_test.cpp)
   target_include_directories(adapt_async_default_test PRIVATE include)
   add_test(NAME adapt_async_default_test COMMAND adapt_async_default_test)
   add_executable(uma_cache_test src/core/uma_cache_test.cpp)
@@ -1597,7 +1602,7 @@ if(STRATA_BUILD_TESTS OR STRATA_BUILD_CONVERSATION_TESTS)
   target_include_directories(spec_prob_test PRIVATE include)
   add_test(NAME spec_prob_test COMMAND spec_prob_test)
   # the per-card window cap of --draft dflash2 (header-only, CPU)
-  add_executable(draft_cap_test src/core/draft_cap_test.cpp)
+  add_executable(draft_cap_test src/models/qwen38/draft_cap_test.cpp)
   target_include_directories(draft_cap_test PRIVATE include)
   add_test(NAME draft_cap_test COMMAND draft_cap_test)
   # the f32 -> bf16 rounding against ggml's, NaN included, over every f32 bit pattern (header-only, CPU)

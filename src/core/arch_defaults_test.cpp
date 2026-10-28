@@ -1,6 +1,6 @@
 // src/core/arch_defaults_test.cpp - the per-architecture default table (no GPU needed).
 #include "strata/core/arch_defaults.hpp"
-#include "strata/core/gfx12_platform_defaults.hpp"
+#include "strata/base/gpu/gfx12_platform_defaults.hpp"
 
 #include <cstdio>
 #include <cstdlib>

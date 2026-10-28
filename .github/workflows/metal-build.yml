@@ -1,7 +1,7 @@
 name: Metal build
 
 # Compile and link the Metal engine on a macOS runner (no GPU needed: the kernels are compiled at run time).  The shared host files
-# (src/core/verify.cpp, src/prefill, src/program/generate.cpp) call kernel entry points that exist only for CUDA / HIP until Metal gets a
+# (src/models/qwen38/verify.cpp, src/prefill, src/program/generate.cpp) call kernel entry points that exist only for CUDA / HIP until Metal gets a
 # stub or an implementation; a missing one is a link error here, not on a user's Mac (owner round 9, G6).
 
 on:

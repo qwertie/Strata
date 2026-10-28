@@ -22,7 +22,7 @@
 #include "strata/kernels/sampler.hpp"
 #include "strata/core/coupled_draft.hpp"
 #include "strata/core/spec_prob.hpp"
-#include "strata/core/emulate.hpp"
+#include "strata/base/gpu/emulate.hpp"
 
 #include <cuda_runtime.h>
 

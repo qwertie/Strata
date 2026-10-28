@@ -1,7 +1,7 @@
 // src/core/arch_defaults.cpp - see include/strata/core/arch_defaults.hpp.
 #include "strata/core/arch_defaults.hpp"
 
-#include "strata/kernels/gfx_arch.hpp"
+#include "strata/base/gpu/gfx_arch.hpp"
 
 #include <cstdio>
 #include <cstdlib>

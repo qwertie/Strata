@@ -24,7 +24,7 @@ THE ENGINE LAYOUT IS NOT THE PACK LAYOUT, and that is the point of `dst_*`.  Two
      `{fp16 d; ...}`).  213 tensors (IQ4_XS, Q3_K, Q4_K, Q5_K, Q6_K) carry f32 scales.  The manifest has said
      which is which all along, in `scales_fp16`.
 
-     `src/core/layer.cpp` did not read that field.  It assumed 4 bytes per scale, so it computed a scale plane
+     `src/models/qwen38/layer.cpp` did not read that field.  It assumed 4 bytes per scale, so it computed a scale plane
      twice the real size, the three planes did not add up to the tensor, and the loader REFUSED - which is how
      this was found, and the refusal is the only reason it was not a silent wrong answer.  The first diagnosis
      was "the manifest's `group_elems` must be wrong, the real group is 64".  It is not: `group_elems` is 32

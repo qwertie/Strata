@@ -298,13 +298,13 @@ def verify(s):
     cgh.host_task([=]() { raise_flag(fsp->flag, fsp->value); });
   });""")
     return s
-edit("src/core/verify.cpp", verify)
+edit("src/models/qwen38/verify.cpp", verify)
 # 15. cudaInitDevice(spin-wait scheduling, mapped host memory): device flags with no SYCL equivalent.
 edit("src/core/remote_experts.cpp", lambda s: s.replace(
     "    if (!(spin && spin[0] == '0'))\n        cudaInitDevice(device, cudaDeviceScheduleSpin | cudaDeviceMapHost, 0);",
     "    (void) spin;   // SYCL: no cudaInitDevice scheduling flags; the runtime picks its own wait policy"))
 # 16. graph.hpp: the event's timestamp is written from a const launch(); dpct added the member without `mutable`.
-edit("include/strata/core/graph.hpp", lambda s: s.replace(
+edit("include/strata/base/gpu/graph.hpp", lambda s: s.replace(
     "    std::chrono::time_point<std::chrono::steady_clock> done__ct1;", "    mutable std::chrono::time_point<std::chrono::steady_clock> done__ct1;"))
 print("files changed:", changed)
 
@@ -312,7 +312,7 @@ print("files changed:", changed)
 for rel in all_sources():
     edit(str(rel), sub(r"\(\(cudaStream_t\)(\w+)\)->", r"strata::q_of(\1)->"))
 # 0.1.29: sycl::free takes void*; NativeEmbed frees a const device pointer.
-edit("src/core/native_head.cpp", lambda s: s.replace("sycl::free(dev_, dpct::get_in_order_queue())", "sycl::free((void *) dev_, dpct::get_in_order_queue())"))
+edit("src/models/qwen38/native_head.cpp", lambda s: s.replace("sycl::free(dev_, dpct::get_in_order_queue())", "sycl::free((void *) dev_, dpct::get_in_order_queue())"))
 
 # 2026-10-01: cudaMemcpy / cudaMemset on the legacy default stream wait for every earlier launch on the device's
 # blocking streams; dpct's `get_in_order_queue().memcpy(...)` does not wait for work on another queue. The parity
@@ -337,7 +337,7 @@ edit("src/kernels/cuda/native_router.dp.cpp", lambda s: s.replace(
 
 # MtpDrafter: CUDA's `cudaStream_t cs_ = nullptr` came out as the device's default in-order queue. A drafter that never
 # loads (no --mtp) kept it, and its destructor waited on and destroyed that queue: exit 139 after the output.
-edit("include/strata/core/mtp.hpp", lambda s: s.replace(
+edit("include/strata/models/qwen38/mtp.hpp", lambda s: s.replace(
     "    dpct::queue_ptr cs_ = &dpct::get_in_order_queue();\n",
     "    dpct::queue_ptr cs_ = nullptr;   // load() creates it; not the device's queue, which ~MtpDrafter would destroy\n"))
 

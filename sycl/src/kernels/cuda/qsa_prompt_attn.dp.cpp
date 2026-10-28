@@ -4,12 +4,12 @@
 #include "strata/core/geometry.hpp"
 #include <dpct/dpct.hpp>
 #include "strata/sycl_queue.hpp"
-#include "strata/core/emulate.hpp"
+#include "strata/base/gpu/emulate.hpp"
 #include <cstdlib>
 #include <cstring>
 #include "strata/kernels/qsa_prompt_attn.hpp"
 #include "strata/kernels/qsa_prompt_attn_xmx.hpp"
-#include "strata/kernels/gfx_arch.hpp"
+#include "strata/base/gpu/gfx_arch.hpp"
 #include "strata/kernels/kv_q8.hpp"
 #include "strata/kernels/kv_q4.hpp"
 

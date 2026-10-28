@@ -1,4 +1,4 @@
-// metal/src/engine/msl/mtp.metal - the small steps of the MTP draft layer's input branches (include/strata/core/mtp.hpp)
+// metal/src/engine/msl/mtp.metal - the small steps of the MTP draft layer's input branches (include/strata/models/qwen38/mtp.hpp)
 // around mac-kern's kernels (GEMVs, the hyper-connection read, QSA, MoE, the head):
 //
 //   mtp_rms      y[r] = x[r] * rsqrt(mean(x[r]^2) + eps) * w        rows of width n (w: (1 + w) folded by the host)

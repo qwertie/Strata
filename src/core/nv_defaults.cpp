@@ -1,7 +1,7 @@
 // src/core/nv_defaults.cpp - see include/strata/core/nv_defaults.hpp.
 #include "strata/core/nv_defaults.hpp"
 
-#include "strata/core/emulate.hpp"
+#include "strata/base/gpu/emulate.hpp"
 
 #include <cstdio>
 #include <cstdlib>

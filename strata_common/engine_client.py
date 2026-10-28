@@ -1072,9 +1072,10 @@ class StrataEngine:
 
     def list_conversations(self, marker=(), preview: int = 0) -> list[dict]:
         """The API monitor's Context view: `LIST_CONVERSATIONS` (an engine whose READY says "conversations";
-        include/strata/core/token_listing.hpp) - each conversation the engine holds, in a session in VRAM or parked,
-        without its tokens: [{"id", "place", "state", "count", "capacity", "bytes", "used", "preview"}] (count and
-        capacity in tokens: what it holds and the most it can; bytes its physical size and used what its tokens take).  `marker` and `preview` ask for the
+        include/strata/common/state/token_listing.hpp) - each conversation the engine holds, in a session in VRAM or
+        parked, without its tokens: [{"id", "place", "state", "count", "capacity", "bytes", "used", "preview"}]
+        (count and capacity in tokens: what it holds and the most it can; bytes its physical size and used what its
+        tokens take).  `marker` and `preview` ask for the
         first `preview` tokens after the first place a conversation holds `marker` (the user-turn header).  Between
         requests: the caller holds the service's FIFO and, with --batch, the control lines; the slots may decode
         meanwhile (the engine answers between their windows)."""

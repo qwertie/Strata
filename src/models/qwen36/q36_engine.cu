@@ -17,8 +17,8 @@
 // Modes: --serve (strata_server/server.py's engine protocol: READY / GEN / T / DONE / STOP / PP), --tokens IDS [--n N]
 // [--force IDS] [--dump-full-logits F] (tools/qwen35/kl.py's reference interface), --bench-pp N / --bench-tg N.
 #include "strata/common/artifact/gguf_reader.hpp"
-#include "strata/core/family_layout.hpp"
-#include "strata/core/token_listing.hpp"
+#include "strata/models/common/family_layout.hpp"
+#include "strata/common/state/token_listing.hpp"
 #include "strata/kernels/fused_gdn.hpp"
 #include "strata/kernels/iq_kernels.hpp"
 #include "strata/kernels/native_mmvq.hpp"

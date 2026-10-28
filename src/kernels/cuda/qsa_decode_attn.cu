@@ -1,12 +1,12 @@
 // src/kernels/cuda/qsa_decode_attn.cu - see include/strata/kernels/qsa_decode_attn.hpp.
 #include "strata/kernels/qsa_decode_attn.hpp"
-#include "strata/core/sm75_series.hpp"
-#include "strata/core/sm120_series.hpp"
+#include "strata/base/gpu/sm75_series.hpp"
+#include "strata/base/gpu/sm120_series.hpp"
 #include "strata/core/geometry.hpp"
 #include "strata/kernels/kv_q8.hpp"
 #include "strata/kernels/kv_q4.hpp"
 #if defined(STRATA_HIP_GFX906)
-#include "strata/kernels/gfx_arch.hpp"
+#include "strata/base/gpu/gfx_arch.hpp"
 #endif
 
 #include <cuda_fp16.h>

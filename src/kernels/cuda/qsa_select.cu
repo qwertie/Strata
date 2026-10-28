@@ -1,11 +1,11 @@
 // src/kernels/cuda/qsa_select.cu - see include/strata/kernels/qsa_select.hpp.
-#include "strata/core/emulate.hpp"
-#include "strata/core/sm75_series.hpp"
+#include "strata/base/gpu/emulate.hpp"
+#include "strata/base/gpu/sm75_series.hpp"
 #include "strata/core/geometry.hpp"
 #include <cstdlib>
 #include <cstring>
 #include "strata/kernels/qsa_select.hpp"
-#include "strata/kernels/gfx_arch.hpp"
+#include "strata/base/gpu/gfx_arch.hpp"
 
 #include <cuda_runtime.h>
 

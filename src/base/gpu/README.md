@@ -7,9 +7,11 @@ The HIP compat headers are two different sets, each put first on the include pat
 `include/strata/base/gpu/hip_compat/` for the wave32 HIP backend (`STRATA_ENABLE_HIP`) and
 `include/strata/base/gpu/hip_compat_gfx906/` for the wave64 gfx906 build (`STRATA_HIP_GFX906`).
 
-**A3** moves in `src/core/{device.cu,pinned.cu,graph.cpp}`, the hardware-trait headers from `include/strata/core/` and
-`include/strata/kernels/gfx_arch.hpp`. **A5** adds the runtime interface, so that shared code stops calling the CUDA
-runtime directly.
+What is here so far came unchanged from `src/core/` (and `gfx_arch.hpp` from `include/strata/kernels/`): the device
+arena and device facts (`device`), the pinned host arena and its budget (`pinned`, `pin_budget`, `pinned_ring`),
+graphs (`graph`, `host_graph_launch`), virtual memory (`vmm`), batched copies (`dma_batch`), `on_device`, and the
+hardware traits (`emulate`, `sm75_series`, `sm120_series`, `tc_sm75`, `gfx12_platform_defaults`, `gfx_arch`). **A5**
+adds the runtime interface, so that shared code stops calling the CUDA runtime directly.
 
 See [docs/ARCHITECTURE.md](../../../docs/ARCHITECTURE.md) for the layers and
 [docs/REFACTOR_PLAN.md](../../../docs/REFACTOR_PLAN.md) for the steps.

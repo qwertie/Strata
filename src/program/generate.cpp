@@ -1,4 +1,4 @@
-#include "strata/core/logit_bias.hpp"
+#include "strata/common/sample/logit_bias.hpp"
 // src/program/generate.cpp - P2.S6: `strata generate`.
 //
 // THE DRIVER, and the first program in this project that answers a question.  Everything below it is a
@@ -16,34 +16,34 @@
 // (`phase-2-correct-engine.md:5-9`).  What it is FOR is the honest tok/s figure and the logit dump.
 
 #include "strata/base/platform/memory.hpp"
-#include "strata/core/adapt_async_default.hpp"
+#include "strata/models/qwen38/adapt_async_default.hpp"
 #include "strata/core/arch_defaults.hpp"
 #include "strata/core/nv_defaults.hpp"
-#include "strata/kernels/gfx_arch.hpp"
-#include "strata/core/batch_telemetry.hpp"
-#include "strata/core/dma_batch.hpp"
-#include "strata/core/device.hpp"
+#include "strata/base/gpu/gfx_arch.hpp"
+#include "strata/models/qwen38/batch_telemetry.hpp"
+#include "strata/base/gpu/dma_batch.hpp"
+#include "strata/base/gpu/device.hpp"
 #include "strata/core/remote_expert_opt.hpp"
-#include "strata/core/token_listing.hpp"
+#include "strata/common/state/token_listing.hpp"
 #include "strata/core/expert_cache.hpp"
-#include "strata/core/conversation_snapshot.hpp"
-#include "strata/core/conversation_file.hpp"
-#include "strata/core/session_save_reclaim.hpp"
-#include "strata/core/conversation_memory.hpp"
+#include "strata/models/qwen38/conversation_snapshot.hpp"
+#include "strata/common/state/conversation_file.hpp"
+#include "strata/common/state/session_save_reclaim.hpp"
+#include "strata/common/state/conversation_memory.hpp"
 #include "strata/core/coupled_draft.hpp"
 #include "strata/core/expert_source.hpp"
 #include "strata/core/foresight_swap.hpp"
-#include "strata/core/pinned.hpp"
-#include "strata/core/pin_budget.hpp"
+#include "strata/base/gpu/pinned.hpp"
+#include "strata/base/gpu/pin_budget.hpp"
 #include "strata/core/uma_cache.hpp"
 #include "strata/core/remote_experts.hpp"
-#include "strata/core/on_device.hpp"
+#include "strata/base/gpu/on_device.hpp"
 #include "strata/core/peer_experts.hpp"
-#include "strata/core/layer.hpp"
+#include "strata/models/qwen38/layer.hpp"
 #include "strata/core/layout.hpp"
-#include "strata/core/session.hpp"
+#include "strata/models/qwen38/session.hpp"
 #include "strata/core/weights.hpp"
-#include "strata/kernels/gfx_arch.hpp"
+#include "strata/base/gpu/gfx_arch.hpp"
 #include "strata/kernels/cpu/expert.hpp"
 #include "strata/kernels/cpu/pool.hpp"
 #include "strata/base/platform/aux_cpus.hpp"
@@ -65,18 +65,18 @@
 #include "strata/kernels/mrope.hpp"
 #include "strata/kernels/kv_q4.hpp"
 #include "strata/kernels/qsa.hpp"
-#include "strata/core/native_head.hpp"
-#include "strata/core/verify.hpp"
-#include "strata/core/mtp.hpp"
+#include "strata/models/qwen38/native_head.hpp"
+#include "strata/models/qwen38/verify.hpp"
+#include "strata/models/qwen38/mtp.hpp"
 #if defined(STRATA_HAVE_DFLASH2)
-#include "strata/core/dflash2.hpp"
-#include "strata/core/draft_cap.hpp"
+#include "strata/models/qwen38/dflash2.hpp"
+#include "strata/models/qwen38/draft_cap.hpp"
 #endif
 #include "strata/prefill/prefill.hpp"
 #if defined(STRATA_PREFILL_MMQ)
 #include "strata/prefill/moe_mmq.hpp"
 #endif
-#include "strata/core/native_dense.hpp"
+#include "strata/models/qwen38/native_dense.hpp"
 #include "strata/program/batch_read.hpp"
 #include "strata/program/logits_selection.hpp"
 #include "strata/program/conv_cache.hpp"
@@ -93,14 +93,14 @@
 #include "strata/common/spec/spec_start.hpp"
 #include "strata/program/batch_groups.hpp"
 #include "strata/kernels/cvec.hpp"
-#include "strata/core/progress.hpp"
-#include "strata/core/device.hpp"
-#include "strata/core/emulate.hpp"
+#include "strata/common/state/progress.hpp"
+#include "strata/base/gpu/device.hpp"
+#include "strata/base/gpu/emulate.hpp"
 #ifndef NOMINMAX
 #define NOMINMAX   // gguf_reader.hpp includes windows.h
 #endif
 #include "strata/common/artifact/gguf_reader.hpp"
-#include "strata/core/family_layout.hpp"
+#include "strata/models/common/family_layout.hpp"
 #if defined(STRATA_HAVE_QWEN35)
 #include "strata/models/qwen36/engine.hpp"
 #endif
@@ -1236,7 +1236,7 @@ struct GpuStage {
 };
 
 // what a refusal on the RAM guard says it had: "900 MiB available, source cgroup" (the smallest of MemAvailable, the
-// cgroup limits above the engine and --memory-limit-mib; see strata/core/conversation_memory.hpp)
+// cgroup limits above the engine and --memory-limit-mib; see strata/common/state/conversation_memory.hpp)
 static std::string ram_note(const std::optional<strata::core::HostMemoryReading>& mem) {
     if (!mem) return "RAM telemetry unavailable";
     return std::to_string(mem->available >> 20) + " MiB available, source " + strata::core::memory_source_name(mem->source);
@@ -1545,9 +1545,9 @@ int adapt_lag() {
 /// STRATA_ADAPT_OVERLAP=1: the adaptive tier's copies land while the next decode window already runs.  The window
 /// sees the swapped-in experts as resident from its first layer, exactly as after #463's wait (so the tokens are the same
 /// ones); what changes is only when the bytes arrive: the copies go in layer order and the verify window holds a layer's
-/// plan back until that layer's copies have landed (AdaptGate in strata/core/verify.hpp).  The ~10 ms a 96-swap round
-/// took at the next window's start (PCIe 3.0 x16, Q2_0) is then hidden behind the window.  Opt-in on every backend
-/// (=1 turns it on); the startup log names the state, and why when it cannot run.
+/// plan back until that layer's copies have landed (AdaptGate in strata/models/qwen38/verify.hpp).  The ~10 ms a
+/// 96-swap round took at the next window's start (PCIe 3.0 x16, Q2_0) is then hidden behind the window.  Opt-in on
+/// every backend (=1 turns it on); the startup log names the state, and why when it cannot run.
 bool adapt_overlap() {
     static const bool v = [] {
         const char* e = std::getenv("STRATA_ADAPT_OVERLAP");
@@ -8111,7 +8111,7 @@ int main(int argc, char** argv) {
         o.adapt_async = 0;
     };
     // Where the asynchronous tier could run on its own (CUDA, one GPU, the expert arena, no batch slots), the engine measures
-    // and chooses during the session: see include/strata/core/adapt_async_default.hpp.  --adapt-async 0 or
+    // and chooses during the session: see include/strata/models/qwen38/adapt_async_default.hpp.  --adapt-async 0 or
     // STRATA_ADAPT_ASYNC=0 keep the blocking tier; --adapt-async 1 keeps its old meaning.
     if (o.adapt_async_given < 0) {
         strata::core::AdaptAsyncAuto aa;

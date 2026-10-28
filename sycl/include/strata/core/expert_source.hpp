@@ -12,7 +12,7 @@
 //      layers, which is a finite, plausible, completely wrong token.  There is no cache here at all: the
 //      conversion is one 2560-element pass against a 0.3 ms/layer budget, and a correct answer is worth more
 //      than the microseconds.
-//   2. **THE POOL DOES NOT APPLY THE ROUTER WEIGHT.**  `moe_combine` (`src/core/layer.cpp:479`) sums
+//   2. **THE POOL DOES NOT APPLY THE ROUTER WEIGHT.**  `moe_combine` (`src/models/qwen38/layer.cpp:479`) sums
 //      `w[i] * parts[i]` on the device.  `ExpertJob::weight` is a diagnostic field; setting it here would
 //      apply the weight twice, which is invisible in a single layer and compounds over 48.
 //   3. **THE KERNEL'S GEOMETRY IS FIXED BY THE ARTIFACT** (`H = 2560`, `FF = 640`, `BLOB = 1,382,400`).  A

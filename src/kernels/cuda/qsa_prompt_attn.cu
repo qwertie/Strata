@@ -1,12 +1,12 @@
 // src/kernels/cuda/qsa_prompt_attn.cu - see include/strata/kernels/qsa_prompt_attn.hpp.
-#include "strata/core/emulate.hpp"
-#include "strata/core/sm75_series.hpp"
+#include "strata/base/gpu/emulate.hpp"
+#include "strata/base/gpu/sm75_series.hpp"
 #include "strata/core/geometry.hpp"
-#include "strata/core/gfx12_platform_defaults.hpp"
+#include "strata/base/gpu/gfx12_platform_defaults.hpp"
 #include <cstdlib>
 #include <cstring>
 #include "strata/kernels/qsa_prompt_attn.hpp"
-#include "strata/kernels/gfx_arch.hpp"
+#include "strata/base/gpu/gfx_arch.hpp"
 #include "strata/kernels/kv_q8.hpp"
 #include "strata/kernels/kv_q4.hpp"
 

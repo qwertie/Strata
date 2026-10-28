@@ -69,18 +69,24 @@ code updates its rows here. Rows are grouped by step; `{a,b}` lists several file
 | `SPLIT_MIN_VRAM_GB`, `SPLIT_PROMPT_VRAM_GB` in `setup.py` | `strata_common/gpu_fit.py` | A2 | done |
 | `src/platform/`, `include/strata/platform/` (except `hip_compat/`) | `src/base/platform/`, `include/strata/base/platform/` | A3 | done |
 | `include/strata/hip_compat/`, `include/strata/platform/hip_compat/` | `include/strata/base/gpu/hip_compat/` (the wave32 HIP backend's) and `include/strata/base/gpu/hip_compat_gfx906/` (gfx906's): two different sets | A3 | done |
-| `src/core/{device.cu,pinned.cu,graph.cpp}` and their headers | `src/base/gpu/` | A3 | planned |
-| `include/strata/core/{sm75_series,sm120_series,tc_sm75,emulate,gfx12_platform_defaults}.hpp`, `include/strata/kernels/gfx_arch.hpp` | `include/strata/base/gpu/` | A3 | planned |
+| `src/core/{device.cu,pinned.cu,graph.cpp}` and their headers | `src/base/gpu/` | A3 | done |
+| `src/core/{vmm.cpp,pin_budget_test.cpp,pinned_shared_test.cpp}`, `include/strata/core/{vmm,pin_budget,pinned_ring,host_graph_launch,on_device,dma_batch}.hpp` | `src/base/gpu/`, `include/strata/base/gpu/` | A3 | done |
+| `include/strata/core/{sm75_series,sm120_series,tc_sm75,emulate,gfx12_platform_defaults}.hpp`, `include/strata/kernels/gfx_arch.hpp` | `include/strata/base/gpu/` | A3 | done |
 | `src/artifact/`, `include/strata/artifact/` | `src/common/artifact/`, `include/strata/common/artifact/` | A3 | done |
 | `src/spec/`, `include/strata/spec/` | `src/common/spec/`, `include/strata/common/spec/` | A3 | done |
-| `src/core/conversation_*` and `include/strata/core/{conversation_*,token_listing,progress}.hpp`, except the snapshot files below | `src/common/state/` | A3 | planned |
-| `src/core/{conversation_snapshot,conversation_state}.cpp`, `include/strata/core/conversation_snapshot.hpp` (they use Qwen3.8's session) | `src/models/qwen38/` until A5 makes them model-neutral | A3 | planned |
-| `include/strata/core/{geometry,family_layout}.hpp` | `include/strata/models/common/` | A3 | planned |
+| `src/core/conversation_*` and `include/strata/core/{conversation_*,token_listing,progress}.hpp`, except the snapshot files below | `src/common/state/`, `include/strata/common/state/`; the snapshot code's helpers `src/core/{conversation_copy,conversation_checked}.hpp` and its tests `src/core/{conversation_snapshot,conversation_validation}_test.cpp` go with it to `src/models/qwen38/` | A3 | done |
+| `include/strata/core/session_save_reclaim.hpp`, `src/core/{session_save_reclaim,token_listing}_test.cpp` | `include/strata/common/state/`, `src/common/state/` | A3 | done |
+| `src/core/{conversation_snapshot,conversation_state}.cpp`, `include/strata/core/conversation_snapshot.hpp` (they use Qwen3.8's session) | `src/models/qwen38/` until A5 makes them model-neutral | A3 | done |
+| `include/strata/core/{geometry,family_layout}.hpp` | `include/strata/models/common/`; `geometry.hpp` only once `include/strata/common/artifact/gguf_reader.hpp` and the shared kernels no longer use it | A3, B1 | `family_layout.hpp` done |
 | `src/dsv41/`, `include/strata/dsv41/` | `src/models/deepseekv41/`, `include/strata/models/deepseekv41/` | A3 | done |
 | `src/qwen35/`, `include/strata/qwen35/` | `src/models/qwen36/`, `include/strata/models/qwen36/` | A3 | done |
 | `src/ngram/`, `src/plan/` and their headers | `src/models/qwen38/{ngram,plan}/`, `include/strata/models/qwen38/{ngram,plan}/` | A3 | done |
-| the Qwen3.8-only files of `src/core/` (one row per file once A3 decides) | `src/models/qwen38/` | A3 | planned |
+| the Qwen3.8-only files of `src/core/` (one row per file once A3 decides) | `src/models/qwen38/`, `include/strata/models/qwen38/`: `{layer,session,mtp,verify,native_dense,native_head,dflash2}` (source and header), `dflash2_{parity,attn_bench,gemm_bench,small_bench}.cpp`, `dflash2_{bw,launch}_bench.cu`, the headers `{adapt_async_default,batch_rows,batch_telemetry,draft_cap}.hpp` and their tests | A3 | done |
+| `src/core/{device_main,load_main,concurrent_main,overlap_main}.cpp` | `src/program/` | A3 | done |
+| `include/strata/core/logit_bias.hpp`, `src/core/logit_bias_test.cpp` | `include/strata/common/sample/`, `src/common/sample/` | A3 | done |
+| `src/core/{arch_defaults,nv_defaults,weights,layout}.cpp`, `include/strata/core/{coupled_draft,spec_prob,uma_cache,foresight_swap,exchange_storage,hit_hook,remote_expert_opt}.hpp` and the other files left in `src/core/` | decided in A5, B1 or B3 (each is shared by several engines, or mixes model-neutral and Qwen3.8 code) | A5, B1, B3 | planned |
 | `sycl/src/{platform,ngram}/` | `sycl/src/base/platform/`, `sycl/src/models/qwen38/ngram/` | A3 | done |
+| the SYCL copies of the `src/core/` files above, `sycl/src/core/copy_queue.cpp` | the same new place under `sycl/`; `copy_queue.cpp` to `sycl/src/base/gpu/` | A3 | done |
 | `sycl/src/X`, `sycl/include/strata/X` | the same new place as `src/X`, under `sycl/` | A3 | planned |
 | `src/dsv41/ds4_os.hpp` | merged into `src/base/platform/` | A4 | planned |
 | `src/dsv41/ds4_pool.hpp`, `src/kernels/cpu/pool.cpp`, `include/strata/kernels/cpu/pool.hpp` | one worker pool in `src/base/platform/` | A4 | planned |

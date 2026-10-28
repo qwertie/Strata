@@ -120,6 +120,9 @@ Found during the work; each needs a decision or a later step.
   differently from `engine_component`'s (it keeps cards with 2 GB or more and reads the vendor from the provider name).
 - **SYCL's upstream merge script.** `sycl/tools/merge_upstream.py` maps upstream paths straight onto `sycl/`; after the
   A3 moves the paths no longer line up, so a merge needs the path map in [UPSTREAM_PORTING.md](UPSTREAM_PORTING.md).
+- **The CPU expert pool uses the watchdog hooks.** `src/kernels/cpu/pool.cpp`, which A4 merges into
+  `src/base/platform/`, calls the diagnostic hooks of `include/strata/common/state/progress.hpp` (`diag_pool_fn`,
+  `release_gpu_waits`). Layer 0 may not use layer 1, so A4 must move those hooks down or let the caller install them.
 
 ## Results
 

@@ -1,6 +1,6 @@
 // metal/src/engine/window.cpp - the decode window on Metal: Verifier::init/run/commit's Metal side (the one backend
-// hook, src/core/verify.cpp under STRATA_GPU_METAL).  Everything above it - the decode loop, MTP control, the serve
-// protocol, the PLE table reads, the file tier - is the shared host code.
+// hook, src/models/qwen38/verify.cpp under STRATA_GPU_METAL).  Everything above it - the decode loop, MTP control, the
+// serve protocol, the PLE table reads, the file tier - is the shared host code.
 //
 // The window is mac-kern's chain (metal/kernels, tests/token_chain.cpp) on the model GGUF itself: shard 1 is mmapped
 // and wrapped no-copy as one MTLBuffer, every weight is read where it lies (unified memory: no upload, no expert
@@ -19,9 +19,9 @@
 #include "stream.h"
 #include "../../tests/coop_probe.h"
 
-#include "strata/core/layer.hpp"
-#include "strata/core/conversation_cache.hpp"
-#include "strata/core/session.hpp"
+#include "strata/models/qwen38/layer.hpp"
+#include "strata/common/state/conversation_cache.hpp"
+#include "strata/models/qwen38/session.hpp"
 #include "strata/kernels/ngram.hpp"
 #include "strata/kernels/cpu/hadamard.hpp"
 #include "strata/kernels/cpu/expert_layout.hpp"
@@ -2647,7 +2647,7 @@ bool window_commit(void* w, int n_keep, std::string& err) {
 }
 bool window_copy_logits(void* w, int t, float* host) { return ((Window*) w)->copy_logits(t, host); }
 
-// the MTP hook (src/core/mtp.cpp under STRATA_GPU_METAL): the drafter lives beside the decode window it reads
+// the MTP hook (src/models/qwen38/mtp.cpp under STRATA_GPU_METAL): the drafter lives beside the decode window it reads
 namespace {
 Window* g_window = nullptr;
 }

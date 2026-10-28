@@ -28,7 +28,7 @@
 #include <string>
 #include <vector>
 
-#include "strata/core/vmm.hpp"
+#include "strata/base/gpu/vmm.hpp"
 
 namespace strata::core {
 

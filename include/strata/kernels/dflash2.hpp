@@ -1,4 +1,4 @@
-// include/strata/kernels/dflash2.hpp - the small kernels of the DFlash2 drafter (core/dflash2.hpp) for Qwen3.8-Flash-Next.
+// include/strata/kernels/dflash2.hpp - the small kernels of the DFlash2 drafter (models/qwen38/dflash2.hpp) for Qwen3.8-Flash-Next.
 //
 // The drafter's matrices run through the engine's multi-column MMVQ (native_q8_0_mmvq); what is here is everything between
 // them: the grouped dynamic 2-tap convolution, the per-head RMS norm + rotary rotation, the windowed non-causal attention over a

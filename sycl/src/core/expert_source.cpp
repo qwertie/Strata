@@ -9,7 +9,7 @@
 #include "strata/kernels/cpu/expert_layout.hpp"
 #include "strata/common/artifact/gguf_reader.hpp"
 
-#include "strata/core/pinned.hpp"
+#include "strata/base/gpu/pinned.hpp"
 #include "strata/base/platform/memory.hpp"
 #include "strata/kernels/elementwise.hpp"
 #include "strata/kernels/quantize_act.hpp"

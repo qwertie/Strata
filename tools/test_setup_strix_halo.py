@@ -90,9 +90,9 @@ class ExactArch(unittest.TestCase):
         self.assertFalse(setup.is_strix_halo({}))
 
     def test_matches_the_engines_header(self):
-        """include/strata/kernels/gfx_arch.hpp is the reference: gfx1151 has the WMMA kernels and the gfx1151 defaults;
+        """include/strata/base/gpu/gfx_arch.hpp is the reference: gfx1151 has the WMMA kernels and the gfx1151 defaults;
         gfx1103 (Radeon 780M/760M, 0.1.44) shares the gfx11 WMMA kernels; gfx1152 is outside the list."""
-        hpp = (ROOT / "include/strata/kernels/gfx_arch.hpp").read_text(encoding="utf-8")
+        hpp = (ROOT / "include/strata/base/gpu/gfx_arch.hpp").read_text(encoding="utf-8")
         wmma = re.search(r"gfx_arch_is_gfx11_wmma.*?\n}", hpp, re.S).group(0)
         listed = set(re.findall(r'"(gfx\d+)"', wmma))
         self.assertIn("gfx1151", listed)

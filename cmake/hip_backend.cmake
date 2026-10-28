@@ -38,7 +38,7 @@ list(REMOVE_DUPLICATES STRATA_HIP_ARCH_LIST)
 if(NOT STRATA_HIP_ARCH_LIST)
   message(FATAL_ERROR "Strata HIP: CMAKE_HIP_ARCHITECTURES is empty")
 endif()
-# The compiled architectures reach the runtime device check (src/core/device.cu) as "gfx1100,gfx1201": a binary
+# The compiled architectures reach the runtime device check (src/base/gpu/device.cu) as "gfx1100,gfx1201": a binary
 # carried to a card it has no code for stops at startup with a clear message instead of "invalid device function".
 string(REPLACE ";" "," STRATA_HIP_ARCHS "${STRATA_HIP_ARCH_LIST}")
 

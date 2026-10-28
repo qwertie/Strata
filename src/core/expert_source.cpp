@@ -1,14 +1,14 @@
 // src/core/expert_source.cpp - the adapter.  See the header for the three clauses of the contract.
 #include "strata/core/expert_source.hpp"
 #include "strata/core/foresight_swap.hpp"
-#include "strata/core/on_device.hpp"
+#include "strata/base/gpu/on_device.hpp"
 #include "strata/base/platform/aux_cpus.hpp"
 #include "strata/core/remote_experts.hpp"
 #include "strata/core/peer_experts.hpp"
 #include "strata/kernels/cpu/expert_layout.hpp"
 #include "strata/common/artifact/gguf_reader.hpp"
 
-#include "strata/core/pinned.hpp"
+#include "strata/base/gpu/pinned.hpp"
 #include "strata/base/platform/memory.hpp"
 #include "strata/kernels/elementwise.hpp"
 #include "strata/kernels/quantize_act.hpp"

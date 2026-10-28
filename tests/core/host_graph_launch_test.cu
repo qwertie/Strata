@@ -1,4 +1,4 @@
-#include "strata/core/host_graph_launch.hpp"
+#include "strata/base/gpu/host_graph_launch.hpp"
 #include <chrono>
 #include <cstdio>
 #include <cstdlib>

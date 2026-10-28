@@ -4,7 +4,7 @@
 // elementwise.cu) with the same operation order, so a verify window reproduces plain decode bit for bit.
 #include "strata/kernels/verify_kernels.hpp"
 #include "strata/core/geometry.hpp"
-#include "strata/core/emulate.hpp"
+#include "strata/base/gpu/emulate.hpp"
 #include "strata/kernels/q8_1_finite.hpp"   // #606: q8_1_ds
 #include "strata/kernels/dp4a.hpp"
 #include "strata/kernels/pdl.hpp"

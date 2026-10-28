@@ -1,6 +1,6 @@
 // available_host_bytes(): MemAvailable, the cgroup limits above this process, and the operator's cap, on fixture
 // directories standing in for /proc/meminfo, /proc/self/cgroup and /sys/fs/cgroup.  CPU only, no GPU.
-#include "strata/core/conversation_memory.hpp"
+#include "strata/common/state/conversation_memory.hpp"
 
 #ifdef _WIN32
 #include <process.h>

@@ -27,8 +27,8 @@
 #include "strata/kernels/dp4a.hpp"
 #include "strata/kernels/q8_1_finite.hpp"
 #include "strata/kernels/iq_kernels.hpp"
-#include "strata/kernels/gfx_arch.hpp"
-#include "strata/core/sm75_series.hpp"
+#include "strata/base/gpu/gfx_arch.hpp"
+#include "strata/base/gpu/sm75_series.hpp"
 #include "s26_tsum.cuh"
 #if !defined(__HIPCC__)
 #include "q8_1_il.cuh"

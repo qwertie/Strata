@@ -1,7 +1,7 @@
 // GPU contract test for the optional gfx1100 port of PR1825. Synthetic, no model or coding score.
 #include "strata/kernels/qsa.hpp"
 #include "strata/kernels/qsa_select.hpp"
-#include "strata/kernels/gfx_arch.hpp"
+#include "strata/base/gpu/gfx_arch.hpp"
 #include <cuda_runtime.h>
 #include <algorithm>
 #include <cmath>

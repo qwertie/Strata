@@ -6,7 +6,7 @@
 #include "strata/prefill/kernels.hpp"
 #include "strata/prefill/gdn_xe.hpp"
 #include "strata/kernels/mrope.hpp"
-#include "strata/kernels/gfx_arch.hpp"
+#include "strata/base/gpu/gfx_arch.hpp"
 #include "strata/kernels/router_top10.hpp"
 
 #include <algorithm>

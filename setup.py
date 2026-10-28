@@ -3016,7 +3016,7 @@ UMA_OS_LEFT_GB = 6             # the share of the unified memory kept for the OS
 
 
 def gfx_arch_is(arch, name) -> bool:
-    """include/strata/kernels/gfx_arch.hpp's gfx_arch_is: `arch` (gcnArchName, "gfx1151" or "gfx1151:sramecc-:xnack-")
+    """include/strata/base/gpu/gfx_arch.hpp's gfx_arch_is: `arch` (gcnArchName, "gfx1151" or "gfx1151:sramecc-:xnack-")
     is exactly `name`, never a prefix: gfx1150 and gfx1152 are not gfx1151 (and gfx1151 is not gfx115)."""
     arch = str(arch or "")
     return arch == name or arch.startswith(name + ":")

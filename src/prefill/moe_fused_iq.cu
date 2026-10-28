@@ -20,10 +20,10 @@
 // ldmatrix.  The products are mma.sync m16n8k32 (m16n8k16 for the formats with a scale per 16 values); the epilogues
 // (SwiGLU, H to int8 per 32 features; down into the per-slot rows) are moe_fused.cu's.
 #include "strata/prefill/moe_fused_iq.hpp"
-#include "strata/kernels/gfx_arch.hpp"
-#include "strata/core/emulate.hpp"
-#include "strata/core/sm120_series.hpp"
-#include "strata/core/gfx12_platform_defaults.hpp"
+#include "strata/base/gpu/gfx_arch.hpp"
+#include "strata/base/gpu/emulate.hpp"
+#include "strata/base/gpu/sm120_series.hpp"
+#include "strata/base/gpu/gfx12_platform_defaults.hpp"
 
 #if defined(__HIPCC__)
 #include "moe_f16_common.cuh"

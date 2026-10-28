@@ -12,8 +12,8 @@
 
 #include "strata/core/expert_cache.hpp"
 #include "strata/core/expert_source.hpp"
-#include "strata/core/layer.hpp"
-#include "strata/core/session.hpp"
+#include "strata/models/qwen38/layer.hpp"
+#include "strata/models/qwen38/session.hpp"
 #include "strata/core/weights.hpp"
 
 #include <cstdint>

@@ -87,7 +87,7 @@ SESSIONS = [
      [("read_file", "include/strata/kernels/fused_gr.hpp", "First the kernel interface."),
       ("read_file", "src/kernels/cuda/fused_gr.cu", "Now the kernels themselves."),
       ("grep", "fused_gr_read_multi", "Where are they called from?"),
-      ("read_file", "src/core/verify.cpp", "The verify window calls them; reading it.")]),
+      ("read_file", "src/models/qwen38/verify.cpp", "The verify window calls them; reading it.")]),
     ("tokenizer-fr",
      "Écris une suite de tests pytest pour le tokenizer Python (encodage, décodage, tokens spéciaux, texte multilingue, "
      "cas limites), puis corrige les bugs que les tests révèlent. Réponds en français.",

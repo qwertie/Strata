@@ -26,7 +26,7 @@
 #include "strata/kernels/iq_kernels.hpp"
 #include "strata/kernels/ngram.hpp"
 #include "strata/kernels/native_mmvq.hpp"
-#include "strata/core/native_dense.hpp"
+#include "strata/models/qwen38/native_dense.hpp"
 #include "strata/core/expert_source.hpp"
 
 #include <fstream>

@@ -22,7 +22,7 @@
 #include "ds4_os.hpp"
 #include "ds4_packinfo.hpp"
 #include "ds4_slotmeta.hpp"
-#include "strata/core/token_listing.hpp"
+#include "strata/common/state/token_listing.hpp"
 
 #include <algorithm>
 #include <cmath>

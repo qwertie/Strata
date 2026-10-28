@@ -1,5 +1,5 @@
 // Byte parity and event ordering for independent pinned-host expert uploads.
-#include "strata/core/dma_batch.hpp"
+#include "strata/base/gpu/dma_batch.hpp"
 #include <algorithm>
 #include <chrono>
 #include <cstdio>

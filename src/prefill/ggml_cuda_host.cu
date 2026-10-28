@@ -1,6 +1,6 @@
 // src/prefill/ggml_cuda_host.cu - prompt-speed plan step 2b: the host-side symbols of llama.cpp's ggml-cuda that its MMQ
 // and quantize code reference, for the MMQ kernels compiled into strata_mmq without the rest of ggml-cuda.cu.
-#include "strata/core/emulate.hpp"
+#include "strata/base/gpu/emulate.hpp"
 #include "common.cuh"
 
 #include <cstdio>

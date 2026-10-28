@@ -1,11 +1,11 @@
-// metal/tests/runtime_hello.cpp - the Metal runtime end to end, with the shared src/core/graph.cpp built unchanged:
+// metal/tests/runtime_hello.cpp - the Metal runtime end to end, with the shared src/base/gpu/graph.cpp built unchanged:
 //   1. gpu::malloc_device / host_alloc (mapped) / memcpy_async / a kernel through metal::dispatch / events / D2H
-//   2. the SHARED host file src/core/graph.cpp (CapturedGraph / GraphRegistry), compiled unchanged for Metal:
+//   2. the SHARED host file src/base/gpu/graph.cpp (CapturedGraph / GraphRegistry), compiled unchanged for Metal:
 //      capture a 3-kernel "window", replay it 5 times, wait with wait_ms (event query polling), check the data path
 //      is live (each replay reads the buffers' current contents, as a CUDA graph does)
 //   3. host_device_pointer: a kernel writes a mapped host buffer that the host reads without a copy
 //   4. the cost of replaying a 1,000-dispatch window
-#include "strata/core/graph.hpp"
+#include "strata/base/gpu/graph.hpp"
 #include "strata/gpu/metal.hpp"
 #include "strata/gpu/runtime.hpp"
 
@@ -79,7 +79,7 @@ int main() {
     CHECK(bad == 0, "step 1: %d wrong values", bad);
     std::printf("1. copies + kernel + cross-stream event + D2H: %s\n", bad ? "FAIL" : "OK");
 
-    // ---- 2. the shared CapturedGraph from src/core/graph.cpp
+    // ---- 2. the shared CapturedGraph from src/base/gpu/graph.cpp
     {
         float one = 1.0f;
         gpu::memcpy_sync(ds, &one, 4, gpu::kHostToDevice);
@@ -110,7 +110,7 @@ int main() {
         for (uint32_t i = 0; i < N; ++i) wrong += got[i] != m[i];
         all = wrong == 0;
         CHECK(all, "graph replays: %d wrong values", wrong);
-        std::printf("2. shared CapturedGraph (src/core/graph.cpp): 3-kernel window, 5 replays with live data: %s\n", all ? "OK" : "FAIL");
+        std::printf("2. shared CapturedGraph (src/base/gpu/graph.cpp): 3-kernel window, 5 replays with live data: %s\n", all ? "OK" : "FAIL");
 
         strata::core::GraphRegistry reg(s);
         int bodies = 0;

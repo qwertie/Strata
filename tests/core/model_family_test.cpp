@@ -11,7 +11,7 @@
 // verdict and the layout check over every shard.
 #include "gguf_fixture.hpp"
 
-#include "strata/core/family_layout.hpp"
+#include "strata/models/common/family_layout.hpp"
 
 #include <chrono>
 #include <cstdio>

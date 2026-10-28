@@ -9,7 +9,7 @@
 // itself (unified addressing; this test prints both addresses), and a D2D copy into it does not
 // publish - hip_handoff's timeout there. The engine itself runs on Windows (the reporter's serving
 // run gave correct answers), so kernels reading mapped memory through that address work; only the
-// copy-engine path does not. src/core/native_head.cpp keeps the token embedding in VRAM when the
+// copy-engine path does not. src/models/qwen38/native_head.cpp keeps the token embedding in VRAM when the
 // alias is refused outright.
 //
 // Reporting, not gating: a Windows host is EXPECTED to fail some checks below, so this test exits 0

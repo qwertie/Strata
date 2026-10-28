@@ -1,4 +1,4 @@
-"""Builds the input of src/core/dflash2_parity.cpp and the torch reference answer.
+"""Builds the input of src/models/qwen38/dflash2_parity.cpp and the torch reference answer.
 
     python mk_parity_case.py <drafter.safetensors> <drafter_config.json> <out.bin> [n_ctx=2300] [vp=20000] [seed=1]
 

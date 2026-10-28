@@ -741,7 +741,7 @@ one read last. `available` is `false` with `"reason": "engine"` for an engine wi
 text), 404 when the engine no longer holds it, and 503 while a request has the engine's turn and they were not read
 before. When the monitor is on, the main page's Sampling panel and Monitor tab link to `/api-monitor`.
 
-The engine's commands, one line each on its stdin (include/strata/core/token_listing.hpp):
+The engine's commands, one line each on its stdin (include/strata/common/state/token_listing.hpp):
 
 - `LIST_CONVERSATIONS [<marker> <n>]` answers `CONVERSATION <id> <place> <state> <tokens> <capacity> <bytes> <used>
   [<preview>]` for each conversation it holds (place `vram`, `ram` or `disk`), then `END_CONVERSATIONS`. With a

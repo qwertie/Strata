@@ -5,9 +5,9 @@
 // MIT license, third_party/ggml/LICENSE).  The block structs and codebook grids come from its ggml-common.h,
 // included unchanged.
 #include "strata/kernels/iq_kernels.hpp"
-#include "strata/core/sm75_series.hpp"
-#include "strata/core/sm120_series.hpp"
-#include "strata/kernels/gfx_arch.hpp"
+#include "strata/base/gpu/sm75_series.hpp"
+#include "strata/base/gpu/sm120_series.hpp"
+#include "strata/base/gpu/gfx_arch.hpp"
 #include "strata/kernels/dp4a.hpp"
 #include "strata/kernels/q8_1_finite.hpp"
 #include "s26_tsum.cuh"

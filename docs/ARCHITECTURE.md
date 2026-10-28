@@ -82,7 +82,7 @@ These replace practices that the old code has, and that new code must not copy:
 - **Code in `src/common/` and `src/models/` does not call the CUDA runtime (`cudaMalloc`, `cudaMemcpyAsync`, …)
   directly.** It uses `src/base/gpu/`, so that it can be built for every backend.
 - **No settings in file-wide global variables** (as `g_kv_int8` and the other `qsa_set_*` switches in
-  `src/core/layer.cpp`). Pass settings in a struct.
+  `src/models/qwen38/layer.cpp`). Pass settings in a struct.
 - **One settings reader.** Engines do not each parse their own environment variables.
 - **Model-specific code does not go in a folder called `core` or `common`.**
 - **`main()` parses its arguments and calls a library.** It is not the engine itself (as the 14,800-line
@@ -98,7 +98,7 @@ each file goes is listed in [UPSTREAM_PORTING.md](UPSTREAM_PORTING.md#path-map).
 
 | Old folder | Goes to |
 |---|---|
-| `src/core/` | split: `src/base/gpu/`, `src/common/state/`, `src/common/experts/`, `src/models/common/`, `src/models/qwen38/` |
+| `src/core/` | split. Done (A3): `src/base/gpu/`, `src/common/state/`, `src/common/sample/`, `src/models/common/`, `src/models/qwen38/`, `src/program/`. Left: the expert store for `src/common/experts/` (A5, B3) and the files that must be split first (A5, B1) |
 | `src/kernels/` | split: `src/common/kernels/`, `src/models/common/`, `src/models/qwen38/` |
 | `src/prefill/` | split: `src/common/kernels/`, `src/models/qwen38/` |
 | `serve/` | `strata_server/`; its all-purpose modules to `strata_base/` |

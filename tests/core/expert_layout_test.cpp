@@ -14,7 +14,7 @@
 #include "gguf_fixture.hpp"
 
 #include "strata/core/expert_source.hpp"
-#include "strata/core/pinned.hpp"
+#include "strata/base/gpu/pinned.hpp"
 #include "strata/kernels/cpu/expert_layout.hpp"
 #include "strata/kernels/cpu/native_expert.hpp"
 

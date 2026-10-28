@@ -26,7 +26,7 @@
 #include "strata/sycl_math.hpp"
 #include "strata/kernels/sampler.hpp"
 #include "strata/core/coupled_draft.hpp"
-#include "strata/core/emulate.hpp"
+#include "strata/base/gpu/emulate.hpp"
 
 #include <cmath>
 #include <cstdio>
