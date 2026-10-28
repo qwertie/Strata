@@ -100,7 +100,7 @@ set(STRATA_METAL_HOST_SOURCES
   ${S}/kernels/ngram.cpp ${S}/models/qwen38/ngram/ple_reader.cpp ${S}/base/platform/direct_file.cpp
   ${S}/prefill/prefill.cpp
   ${S}/common/spec/suffix_drafter.cpp ${S}/common/spec/controller.cpp ${S}/common/spec/draft_policy.cpp
-  ${S}/common/spec/draft_source.cpp
+  ${S}/common/spec/draft_source.cpp ${S}/common/serve/loop.cpp ${S}/common/serve/request.cpp
   ${S}/kernels/cpu/pool.cpp ${S}/kernels/cpu/expert_layout.cpp ${S}/kernels/cpu/native_expert.cpp
   ${S}/kernels/cpu/hadamard.cpp ${S}/kernels/cpu/tq_cpu.cpp)   # Gyro: the Hadamard rotation, the scalar trellis rows
 set_source_files_properties(${S}/base/gpu/device.cu ${S}/base/gpu/pinned.cu PROPERTIES LANGUAGE CXX)

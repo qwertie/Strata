@@ -25,6 +25,8 @@
 #include "strata/base/gpu/device.hpp"
 #include "strata/core/remote_expert_opt.hpp"
 #include "strata/common/state/token_listing.hpp"
+#include "strata/common/serve/loop.hpp"
+#include "strata/common/serve/request.hpp"
 #include "strata/core/expert_cache.hpp"
 #include "strata/models/qwen38/conversation_snapshot.hpp"
 #include "strata/common/state/conversation_file.hpp"
@@ -10973,73 +10975,8 @@ int main(int argc, char** argv) {
         };
         // stdin is read on its own thread, so a STOP line reaches a request that is still running (the client went
         // away, or pressed Esc): the flag is checked between prompt chunks and between verify windows.
-        // 0.1.44: the reader is detached and may sit in read(2) past QUIT (the server writes more, or closes stdin, while
-        // main returns and the process exits), so what it touches is shared with it, never main's locals: a line or
-        // EOF after QUIT used to lock a destroyed mutex (undefined behaviour; an abort on macOS).
-        struct StdinShared {
-            std::atomic<bool> stop_req{false};
-            std::mutex mu;
-            std::condition_variable cv;
-            std::deque<std::string> lines;
-            bool eof = false;
-        };
-        const auto in_shared = std::make_shared<StdinShared>();
-        std::atomic<bool>& stop_req = in_shared->stop_req;
-        std::mutex& in_mu = in_shared->mu;
-        std::condition_variable& in_cv = in_shared->cv;
-        std::deque<std::string>& in_lines = in_shared->lines;
-        bool& in_eof = in_shared->eof;
-        std::thread([st = in_shared] {
-            strata::platform::name_this_thread("strata-stdin");
-            strata::aux_cpus::pin_current_thread();
-            // read(2) on the descriptor, not std::cin: glibc's exit() flushes every stdio stream and waits for
-            // stdin's lock, which getline holds while it waits for input - an engine ending on an error (every
-            // std::exit) would hang in exit() on Linux, and the server would wait for it forever
-            std::string l, buf;
-            char chunk[4096];
-            auto getline_fd = [&](std::string& out) -> bool {
-                for (;;) {
-                    const size_t nlpos = buf.find('\n');
-                    if (nlpos != std::string::npos) {
-                        out.assign(buf, 0, nlpos);
-                        buf.erase(0, nlpos + 1);
-                        return true;
-                    }
-#if defined(_WIN32)
-                    const int n = _read(0, chunk, (unsigned) sizeof chunk);
-#else
-                    const ssize_t n = ::read(0, chunk, sizeof chunk);
-                    if (n < 0 && errno == EINTR) continue;
-#endif
-                    if (n <= 0) {
-                        if (buf.empty()) return false;
-                        out.swap(buf);
-                        buf.clear();
-                        return true;
-                    }
-                    buf.append(chunk, (size_t) n);
-                }
-            };
-            while (getline_fd(l)) {
-                if (!l.empty() && l.back() == '\r') l.pop_back();
-                if (l == "STOP") { st->stop_req.store(true); continue; }
-                std::lock_guard<std::mutex> lk(st->mu);
-                st->lines.push_back(l);
-                st->cv.notify_one();
-            }
-            std::lock_guard<std::mutex> lk(st->mu);
-            st->eof = true;
-            st->cv.notify_one();
-        }).detach();
-        auto next_line = [&](std::string& out) -> bool {
-            std::unique_lock<std::mutex> lk(in_mu);
-            in_cv.wait(lk, [&] { return !in_lines.empty() || in_eof; });
-            if (in_lines.empty()) return false;
-            out = std::move(in_lines.front());
-            in_lines.pop_front();
-            return true;
-        };
-        sp.should_stop = [&] { return stop_req.load(); };
+        strata::serve::Input input;
+        sp.should_stop = [&] { return input.is_stop_requested(); };
         // 149-prefetch STRATA_RAM_ADAPT2: the prompt's routing seeds the RAM policy with a limited weight
         // (STRATA_RAM_ADAPT_PROMPT_W, default 0.25: an expert every prompt token routes to counts like ~5 decode routings),
         // fading by 5% a decode window; the decode's own counts and the GPU tier are untouched
@@ -11445,13 +11382,6 @@ int main(int argc, char** argv) {
         int admit_slot = -1;               ///< the slot the request being read will continue in (BGEN)
         long long admit_max_new = 0;
         auto batch_on = [&] { for (const BSlot& b : bs) if (b.active) return true; return false; };
-        auto try_next_line = [&](std::string& out) -> bool {
-            std::lock_guard<std::mutex> lk(in_mu);
-            if (in_lines.empty()) return false;
-            out = std::move(in_lines.front());
-            in_lines.pop_front();
-            return true;
-        };
         // the session a request just left behind (its prompt) -> slot b's sessions, on every stage
         // the main sessions and the slot sessions of a stage live on the same device and are carved alike, so
         // a slot copy can go device to device (the same bytes into the same places as the checkpoint/K-V image
@@ -12009,84 +11939,81 @@ int main(int argc, char** argv) {
                 if (!pump(false)) return false;
             return true;
         };
-        for (;;) {
+        // BSTOP <slot> ends that slot at its next batch window (here, and in a prompt read that slots decode beside)
+        auto stop_slot = [&](int b) {
+            if (b >= 0 && b < (int) bs.size()) bs[(size_t) b].stop = true;
+        };
+        // what the shared command loop (strata/common/serve/loop.hpp) asks of this engine
+        strata::serve::EngineHooks hooks;
+        hooks.is_busy = [&] { return batch_on() || (piped && pipe_inflight()); };
+        hooks.step = [&] { return piped ? pump(true) : batch_step(); };
+        hooks.before_line = [&](const std::string& l) {
             line_drain_ms = 0.0;
-            if (batch_on() || (piped && pipe_inflight())) {
-                if (!try_next_line(line)) {
-                    if (!(piped ? pump(true) : batch_step())) return 1;
-                    continue;
-                }
-                // a request reads its prompt through every stage: the groups in flight finish first
-                // (STRATA_PIPE_BYIELD_NODRAIN: not for a BYIELD, which is dropped below)
-                if (piped && line.rfind("BSTOP ", 0) != 0 &&
-                    !(pipe_byield_nodrain_env() && line.rfind("BYIELD", 0) == 0)) {
-                    const int in_flight = trace ? (int) std::count_if(pg.begin(), pg.end(), [](const PGroup& G) {
-                                                      return G.inflight; }) : 0;
-                    const auto td = Clock::now();
-                    if (!pipe_drain()) return 1;
-                    if (trace) {   // STRATA_TRACE: what the drain before this line cost (BGEN: an admission's first phase)
-                        line_drain_ms = std::chrono::duration<double, std::milli>(Clock::now() - td).count();
-                        std::fprintf(stderr, "strata trace: drain for %.*s: %d groups in flight, %.1f ms\n",
-                                     (int) std::min(line.find(' '), line.size()), line.c_str(), in_flight, line_drain_ms);
-                        const bool timed = in_flight > 0 && line.rfind("BYIELD", 0) == 0;
-                        rows_wait = timed ? "the drain for BYIELD started" : nullptr;
-                        rows_wait_t = td;
-                        std::fflush(stderr);
-                    }
-                }
-            } else if (!next_line(line)) {
-                break;
+            // a request reads its prompt through every stage: the groups in flight finish first
+            // (STRATA_PIPE_BYIELD_NODRAIN: not for a BYIELD, which is dropped)
+            if (!piped || !(batch_on() || pipe_inflight()) || l.rfind("BSTOP ", 0) == 0 ||
+                (pipe_byield_nodrain_env() && l.rfind("BYIELD", 0) == 0))
+                return true;
+            const int in_flight = trace ? (int) std::count_if(pg.begin(), pg.end(), [](const PGroup& G) {
+                                              return G.inflight; }) : 0;
+            const auto td = Clock::now();
+            if (!pipe_drain()) return false;
+            if (trace) {   // STRATA_TRACE: what the drain before this line cost (BGEN: an admission's first phase)
+                line_drain_ms = std::chrono::duration<double, std::milli>(Clock::now() - td).count();
+                std::fprintf(stderr, "strata trace: drain for %.*s: %d groups in flight, %.1f ms\n",
+                             (int) std::min(l.find(' '), l.size()), l.c_str(), in_flight, line_drain_ms);
+                const bool timed = in_flight > 0 && l.rfind("BYIELD", 0) == 0;
+                rows_wait = timed ? "the drain for BYIELD started" : nullptr;
+                rows_wait_t = td;
+                std::fflush(stderr);
             }
-            // --batch: BSTOP <slot> ends that slot at its next batch window; BGEN <slot> <max_new> ... reads the
-            // request's prompt and first token as a GEN 1, then continues it in that slot
-            if (line.rfind("BSTOP ", 0) == 0) {
-                const int b = std::atoi(line.c_str() + 6);
-                if (b >= 0 && b < (int) bs.size()) bs[(size_t) b].stop = true;
-                continue;
+            return true;
+        };
+        hooks.stop_slot = stop_slot;
+        hooks.on_late_yield = [&] {
+            if (trace && piped)
+                std::fprintf(stderr, "strata trace: BYIELD dropped, %d groups in flight\n",
+                             (int) std::count_if(pg.begin(), pg.end(), [](const PGroup& G) { return G.inflight; }));
+        };
+        // the conversations the sessions hold and the parked ones, for the server's API monitor (token_listing.hpp):
+        // between requests and between batch windows, changing nothing
+        hooks.list_conversations = [&] {
+            // a session's size for `cells` tokens: at --max-context the bytes it takes, at what it holds the bytes
+            // a session sized for just those would take (its state and buffers, and their K/V)
+            auto session_size = [&](int64_t cells) {
+                uint64_t n = 0;
+                for (const auto& [lo, hi] : session_layers)
+                    n += strata::core::session_bytes(g, std::max<int64_t>(cells, 1), K, lo, hi);
+                return n;
+            };
+            const uint64_t session_cap = session_size(o.max_context);
+            std::vector<strata::core::HeldConversation> held;
+            const bool main_held = live_ok && !live.empty();
+            const size_t main_n = main_held ? live.size() : 0;
+            held.push_back({"main", "vram", main_held ? "holding" : "empty", live.data(), main_n,
+                            (uint64_t) o.max_context, session_cap, main_n ? session_size((int64_t) main_n) : 0});
+            for (size_t b = 0; b < bs.size(); ++b) {
+                const BSlot& sl = bs[b];
+                const size_t n = sl.active || sl.partial || sl.cached ? sl.ids.size() : 0;
+                held.push_back({"slot" + std::to_string(b), "vram",
+                                sl.active ? "decoding" : sl.partial ? "reading" : sl.cached ? "holding" : "empty",
+                                sl.ids.data(), n, (uint64_t) o.max_context, session_cap,
+                                n ? session_size((int64_t) n) : 0});
             }
-            if (line.rfind("BYIELD", 0) == 0) {   // for a prompt read that has ended meanwhile
-                if (trace && piped)
-                    std::fprintf(stderr, "strata trace: BYIELD dropped, %d groups in flight\n",
-                                 (int) std::count_if(pg.begin(), pg.end(), [](const PGroup& G) { return G.inflight; }));
-                continue;
-            }
+            conversations.for_each([&](uint64_t serial, const strata::core::SavedConversation& c) {
+                held.push_back({"parked" + std::to_string(serial), "ram", "parked", c.live.ids.data(),
+                                c.live.ids.size(), c.live.ids.size(), c.bytes(), c.bytes()});
+            });
+            return held;
+        };
+        strata::serve::Loop loop(input, hooks);
+        while (loop.next(line)) {
             if (line.rfind("VRAM", 0) == 0) {   // #533 (above): between requests, not a request
                 std::string verr;
                 if (batch_on()) verr = "VRAM: not while batch slots are decoding";
                 else vram_command(line, verr);
                 if (!verr.empty()) std::printf("ERR %s\n", verr.c_str());
                 std::fflush(stdout);
-                continue;
-            }
-            // the conversations the sessions hold and the parked ones, for the server's API monitor (token_listing.hpp):
-            // between requests and between batch windows, changing nothing
-            if (strata::core::is_conversation_command(line)) {
-                // a session's size for `cells` tokens: at --max-context the bytes it takes, at what it holds the bytes
-                // a session sized for just those would take (its state and buffers, and their K/V)
-                auto session_size = [&](int64_t cells) {
-                    uint64_t n = 0;
-                    for (const auto& [lo, hi] : session_layers)
-                        n += strata::core::session_bytes(g, std::max<int64_t>(cells, 1), K, lo, hi);
-                    return n;
-                };
-                const uint64_t session_cap = session_size(o.max_context);
-                std::vector<strata::core::HeldConversation> held;
-                const bool main_held = live_ok && !live.empty();
-                const size_t main_n = main_held ? live.size() : 0;
-                held.push_back({"main", "vram", main_held ? "holding" : "empty", live.data(), main_n,
-                                (uint64_t) o.max_context, session_cap, main_n ? session_size((int64_t) main_n) : 0});
-                for (size_t b = 0; b < bs.size(); ++b) {
-                    const BSlot& sl = bs[b];
-                    const size_t n = sl.active || sl.partial || sl.cached ? sl.ids.size() : 0;
-                    held.push_back({"slot" + std::to_string(b), "vram",
-                                    sl.active ? "decoding" : sl.partial ? "reading" : sl.cached ? "holding" : "empty",
-                                    sl.ids.data(), n, (uint64_t) o.max_context, session_cap, n ? session_size((int64_t) n) : 0});
-                }
-                conversations.for_each([&](uint64_t serial, const strata::core::SavedConversation& c) {
-                    held.push_back({"parked" + std::to_string(serial), "ram", "parked", c.live.ids.data(),
-                                    c.live.ids.size(), c.live.ids.size(), c.bytes(), c.bytes()});
-                });
-                strata::core::answer_conversation_command(line, held);
                 continue;
             }
             // a command may touch the expert cache (a request lends slots, a K/V growth moves them, a session restore
@@ -12096,21 +12023,21 @@ int main(int argc, char** argv) {
                 return 1;
             }
             admit_slot = -1;
-            if (line.rfind("BGEN ", 0) == 0 || line.rfind("BGENI ", 0) == 0) {
-                const bool bimg = line.rfind("BGENI ", 0) == 0;
-                char* e1 = nullptr;
-                const long b = std::strtol(line.c_str() + (bimg ? 6 : 5), &e1, 10);
-                char* e2 = nullptr;
-                const long long mn = std::strtoll(e1, &e2, 10);
-                if (bs.empty() || b < 0 || b >= (long) bs.size() || bs[(size_t) b].active || mn < 1 || e2 == e1) {
+            // BGEN <slot> <max_new> ... reads the request's prompt and first token as a GEN 1, then continues it in
+            // that slot
+            strata::serve::RequestLine req;
+            const bool is_request = strata::serve::parse_request_line(line, req);
+            if (is_request && req.batch) {
+                if (bs.empty() || req.slot < 0 || req.slot >= (long) bs.size() || bs[(size_t) req.slot].active ||
+                    req.max_new < 1) {
                     std::printf("ERR BGEN: no such free slot (--batch %d) or a bad max_new\n", o.batch);
                     std::fflush(stdout);
                     continue;
                 }
-                admit_slot = (int) b;
-                admit_max_new = mn;
+                admit_slot = (int) req.slot;
+                admit_max_new = req.max_new;
                 adm_drain_ms = line_drain_ms;
-                line = std::string(bimg ? "GENI 1" : "GEN 1") + e2;
+                req.max_new = 1;
             }
             // #477: every --expert-profile-save-every minutes, before the next request (at QUIT: after the loop)
             if (!heat.empty() && line != "QUIT" && o.expert_profile_save_min > 0 &&
@@ -12148,7 +12075,7 @@ int main(int argc, char** argv) {
                     }
                 }
             }
-            stop_req.store(false);   // a STOP that arrived between requests is stale
+            input.clear_stop();   // a STOP that arrived between requests is stale
             err.clear();
             // Disk sessions: SAVE <path> | RESTORE <path>, between requests (the path runs to the end of the line,
             // UTF-8).  The file holds what a parked conversation holds (conversation_file.hpp).  Answers: SAVED /
@@ -12383,21 +12310,15 @@ int main(int argc, char** argv) {
                 std::fflush(stdout);
                 continue;
             }
-            const bool geni = line.rfind("GENI ", 0) == 0;
-            if (!geni && line.rfind("GEN ", 0) != 0) {
+            if (!is_request) {
                 std::printf("ERR expected: GEN <max_new> <id,id,...> or GENI <max_new> <file> <id,id,...>\n");
                 continue;
             }
-            char* endp = nullptr;
-            const long long max_new = std::strtoll(line.c_str() + (geni ? 5 : 4), &endp, 10);
-            // optional sampling keys between max_new and the ids: temperature=F, top_p=F, top_k=N, min_p=F,
-            // penalty_last_n=N, penalty_repeat=F, penalty_freq=F, penalty_present=F, seed=N (text requests
-            // only).  Absent keys keep today's behavior: greedy, no penalties.
-            float req_temperature = 0.0f, req_top_p = 1.0f;
-            int req_top_k = 20;   // the sampler's own default; the sampled path REQUIRES top_k in 1..64
-            unsigned long long req_seed = 0;
-            float req_min_p = 0.0f, req_penalty_repeat = 1.0f, req_penalty_freq = 0.0f, req_penalty_present = 0.0f;
-            int req_penalty_last_n = 0;
+            const bool geni = req.pictures;
+            const long long max_new = req.max_new;
+            // optional keys between max_new and the ids: the sampling keys (strata::serve::Sampling; text requests
+            // only) and the ones below.  Absent keys keep today's behavior: greedy, no penalties.
+            strata::serve::Sampling smp;
             std::string req_bias_text;
             bool req_bias_present = false;
             int req_cvec = 1;   // cvec=0|1: a loaded control vector for this request (on when absent)
@@ -12421,49 +12342,19 @@ int main(int argc, char** argv) {
             // embedding floats, so a picture encoded again with other bits still matches.  Absent: the embeddings' hash.
             std::vector<uint64_t> req_img_keys;
             bool req_pcie_set = false;   // the request names its own share (the measured one holds meanwhile)
-            if (endp != nullptr) {   // GENI takes the same keys (#75: image requests were always greedy); its
-                                     // embedding file path is the first token without an =
-                for (;;) {
-                    while (*endp == ' ') ++endp;
-                    const char* start = endp;
-                    while (*endp != '\0' && *endp != ' ') ++endp;
-                    if (endp == start) break;
-                    const std::string tok(start, (size_t) (endp - start));
-                    const size_t eq = tok.find('=');
-                    if (eq == std::string::npos) { endp = const_cast<char*>(start); break; }
-                    const std::string key = tok.substr(0, eq);
-                    const float fv = std::strtof(tok.c_str() + eq + 1, nullptr);
-                    if (key == "logit_bias") { req_bias_text = tok.substr(eq + 1); req_bias_present = true; }
-                    else if (key == "cvec") req_cvec = std::atoi(tok.c_str() + eq + 1);
-                    else if (key == "ckpt") req_ckpt = std::atoi(tok.c_str() + eq + 1) != 0;
-                    else if (key == "pin") req_pin = std::max<long long>(0, std::atoll(tok.c_str() + eq + 1));
-                    else if (key == "temperature") req_temperature = fv;
-                    else if (key == "top_p") req_top_p = fv;
-                    else if (key == "top_k") req_top_k = std::atoi(tok.c_str() + eq + 1);
-                    else if (key == "min_p") req_min_p = fv;
-                    else if (key == "penalty_last_n") req_penalty_last_n = std::atoi(tok.c_str() + eq + 1);
-                    else if (key == "penalty_repeat") req_penalty_repeat = fv;
-                    else if (key == "penalty_freq") req_penalty_freq = fv;
-                    else if (key == "penalty_present") req_penalty_present = fv;
-                    else if (key == "seed") req_seed = std::strtoull(tok.c_str() + eq + 1, nullptr, 10);
-                    else if (key == "pcie_frac") { req_pcie_frac = std::clamp((double) fv, 0.0, 1.0); req_pcie_set = true; }
-                    else if (key == "spec_min_p") req_spec_min_p = std::clamp((double) fv, 0.0, 1.0);
-                    else if (key == "pipe") req_pipe = std::max(0.0, (double) fv);
-                    else if (key == "aux_cpus") req_aux_cpus = std::atoi(tok.c_str() + eq + 1) != 0 ? 1 : 0;
-                    else if (key == "img_keys") {
-                        req_img_keys.clear();
-                        const char* q = tok.c_str() + eq + 1;
-                        while (*q != '\0') {
-                            char* qe = nullptr;
-                            const unsigned long long v = std::strtoull(q, &qe, 16);
-                            if (qe == q) { req_img_keys.clear(); break; }
-                            req_img_keys.push_back((uint64_t) v);
-                            q = *qe == ',' ? qe + 1 : qe;
-                            if (*qe != ',' && *qe != '\0') { req_img_keys.clear(); break; }
-                        }
-                    }
-                    // unknown keys are skipped: the ids start at the first token without '='
-                }
+            for (const auto& [key, val] : req.keys) {   // (#75: GENI takes the same keys; image requests were greedy)
+                if (strata::serve::read_sampling_key(key, val, smp)) continue;
+                const float fv = std::strtof(val.c_str(), nullptr);
+                if (key == "logit_bias") { req_bias_text = val; req_bias_present = true; }
+                else if (key == "cvec") req_cvec = std::atoi(val.c_str());
+                else if (key == "ckpt") req_ckpt = std::atoi(val.c_str()) != 0;
+                else if (key == "pin") req_pin = std::max<long long>(0, std::atoll(val.c_str()));
+                else if (key == "pcie_frac") { req_pcie_frac = std::clamp((double) fv, 0.0, 1.0); req_pcie_set = true; }
+                else if (key == "spec_min_p") req_spec_min_p = std::clamp((double) fv, 0.0, 1.0);
+                else if (key == "pipe") req_pipe = std::max(0.0, (double) fv);
+                else if (key == "aux_cpus") req_aux_cpus = std::atoi(val.c_str()) != 0 ? 1 : 0;
+                else if (key == "img_keys") req_img_keys = strata::serve::parse_hex_list(val);
+                // unknown keys are skipped
             }
             strata::prefill::Prefill::set_pipe_request(req_pipe);   // every request sets it: none carries over
             std::vector<float> req_bias;
@@ -12473,15 +12364,10 @@ int main(int argc, char** argv) {
                 std::printf("ERR logit_bias: %s\n", o.batch > 0 ? "continuous batching is not supported" : bias_error.c_str());
                 continue;
             }
-            std::string emb_path;
-            if (geni && endp != nullptr) {
-                while (*endp == ' ') ++endp;
-                char* gap = std::strchr(endp, ' ');
-                if (gap != nullptr) { emb_path.assign(endp, (size_t) (gap - endp)); endp = gap; }
-            }
+            const std::string& emb_path = req.file;
             std::vector<int64_t> ids;
             std::string pe;
-            if (max_new < 1 || endp == nullptr || (geni && emb_path.empty()) || !parse_i64_list(endp, ids, pe)) {
+            if (max_new < 1 || (geni && emb_path.empty()) || !parse_i64_list(req.ids.c_str(), ids, pe)) {
                 std::printf("ERR bad request: %s\n", pe.empty() ? "max_new" : pe.c_str());
                 continue;
             }
@@ -13232,7 +13118,7 @@ int main(int argc, char** argv) {
                     return false;
                 };
                 while (f1 < N) {
-                    if (stop_req.load()) return fail("cancelled");
+                    if (input.is_stop_requested()) return fail("cancelled");
                     // stage 0: up to two windows queued; window K+2 (K's parity) only once stage 1 has finished window
                     // K, whose hand-off K+2 overwrites
                     while (l0 < N && l0 < f0 + 2 && l0 < f1 + 2) {
@@ -13305,7 +13191,7 @@ int main(int argc, char** argv) {
                 std::vector<int32_t> win((size_t) S), outw((size_t) S), nxt((size_t) S);
                 pp_exact = true;   // between windows the session is exactly at `a`
                 for (int64_t q = a; q < b;) {
-                    if (stop_req.load()) { e = "cancelled"; return false; }
+                    if (input.is_stop_requested()) { e = "cancelled"; return false; }
                     pp_exact = false;   // until this window and the drafter's rows are in
                     const int T = (int) std::min<int64_t>(S, b - q);
                     for (int t = 0; t < T; ++t) {
@@ -13815,8 +13701,7 @@ int main(int argc, char** argv) {
                                 read_err = "the prompt read failed";
                             }
                             done.store(true, std::memory_order_release);
-                            { std::lock_guard<std::mutex> lk(in_mu); }   // (the loop below may be waiting on in_cv)
-                            in_cv.notify_all();
+                            input.wake();   // (the loop below may be waiting for a line)
                         });
                         struct ReadEnd {   // on every way out of this round (an exception too): the reader joined first
                             std::thread& t;
@@ -13829,30 +13714,19 @@ int main(int argc, char** argv) {
                             }
                         } read_end{reader, sp.stop_at_chunk, in_prompt_read};
                         bool pump_ok = true;
-                        size_t seen = 0;   // in_lines' length after the last look: a line that comes wakes the wait
                         while (!done.load(std::memory_order_acquire)) {
                             const bool decoding = pump_ok && (batch_on() || pipe_inflight());
                             if (decoding) pump_ok = pump(true);
-                            std::unique_lock<std::mutex> lk(in_mu);
-                            if (!decoding)   // nothing to pump: until the read ends or a line comes (both notify)
-                                in_cv.wait_for(lk, std::chrono::milliseconds(2), [&] {
-                                    return done.load(std::memory_order_acquire) || in_lines.size() != seen;
-                                });
+                            else   // nothing to pump: until the read ends or a line comes (both notify)
+                                input.wait_for_line(std::chrono::milliseconds(2),
+                                                    [&] { return done.load(std::memory_order_acquire); });
                             // a BSTOP that came meanwhile ends its slot at its next window; a BYIELD ends the read at
                             // its next chunk
-                            for (auto it = in_lines.begin(); it != in_lines.end();) {
-                                if (it->rfind("BSTOP ", 0) == 0) {
-                                    const int b = std::atoi(it->c_str() + 6);
-                                    if (b >= 0 && b < (int) bs.size()) bs[(size_t) b].stop = true;
-                                    it = in_lines.erase(it);
-                                } else if (it->rfind("BYIELD ", 0) == 0 && want_yield.load() < 0) {
-                                    want_yield.store(std::atoi(it->c_str() + 7), std::memory_order_release);
-                                    it = in_lines.erase(it);
-                                } else {
-                                    ++it;
-                                }
-                            }
-                            seen = in_lines.size();
+                            input.take_slot_controls(stop_slot, [&](int ys) {
+                                if (want_yield.load() >= 0) return false;
+                                want_yield.store(ys, std::memory_order_release);
+                                return true;
+                            });
                         }
                         reader.join();   // (a failed window leaves the read to finish: it is not stopped mid-run)
                         sp.stop_at_chunk = nullptr;
@@ -13966,21 +13840,11 @@ int main(int argc, char** argv) {
                     q = r;
                     if (q >= b0) continue;
                     int ys = -1;
-                    {   // a BSTOP that came meanwhile ends its slot at its next window; a BYIELD is for this read
-                        std::lock_guard<std::mutex> lk(in_mu);
-                        for (auto it = in_lines.begin(); it != in_lines.end();) {
-                            if (it->rfind("BSTOP ", 0) == 0) {
-                                const int b = std::atoi(it->c_str() + 6);
-                                if (b >= 0 && b < (int) bs.size()) bs[(size_t) b].stop = true;
-                                it = in_lines.erase(it);
-                            } else if (it->rfind("BYIELD ", 0) == 0) {
-                                ys = std::atoi(it->c_str() + 7);
-                                it = in_lines.erase(it);
-                            } else {
-                                ++it;
-                            }
-                        }
-                    }
+                    // a BSTOP that came meanwhile ends its slot at its next window; a BYIELD is for this read
+                    input.take_slot_controls(stop_slot, [&](int y) {
+                        ys = y;
+                        return true;
+                    });
                     if (ys >= 0 && give_way(ys, q, e)) return false;
                     // (on the pipelined path a piece's end has the pipeline drained - nothing runs during a piece and
                     // every decode budget ends in pipe_drain - so the part read can give way there as off the pipeline)
@@ -14031,17 +13895,17 @@ int main(int argc, char** argv) {
             }
             // per-request sampling for the verify window's head (greedy when temperature is absent)
             strata::kernels::SamplerParams req_sp;
-            req_sp.greedy = req_temperature <= 0.0f;
-            req_sp.temperature = req_temperature;
-            req_sp.top_p = req_top_p;
-            req_sp.top_k = req_top_k;
-            req_sp.seed = req_seed ? req_seed
+            req_sp.greedy = smp.temperature <= 0.0f;
+            req_sp.temperature = smp.temperature;
+            req_sp.top_p = smp.top_p;
+            req_sp.top_k = smp.top_k;
+            req_sp.seed = smp.seed ? smp.seed
                                    : (unsigned long long) std::chrono::steady_clock::now().time_since_epoch().count();
-            req_sp.min_p = std::clamp(req_min_p, 0.0f, 1.0f);
-            req_sp.penalty_last_n = std::max(req_penalty_last_n, 0);
-            req_sp.penalty_repeat = req_penalty_repeat;
-            req_sp.penalty_freq = req_penalty_freq;
-            req_sp.penalty_present = req_penalty_present;
+            req_sp.min_p = std::clamp(smp.min_p, 0.0f, 1.0f);
+            req_sp.penalty_last_n = std::max(smp.penalty_last_n, 0);
+            req_sp.penalty_repeat = smp.penalty_repeat;
+            req_sp.penalty_freq = smp.penalty_freq;
+            req_sp.penalty_present = smp.penalty_present;
             req_sp.counter = 0;
             if (!ver.set_logit_bias(req_bias, err) || (pipe && !ver_b.set_logit_bias(req_bias, err))) {
                 std::printf("ERR %s\n", err.c_str());
@@ -14204,7 +14068,7 @@ int main(int argc, char** argv) {
                     std::fflush(stdout);
                 }
                 if (!sp_ok) {
-                    if (yielded_at < 0 && (batch_fatal || !stop_req.load())) {
+                    if (yielded_at < 0 && (batch_fatal || !input.is_stop_requested())) {
                         std::fprintf(stderr, "strata serve: %s\n", err.c_str());
                         std::printf("ERR %s\n", err.c_str());
                         // #224: a CUDA fault (an illegal address) poisons the context for the whole process, and
@@ -14841,8 +14705,8 @@ int main(int argc, char** argv) {
                     std::fflush(stdout);
                     if (nf) finish = "nonfinite";
                     else if (eos) finish = "stop";
-                    else if (stop_req.load()) finish = "cancel";
-                    const bool last = nf || eos || produced_n >= max_new || stop_req.load();
+                    else if (input.is_stop_requested()) finish = "cancel";
+                    const bool last = nf || eos || produced_n >= max_new || input.is_stop_requested();
                     const bool on = !nf && B.launched && a == A.T - 1 && B.tok[0] == outp[(size_t) A.T - 1];
                     if (B.made) {   // the gate's calibration: would B have been on the path, by its estimate p_on
                         const bool would = a == A.T - 1 && B.tok[0] == outp[(size_t) A.T - 1];
@@ -15321,7 +15185,7 @@ int main(int argc, char** argv) {
                     policy.observe_chain(T_mtp, chain_n, a, cm,
                                          std::chrono::duration<double, std::milli>(Clock::now() - round0).count());
                 if (eos) { finish = "stop"; break; }
-                if (stop_req.load()) { finish = "cancel"; break; }
+                if (input.is_stop_requested()) { finish = "cancel"; break; }
                 x = outv[(size_t) a];
                 p += a + 1;
             }
@@ -15808,10 +15672,11 @@ int main(int argc, char** argv) {
                 helper_bytes_before = bytes;
             }
         }
+        if (loop.is_failed()) return 1;
         save_profile("exit");   // #477: QUIT, or the server closed stdin
 #if defined(STRATA_GPU_METAL)
-        // the stdin reader (detached above) may still take in_mu when the server closes the pipe after QUIT; on macOS
-        // locking that mutex once this scope has destroyed it throws (the engine ended with an abort): end here
+        // the stdin reader (detached above) may still take its mutex when the server closes the pipe after QUIT; on
+        // macOS locking that mutex once this scope has destroyed it throws (the engine ended with an abort): end here
         std::fflush(stdout);
         std::fflush(stderr);
         std::_Exit(0);
