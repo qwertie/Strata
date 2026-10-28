@@ -145,6 +145,20 @@ Found during the work; each needs a decision or a later step.
   `sample_verify`, `DS4_DSPARK_SAMPLE=1`), which the shared sampler lacks. The shared one has `gumbel`, the cluster
   argmax and the coupled-draft functions instead. Its `host_history` field is unused. Merging means porting the
   draft and verify modes into the shared `sampler.cu`: kernel work, tested on NVIDIA with the rest of B2.
+- **Qwen3.6 drafts nothing at temperature 0.** The server adds the model card's `presence_penalty: 1.5` for
+  `qwen35moe` (`MODEL_CARD_SAMPLING` in `strata_server/server.py`); any penalty sends the Qwen3.6 engine down its
+  sampling path, which skips MTP drafting (`src/models/qwen36/q36_engine.cu`). Measured 2026-10-28 on the Strix Halo,
+  UD-Q4_K_XL, 2,000-token prompt: 47 tok/s decode with the penalty, 65 tok/s with `presence_penalty: 0`. Older than the
+  refactor; may be intended.
+
+## Running engines and GPU tests on this PC
+
+Windows loads the driver's `System32mdhip64_7.dll` before anything on `PATH`, so an engine or GPU test run from
+`build-hip-win` gets the wrong HIP runtime (the engine exits with 0xC0000139; tests hang or crash). Copy the program
+into a folder together with `engine\*.dll` (as `engine\strata.exe` is installed) and run it there. End-to-end checks
+use a copy of the run config with `"exe"` pointing at the engine under test and the server on another port (8091), with
+alternating runs of the two builds. Models on this PC: Qwen3.8 IQ3_S (`strata-iq3_s.json`) and Qwen3.6 UD-Q4_K_XL
+(`C:\AI-models\Strata-data\models\qwen36-UD-Q4_K_XL`); DeepSeek V4.1 is being downloaded (2026-10-28).
 
 ## Results
 
