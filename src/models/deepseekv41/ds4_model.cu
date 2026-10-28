@@ -21,7 +21,7 @@
 #include "ds4_iq.cuh"
 #include "ds4_gguf_cpu.hpp"
 #include "ds4_kernels.cuh"
-#include "ds4_os.hpp"
+#include "strata/base/platform/os.hpp"
 #include "ds4_pool.hpp"
 #include "ds4_store.hpp"
 #include "ds4_vision.cuh"
@@ -121,7 +121,7 @@ std::vector<std::vector<int>> node_cores() {
         const char* v = std::getenv("DS4_CPU_SMT");
         return v != nullptr && std::atoi(v) != 0;
     }();
-    std::vector<std::vector<int>> nodes = os::node_cores(smt);
+    std::vector<std::vector<int>> nodes = platform::node_cores(smt);
 #else
     std::vector<std::vector<int>> nodes;
     for (int n = 0; n < 64; ++n) {
@@ -144,13 +144,13 @@ std::vector<std::vector<int>> node_cores() {
     return nodes;
 }
 // anonymous memory on one NUMA node (node < 0: wherever the first touch puts it), transparent huge pages
-void* node_map(size_t bytes, int node, int n_nodes) { return os::anon_alloc(bytes, node, n_nodes); }
-void pin_self(int cpu) { os::pin_self(cpu); }
+void* node_map(size_t bytes, int node, int n_nodes) { return platform::anon_alloc(bytes, node, n_nodes); }
+void pin_self(int cpu) { platform::pin_self(cpu); }
 // the RAM this process can still get: MemAvailable, and below it the tightest cgroup v2 limit on the way to the root
 // (its limit less what is charged, the page cache counted as free: the kernel takes it back); ~0: not known
 uint64_t ram_avail() {
 #if defined(_WIN32)
-    return os::ram_avail();
+    return platform::ram_avail();
 #endif
     uint64_t avail = ~uint64_t{0};
     {
@@ -228,7 +228,7 @@ struct Pack {
     std::string dir, model_dir;
     std::unordered_map<std::string, std::string> kv;
     std::vector<std::string> files;
-    std::vector<os::fd_t> fds;
+    std::vector<platform::fd_t> fds;
     std::unordered_map<std::string, Tensor> t;
     int eg_vocab = 0, eg_layers = 0, eg_ngram = 0, eg_heads = 0, eg_hd = 0, eg_pad = 0;
     std::vector<int32_t> eg_map;
@@ -238,22 +238,22 @@ struct Pack {
     bool gguf = false;
 
     std::vector<std::pair<uint8_t*, size_t>> maps;   // file -> its read-only mapping (map(): the experts in place)
-    std::vector<os::fd_t> dfds;   // (gguf) file -> unbuffered (os::open_direct; kBadFd: buffered reads only)
-    std::vector<os::fd_t> pfds;   // (gguf) file -> for reads from many threads at once (os::open_par)
+    std::vector<platform::fd_t> dfds;   // (gguf) file -> unbuffered (open_direct; kBadFd: buffered reads only)
+    std::vector<platform::fd_t> pfds;   // (gguf) file -> for reads from many threads at once (platform::open_par)
 
     ~Pack() {
-        for (auto& m : maps) os::unmap(m.first, m.second);
-        for (os::fd_t fd : fds) os::close_fd(fd);
-        for (os::fd_t fd : dfds) os::close_fd(fd);
-        for (os::fd_t fd : pfds) os::close_fd(fd);
+        for (auto& m : maps) platform::unmap(m.first, m.second);
+        for (platform::fd_t fd : fds) platform::close_fd(fd);
+        for (platform::fd_t fd : dfds) platform::close_fd(fd);
+        for (platform::fd_t fd : pfds) platform::close_fd(fd);
     }
     // file i mapped whole, read-only (once; not thread-safe: called while loading)
     const uint8_t* map(int file) {
         if (maps.size() < fds.size()) maps.resize(fds.size(), {nullptr, 0});
         auto& m = maps[(size_t) file];
         if (m.first == nullptr) {
-            const uint64_t size = os::file_size(fds[(size_t) file]);
-            void* p = os::map_ro(fds[(size_t) file], size);
+            const uint64_t size = platform::file_size(fds[(size_t) file]);
+            void* p = platform::map_ro(fds[(size_t) file], size);
             if (p == nullptr) return nullptr;
             m = {(uint8_t*) p, (size_t) size};
         }
@@ -313,8 +313,8 @@ struct Pack {
         std::fclose(f);
         for (const std::string& fn : files) {
             const std::string p = model_dir + "/" + fn;
-            const os::fd_t fd = os::open_ro(p);
-            if (fd == os::kBadFd) {
+            const platform::fd_t fd = platform::open_ro(p);
+            if (fd == platform::kBadFd) {
                 err = p + ": cannot open";
                 return false;
             }
@@ -327,8 +327,8 @@ struct Pack {
                     err = model_dir + "/" + files[i] + ": cannot map";
                     return false;
                 }
-                dfds.push_back(os::open_direct(model_dir + "/" + files[i]));
-                pfds.push_back(os::open_par(model_dir + "/" + files[i]));
+                dfds.push_back(platform::open_direct(model_dir + "/" + files[i]));
+                pfds.push_back(platform::open_par(model_dir + "/" + files[i]));
             }
         // the Engram tables
         std::FILE* e = std::fopen((d + "/engram.bin").c_str(), "rb");
@@ -381,9 +381,9 @@ struct Pack {
         return it == t.end() ? nullptr : &it->second;
     }
     bool read_at(int file, uint64_t off, uint64_t n, void* dst) const {   // (any thread; side by side where pfds is)
-        if ((size_t) file < pfds.size() && pfds[(size_t) file] != os::kBadFd)
-            return os::pread_par(pfds[(size_t) file], dst, n, off);
-        return os::pread_full(fds[(size_t) file], dst, n, off);
+        if ((size_t) file < pfds.size() && pfds[(size_t) file] != platform::kBadFd)
+            return platform::pread_par(pfds[(size_t) file], dst, n, off);
+        return platform::pread_full(fds[(size_t) file], dst, n, off);
     }
     bool read(const Tensor& x, void* dst) const { return read_at(x.file, x.off, x.bytes, dst); }
     const uint8_t* at(int file, uint64_t off) const { return maps[(size_t) file].first + off; }   // (gguf: mapped)
@@ -987,7 +987,7 @@ struct Model::Impl {
     int async_max_t = std::getenv("DS4_ASYNC_T") ? std::atoi(std::getenv("DS4_ASYNC_T")) : 8;   // windows up to this
     // lookahead: while layer L runs, the device guesses the next layer's picks (its gate on L's FFN input, the same
     // choice) and publishes them with L's routing; the CPU lane asks for the guessed experts it will read from the files
-    // at once (a thread of its own, os::prefetch), so the SSD reads them while L computes instead of on the next
+    // at once (a thread of its own, platform::prefetch), so the SSD reads them while L computes instead of on the next
     // layer's critical path.  Only the page cache sees it - the outputs are the same.  DS4_AHEAD=0: off, 2: also the
     // layer after (from L's input too); DS4_AHEAD_EXTRA: guesses past the next layer's top k (< 0: fewer - the guess's
     // picks by rank on Sun: 97 91 81 70 57 41 %, past the top 6 29 20 %: reads wasted on an SSD-bound PC).
@@ -1039,7 +1039,7 @@ struct Model::Impl {
     bool ram_tier = std::getenv("STRATA_DS4_RAM_TIER") != nullptr && std::atoi(std::getenv("STRATA_DS4_RAM_TIER")) != 0;
     // STRATA_DS4_DISK_SKIP_W (experimental opt-in, CHANGES THE ANSWERS; 0 = off): on the small windows (decode, a
     // draft's check - never the prompt path) the CPU lane leaves out a routed expert whose share of its token's route
-    // weights is below this and whose pages are not in RAM now (the page cache or the RAM tier; os::in_ram - Linux every
+    // weights is below this and whose pages are not in RAM now (the page cache or the RAM tier; platform::in_ram - Linux every
     // page, Windows sampled pages of the working set), so a token waits on the SSD only for the experts that weigh; the
     // weight it carried is lost (no renormalisation).  On layers from STRATA_DS4_DISK_SKIP_FROM (0) on.  An expert left
     // out still counts as used (the expert cache, the profile).
@@ -1060,10 +1060,10 @@ struct Model::Impl {
         if (!l.ram.empty() && l.ram[(size_t) e] >= 0) return true;
         if (l.lay.fmt == gg::kFmtMXFP4) {
             for (int r = 0; r < 3; ++r)
-                if (!os::in_ram(mx_mat(l, e, r), mx_part_bytes(l, r))) return false;
+                if (!platform::in_ram(mx_mat(l, e, r), mx_part_bytes(l, r))) return false;
             return true;
         }
-        return !file_experts || os::in_ram(file_part(l, e), l.blob);
+        return !file_experts || platform::in_ram(file_part(l, e), l.blob);
     }
     // a GGUF's CPU-lane experts copied into RAM (copy_experts, after VRAM took its share: --mmap-experts off - auto reads
     // them in place; DS4_COPY_GB=<n>: the hottest n GB, the rest in place - static, no moves between
@@ -1080,12 +1080,12 @@ struct Model::Impl {
     // them (the log's WARNING, a NOTE and INFO for the server)
     double commit_kept = 0, pagefile_hint = 0;
     double commit_margin() const {
-        const os::Commit c = os::commit();
+        const platform::Commit c = platform::commit();
         return std::max(8.0 * (double) (1ull << 30), c.ram == ~uint64_t{0} ? 0.0 : 0.1 * (double) c.ram);
     }
     // what may still be committed beside the margin (~inf: nothing limits it; DS4_COMMIT_CAP_GB: at most that, tests)
     double commit_room() const {
-        const os::Commit c = os::commit();
+        const platform::Commit c = platform::commit();
         double avail = c.avail == ~uint64_t{0} ? 1e300 : (double) c.avail;
         if (const char* v = std::getenv("DS4_COMMIT_CAP_GB")) avail = std::min(avail, std::atof(v) * 1e9);
         return avail >= 1e300 ? 1e300 : std::max(0.0, avail - commit_margin());
@@ -1266,7 +1266,7 @@ struct Model::Impl {
         for (std::thread& t : cache_ths)
             if (t.joinable()) t.join();
         if (ram_th.joinable()) ram_th.join();
-        for (size_t i = 0; i < ram_chunks.size(); ++i) os::anon_free(ram_chunks[i], ram_chunk_bytes[i]);
+        for (size_t i = 0; i < ram_chunks.size(); ++i) platform::anon_free(ram_chunks[i], ram_chunk_bytes[i]);
         for (Dev& d : devs) {
             cudaSetDevice(d.id);
             for (void* p : d.allocs) cudaFree(p);
@@ -1281,7 +1281,7 @@ struct Model::Impl {
                 }
         for (auto& m : host_maps) {
             if (chunk > 0) cudaHostUnregister(m.first);
-            os::anon_free(m.first, m.second);
+            platform::anon_free(m.first, m.second);
         }
     }
     std::vector<std::pair<void*, size_t>> host_maps;
@@ -2526,7 +2526,7 @@ struct Model::Impl {
                 for (size_t i = 0; i < pk.files.size(); ++i)
                     if (eg_file[i] && !other[i]) {
                         if (i < pk.maps.size() && pk.maps[i].first != nullptr) {
-                            os::unmap(pk.maps[i].first, pk.maps[i].second);
+                            platform::unmap(pk.maps[i].first, pk.maps[i].second);
                             pk.maps[i] = {nullptr, 0};
                         }
                         eg_direct[i] = 1;
@@ -3184,11 +3184,11 @@ struct Model::Impl {
                     if (l0.lay.fmt == gg::kFmtMXFP4) {
                         if (copy_mode && l0.ram[(size_t) e] >= 0) continue;   // (in RAM: nothing to read)
                         for (int r = 0; r < 3; ++r)
-                            os::advise(pk.fds[(size_t) l0.mx_file[r]], (l0.mx_off[r] + (uint64_t) e * l0.mx_stride[r]), mx_part_bytes(l0, r), true);
+                            platform::advise(pk.fds[(size_t) l0.mx_file[r]], (l0.mx_off[r] + (uint64_t) e * l0.mx_stride[r]), mx_part_bytes(l0, r), true);
                         nb += (double) l0.blob;
                         continue;
                     }
-                    os::advise(pk.fds[(size_t) l0.region_file[(size_t) e]], l0.region_off[(size_t) e], l0.region_bytes[(size_t) e], true);
+                    platform::advise(pk.fds[(size_t) l0.region_file[(size_t) e]], l0.region_off[(size_t) e], l0.region_bytes[(size_t) e], true);
                     nb += (double) l0.region_bytes[(size_t) e];
                 }
             issued.push_back({q++, nb});
@@ -3243,7 +3243,8 @@ struct Model::Impl {
     // nothing.  (CUDA too since #303: two RTX 3080s hung before the first layer, one GPU spinning on the other's flow)
     static void kick(cudaStream_t s) { win_submit(s); }
     size_t flow_region(int r) const {   // a part's room in a staging slot (read from its offset rounded down)
-        return ((flow_part[r] + os::kDirectAlign - 1) & ~(size_t) (os::kDirectAlign - 1)) + os::kDirectAlign;
+        constexpr size_t A = platform::kDirectAlign;
+        return ((flow_part[r] + A - 1) & ~(A - 1)) + A;
     }
     size_t flow_stride() const { return flow_region(0) + flow_region(1) + flow_region(2); }
     static Chunk::Item& fit(Chunk& c, size_t i) { return c.items[i - c.base]; }
@@ -3317,7 +3318,7 @@ struct Model::Impl {
         uint8_t* sb = c.stage + (size_t) it.stage * c.stage_stride;
         for (int r = 0; r < 3; ++r) {
             const uint64_t off = l.mx_off[r] + (uint64_t) e * l.mx_stride[r] + mx_read_off(l, mi, r);
-            it.src[r] = sb + (in_ram || hit ? 0 : off % os::kDirectAlign);
+            it.src[r] = sb + (in_ram || hit ? 0 : off % platform::kDirectAlign);
             sb += flow_region(r);
         }
         it.left.store(in_ram && copy_mode && store_blob == nullptr ? 3 * NH : 3, std::memory_order_relaxed);
@@ -3478,9 +3479,9 @@ struct Model::Impl {
                         continue;
                     }
                     IoQueue::Job& j = jobs[nj++];
-                    const os::fd_t pf = pk.pfds.empty() ? os::kBadFd : pk.pfds[(size_t) l.mx_file[r]];
-                    j.fd = pf != os::kBadFd ? pf : pk.fds[(size_t) l.mx_file[r]];
-                    j.dfd = pk.dfds.empty() ? os::kBadFd : pk.dfds[(size_t) l.mx_file[r]];
+                    const platform::fd_t pf = pk.pfds.empty() ? platform::kBadFd : pk.pfds[(size_t) l.mx_file[r]];
+                    j.fd = pf != platform::kBadFd ? pf : pk.fds[(size_t) l.mx_file[r]];
+                    j.dfd = pk.dfds.empty() ? platform::kBadFd : pk.dfds[(size_t) l.mx_file[r]];
                     j.off = l.mx_off[r] + (uint64_t) it.e * l.mx_stride[r] + mx_read_off(l, it.mi, r);
                     j.len = mx_read_len(l, r);
                     j.dst = sb;
@@ -3969,7 +3970,7 @@ struct Model::Impl {
             }
         }
         if (kept > 0) {   // the commit kept experts off the GPU: say so, and the page file that keeps them on it
-            const os::Commit c = os::commit();
+            const platform::Commit c = platform::commit();
             const double gib = (double) (1ull << 30);
             const double pf = c.limit != ~uint64_t{0} && c.ram != ~uint64_t{0} && c.limit > c.ram ? (double) (c.limit - c.ram) : 0.0;
             commit_kept = kept;
@@ -4167,7 +4168,7 @@ struct Model::Impl {
             for (int e = 0; e < l.n_exp; ++e) {
                 if (l.slot[(size_t) e] >= 0) {
                     for (int r = 0; r < 3; ++r)
-                        os::advise(pk.fds[(size_t) l.mx_file[r]], (l.mx_off[r] + (uint64_t) e * l.mx_stride[r]), mx_part_bytes(l, r), false);
+                        platform::advise(pk.fds[(size_t) l.mx_file[r]], (l.mx_off[r] + (uint64_t) e * l.mx_stride[r]), mx_part_bytes(l, r), false);
                 } else {
                     warm.push_back({l.il, e, sum > 0 ? p[e] / sum : 0.0});
                 }
@@ -4194,7 +4195,7 @@ struct Model::Impl {
             const size_t want = std::min(warm.size(), (size_t) (warm_bytes / maxb));
             while (ram_slots.size() < want + 1) {
                 const size_t n = std::min<size_t>(32, want + 1 - ram_slots.size());
-                uint8_t* c = (uint8_t*) os::anon_alloc(n * maxb, -1, 1);
+                uint8_t* c = (uint8_t*) platform::anon_alloc(n * maxb, -1, 1);
                 if (c == nullptr) break;
                 ram_chunks.push_back(c);
                 ram_chunk_bytes.push_back(n * maxb);
@@ -4212,7 +4213,7 @@ struct Model::Impl {
                         const Layer& l = L[(size_t) warm[i].layer];
                         if (!read_mx_file(l, warm[i].e, ram_slots[i])) rfail.store(true);
                         for (int r = 0; r < 3; ++r)
-                            os::advise(pk.fds[(size_t) l.mx_file[r]], l.mx_off[r] + (uint64_t) warm[i].e * l.mx_stride[r],
+                            platform::advise(pk.fds[(size_t) l.mx_file[r]], l.mx_off[r] + (uint64_t) warm[i].e * l.mx_stride[r],
                                        mx_part_bytes(l, r), false);
                     }
                 });
@@ -4494,7 +4495,7 @@ struct Model::Impl {
                             break;
                         }
                         if (file_experts)
-                            os::advise(pk.fds[(size_t) l.region_file[(size_t) e]], l.region_off[(size_t) e], l.region_bytes[(size_t) e], false);
+                            platform::advise(pk.fds[(size_t) l.region_file[(size_t) e]], l.region_off[(size_t) e], l.region_bytes[(size_t) e], false);
                     } else if (!file_experts) {
                         for (int X = 0; X < NH; ++X) repack_part(l, region.data(), X, l.hh[(size_t) e][(size_t) X]);
                     }
@@ -4706,7 +4707,7 @@ struct Model::Impl {
             };
         }
         bool direct = true;
-        for (os::fd_t f : pk.dfds) direct = direct && f != os::kBadFd;
+        for (platform::fd_t f : pk.dfds) direct = direct && f != platform::kBadFd;
         auto st = std::make_unique<ExpertStore>();
         if (!st->init(cfg, geo, pk.dfds, pk.pfds)) {
             std::fprintf(stderr, "ds4: --ssd-cache: the store could not start\n");
@@ -5332,7 +5333,7 @@ struct Model::Impl {
         id << " ds4.txt:" << size_of(pk.dir + "/ds4.txt") << " engram.bin:" << size_of(pk.dir + "/engram.bin")
            << " tensors.txt:" << size_of(pk.dir + "/tensors.txt");
         for (size_t i = 0; i < pk.files.size(); ++i)
-            id << " " << pk.files[i] << ":" << os::file_size(pk.fds[i]);
+            id << " " << pk.files[i] << ":" << platform::file_size(pk.fds[i]);
         return id.str();
     }
 
@@ -5648,13 +5649,13 @@ struct Model::Impl {
         static_assert(kc::kExl3CpuMaxN <= gg::kMxCpuMaxN, "a CPU-lane entry's tokens in one call");
         {   // the experts read from the files (not in the RAM tier) that are not resident: all their pages asked for at
             // once, so the SSD reads them with large requests side by side while the first entries compute
-            // (os::prefetch_cold: the resident ones are left alone - the hint walks every page of a range, which cost
-            // more than computing a warm expert, 0.34 ms a 6.3 MB matrix on Windows)
+            // (platform::prefetch_cold: the resident ones are left alone - the hint walks every page of a range, which
+            // cost more than computing a warm expert, 0.34 ms a 6.3 MB matrix on Windows)
             std::vector<std::pair<const void*, size_t>> want;
             for (const Ent& en : ents)
                 if (!store && (l.ram.empty() || l.ram[(size_t) en.e] < 0))
                     for (int r = 0; r < 3; ++r) want.push_back({mx_mat(l, en.e, r), mx_part_bytes(l, r)});
-            os::prefetch_cold(want);
+            platform::prefetch_cold(want);
         }
         // the int8 inputs in c_xh's bytes: token t's (t < kWin) at t xa, then the slots' h at (kWin + slot) ha; a token
         // index past the window (none on the decode or chunk paths) gets a row of its own after them
@@ -5740,7 +5741,7 @@ struct Model::Impl {
         }
         const float lim = g.lim;
         const double tp0 = now_ms();
-        {   // (os::prefetch_cold, as above: the resident ones are left alone - on Windows the hint walks every page of a
+        {   // (platform::prefetch_cold, as above: the resident ones are left alone - on Windows the hint walks every page of a
             // range, ~0.13 ms an IQ2_XXS expert, on the lane's critical path before the first entry computes.
             // off by default (the mmap path, owner PC: not faster in every pair); DS4_IQ_PF_COLD=1 turns it on)
             std::vector<std::pair<const void*, size_t>> want;
@@ -5748,8 +5749,8 @@ struct Model::Impl {
                 if (!store && (l.ram.empty() || l.ram[(size_t) en.e] < 0))
                     for (int r = 0; r < 3; ++r) want.push_back({mx_mat(l, en.e, r), mx_part_bytes(l, r)});
             static const bool pf_all = std::getenv("DS4_IQ_PF_COLD") == nullptr || std::atoi(std::getenv("DS4_IQ_PF_COLD")) == 0;
-            if (pf_all) os::prefetch(want);
-            else os::prefetch_cold(want);
+            if (pf_all) platform::prefetch(want);
+            else platform::prefetch_cold(want);
         }
         // the activations in c_xh's bytes, E 4 apart: token t's (t < kWin) at row t - quantized once, whatever number of
         // entries take it - then a row a slot (kWin + slot): a token past the window's input (none on the decode or
@@ -6027,7 +6028,7 @@ struct Model::Impl {
             const Layer& l = L[(size_t) rs.layer];
             if (read_mx_file(l, rs.in, ram_slots[(size_t) rs.slot])) {
                 for (int r = 0; r < 3; ++r)   // (one copy of it in RAM)
-                    os::advise(pk.fds[(size_t) l.mx_file[r]], l.mx_off[r] + (uint64_t) rs.in * l.mx_stride[r],
+                    platform::advise(pk.fds[(size_t) l.mx_file[r]], l.mx_off[r] + (uint64_t) rs.in * l.mx_stride[r],
                                mx_part_bytes(l, r), false);
             } else {
                 rs.in = -1;   // (failed: the slot goes back)
@@ -6377,7 +6378,7 @@ struct Model::Impl {
         if (rqueued) ram_cv.notify_one();
     }
 
-    // lookahead's thread: the ranges the CPU lane asked for, read in (os::prefetch) off the lane, which computes
+    // lookahead's thread: the ranges the CPU lane asked for, read in (platform::prefetch) off the lane, which computes
     void prefetch_loop() {
         std::vector<std::pair<const void*, size_t>> b;
         for (;;) {
@@ -6387,7 +6388,7 @@ struct Model::Impl {
                 if (quit.load(std::memory_order_relaxed)) return;
                 b.swap(pf_q);
             }
-            os::prefetch_cold(b);   // (the resident ones would only cost the page walk)
+            platform::prefetch_cold(b);   // (the resident ones would only cost the page walk)
             b.clear();
         }
     }
@@ -7858,7 +7859,8 @@ struct Model::Impl {
         for (int e = 0; e < l.n_exp && (int) cold.size() < n_read + n_cpu; ++e) {
             if (l.slot[(size_t) e] >= 0 || (!l.ram.empty() && l.ram[(size_t) e] >= 0)) continue;
             bool res = false;
-            for (int r = 0; r < 3; ++r) res = res || os::resident_sampled(mx_mat(l, e, r), mx_part_bytes(l, r), 4);
+            for (int r = 0; r < 3; ++r)
+                res = res || platform::resident_sampled(mx_mat(l, e, r), mx_part_bytes(l, r), 4);
             if (!res) cold.push_back(e);
         }
         if ((int) cold.size() >= n_read + n_cpu) {
@@ -7869,9 +7871,9 @@ struct Model::Impl {
                 uint8_t* sb = c.stage + (size_t) i * c.stage_stride;
                 for (int r = 0; r < 3; ++r) {
                     IoQueue::Job j;
-                    const os::fd_t pf = pk.pfds.empty() ? os::kBadFd : pk.pfds[(size_t) l.mx_file[r]];
-                    j.fd = pf != os::kBadFd ? pf : pk.fds[(size_t) l.mx_file[r]];
-                    j.dfd = pk.dfds.empty() ? os::kBadFd : pk.dfds[(size_t) l.mx_file[r]];
+                    const platform::fd_t pf = pk.pfds.empty() ? platform::kBadFd : pk.pfds[(size_t) l.mx_file[r]];
+                    j.fd = pf != platform::kBadFd ? pf : pk.fds[(size_t) l.mx_file[r]];
+                    j.dfd = pk.dfds.empty() ? platform::kBadFd : pk.dfds[(size_t) l.mx_file[r]];
                     j.off = l.mx_off[r] + (uint64_t) cold[(size_t) i] * l.mx_stride[r];
                     j.len = mx_part_bytes(l, r);
                     j.dst = sb;
@@ -8009,7 +8011,8 @@ struct Model::Impl {
                 bool r = !l.ram.empty() && l.ram[(size_t) e] >= 0;
                 if (!r) {
                     r = true;
-                    for (int p = 0; p < 3 && r; ++p) r = os::resident_sampled(mx_mat(l, e, p), mx_part_bytes(l, p), 2);
+                    for (int p = 0; p < 3 && r; ++p)
+                        r = platform::resident_sampled(mx_mat(l, e, p), mx_part_bytes(l, p), 2);
                 }
                 ++sampled;
                 res += r;
@@ -8121,13 +8124,13 @@ struct Model::Impl {
         c.lm_pinned = cudaHostAlloc(&st_p, state_b, cudaHostAllocPortable) == cudaSuccess;
         if (!c.lm_pinned) {
             cudaGetLastError();
-            st_p = os::anon_alloc(state_b, -1, 1);
+            st_p = platform::anon_alloc(state_b, -1, 1);
             if (st_p == nullptr) return false;
         }
-        c.lc = (uint8_t*) os::anon_alloc(lc_bytes, -1, 1);
+        c.lc = (uint8_t*) platform::anon_alloc(lc_bytes, -1, 1);
         if (c.lc == nullptr) {
             if (c.lm_pinned) cudaFreeHost(st_p);
-            else os::anon_free(st_p, state_b);
+            else platform::anon_free(st_p, state_b);
             return false;
         }
         c.lm_state = (uint8_t*) st_p;
@@ -8149,8 +8152,8 @@ struct Model::Impl {
             for (size_t i = c.base; i < c.n_read; ++i)
                 while (fit(c, i).left.load(std::memory_order_acquire) != 0) c.io->wait_any(500);
             if (c.lm_pinned) cudaFreeHost(c.lm_state);
-            else os::anon_free(c.lm_state, c.lm_state_bytes);
-            os::anon_free(c.lc, c.lc_bytes);
+            else platform::anon_free(c.lm_state, c.lm_state_bytes);
+            platform::anon_free(c.lc, c.lc_bytes);
             c.lm_state = c.lc = nullptr;
             c.lm_state_bytes = c.lc_bytes = 0;
             c.lm = c.lm_pinned = false;
@@ -9302,7 +9305,7 @@ struct Model::Impl {
         std::fclose(f);
         // (the old profile replaced: std::rename does not replace an existing file on Windows, so there the profile
         // never moved on and only .tmp files were left)
-        if (!ok || !os::replace_file(tmp, o.profile)) std::remove(tmp.c_str());
+        if (!ok || !platform::replace_file(tmp, o.profile)) std::remove(tmp.c_str());
     }
 
     std::vector<std::string> info_lines() const {

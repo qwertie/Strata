@@ -1,9 +1,11 @@
 // Copyright (c) 2026 Peasant Smith and the Project Maya contributors (MIT; https://github.com/mw00/project-maya, v1.1.17).
 // Ported into Strata (third_party/project-maya/NOTICE.md, LICENSE); changes are in the git history of this file.
-// src/ds4/ds4_os.hpp - the few OS services maya-ds4 needs, on Linux and on Windows: files read at an offset and
-// mapped read-only (the experts read in place), page-cache hints, anonymous host memory on a NUMA node, thread pinning,
-// each NUMA node's physical cores, the RAM this process can still get.  (On Windows as src/core/expert_source.cpp
-// does it for GLM: no FILE_FLAG_RANDOM_ACCESS - the page cache must keep what it read.)
+// include/strata/base/platform/os.hpp - OS services on Linux and on Windows, header-only (the DeepSeek engine's, from
+// Project Maya): files read at an offset and mapped read-only (the experts read in place), page-cache hints, anonymous
+// host memory on a NUMA node, thread pinning, each NUMA node's physical cores, the RAM this process can still get.
+// (On Windows as src/core/expert_source.cpp does it: no FILE_FLAG_RANDOM_ACCESS - the page cache must keep what it
+// read.)  The page-cache hints are not memory.hpp's advise_willneed: prefetch() asks Windows too
+// (PrefetchVirtualMemory) and Linux in one call, ignoring STRATA_READ_AHEAD; advise() can also drop a range.
 #pragma once
 
 #include <algorithm>
@@ -36,7 +38,7 @@
 #include <unistd.h>
 #endif
 
-namespace strata::ds4::os {
+namespace strata::platform {
 
 /// Windows sleeps in 15.6 ms ticks unless a process asks for finer ones: the CPU lane's service thread naps (sleep_for 20 us)
 /// between tokens, and the device's first wait of the next token then waits out the tick.  1 ms for the process's life
@@ -54,7 +56,8 @@ using fd_t = intptr_t;
 constexpr fd_t kBadFd = -1;
 
 #if defined(_WIN32)
-inline std::wstring wide(const std::string& s) {   // UTF-8 -> UTF-16 (a path with non-ASCII characters)
+/// Converts a UTF-8 path to the UTF-16 that the Windows file functions take (a path with non-ASCII characters).
+inline std::wstring widen_utf8(const std::string& s) {
     const int n = MultiByteToWideChar(CP_UTF8, 0, s.c_str(), -1, nullptr, 0);
     std::wstring w((size_t) (n > 0 ? n : 1), L'\0');
     if (n > 0) MultiByteToWideChar(CP_UTF8, 0, s.c_str(), -1, &w[0], n);
@@ -65,7 +68,7 @@ inline std::wstring wide(const std::string& s) {   // UTF-8 -> UTF-16 (a path wi
 /// A file opened for reading (kBadFd: it could not be).
 inline fd_t open_ro(const std::string& path) {
 #if defined(_WIN32)
-    HANDLE h = CreateFileW(wide(path).c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr, OPEN_EXISTING,
+    HANDLE h = CreateFileW(widen_utf8(path).c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr, OPEN_EXISTING,
                            FILE_ATTRIBUTE_NORMAL, nullptr);
     return h == INVALID_HANDLE_VALUE ? kBadFd : (fd_t) h;
 #else
@@ -84,7 +87,7 @@ inline fd_t open_direct(const std::string& path) {
         return v != nullptr && std::atoi(v) == 0;
     }();
     if (off) return kBadFd;
-    HANDLE h = CreateFileW(wide(path).c_str(), GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr, OPEN_EXISTING,
+    HANDLE h = CreateFileW(widen_utf8(path).c_str(), GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr, OPEN_EXISTING,
                            FILE_FLAG_NO_BUFFERING | FILE_FLAG_OVERLAPPED, nullptr);
     return h == INVALID_HANDLE_VALUE ? kBadFd : (fd_t) h;
 #else
@@ -154,7 +157,7 @@ inline bool pread_direct(fd_t f, void* dst, uint64_t n, uint64_t off) {
 /// unbuffered reads of a mapped file take a slow path there (open_direct); kBadFd elsewhere
 inline fd_t open_unbuffered(const std::string& path) {
 #if defined(_WIN32)
-    HANDLE h = CreateFileW(wide(path).c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr, OPEN_EXISTING,
+    HANDLE h = CreateFileW(widen_utf8(path).c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr, OPEN_EXISTING,
                            FILE_ATTRIBUTE_NORMAL | FILE_FLAG_NO_BUFFERING, nullptr);
     return h == INVALID_HANDLE_VALUE ? kBadFd : (fd_t) h;
 #else
@@ -181,7 +184,7 @@ inline bool pread_unbuffered(fd_t f, void* buf, uint64_t n, uint64_t off) {
 /// time, so an overlapped one; Linux: a plain descriptor, pread is concurrent anyway)
 inline fd_t open_par(const std::string& path) {
 #if defined(_WIN32)
-    HANDLE h = CreateFileW(wide(path).c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr, OPEN_EXISTING,
+    HANDLE h = CreateFileW(widen_utf8(path).c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr, OPEN_EXISTING,
                            FILE_ATTRIBUTE_NORMAL | FILE_FLAG_OVERLAPPED, nullptr);
     return h == INVALID_HANDLE_VALUE ? kBadFd : (fd_t) h;
 #else
@@ -228,7 +231,8 @@ inline bool pread_par(fd_t f, void* dst, uint64_t n, uint64_t off) {
 /// MoveFileExW with MOVEFILE_REPLACE_EXISTING)
 inline bool replace_file(const std::string& from, const std::string& to) {
 #if defined(_WIN32)
-    return MoveFileExW(wide(from).c_str(), wide(to).c_str(), MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH) != 0;
+    return MoveFileExW(widen_utf8(from).c_str(), widen_utf8(to).c_str(),
+                       MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH) != 0;
 #else
     return std::rename(from.c_str(), to.c_str()) == 0;
 #endif
@@ -351,7 +355,7 @@ inline bool resident(const void* p, size_t n) {
 inline bool resident_sampled(const void* p, size_t bytes, int samples = 8) {
     if (bytes == 0) return true;
     const uintptr_t pg = 4096, a = (uintptr_t) p, span = bytes - 1;
-    samples = std::max(1, std::min(samples, 16));
+    samples = (std::max)(1, (std::min)(samples, 16));   // (parentheses: windows.h without NOMINMAX)
 #if defined(_WIN32)
     PSAPI_WORKING_SET_EX_INFORMATION w[16] = {};
     for (int i = 0; i < samples; ++i)
@@ -558,4 +562,4 @@ inline Commit commit() {
     return c;
 }
 
-}  // namespace strata::ds4::os
+}  // namespace strata::platform

@@ -17,7 +17,7 @@
 #include <thread>
 #include <vector>
 
-#include "ds4_os.hpp"
+#include "strata/base/platform/os.hpp"
 #if defined(_MSC_VER)
 #include <intrin.h>
 #endif
@@ -37,7 +37,7 @@ public:
     explicit Pool(int n, const std::vector<int>& cpus = {}, int spin_us = 200) : spin_us_(spin_us) {
         for (int i = 0; i < n; ++i) {
             th_.emplace_back([this] { loop(); });
-            if (!cpus.empty()) os::pin_thread(th_.back(), cpus[(size_t) i % cpus.size()]);
+            if (!cpus.empty()) platform::pin_thread(th_.back(), cpus[(size_t) i % cpus.size()]);
         }
     }
     ~Pool() {
@@ -132,12 +132,12 @@ private:
 /// File reads on threads of their own, in the order they were pushed, the pusher never waiting: the prompt path's
 /// streamed experts (each part of an expert a job), unbuffered where the job has a direct descriptor and its range is
 /// not all in the page cache already (the disk straight into dst, the cache neither used nor disturbed), buffered
-/// otherwise or when the unbuffered read fails - the bytes land at dst + off % os::kDirectAlign either way.  A job's `left` is
+/// otherwise or when the unbuffered read fails - the bytes land at dst + off % platform::kDirectAlign either way.  A job's `left` is
 /// counted down when it is done (`bad` set if it failed); wait_any() sleeps until some job finished or the timeout.
 class IoQueue {
 public:
     struct Job {
-        os::fd_t fd = os::kBadFd, dfd = os::kBadFd;
+        platform::fd_t fd = platform::kBadFd, dfd = platform::kBadFd;
         uint64_t off = 0, len = 0;
         uint8_t* dst = nullptr;
         std::atomic<int>* left = nullptr;
@@ -199,16 +199,16 @@ private:
                 continue;
             }
             const auto t0 = std::chrono::steady_clock::now();
-            const uint64_t lead = j.off % os::kDirectAlign;
+            const uint64_t lead = j.off % platform::kDirectAlign;
             bool ok = false;
             if (j.mem != nullptr) {
                 std::memcpy(j.dst, j.mem, (size_t) j.len);
                 ok = true;
-            } else if (j.dfd != os::kBadFd && !(j.map != nullptr && os::resident(j.map, (size_t) j.len)) &&
-                       os::pread_direct(j.dfd, j.dst, j.len, j.off)) {   // (the page cache's ones: buffered, below)
+            } else if (j.dfd != platform::kBadFd && !(j.map != nullptr && platform::resident(j.map, (size_t) j.len)) &&
+                       platform::pread_direct(j.dfd, j.dst, j.len, j.off)) {   // (cached ranges: buffered, below)
                 ok = true;
                 direct_.fetch_add(j.len, std::memory_order_relaxed);
-            } else if (os::pread_par(j.fd, j.dst + lead, j.len, j.off)) {
+            } else if (platform::pread_par(j.fd, j.dst + lead, j.len, j.off)) {
                 ok = true;
                 buffered_.fetch_add(j.len, std::memory_order_relaxed);
             }

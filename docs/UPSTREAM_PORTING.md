@@ -88,9 +88,9 @@ code updates its rows here. Rows are grouped by step; `{a,b}` lists several file
 | `sycl/src/{platform,ngram}/` | `sycl/src/base/platform/`, `sycl/src/models/qwen38/ngram/` | A3 | done |
 | the SYCL copies of the `src/core/` files above, `sycl/src/core/copy_queue.cpp` | the same new place under `sycl/`; `copy_queue.cpp` to `sycl/src/base/gpu/` | A3 | done |
 | `sycl/src/X`, `sycl/include/strata/X` | the same new place as `src/X`, under `sycl/` | A3 | planned |
-| `src/dsv41/ds4_os.hpp` | merged into `src/base/platform/` | A4 | planned |
-| `src/dsv41/ds4_pool.hpp`, `src/kernels/cpu/pool.cpp`, `include/strata/kernels/cpu/pool.hpp` | one worker pool in `src/base/platform/` | A4 | planned |
-| `include/strata/dsv41/sampler.hpp` | deleted; the shared `sampler.hpp` is used | A4 | planned |
+| `src/dsv41/ds4_os.hpp` | `include/strata/base/platform/os.hpp`, namespace `strata::platform` (`os::x` is `platform::x`); its `wide` is `widen_utf8`, which `direct_file.cpp`, `pinned.cu` and `expert_source.cpp` now use too | A4 | done |
+| `src/dsv41/ds4_pool.hpp`, `src/kernels/cpu/pool.cpp`, `include/strata/kernels/cpu/pool.hpp` | one worker pool in `src/base/platform/`, once both engines' speed can be measured ([open issue](REFACTOR_PLAN.md#open-issues)) | A4 | planned |
+| `include/strata/dsv41/sampler.hpp` | not a copy: the header of DeepSeek's own sampler kernels (`src/models/deepseekv41/vendor/sampler.cu`); merged with the shared sampler with the other kernels ([open issue](REFACTOR_PLAN.md#open-issues)) | B2 | planned |
 | the protocol code in `src/program/generate.cpp`, `src/qwen35/q36_engine.cu`, `src/dsv41/ds4_main.cpp` | `src/common/serve/` | A5 | planned |
 | DeepSeek's conversation slots (`src/dsv41/ds4_main.cpp`, `ds4_slotmeta.hpp`) | `src/common/state/` | A5 | planned |
 | the generic parts of `src/core/{expert_cache,expert_source}.cpp`, `src/dsv41/ds4_store.hpp` | `src/common/experts/` | A5 | planned |

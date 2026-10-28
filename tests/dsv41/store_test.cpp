@@ -12,6 +12,7 @@
 #include <thread>
 
 using namespace strata::ds4;
+namespace os = strata::platform;
 
 int main(int argc, char** argv) {
     if (argc < 6) {

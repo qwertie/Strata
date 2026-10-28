@@ -31,7 +31,7 @@
 #include <vector>
 
 namespace gg = strata::ds4::gguf;
-namespace os = strata::ds4::os;
+namespace os = strata::platform;
 using strata::ds4::Pool;
 
 namespace {

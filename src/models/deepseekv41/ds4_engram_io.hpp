@@ -10,7 +10,7 @@
 // in the prompt or later) is a copy, not a read.  The rows are the file's bytes either way, so the output is the same.
 #pragma once
 
-#include "ds4_os.hpp"
+#include "strata/base/platform/os.hpp"
 
 #include <algorithm>
 #include <atomic>
@@ -130,7 +130,7 @@ struct EgBatch {
 class EgReader {
 public:
     ~EgReader() { stop(); }
-    /// direct[i]: file i read unbuffered (Windows, a file nothing maps: os::open_unbuffered), else buffered
+    /// direct[i]: file i read unbuffered (Windows, a file nothing maps: platform::open_unbuffered), else buffered
     void start(const std::vector<std::string>& paths, int threads, std::vector<char> direct = {}) {
         paths_ = paths;
         direct_ = std::move(direct);
@@ -178,10 +178,12 @@ public:
 
 private:
     void loop() {
-        std::vector<os::fd_t> fds(paths_.size(), os::kBadFd);   // this thread's own handles, opened on first use
-        std::vector<os::fd_t> ufds(paths_.size(), os::kBadFd);  // (and its unbuffered ones)
-        std::vector<uint8_t> buf, abuf(3 * os::kDirectAlign);
-        uint8_t* al = abuf.data() + (os::kDirectAlign - (uintptr_t) abuf.data() % os::kDirectAlign) % os::kDirectAlign;
+        // this thread's own handles, opened on first use
+        std::vector<platform::fd_t> fds(paths_.size(), platform::kBadFd);
+        std::vector<platform::fd_t> ufds(paths_.size(), platform::kBadFd);  // (and its unbuffered ones)
+        std::vector<uint8_t> buf, abuf(3 * platform::kDirectAlign);
+        constexpr uint64_t A = platform::kDirectAlign;
+        uint8_t* al = abuf.data() + (A - (uintptr_t) abuf.data() % A) % A;
         for (;;) {
             Job job;
             {
@@ -201,23 +203,23 @@ private:
                 done_cv_.notify_all();
             }
         }
-        for (os::fd_t f : fds) os::close_fd(f);
-        for (os::fd_t f : ufds) os::close_fd(f);
+        for (platform::fd_t f : fds) platform::close_fd(f);
+        for (platform::fd_t f : ufds) platform::close_fd(f);
     }
-    bool read(std::vector<os::fd_t>& fds, std::vector<os::fd_t>& ufds, uint8_t* al, const EgRead& r,
+    bool read(std::vector<platform::fd_t>& fds, std::vector<platform::fd_t>& ufds, uint8_t* al, const EgRead& r,
               std::vector<uint8_t>& buf) {
         if ((r.mx8 || r.n2 == 0) && r.file >= 0 && (size_t) r.file < direct_.size() && direct_[(size_t) r.file] &&
-            os::direct_span(r.off, r.n) <= 2 * os::kDirectAlign) {
-            os::fd_t& u = ufds[(size_t) r.file];
-            if (u == os::kBadFd) u = os::open_unbuffered(paths_[(size_t) r.file]);
-            if (u != os::kBadFd && os::pread_unbuffered(u, al, r.n, r.off)) {
-                const uint8_t* src = al + r.off % os::kDirectAlign;
+            platform::direct_span(r.off, r.n) <= 2 * platform::kDirectAlign) {
+            platform::fd_t& u = ufds[(size_t) r.file];
+            if (u == platform::kBadFd) u = platform::open_unbuffered(paths_[(size_t) r.file]);
+            if (u != platform::kBadFd && platform::pread_unbuffered(u, al, r.n, r.off)) {
+                const uint8_t* src = al + r.off % platform::kDirectAlign;
                 static const bool check = std::getenv("DS4_EG_CHECK") != nullptr;   // (each row read buffered too)
                 if (check) {
                     std::vector<uint8_t> ref(r.n);
-                    os::fd_t& f2 = fds[(size_t) r.file];
-                    if (f2 == os::kBadFd) f2 = os::open_ro(paths_[(size_t) r.file]);
-                    const bool ok = f2 != os::kBadFd && os::pread_full(f2, ref.data(), r.n, r.off);
+                    platform::fd_t& f2 = fds[(size_t) r.file];
+                    if (f2 == platform::kBadFd) f2 = platform::open_ro(paths_[(size_t) r.file]);
+                    const bool ok = f2 != platform::kBadFd && platform::pread_full(f2, ref.data(), r.n, r.off);
                     if (!ok || std::memcmp(ref.data(), src, r.n) != 0) ++check_bad_;
                     ++check_n_;
                 }
@@ -233,20 +235,20 @@ private:
             }   // (else buffered, below)
         }
         auto fd = [&](int file) {
-            if (file < 0 || file >= (int) fds.size()) return os::kBadFd;
-            if (fds[(size_t) file] == os::kBadFd) fds[(size_t) file] = os::open_ro(paths_[(size_t) file]);
+            if (file < 0 || file >= (int) fds.size()) return platform::kBadFd;
+            if (fds[(size_t) file] == platform::kBadFd) fds[(size_t) file] = platform::open_ro(paths_[(size_t) file]);
             return fds[(size_t) file];
         };
-        const os::fd_t f = fd(r.file);
-        if (f == os::kBadFd) return false;
+        const platform::fd_t f = fd(r.file);
+        if (f == platform::kBadFd) return false;
         if (!r.mx8) {
-            if (!os::pread_full(f, r.dst, r.n, r.off)) return false;
+            if (!platform::pread_full(f, r.dst, r.n, r.off)) return false;
             if (r.n2 == 0) return true;
-            const os::fd_t f2 = fd(r.file2);
-            return f2 != os::kBadFd && os::pread_full(f2, r.scales, r.n2, r.off2);
+            const platform::fd_t f2 = fd(r.file2);
+            return f2 != platform::kBadFd && platform::pread_full(f2, r.scales, r.n2, r.off2);
         }
         buf.resize(r.n);
-        if (!os::pread_full(f, buf.data(), r.n, r.off)) return false;
+        if (!platform::pread_full(f, buf.data(), r.n, r.off)) return false;
         for (uint32_t k = 0; k < r.n / 33; ++k) {   // [scale, 32 codes] -> codes | scales
             r.scales[k] = buf[(size_t) k * 33];
             std::memcpy(r.dst + (size_t) k * 32, buf.data() + (size_t) k * 33 + 1, 32);

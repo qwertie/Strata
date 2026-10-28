@@ -28,6 +28,7 @@
 
 #ifdef _WIN32
 #include <windows.h>
+#include "strata/base/platform/os.hpp"   // widen_utf8
 #else
 #include <fcntl.h>
 #include <sys/mman.h>
@@ -707,9 +708,7 @@ LoadStats load_experts_direct(const std::string& path, uint8_t* dst, const std::
     std::atomic<size_t> next{0};
     std::mutex err_mu;
     std::string err;
-    const int wide = MultiByteToWideChar(CP_UTF8, 0, path.c_str(), -1, nullptr, 0);
-    std::vector<wchar_t> wpath((size_t) (std::max)(wide, 1), L'\0');
-    if (wide > 0) MultiByteToWideChar(CP_UTF8, 0, path.c_str(), -1, wpath.data(), wide);
+    const std::wstring wpath = strata::platform::widen_utf8(path);
     auto worker = [&]() {
         HANDLE h = CreateFileW(wpath.data(), GENERIC_READ, FILE_SHARE_READ, nullptr, OPEN_EXISTING,
                                FILE_FLAG_NO_BUFFERING | FILE_FLAG_SEQUENTIAL_SCAN, nullptr);
@@ -777,9 +776,7 @@ bool experts_unbuffered(const std::vector<std::string>& files, uint64_t arena_by
     int fast = 0, n = 0;
     uint64_t seed = (uint64_t) GetTickCount64() * 6364136223846793005ull + 1442695040888963407ull;
     for (const std::string& f : files) {
-        const int wide = MultiByteToWideChar(CP_UTF8, 0, f.c_str(), -1, nullptr, 0);
-        std::vector<wchar_t> w((size_t) (std::max)(wide, 1), L'\0');
-        if (wide > 0) MultiByteToWideChar(CP_UTF8, 0, f.c_str(), -1, w.data(), wide);
+        const std::wstring w = strata::platform::widen_utf8(f);
         HANDLE h = CreateFileW(w.data(), GENERIC_READ, FILE_SHARE_READ, nullptr, OPEN_EXISTING, FILE_FLAG_RANDOM_ACCESS,
                                nullptr);
         if (h == INVALID_HANDLE_VALUE) continue;

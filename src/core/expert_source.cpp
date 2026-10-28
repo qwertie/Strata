@@ -45,6 +45,7 @@
 #define NOMINMAX   // std::numeric_limits<T>::max() below
 #endif
 #include <windows.h>
+#include "strata/base/platform/os.hpp"   // widen_utf8
 #else
 #include <fcntl.h>
 #if defined(__APPLE__)
@@ -1435,9 +1436,7 @@ bool FileExpertSource::open(const std::string& pack_dir, int64_t n_layers, int64
 #if defined(_WIN32)
     // UTF-8 -> UTF-16: the pack may live under a path with non-ASCII characters, and `CreateFileA` would
     // silently mangle it into a file-not-found.
-    const int wide = MultiByteToWideChar(CP_UTF8, 0, path.c_str(), -1, nullptr, 0);
-    std::vector<wchar_t> wpath((size_t) (wide > 0 ? wide : 1));
-    if (wide > 0) MultiByteToWideChar(CP_UTF8, 0, path.c_str(), -1, wpath.data(), wide);
+    const std::wstring wpath = strata::platform::widen_utf8(path);
     // **`FILE_FLAG_RANDOM_ACCESS` WAS HERE AND IT COST 14x.**
     //
     // The design depends on the OS page cache holding the whole 34 GB expert set, because this machine has
@@ -1674,9 +1673,7 @@ bool FileExpertSource::open_gguf(std::string& err) {
             if (it == index.end()) {
                 Map m;
 #if defined(_WIN32)
-                const int wide = MultiByteToWideChar(CP_UTF8, 0, path.c_str(), -1, nullptr, 0);
-                std::vector<wchar_t> wpath((size_t) (wide > 0 ? wide : 1));
-                if (wide > 0) MultiByteToWideChar(CP_UTF8, 0, path.c_str(), -1, wpath.data(), wide);
+                const std::wstring wpath = strata::platform::widen_utf8(path);
                 HANDLE f = CreateFileW(wpath.data(), GENERIC_READ, FILE_SHARE_READ, nullptr, OPEN_EXISTING,
                                        FILE_ATTRIBUTE_NORMAL, nullptr);
                 LARGE_INTEGER sz{};
@@ -2407,9 +2404,7 @@ uint64_t FileExpertSource::expert_bytes() const {
 bool FileExpertSource::open_direct(std::string& why) {
 #if defined(_WIN32)
     for (const std::string& path : paths_) {
-        const int wide = MultiByteToWideChar(CP_UTF8, 0, path.c_str(), -1, nullptr, 0);
-        std::vector<wchar_t> w((size_t) (wide > 0 ? wide : 1), L'\0');
-        if (wide > 0) MultiByteToWideChar(CP_UTF8, 0, path.c_str(), -1, w.data(), wide);
+        const std::wstring w = strata::platform::widen_utf8(path);
         HANDLE h = CreateFileW(w.data(), GENERIC_READ, FILE_SHARE_READ, nullptr, OPEN_EXISTING,
                                FILE_FLAG_NO_BUFFERING | FILE_FLAG_OVERLAPPED, nullptr);
         if (h == INVALID_HANDLE_VALUE) {
@@ -2663,9 +2658,7 @@ bool FileExpertSource::map_view(std::string& why) {
 #if defined(_WIN32)
     // open's mapping of experts.bin, again
     const std::string& path = paths_.front();
-    const int wide = MultiByteToWideChar(CP_UTF8, 0, path.c_str(), -1, nullptr, 0);
-    std::vector<wchar_t> wpath((size_t) (wide > 0 ? wide : 1), L'\0');
-    if (wide > 0) MultiByteToWideChar(CP_UTF8, 0, path.c_str(), -1, wpath.data(), wide);
+    const std::wstring wpath = strata::platform::widen_utf8(path);
     HANDLE f = CreateFileW(wpath.data(), GENERIC_READ, FILE_SHARE_READ, nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL,
                            nullptr);
     LARGE_INTEGER sz{};
@@ -5559,9 +5552,7 @@ LoadStats load_experts_gguf(const std::string& gguf, uint8_t* dst, const strata:
                     const std::string name = expert_gguf_file(gguf, lay, l, r);
                     if (name != open_name) {
                         if (h != INVALID_HANDLE_VALUE) CloseHandle(h);
-                        const int wide = MultiByteToWideChar(CP_UTF8, 0, name.c_str(), -1, nullptr, 0);
-                        std::vector<wchar_t> w((size_t) std::max(wide, 1), L'\0');
-                        if (wide > 0) MultiByteToWideChar(CP_UTF8, 0, name.c_str(), -1, w.data(), wide);
+                        const std::wstring w = strata::platform::widen_utf8(name);
                         h = CreateFileW(w.data(), GENERIC_READ, FILE_SHARE_READ, nullptr, OPEN_EXISTING,
                                         FILE_FLAG_NO_BUFFERING | FILE_FLAG_SEQUENTIAL_SCAN, nullptr);
                         if (h == INVALID_HANDLE_VALUE) {

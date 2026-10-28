@@ -36,7 +36,7 @@ session on an NVIDIA machine. Changes nobody can test come last.
 | A1 | Skeleton: the new folders with a README each, [ARCHITECTURE.md](ARCHITECTURE.md), [UPSTREAM_PORTING.md](UPSTREAM_PORTING.md), the layering test | — | done |
 | A2 | Python: `strata_base/`, `strata_common/`; `serve/` becomes `strata_server/`; remove the import cycles between `serve/`, `strata_control/` and `strata_cli/`; one copy of the helpers repeated in `setup.py` and `tools/` | 2–5K | |
 | A3 | Move every whole file whose new place is already clear, without changing it: the folders `src/platform`, `src/artifact`, `src/spec`, `src/dsv41`, `src/qwen35`, `src/ngram`, `src/plan`; from `src/core/`, the runtime files to `src/base/gpu`, the conversation files to `src/common/state` and the Qwen3.8-only files to `src/models/qwen38`; the matching files in `sycl/`. Files that must be split wait for their step. | 0 | |
-| A4 | DeepSeek's own copies of host code: `ds4_os.hpp`, `ds4_pool.hpp`, `include/strata/models/deepseekv41/sampler.hpp` | ~1K | |
+| A4 | DeepSeek's own copies of host code: `ds4_os.hpp`, `ds4_pool.hpp`, `include/strata/models/deepseekv41/sampler.hpp` | ~1K | `ds4_os.hpp` done; the pool and the sampler wait (open issues) |
 | A5 | The `src/base/gpu` runtime interface (the shared code must not call the CUDA runtime directly), then `src/common/state`, `src/common/serve`, `src/common/spec` and the one-GPU parts of `src/common/experts`. These are also the base for the planned paged-KV engine. | 3–7K | |
 | A6 | SYCL: the 7 files that are 95% or more the same as their `src/` original become shared | ~2.4K | |
 
@@ -45,7 +45,7 @@ session on an NVIDIA machine. Changes nobody can test come last.
 | Step | Work | Est. | Status |
 |---|---|---:|---|
 | B1 | Split `src/kernels/` and `src/prefill/` by what they depend on; remove Qwen's `geometry.hpp` from the 12 shared kernels | small | |
-| B2 | DeepSeek's own quant kernels (`ds4_iq`, `ds4_gguf`, `ds4_tq`) replaced by the shared ones | 3–5K | |
+| B2 | DeepSeek's own quant kernels (`ds4_iq`, `ds4_gguf`, `ds4_tq`) and its sampler (`vendor/sampler.cu`) replaced by the shared ones | 3–5K | |
 | B3 | The multi-GPU parts of `src/common/experts` (`peer_experts`, `remote_experts`) | ~0.5K | |
 | B✓ | Test session on an RTX 30-series machine with several cards: parity tests on sm_86, sm_75/80 through `STRATA_EMULATE_CC`, multi-GPU, a DeepSeek speed comparison. Ada (sm_89) and Blackwell (sm_120, NVFP4) stay untested unless such a card is found. | | |
 
@@ -120,9 +120,31 @@ Found during the work; each needs a decision or a later step.
   differently from `engine_component`'s (it keeps cards with 2 GB or more and reads the vendor from the provider name).
 - **SYCL's upstream merge script.** `sycl/tools/merge_upstream.py` maps upstream paths straight onto `sycl/`; after the
   A3 moves the paths no longer line up, so a merge needs the path map in [UPSTREAM_PORTING.md](UPSTREAM_PORTING.md).
-- **The CPU expert pool uses the watchdog hooks.** `src/kernels/cpu/pool.cpp`, which A4 merges into
-  `src/base/platform/`, calls the diagnostic hooks of `include/strata/common/state/progress.hpp` (`diag_pool_fn`,
-  `release_gpu_waits`). Layer 0 may not use layer 1, so A4 must move those hooks down or let the caller install them.
+- **Two CPU worker pools, not merged in A4.** They share an idea (one 64-bit claim word tagged with the batch, so a
+  late worker cannot take a job of the next batch; spin, then sleep), but differ where the speed is decided:
+
+  | | DeepSeek `ds4::Pool` (`ds4_pool.hpp`) | Qwen `ExpertPool` (`src/kernels/cpu/pool.cpp`) |
+  |---|---|---|
+  | Jobs | any `fn(i)` through `std::function`; `start`/`help`/`wait` run two pools (two NUMA nodes) at once | expert jobs in 7 modes (whole experts, row parts, native rows), one scratch per worker |
+  | Claim | `generation << 32 \| index`, the job count in its own atomic | `epoch \| njobs \| index`; per NUMA slice with `STRATA_NUMA_SPLIT` |
+  | End of a batch | the caller waits for `done` | the host waits for `done` and for every worker to park |
+  | Idle workers | spin 200 µs, then sleep | spin 20 ms (`STRATA_POOL_SPIN_US`), then sleep |
+  | Placement | the caller's CPU list, hard affinity, Windows processor group 0 | its own: topology, hybrid cores, `--pool-cores`, `--host-core`, processor groups |
+  | Stalls | none | 60 s without progress stops the engine through the watchdog hooks of `include/strata/common/state/progress.hpp` |
+
+  A merge design: a `WorkerPool` in `src/base/platform/` with the threads, the pinning, the tagged claim, the spin
+  time as a setting, an optional park barrier and a stall callback the owner installs (so the watchdog hooks stay in
+  layer 1: `ExpertPool` installs one that prints `diag` and calls `release_gpu_waits`). `ExpertPool` keeps its modes,
+  scratch and NUMA slices on top of it, and `ds4::Pool` becomes a thin `run(n, fn)` with a 200 µs spin and no
+  barrier. It needs a DeepSeek and a Qwen3.8 decode and prompt speed run before and after, which this PC could not
+  give for A4 (no DeepSeek model here, and the Qwen server owned the GPU).
+- **DeepSeek's sampler is its own.** `include/strata/models/deepseekv41/sampler.hpp` is not a copy of
+  `include/strata/kernels/sampler.hpp`: it declares `src/models/deepseekv41/vendor/sampler.cu` (581 lines), whose
+  `sample_tokens` is engine 0.1.20's one-block kernel (kept in the shared `sampler.cu` behind
+  `STRATA_OLD_SAMPLER=1`), plus speculative sampling for the NextN drafts (`SpecList`, `sample_draft`,
+  `sample_verify`, `DS4_DSPARK_SAMPLE=1`), which the shared sampler lacks. The shared one has `gumbel`, the cluster
+  argmax and the coupled-draft functions instead. Its `host_history` field is unused. Merging means porting the
+  draft and verify modes into the shared `sampler.cu`: kernel work, tested on NVIDIA with the rest of B2.
 
 ## Results
 

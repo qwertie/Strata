@@ -16,7 +16,7 @@
 // sync() takes it back at a window boundary (the GPU idle), which also publishes the newly ready ones.
 #pragma once
 
-#include "ds4_os.hpp"
+#include "strata/base/platform/os.hpp"
 #include "ds4_pool.hpp"
 
 #include <algorithm>
@@ -70,19 +70,19 @@ public:
         int vis_percent = 100;             // the share of experts the GPU may take (by a fixed hash): the rest stay the CPU lane's, so both lanes work
     };
 
-    bool init(const Cfg& c, const std::vector<LayerGeo>& layers, const std::vector<os::fd_t>& dfds, const std::vector<os::fd_t>& pfds) {
+    bool init(const Cfg& c, const std::vector<LayerGeo>& layers, const std::vector<platform::fd_t>& dfds, const std::vector<platform::fd_t>& pfds) {
         cfg_ = c;
         geo_ = layers;
         dfds_ = dfds;
         pfds_ = pfds;
         size_t blob = 0;
         for (const LayerGeo& g : geo_) blob = std::max<size_t>(blob, g.blob);
-        slot_bytes_ = (blob + 2 * kSlack + os::kDirectAlign - 1) & ~(size_t) (os::kDirectAlign - 1);
+        slot_bytes_ = (blob + 2 * kSlack + platform::kDirectAlign - 1) & ~(size_t) (platform::kDirectAlign - 1);
         if (blob == 0 || c.budget_bytes < slot_bytes_) return false;
         nmax_ = c.budget_bytes / slot_bytes_;
         // one reserved range for the whole arena (chunks committed as they are needed), 64 KB aligned chunks
         arena_bytes_ = ((nmax_ + kChunk - 1) / kChunk) * kChunk * slot_bytes_;
-        arena_ = (uint8_t*) os::range_reserve(arena_bytes_);
+        arena_ = (uint8_t*) platform::range_reserve(arena_bytes_);
         if (arena_ == nullptr) return false;
         slots_.reset(new Slot[nmax_]);
         where_.resize(geo_.size());
@@ -111,7 +111,7 @@ public:
         io_.reset();
         for (size_t i = 0; i < chunks_.size(); ++i)
             if (cfg_.unmap_chunk && chunk_dev_[i] != nullptr) cfg_.unmap_chunk(chunks_[i].first);
-        os::range_release(arena_, arena_bytes_);
+        platform::range_release(arena_, arena_bytes_);
     }
 
     size_t slot_bytes() const { return slot_bytes_; }
@@ -358,7 +358,7 @@ public:
                 sp.base = nullptr;
             }
             if (cfg_.unmap_chunk && chunk_dev_[c] != nullptr) cfg_.unmap_chunk(chunks_[c].first);
-            os::range_decommit(chunks_[c].first, chunks_[c].second);
+            platform::range_decommit(chunks_[c].first, chunks_[c].second);
             chunks_.pop_back();
             chunk_dev_.pop_back();
             nalloc_ = first;
@@ -438,11 +438,11 @@ private:
         IoQueue::Job jobs[3];
         for (int r = 0; r < 3; ++r) {
             const uint64_t off = g.off[r] + (uint64_t) e * g.stride[r];
-            const uint64_t lead = off % os::kDirectAlign;
+            const uint64_t lead = off % platform::kDirectAlign;
             uint8_t* fin = sp.base + g.tr[r];   // where the matrix belongs
             // the aligned read lands the file's byte `off` at dst + lead: dst is fin - lead rounded down to 4096 (its span spills
             // under 4096 bytes either way into the blob's gaps), the matrix is then moved up to fin
-            uint8_t* dst = (uint8_t*) ((uintptr_t) (fin - lead) & ~(uintptr_t) (os::kDirectAlign - 1));
+            uint8_t* dst = (uint8_t*) ((uintptr_t) (fin - lead) & ~(uintptr_t) (platform::kDirectAlign - 1));
             IoQueue::Job& j = jobs[r];
             j.fd = pfds_[(size_t) g.file[r]];
             j.dfd = dfds_[(size_t) g.file[r]];
@@ -484,7 +484,7 @@ private:
         const uint64_t avail = cfg_.ram_avail ? cfg_.ram_avail() : ~uint64_t{0};
         if (avail != ~uint64_t{0} && avail < bytes + cfg_.floor_bytes) return false;
         void* p = arena_ + nalloc_ * slot_bytes_;
-        if (!os::range_commit(p, bytes)) return false;
+        if (!platform::range_commit(p, bytes)) return false;
         chunks_.push_back({p, bytes});
         void* dev = cfg_.map_chunk ? cfg_.map_chunk(p, bytes) : nullptr;
         chunk_dev_.push_back(dev);
@@ -526,7 +526,7 @@ private:
 
     Cfg cfg_;
     std::vector<LayerGeo> geo_;
-    std::vector<os::fd_t> dfds_, pfds_;
+    std::vector<platform::fd_t> dfds_, pfds_;
     size_t slot_bytes_ = 0, nmax_ = 0, nalloc_ = 0, free_hint_ = 0, arena_bytes_ = 0;
     uint8_t* arena_ = nullptr;
     size_t shrunk_ = 0;

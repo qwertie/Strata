@@ -19,7 +19,7 @@
 // read stops there for a checkpoint, so a request behind the same start - another agent - goes back to it instead of
 // reading it again (also without slots).  STRATA_DS4_REUSE=0 turns every reuse off (each request reads its whole prompt).
 #include "ds4_model.hpp"
-#include "ds4_os.hpp"
+#include "strata/base/platform/os.hpp"
 #include "ds4_packinfo.hpp"
 #include "ds4_slotmeta.hpp"
 #include "strata/common/state/token_listing.hpp"
@@ -1208,7 +1208,7 @@ int spec_eval(strata::ds4::Model& m, const std::string& ids_path, int n, int win
 #endif
 
 int main(int argc, char** argv) {
-    strata::ds4::os::fine_timer();
+    strata::platform::fine_timer();
     strata::ds4::Options o;
     std::string ids_s, dump, eos = "1";
     int n = 0, window = 0;   // (0: the model's feed unit - a whole prompt on the chunked path; 16 for the scoring runs)

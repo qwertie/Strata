@@ -16,6 +16,7 @@
 #define WIN32_LEAN_AND_MEAN
 #define NOMINMAX
 #include <windows.h>
+#include "strata/base/platform/os.hpp"   // widen_utf8
 #else
 #include <fcntl.h>
 #include <sys/stat.h>
@@ -158,9 +159,7 @@ DirectFile::~DirectFile() {
 
 bool DirectFile::open(const std::string& path, std::string& err) {
     close();
-    const int wlen = MultiByteToWideChar(CP_UTF8, 0, path.c_str(), -1, nullptr, 0);
-    std::wstring wpath((size_t) (wlen > 0 ? wlen : 1), L'\0');
-    MultiByteToWideChar(CP_UTF8, 0, path.c_str(), -1, wpath.data(), wlen);
+    const std::wstring wpath = strata::platform::widen_utf8(path);
     // NO_BUFFERING: the cache manager never holds these pages, so the table cannot grow into RAM.
     // RANDOM_ACCESS: no read-ahead. OVERLAPPED: many reads in flight, completed through the port below.
     impl_->file = CreateFileW(wpath.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr, OPEN_EXISTING,
