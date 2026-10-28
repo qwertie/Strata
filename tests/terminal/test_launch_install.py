@@ -50,8 +50,8 @@ class Scripts(unittest.TestCase):
 
     def test_the_built_in_address_is_the_default_feed(self):
         """install.sh / install.ps1 and `strata update` use the same GitHub Releases folder; STRATA_FEED stays an override."""
-        from strata_cli import update_cmd
-        self.assertEqual(update_cmd.DEFAULT_FEED, mlf.RELEASE_FEED + "/strata-feed.json")
+        from strata_control import updater
+        self.assertEqual(updater.DEFAULT_FEED, mlf.RELEASE_FEED + "/strata-feed.json")
         self.assertIn(":-" + mlf.RELEASE_FEED + "}", (ROOT / "packaging" / "install.sh").read_text(encoding="utf-8"))
         self.assertIn("$env:STRATA_FEED", (ROOT / "packaging" / "install.ps1").read_text(encoding="utf-8"))
 

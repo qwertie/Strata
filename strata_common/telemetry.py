@@ -7,7 +7,8 @@ A background thread samples once a second and keeps the last 60 readings of each
   IOAccelerator registry - load and VRAM; the temperature and power sensors need root (`powermetrics`), and an Apple
   Silicon GPU sits on the die, so there is no PCIe link.
 - CPU, RAM, disk: `psutil` when it is installed (setup installs it); without it the CPU and RAM readings fall back to
-  the OS (Windows GlobalMemoryStatusEx / GetSystemTimes, Linux /proc) and the disk rate is absent.
+  the OS (Windows GetSystemTimes or Linux /proc for the CPU, strata_base/memory.py for the RAM) and the disk rate is
+  absent.
 Anything that cannot be read is None; nothing here can stop the server.
 """
 from __future__ import annotations
@@ -21,6 +22,8 @@ import subprocess
 import sys
 import threading
 import time
+
+from strata_base.memory import read_ram
 
 HISTORY = 60
 
@@ -506,25 +509,8 @@ class _CpuRamFallback:
 
     @staticmethod
     def ram():
-        if os.name == "nt":
-            class MS(ctypes.Structure):
-                _fields_ = [("dwLength", ctypes.c_ulong), ("dwMemoryLoad", ctypes.c_ulong),
-                            ("ullTotalPhys", ctypes.c_ulonglong), ("ullAvailPhys", ctypes.c_ulonglong),
-                            ("ullTotalPageFile", ctypes.c_ulonglong), ("ullAvailPageFile", ctypes.c_ulonglong),
-                            ("ullTotalVirtual", ctypes.c_ulonglong), ("ullAvailVirtual", ctypes.c_ulonglong),
-                            ("ullAvailExtendedVirtual", ctypes.c_ulonglong)]
-            m = MS()
-            m.dwLength = ctypes.sizeof(MS)
-            if ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(m)):
-                return m.ullTotalPhys - m.ullAvailPhys, m.ullTotalPhys
-            return None, None
-        try:
-            info = dict(line.split(":", 1) for line in open("/proc/meminfo"))
-            total = int(info["MemTotal"].split()[0]) * 1024
-            avail = int(info["MemAvailable"].split()[0]) * 1024
-            return total - avail, total
-        except (OSError, KeyError, ValueError):
-            return None, None
+        ram = read_ram()
+        return (ram.total - ram.available, ram.total) if ram.total and ram.available is not None else (None, None)
 
 
 # ------------------------------------------------------------------------------------------------ the sampler

@@ -616,7 +616,7 @@ def _models_move(a: argparse.Namespace) -> int:
         installs = [models.resolve_install(a.install_dir)[0]] if a.install_dir else [p for p, _s in models.all_installs()]
     except Exception:
         installs = []
-    configs = [c for i in installs for c in mm.config_files(i)]
+    configs = [c for i in installs for c in discovery.config_files(i)]
     cancel = Path(a.cancel_file) if a.cancel_file else None
 
     def show(event: dict) -> None:
@@ -647,7 +647,7 @@ def _interrupted_words(st: dict) -> str:
 
 def _models_move_unfinished(a: argparse.Namespace, old: Path) -> int:
     """`strata models move --status | --resume | --leave`: the move the last run left unfinished (A move was interrupted. Finish it or leave it)."""
-    from strata_control import models, models_move as mm
+    from strata_control import discovery, models, models_move as mm
     machine = a.output in ("json", "jsonl")
     st = mm.interrupted(old)
     if a.status:
@@ -666,7 +666,7 @@ def _models_move_unfinished(a: argparse.Namespace, old: Path) -> int:
         installs = [models.resolve_install(a.install_dir)[0]] if a.install_dir else [p for p, _s in models.all_installs()]
     except Exception:
         installs = []
-    configs = [c for i in installs for c in mm.config_files(i)]
+    configs = [c for i in installs for c in discovery.config_files(i)]
     if a.leave:
         try:
             result = mm.leave(Path(st["from"]), Path(st["to"]), configs=configs)

@@ -35,7 +35,7 @@ def windows(paging, ram=31.9, now_mb=0, drives=None, existing=("\\??\\C:\\pagefi
     return [mock.patch.object(setup, "_mm_multi_sz", lambda name: None if paging is None else
                               list(paging) if name == "PagingFiles" else list(existing)),
             mock.patch.object(setup, "_drive_mb", lambda d: drives.get(d)),
-            mock.patch.object(setup, "_memory_status", lambda: ms)]
+            mock.patch.object(setup, "windows_memory_status", lambda: ms)]
 
 
 def on_windows(fn):

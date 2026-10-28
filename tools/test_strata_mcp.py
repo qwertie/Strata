@@ -352,7 +352,7 @@ class Validation(FakeRoot):
         chosen = self.root.parent / "my-big-disk"
         chosen.mkdir()
         self.assertRejected("strata_install", {"data_dir": str(chosen)}, "named Strata")
-        settings = self.tools.s.settings_path()
+        settings = M.own_settings_file()
         settings.parent.mkdir(parents=True, exist_ok=True)
         settings.write_text(json.dumps({"data_dir": str(chosen)}))
         self.assertEqual(M.norm(self.tools.check_data_dir(str(chosen))), M.norm(chosen))

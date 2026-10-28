@@ -66,9 +66,12 @@ from strata_common import acquisition
 from strata_base import tls
 
 tls.install()      # #3722: HTTPS checks the server against the operating system's certificates (what Chrome and curl.exe do)
-from strata_base import atomic
+from strata_base import atomic, transfer
 from strata_common import draft_layer
-from strata_control.discovery import in_trash
+from strata_base.memory import read_ram, windows_memory_status
+from strata_base.path_compare import same_drive, same_folder
+from strata_control.discovery import config_files, in_app_mode, in_trash, own_settings_file as settings_path
+from strata_control import models_move
 from strata_common import user_args
 
 ROOT = Path(__file__).resolve().parent
@@ -940,38 +943,9 @@ def mark(path: Path, text=""):
 
 
 # ------------------------------------------------------------------------------------------------ the PC
-def _memory_status():
-    """Windows' GlobalMemoryStatusEx: RAM, and the commit limit (ullTotalPageFile = RAM + page file)."""
-    class MS(ctypes.Structure):
-        _fields_ = [("dwLength", ctypes.c_ulong), ("dwMemoryLoad", ctypes.c_ulong),
-                    ("ullTotalPhys", ctypes.c_ulonglong), ("ullAvailPhys", ctypes.c_ulonglong),
-                    ("ullTotalPageFile", ctypes.c_ulonglong), ("ullAvailPageFile", ctypes.c_ulonglong),
-                    ("ullTotalVirtual", ctypes.c_ulonglong), ("ullAvailVirtual", ctypes.c_ulonglong),
-                    ("ullAvailExtendedVirtual", ctypes.c_ulonglong)]
-    m = MS()
-    m.dwLength = ctypes.sizeof(MS)
-    ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(m))
-    return m
-
-
-def ram_gb():
-    if WIN:
-        return _memory_status().ullTotalPhys / 2**30
-    if sys.platform == "darwin":
-        try:
-            value = subprocess.run(["sysctl", "-n", "hw.memsize"], capture_output=True,
-                                   text=True, timeout=3, check=True).stdout.strip()
-            return int(value) / 2**30
-        except (OSError, ValueError, subprocess.CalledProcessError, subprocess.TimeoutExpired):
-            return 0.0
-    try:
-        with open("/proc/meminfo") as stream:
-            for line in stream:
-                if line.startswith("MemTotal"):
-                    return int(line.split()[1]) * 1024 / 2**30
-    except (OSError, ValueError):
-        pass
-    return 0.0
+def ram_gb() -> float:
+    """Gets the installed RAM in GiB; 0 when it cannot be read."""
+    return (read_ram().total or 0) / 2**30
 
 
 _MM_KEY = r"SYSTEM\CurrentControlSet\Control\Session Manager\Memory Management"
@@ -1070,7 +1044,7 @@ def page_file_gb():
     while the card's memory is charged (#60: "System managed" and 4096-32768 MB still failed, a fixed 64 GB worked)."""
     if not WIN:
         return None
-    m = _memory_status()
+    m = windows_memory_status()
     mb = max(0.0, (m.ullTotalPageFile - m.ullTotalPhys) / 2**20)
     files = page_file_setting()
     if files:
@@ -5741,8 +5715,7 @@ def build_engine(gpu, vision, yes, llama, toolkit=None) -> Path:
 # The model files - the GGUFs, the prepared packs and the MTP layer, 70-120 GB - live in a data folder NEXT TO the
 # Strata folder (`Strata-data`), not inside it: updating Strata by unzipping a new copy used to give a new, empty
 # folder and a full download again.  Where it is, and which Strata folders this user ran, is kept in a small
-# per-user file, so every Strata folder on the PC finds the same files.
-DATA_ITEMS = ("models", "packs", "mtp")
+# per-user file, so every Strata folder on the PC finds the same files.  Its subfolders: models_move.ITEMS.
 
 
 LOW_RAM_HEADROOM_GB = 10   # RAM beside the experts: the OS, the engine's other buffers, the server
@@ -5992,22 +5965,6 @@ def ram_ctx(model, ram, low_ram=False) -> int:
     return max(c for c in CONTEXTS if c <= 131072 or (c != 204800 and (ctx_ram_need(model, c, low_ram) or 0) <= ram))
 
 
-def app_settings_file() -> Path | None:
-    """The desktop app keeps its own settings file (STRATA_SETTINGS_FILE, in the app's data folder) and never reads or writes the
-    one an older command-line Strata uses, so an old install is never adopted or moved."""
-    raw = os.environ.get("STRATA_SETTINGS_FILE")
-    return Path(raw) if raw else None
-
-
-def settings_path() -> Path:
-    own = app_settings_file()
-    if own is not None:
-        return own
-    if WIN:
-        return Path(os.environ.get("APPDATA") or Path.home() / "AppData" / "Roaming") / "Strata" / "settings.json"
-    return Path(os.environ.get("XDG_CONFIG_HOME") or Path.home() / ".config") / "strata" / "settings.json"
-
-
 def load_settings() -> dict:
     try:
         return json.loads(settings_path().read_text(encoding="utf-8"))
@@ -6026,7 +5983,7 @@ def save_settings(s: dict) -> None:
 
 
 def has_data(folder: Path) -> bool:
-    for d in DATA_ITEMS:
+    for d in models_move.ITEMS:
         try:
             if (folder / d).is_dir() and any((folder / d).iterdir()):
                 return True
@@ -6039,7 +5996,7 @@ def other_installs(settings: dict) -> list:
     """Strata folders besides this one that may hold model files: the ones this user ran before, and Strata* folders
     next to this one (a zip unpacked again lands in e.g. `Strata-main (1)\\Strata-main`)."""
     cands = [Path(p) for p in settings.get("installs", []) if not in_trash(p)]
-    for base in dict.fromkeys(() if app_settings_file() else (home().parent, home().parent.parent)):
+    for base in dict.fromkeys(() if in_app_mode() else (home().parent, home().parent.parent)):
         try:
             for d in base.iterdir():
                 if d.is_dir() and d.name.lower().startswith("strata"):
@@ -6056,13 +6013,6 @@ def other_installs(settings: dict) -> list:
         except OSError:
             pass
     return found
-
-
-def same_drive(a: Path, b: Path) -> bool:
-    try:
-        return os.stat(a).st_dev == os.stat(b).st_dev
-    except OSError:
-        return False
 
 
 def move_into(src: Path, dst: Path) -> None:
@@ -6084,55 +6034,6 @@ def move_into(src: Path, dst: Path) -> None:
             src.rmdir()
         except OSError:
             pass
-
-
-def repoint_config(cfg_file: Path, old: Path, new: Path) -> None:
-    """A config whose model files moved from `old` to `new` points at them there (each path only if its file is
-    now there and no longer at the old place)."""
-    try:
-        cfg = json.loads(cfg_file.read_text(encoding="utf-8-sig"))
-    except (OSError, ValueError):
-        return
-
-    def fix(v):
-        if isinstance(v, list):
-            return [fix(x) for x in v]
-        if isinstance(v, dict):
-            return {k: fix(x) for k, x in v.items()}
-        if isinstance(v, str):
-            for d in DATA_ITEMS:
-                o = str(old / d)
-                nv, no = os.path.normcase(v), os.path.normcase(o)   # Windows: C:\ and c:\ are the same place
-                if nv == no or nv.startswith(no + os.sep):
-                    n = str(new / d) + v[len(o):]
-                    if Path(n).exists() and not Path(v).exists():
-                        return n
-        return v
-
-    new_cfg = fix(cfg)
-    if new_cfg != cfg:
-        write_config(cfg_file, new_cfg)
-
-
-def library_size_gb(folder: Path) -> float:
-    """The GB of model files (models, packs, mtp) in a data folder."""
-    total = 0
-    for d in DATA_ITEMS:
-        for root, _dirs, files in os.walk(folder / d):
-            for f in files:
-                try:
-                    total += os.path.getsize(os.path.join(root, f))
-                except OSError:
-                    pass
-    return total / 1e9
-
-
-def same_folder(a: Path, b: Path) -> bool:
-    """The same folder, however it is spelled (a different case, a short 8.3 name, a link)."""
-    try:
-        return os.path.samefile(a, b)
-    except OSError:
-        return os.path.normcase(os.path.abspath(a)) == os.path.normcase(os.path.abspath(b))
 
 
 def data_folder(requested: str | None, move: bool = False, yes: bool = True, set_default: bool = False) -> tuple:
@@ -6176,7 +6077,7 @@ def data_folder(requested: str | None, move: bool = False, yes: bool = True, set
                 held.append(folder)
         movable = [f for f in held if same_drive(f, dest)]
         if movable and not move and not yes:
-            gb = sum(library_size_gb(f) for f in movable)
+            gb = sum(models_move.library_gb(f) for f in movable)
             say()
             size = f"{gb:.0f} GB" if gb >= 10 else f"{gb:.1f} GB"
             say(f"  Your models are in {', '.join(str(f) for f in movable)} ({size}).")
@@ -6216,8 +6117,8 @@ def data_folder(requested: str | None, move: bool = False, yes: bool = True, set
                 (folder / d).rmdir()                    # empty now
             except OSError:
                 pass
-        for c in model_config_files(folder):
-            repoint_config(c, folder, dest)
+        for c in config_files(folder):
+            models_move.repoint_config(c, folder, dest)
         if has_data(folder):
             elsewhere.append(folder)                    # in use, or a copy the data folder already has
             warn(f"some model files are still in {folder} (in use, or already in {dest})")
@@ -6459,19 +6360,13 @@ def readable_config(path: Path) -> bool:
     return False
 
 
-def model_config_files(folder: Path) -> list:
-    """#346: the strata-*.json files of a folder that can be model configs. The server keeps a config's Chat settings
-    next to it as strata-<model>.shared-settings.json: it matches the pattern but is no config (no exe, no args)."""
-    return [p for p in folder.glob("strata-*.json") if not p.name.endswith(".shared-settings.json")]
-
-
 def previous_config(elsewhere_first: list, settings: dict):
     """The most recently used model config of another Strata folder on this PC, for a folder that has none yet.  One
     that does not parse (an empty or cut-off file, #459) is skipped with a warning: the newest readable one is used,
     and with none this copy is set up as a fresh install."""
     cands = []
     for folder in [*elsewhere_first, *other_installs(settings)]:
-        cands += model_config_files(folder)
+        cands += config_files(folder)
     cands = [c for c in dict.fromkeys(cands) if c.is_file()]
     return next((c for c in sorted(cands, key=lambda p: p.stat().st_mtime, reverse=True) if readable_config(c)), None)
 
@@ -6566,7 +6461,7 @@ def model_config(path: Path) -> bool:
 
 
 def installed_configs():
-    return [p for p in sorted(model_config_files(home()), key=lambda p: p.stat().st_mtime, reverse=True)
+    return [p for p in sorted(config_files(home()), key=lambda p: p.stat().st_mtime, reverse=True)
             if model_config(p)]
 
 
@@ -7851,24 +7746,14 @@ def local_feed(feed: str | None = None) -> bool:
     """Is the update feed this run reads a local one (a folder, a file or a loopback address, as a test or an offline copy uses)?  Then
     nothing is downloaded from GitHub and its being slow or down must not stop the run.  `feed` is --feed, else STRATA_UPDATE_FEED."""
     src = (feed or os.environ.get("STRATA_UPDATE_FEED") or "").strip()
-    if not src:
-        return False
-    if not re.match(r"^[a-z][a-z0-9+.-]*://", src, re.I) or src.lower().startswith("file://"):
-        return True                                     # a path (a Windows C:\... one too)
-    host = (urllib.parse.urlparse(src).hostname or "").lower()
-    return host in ("localhost", "127.0.0.1", "::1") or host.startswith("127.")
+    return bool(src) and transfer.is_local(src)
 
 
 def github_reachable(timeout: float = 10.0) -> bool:
-    """Does GitHub answer within `timeout` seconds (any HTTP answer counts; no answer, a refused or timed-out connection does not)?  One quick check
-    instead of minutes of retries when the connection is down (a SYN that is never answered)."""
-    try:
-        _urlopen(urllib.request.Request("https://github.com", method="HEAD", headers={"User-Agent": "strata-setup"}), timeout=timeout).close()
-        return True
-    except urllib.error.HTTPError:
-        return True
-    except (OSError, urllib.error.URLError):
-        return False
+    """Does GitHub answer within `timeout` seconds?  One quick check instead of minutes of retries when the connection
+    is down."""
+    from strata_control import dsv41_engine
+    return dsv41_engine.source_reachable("https://github.com", timeout)
 
 
 def dsv41_engine_pending(eng: Path) -> bool:
@@ -7886,7 +7771,7 @@ def dsv41_manual_steps(eng: Path) -> str:
 def get_dsv41_engine(eng: Path, hip: bool, package: str | None = None) -> Path | None:
     """The DeepSeek engine package next to the engine `eng`: one the person gave (--dsv41-package) or put in engine-dsv41/ by hand, else downloaded from
     the signed feed.  Checked first either way; its strata-dsv41, or None when it cannot be had."""
-    from strata_control import dsv41_engine
+    from strata_control import dsv41_engine, updater
     root = dsv41_engine_dir(eng)
     if package:
         exe = dsv41_engine.install_package(root, package, emit=lambda m: say("  " + m))
@@ -7899,33 +7784,15 @@ def get_dsv41_engine(eng: Path, hip: bool, package: str | None = None) -> Path |
         if exe is not None:
             return exe
     acquisition.require("the DeepSeek engine")
-    from strata_cli import update_cmd
-    source = update_cmd._feed_source(argparse.Namespace(feed=None), root.parent)
+    source = updater.feed_source(None, root.parent)
     say("  Downloading the DeepSeek engine (its own package, separate from the Strata engine) ...")
     hw = None
     if hip:
-        from strata_control import updater
         hw = {**updater.detect_hardware(), "backend": "hip", "backend_source": "requested"}
     exe = dsv41_engine.install(root, source, hardware=hw, emit=lambda m: say("  " + m))
     if exe is None:
         warn("no DeepSeek engine package could be fetched (see above)")
     return exe
-
-
-def upgrade_dsv41_engine(eng: Path, exe: Path) -> Path:
-    """The installed DeepSeek engine package is older than the signed feed's: updated next to it, switched after its test start, the old one removed
-    (strata_control.dsv41_engine.upgrade).  Silent when the feed cannot be reached; a failure is one plain line and `exe` keeps running."""
-    from strata_control import dsv41_engine
-    try:
-        from strata_cli import update_cmd
-        root = dsv41_engine_dir(eng)
-        source = update_cmd._feed_source(argparse.Namespace(feed=None), root.parent)
-        if not dsv41_engine.source_reachable(source):
-            return exe
-        new = dsv41_engine.upgrade(root, source, installed=exe, emit=lambda m: say("  " + m))
-    except Exception:                                      # noqa: BLE001 - never stop a setup for this
-        return exe
-    return new or exe
 
 
 def dsv41_exe(eng: Path) -> Path | None:
@@ -8162,9 +8029,9 @@ def install_dsv41(a, family, gpu, hip, amd, cuda_tk, multi, port, ram, adopted, 
     if exe is None and not getattr(a, "build", False):
         get_dsv41_engine(eng, hip, getattr(a, "dsv41_package", None))
         exe = dsv41_exe(eng)
-    if (exe is not None and not getattr(a, "dsv41_package", None) and not getattr(a, "build", False)
-            and not (os.environ.get("STRATA_DSV41_EXE") or "").strip() and exe.parent.parent == dsv41_engine_dir(eng)):
-        exe = upgrade_dsv41_engine(eng, exe)               # an installed package older than the signed feed's: updated next to it, switched after it starts
+    if exe is not None and not getattr(a, "dsv41_package", None) and not getattr(a, "build", False):
+        from strata_control import dsv41_engine
+        exe = dsv41_engine.try_upgrade(exe, emit=lambda m: say("  " + m))
     if exe is not None and exe.parent != Path(eng):
         lib_dirs = [*lib_dirs, str(exe.parent)]            # its own package carries the libraries it needs
     if exe is None:

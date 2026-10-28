@@ -100,6 +100,20 @@ Metal is checked only by the `metal-build` GitHub workflow, because it needs a M
 - Upstream's [CONTRIBUTING.md](../CONTRIBUTING.md) rules about byte-identical default paths and agreeing a
   refactor in an issue first do not apply to this fork; the scope will be raised in an upstream issue.
 
+## Open issues
+
+Found during the work; each needs a decision or a later step.
+
+- **Two rules for the model folder.** `setup.py` (started by `START-HERE.bat`) picks the data folder with
+  `data_folder` (default `Strata-data` beside the checkout's parent) and ignores the app's saved choice and
+  `Documents/Strata`; `strata_control/discovery.py` (`data_dir`) reads both. A source install and the app can therefore
+  use different model folders. `strata launch` is not affected (it always passes `--data-dir`). The owner wants one
+  rule; not yet scheduled.
+- **Ready-made engines in a source checkout** (deferred to phase B, needs NVIDIA testing and an owner decision):
+  `setup.py` still downloads GitHub zips into `engine/` and keeps `engine/.previous`, while the Terminal and the app use
+  the signed feed and the per-user components folder. Unifying them would remove about 600–850 lines, but drops
+  `setup.py --prebuilt <mirror or dist folder>` and may affect the CUDA 12 engine.
+
 ## Results
 
 | Step | Commit | Lines after | Change from baseline | Notes |

@@ -375,13 +375,13 @@ class NoNetwork(Install):
 class GithubCheck(unittest.TestCase):
     def test_github_reachable_answers_quickly_in_both_directions(self):
         import urllib.error
-        with mock.patch.object(setup, "_urlopen", side_effect=urllib.error.URLError("timed out")):
+        with mock.patch("urllib.request.urlopen", side_effect=urllib.error.URLError("timed out")):
             self.assertFalse(setup.github_reachable(1))
-        with mock.patch.object(setup, "_urlopen", side_effect=OSError("unreachable")):
+        with mock.patch("urllib.request.urlopen", side_effect=OSError("unreachable")):
             self.assertFalse(setup.github_reachable(1))
-        with mock.patch.object(setup, "_urlopen", side_effect=urllib.error.HTTPError("https://github.com", 403, "no", {}, None)):
+        with mock.patch("urllib.request.urlopen", side_effect=urllib.error.HTTPError("https://github.com", 403, "no", {}, None)):
             self.assertTrue(setup.github_reachable(1))                       # any answer means it is reachable
-        with mock.patch.object(setup, "_urlopen", return_value=mock.MagicMock()):
+        with mock.patch("urllib.request.urlopen", return_value=mock.MagicMock()):
             self.assertTrue(setup.github_reachable(1))
 
     def test_a_local_feed_is_told_from_the_signed_one(self):

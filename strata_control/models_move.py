@@ -26,6 +26,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
 
+from strata_base import path_compare
+
 ITEMS = ("models", "packs", "mtp")
 STATE_FILE = "models-move.json"
 MARGIN = 1.05                       # room beside the files themselves: 5 %
@@ -93,22 +95,14 @@ def groups(entries: list[Entry]) -> list[dict]:
     return [{"group": g, "name": g, "bytes": b} for g, b in out.items()]
 
 
-def _near(path: Path) -> Path:
-    """The folder that exists and holds ``path`` (or ``path`` itself)."""
-    p = path
-    while not p.exists() and p.parent != p:
-        p = p.parent
-    return p
+def library_gb(data: Path) -> float:
+    """Gets the GB of model files in a data folder (what `inventory` lists); 0 when there are none."""
+    return sum(e.size for e in inventory(data)) / 1e9
 
 
 def same_drive(a: Path, b: Path) -> bool:
     """Both folders are on one volume (a move is then a rename). STRATA_MOVE_ALWAYS_COPY=1 copies anyway: for testing the copy path on one disk."""
-    if os.environ.get("STRATA_MOVE_ALWAYS_COPY") == "1":
-        return False
-    try:
-        return os.stat(_near(a)).st_dev == os.stat(_near(b)).st_dev
-    except OSError:
-        return False
+    return os.environ.get("STRATA_MOVE_ALWAYS_COPY") != "1" and path_compare.same_drive(a, b)
 
 
 def _same(a: Path, b: Path) -> bool:
@@ -169,7 +163,7 @@ def plan(old: Path, new: Path, *, free=None, write_test: bool = True) -> dict:
             return refuse("not_writable", f"Strata can't save files in {new}.", raw)
     result["same_drive"] = same_drive(old, new)
     try:
-        result["free_bytes"] = int(free(_near(new)))
+        result["free_bytes"] = int(free(path_compare.nearest_existing(new)))
     except OSError:
         result["free_bytes"] = 0
     # a same-drive move is a rename: it needs no room
@@ -327,7 +321,7 @@ def interrupted(data: Path) -> dict | None:
 
 def repoint_config(cfg_file: Path, old: Path, new: Path) -> bool:
     """A run config whose model files moved from ``old`` to ``new`` names them there (each path only when its file is now there and no longer
-    at the old place). Same rule as setup.py repoint_config. Returns whether the file changed."""
+    at the old place). Returns whether the file changed."""
     try:
         cfg = json.loads(cfg_file.read_text(encoding="utf-8-sig"))
     except (OSError, ValueError):
@@ -356,13 +350,6 @@ def repoint_config(cfg_file: Path, old: Path, new: Path) -> bool:
     tmp.write_text(json.dumps(fixed, indent=2) + "\n", encoding="utf-8")
     os.replace(tmp, cfg_file)
     return True
-
-
-def config_files(install: Path | None) -> list[Path]:
-    """The ``strata-<model>.json`` run configs of an install folder."""
-    if not install or not Path(install).is_dir():
-        return []
-    return [p for p in Path(install).glob("strata-*.json") if not p.name.endswith(".shared-settings.json")]
 
 
 def _prune(folder: Path, stop_at: Path) -> None:

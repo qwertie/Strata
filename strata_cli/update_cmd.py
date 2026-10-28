@@ -20,15 +20,11 @@ import sys
 import threading
 from pathlib import Path
 
-#: Where the feed is read when nothing else is set: the files of the latest GitHub release of Niko1221/Strata (the same folder the
-#: one-line installers use). Only a feed signed with a key in update_keys.json (or STRATA_UPDATE_TRUSTED_KEYS) is accepted.
-DEFAULT_FEED = "https://github.com/Niko1221/Strata/releases/latest/download/strata-feed.json"
-ENV_FEED = "STRATA_UPDATE_FEED"
 ENV_APP_VERSION = "STRATA_APP_VERSION"
 
 
 def _common(p: argparse.ArgumentParser) -> None:
-    p.add_argument("--feed", default=None, help=f"where the signed update feed is (URL or folder). Default: ${ENV_FEED}, the feed used last, or the project's")
+    p.add_argument("--feed", default=None, help="where the signed update feed is (URL or folder). Default: $STRATA_UPDATE_FEED, the feed used last, or the project's")
     p.add_argument("--components-dir", default=None, help="the component folder (default: the per-user one, or STRATA_COMPONENTS_DIR)")
     p.add_argument("--backend", default=None, help="choose an engine family instead of detecting this PC's GPU")
     p.add_argument("--wait", type=float, default=None, metavar="SECONDS",
@@ -85,23 +81,6 @@ def _emit_factory(a, lines: list):
         elif event.get("event") == "waiting":
             print(f"  {event['message']}", flush=True)
     return emit
-
-
-def _feed_source(a, root: Path) -> str:
-    from strata_control import updater
-    if a.feed:
-        return a.feed
-    if os.environ.get(ENV_FEED):
-        return os.environ[ENV_FEED]
-    remembered = (updater.State(root).data.get("feed") or {}).get("source")
-    return remembered if _may_be_remembered(remembered) else DEFAULT_FEED
-
-
-def _may_be_remembered(source) -> bool:
-    """Only an https address is carried over to later runs. A loopback address or a folder is what a test of an update feed uses; once
-    one such run had been made on a PC, every later check (the app's Settings included) tried that dead address and said "No internet
-    connection". Those runs name their feed again each time (--feed or STRATA_UPDATE_FEED)."""
-    return isinstance(source, str) and source.lower().startswith("https://")
 
 
 def _mib(n: int | None) -> str:
@@ -219,7 +198,7 @@ def run(a) -> int:
         acquisition.require("the update", "`strata update` from a terminal")
         trusted = signing.load_trusted_keys()
         ctx.trusted = trusted
-        ctx.source = _feed_source(a, root)
+        ctx.source = updater.feed_source(a.feed, root)
         if signing.extra_keys_in_effect() and not machine:
             print(f"note: trusting the extra keys in {os.environ.get(signing.ENV_EXTRA_KEYS)} (a test setup)", file=sys.stderr)
         if a.check:

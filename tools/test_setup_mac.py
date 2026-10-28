@@ -188,7 +188,7 @@ class HandOver(unittest.TestCase):
 
     def test_other_platforms_never_reach_it(self):
         src = (ROOT / "setup.py").read_text(encoding="utf-8")
-        self.assertIn('if sys.platform == "darwin":', src)
+        self.assertIn('if sys.platform == "darwin" and not CONTROL:', src)
         with mock.patch.object(setup, "mac_setup", side_effect=AssertionError("called")), \
                 mock.patch.object(setup.sys, "platform", "linux"), \
                 mock.patch.object(setup.sys, "argv", ["setup.py", "--inspect", "x"]), \

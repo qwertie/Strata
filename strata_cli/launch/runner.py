@@ -13,7 +13,6 @@ tests see the same thing. Nothing here prints or reads the keyboard. The steps r
 
 from __future__ import annotations
 
-import argparse
 import json
 import os
 import re
@@ -2097,25 +2096,13 @@ class Runner:
         cfg["lib_dirs"] = [*libs, str(Path(found).parent)]          # its own folder carries the libraries it needs
 
     def upgrade_dsv41_engine(self, found: Path) -> Path:
-        """The installed DeepSeek engine package is older than the signed feed's: fetch, check and start the newer one next to it and switch to it
-        (strata_control.dsv41_engine.upgrade).  Not for a --dsv41-package or a STRATA_DSV41_EXE (the person chose the engine), not for an engine
-        outside an engine-dsv41 folder, and silent when the feed cannot be reached (a 10 s check; the launch never waits on the network)."""
+        """Gets the DeepSeek engine to launch: a newer package from the signed feed when there is one
+        (strata_control.dsv41_engine.try_upgrade), else `found`.  A --dsv41-package is the person's choice and stays."""
+        if getattr(self.s, "dsv41_package", None):
+            return found
         from strata_control import dsv41_engine
-        if (os.environ.get("STRATA_DSV41_EXE") or "").strip() or getattr(self.s, "dsv41_package", None):
-            return found
-        root = Path(found).parent.parent
-        if root.name != dsv41_engine.DIR:
-            return found
-        try:
-            from strata_cli import update_cmd
-            source = update_cmd._feed_source(argparse.Namespace(feed=self.feed), root.parent)
-            if not dsv41_engine.source_reachable(source):
-                return found
-            new = dsv41_engine.upgrade(root, source, installed=found,
-                                       emit=lambda m: self.emit("engine", m, None, level="warn" if "could not" in m else "info"))
-        except Exception:                                    # noqa: BLE001 - never stop a launch for this
-            return found
-        return new or found
+        return dsv41_engine.try_upgrade(
+            found, self.feed, emit=lambda m: self.emit("engine", m, None, level="warn" if "could not" in m else "info"))
 
     def dsv41_engine_found(self) -> tuple[Path | None, bool | None]:
         """(strata-dsv41 already installed, or None; whether the engine can be told at all).  Looks where setup puts DeepSeek's own engine package

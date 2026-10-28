@@ -5,45 +5,16 @@ it is given --move-data.  Without it the old folder stays where it is, stays usa
 downloads."""
 from __future__ import annotations
 
-import os
 import sys
 from pathlib import Path
 
-DATA_ITEMS = ("models", "packs", "mtp")
-
-
-def library_gb(folder: Path) -> float:
-    """GB of model files (models, packs, mtp) in a data folder; 0 when there are none."""
-    total = 0
-    for item in DATA_ITEMS:
-        for root, _dirs, files in os.walk(folder / item):
-            for f in files:
-                try:
-                    total += os.path.getsize(os.path.join(root, f))
-                except OSError:
-                    pass
-    return total / 1e9
-
-
-def same_place(a: Path, b: Path) -> bool:
-    try:
-        return os.path.samefile(a, b)
-    except OSError:
-        return os.path.normcase(os.path.abspath(a)) == os.path.normcase(os.path.abspath(b))
-
-
-def same_drive(a: Path, b: Path) -> bool:
-    probe = lambda p: next((q for q in (p, *p.parents) if q.exists()), None)   # noqa: E731 - the new folder may not exist yet
-    pa, pb = probe(a), probe(b)
-    try:
-        return pa is not None and pb is not None and os.stat(pa).st_dev == os.stat(pb).st_dev
-    except OSError:
-        return False
+from strata_base.path_compare import same_drive, same_folder
+from strata_control.models_move import library_gb
 
 
 def movable_library(old: Path | None, new: Path) -> float:
     """GB of models in `old` that could be moved into `new` (same drive, a different folder); 0 when nothing is there to move."""
-    if old is None or same_place(old, new) or not Path(old).is_dir() or not same_drive(Path(old), new):
+    if old is None or same_folder(old, new) or not Path(old).is_dir() or not same_drive(Path(old), new):
         return 0.0
     return library_gb(Path(old))
 

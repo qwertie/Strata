@@ -38,6 +38,11 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from strata_base.memory import read_ram                             # noqa: E402
+from strata_base.path_compare import nearest_existing               # noqa: E402
+from strata_control.discovery import config_files, own_settings_file  # noqa: E402
+
 PROTOCOL = "2025-06-18"
 PROTOCOLS = ("2025-06-18", "2025-03-26", "2024-11-05")   # the revisions this server answers in
 VERSION = "0.1.0"
@@ -592,16 +597,9 @@ class Strata:
                       key=lambda m: bool(models[m].get("experimental")))
 
     # ---- paths
-    def settings_path(self) -> Path:
-        if os.environ.get("STRATA_SETTINGS_FILE"):
-            return Path(os.environ["STRATA_SETTINGS_FILE"])
-        if WIN:
-            return Path(os.environ.get("APPDATA") or Path.home() / "AppData" / "Roaming") / "Strata" / "settings.json"
-        return Path(os.environ.get("XDG_CONFIG_HOME") or Path.home() / ".config") / "strata" / "settings.json"
-
     def data_dir(self) -> Path:
         try:
-            s = json.loads(self.settings_path().read_text(encoding="utf-8"))
+            s = json.loads(own_settings_file().read_text(encoding="utf-8"))
         except (OSError, ValueError):
             s = {}
         d = s.get("data_dir") if isinstance(s, dict) else None
@@ -642,8 +640,7 @@ class Strata:
 
     # ---- what is installed
     def configs(self) -> list[Path]:
-        return sorted((p for p in self.root.glob("strata-*.json") if not p.name.endswith(".shared-settings.json")),
-                      key=lambda p: p.stat().st_mtime, reverse=True)   # #346: the Chat settings file is no config
+        return sorted(config_files(self.root), key=lambda p: p.stat().st_mtime, reverse=True)
 
     @staticmethod
     def read_config(path: Path) -> dict:
@@ -895,11 +892,8 @@ class Strata:
 
     @staticmethod
     def disk_free(p: Path) -> float | None:
-        p = Path(p)
-        while not p.exists() and p.parent != p:
-            p = p.parent
         try:
-            return round(shutil.disk_usage(p).free / 1e9, 1)
+            return round(shutil.disk_usage(nearest_existing(Path(p))).free / 1e9, 1)
         except OSError:
             return None
 
@@ -912,10 +906,7 @@ class Strata:
                 hw["wsl"] = "microsoft" in Path("/proc/version").read_text().lower()
             except OSError:
                 pass
-        try:
-            hw["ram_gb"] = round(S.ram_gb(), 1) if S else round(own_ram_gb(), 1)
-        except Exception:                               # noqa: BLE001
-            hw["ram_gb"] = round(own_ram_gb(), 1)
+        hw["ram_gb"] = round((read_ram().total or 0) / 2**30, 1)
         if S and WIN:
             try:
                 hw["page_file_gb"] = round(S.page_file_gb(), 1)
@@ -1711,24 +1702,6 @@ def progress_words_for(step, lines, download):
         return None
     w = progress_words.describe(step, lines, download)
     return w.label, w.phase
-
-
-def own_ram_gb() -> float:
-    if WIN:
-        class MS(ctypes.Structure):
-            _fields_ = [("dwLength", ctypes.c_ulong), ("dwMemoryLoad", ctypes.c_ulong),
-                        *((n, ctypes.c_ulonglong) for n in ("tp", "ap", "tpf", "apf", "tv", "av", "aev"))]
-        m = MS()
-        m.dwLength = ctypes.sizeof(MS)
-        ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(m))
-        return m.tp / 2**30
-    try:
-        for line in open("/proc/meminfo"):
-            if line.startswith("MemTotal"):
-                return int(line.split()[1]) * 1024 / 2**30
-    except OSError:
-        pass
-    return 0.0
 
 
 def own_nvidia_gpus() -> list:

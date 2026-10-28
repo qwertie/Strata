@@ -22,6 +22,8 @@ import time
 from pathlib import Path
 from typing import Any
 
+from strata_base.memory import read_ram
+
 MIB = 1024 * 1024
 
 
@@ -29,40 +31,12 @@ MIB = 1024 * 1024
 
 def memory() -> dict[str, int | None]:
     """System RAM in MiB: ``total`` and ``available`` (what a new process could use without swapping)."""
-    try:
-        if os.name == "nt":
-            import ctypes
+    ram = read_ram()
+    return {"total_mib": _mib(ram.total), "available_mib": _mib(ram.available)}
 
-            class _Status(ctypes.Structure):
-                _fields_ = [("dwLength", ctypes.c_ulong), ("dwMemoryLoad", ctypes.c_ulong),
-                            ("ullTotalPhys", ctypes.c_ulonglong), ("ullAvailPhys", ctypes.c_ulonglong),
-                            ("ullTotalPageFile", ctypes.c_ulonglong), ("ullAvailPageFile", ctypes.c_ulonglong),
-                            ("ullTotalVirtual", ctypes.c_ulonglong), ("ullAvailVirtual", ctypes.c_ulonglong),
-                            ("ullAvailExtendedVirtual", ctypes.c_ulonglong)]
 
-            status = _Status()
-            status.dwLength = ctypes.sizeof(_Status)
-            if ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(status)):
-                return {"total_mib": int(status.ullTotalPhys // MIB), "available_mib": int(status.ullAvailPhys // MIB)}
-        elif sys.platform == "darwin":
-            total = int(subprocess.run(["sysctl", "-n", "hw.memsize"], capture_output=True, text=True,
-                                       timeout=5).stdout.strip()) // MIB
-            vm = subprocess.run(["vm_stat"], capture_output=True, text=True, timeout=5).stdout
-            page = int(re.search(r"page size of (\d+)", vm).group(1)) if re.search(r"page size of (\d+)", vm) else 16384
-            pages = 0
-            for key in ("Pages free", "Pages inactive", "Pages speculative"):
-                m = re.search(rf"{key}:\s+(\d+)", vm)
-                pages += int(m.group(1)) if m else 0
-            return {"total_mib": total, "available_mib": pages * page // MIB}
-        else:
-            info: dict[str, int] = {}
-            for line in Path("/proc/meminfo").read_text().splitlines():
-                key, _, rest = line.partition(":")
-                info[key] = int(rest.split()[0])
-            return {"total_mib": info["MemTotal"] // 1024, "available_mib": info["MemAvailable"] // 1024}
-    except Exception:  # noqa: BLE001 - a probe must not raise
-        pass
-    return {"total_mib": None, "available_mib": None}
+def _mib(n: int | None) -> int | None:
+    return None if n is None else n // MIB
 
 
 # --------------------------------------------------------------------------- graphics cards

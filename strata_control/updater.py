@@ -51,6 +51,10 @@ from strata_base import atomic as _atomic_mod
 STATE_DIR = ".updates"
 STAGE_DIR = ".s"                 # staging is short on purpose: <components>\.s\<4 hex>\engine\<folder> (see longpath.py)
 SKEW_FREE_BYTES = 1.15
+#: Where the feed is read when nothing else is set: the files of the latest GitHub release of Niko1221/Strata (the same folder the
+#: one-line installers use). Only a feed signed with a key in update_keys.json (or STRATA_UPDATE_TRUSTED_KEYS) is accepted.
+DEFAULT_FEED = "https://github.com/Niko1221/Strata/releases/latest/download/strata-feed.json"
+ENV_FEED = "STRATA_UPDATE_FEED"
 
 
 def megabytes(n) -> int:
@@ -136,6 +140,24 @@ class TestStartFailed(UpdateError):
 
 def updates_dir(root: Path) -> Path:
     return root / STATE_DIR
+
+
+def feed_source(feed: str | None, root: Path) -> str:
+    """Chooses the update feed to read: `feed` (a --feed argument), else $STRATA_UPDATE_FEED, else the https feed the
+    last update in the components folder `root` used, else DEFAULT_FEED."""
+    if feed:
+        return feed
+    if os.environ.get(ENV_FEED):
+        return os.environ[ENV_FEED]
+    remembered = (State(root).data.get("feed") or {}).get("source")
+    return remembered if _may_be_remembered(remembered) else DEFAULT_FEED
+
+
+def _may_be_remembered(source) -> bool:
+    """Only an https address is carried over to later runs. A loopback address or a folder is what a test of an update feed uses; once
+    one such run had been made on a PC, every later check (the app's Settings included) tried that dead address and said "No internet
+    connection". Those runs name their feed again each time (--feed or STRATA_UPDATE_FEED)."""
+    return isinstance(source, str) and source.lower().startswith("https://")
 
 
 @contextlib.contextmanager

@@ -19,6 +19,7 @@ import tempfile
 from pathlib import Path
 
 from strata_base.hashing import sha256_file
+from strata_base.memory import read_ram
 
 ROOT = Path(__file__).resolve().parents[1]
 LOOPBACK = frozenset({"localhost", "127.0.0.1", "::1"})
@@ -107,21 +108,7 @@ def sha256_text(text: str) -> str:
 
 # ------------------------------------------------------------------------------------------------------------ hardware
 def ram_bytes() -> int | None:
-    try:
-        import psutil
-        return int(psutil.virtual_memory().total)
-    except Exception:                                   # noqa: BLE001
-        pass
-    try:
-        for line in Path("/proc/meminfo").read_text().splitlines():
-            if line.startswith("MemTotal:"):
-                return int(line.split()[1]) * 1024
-    except OSError:
-        pass
-    if sys.platform == "darwin":
-        out = run_cmd(["sysctl", "-n", "hw.memsize"]).strip()
-        return int(out) if out.isdigit() else None
-    return None
+    return read_ram().total
 
 
 def cpu_name() -> str | None:

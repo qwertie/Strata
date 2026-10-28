@@ -52,6 +52,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from ab_engine import PROMPTS, long_prompt          # noqa: E402  the same three short questions and word list
 from agent_turns_bench import SYSTEM, TOOLS         # noqa: E402  the same agent system prompt and tool list
 import serve_load                                   # noqa: E402  the burst client for --clients
+from strata_base.memory import read_ram             # noqa: E402
 from strata_cli.bench_facts import SECRET_KEY, base_if_path, redact_object, redactor, run_cmd  # noqa: E402
 
 SCHEMA = 1
@@ -384,31 +385,8 @@ def summary_metrics(out: dict) -> dict:
 
 # -------------------------------------------------------------------------------------------------- the machine
 def total_ram_gib() -> float | None:
-    try:
-        import psutil
-        return round(psutil.virtual_memory().total / 2 ** 30, 1)
-    except Exception:                                   # noqa: BLE001
-        pass
-    try:
-        for line in Path("/proc/meminfo").read_text().splitlines():
-            if line.startswith("MemTotal:"):
-                return round(int(line.split()[1]) / 2 ** 20, 1)
-    except OSError:
-        pass
-    if os.name == "nt":
-        try:
-            import ctypes
-
-            class MS(ctypes.Structure):
-                _fields_ = [("l", ctypes.c_ulong), ("load", ctypes.c_ulong), ("total", ctypes.c_ulonglong)] + [
-                    (n, ctypes.c_ulonglong) for n in ("a", "b", "c", "d", "e")]
-            ms = MS()
-            ms.l = ctypes.sizeof(MS)
-            ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(ms))
-            return round(ms.total / 2 ** 30, 1)
-        except Exception:                               # noqa: BLE001
-            pass
-    return None
+    total = read_ram().total
+    return round(total / 2 ** 30, 1) if total else None
 
 
 def cpu_name() -> str | None:

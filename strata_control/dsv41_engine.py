@@ -163,6 +163,25 @@ def install(dest: Path, source: str, *, hardware: dict | None = None, emit: Call
 
 # ---------------------------------------------------------------------------------------------- upgrade of an installed package
 
+def try_upgrade(installed: Path, feed: str | None = None, *, emit: Callable[[str], None] = print) -> Path:
+    """Switches to the signed feed's newer DeepSeek engine package, when there is one, by `upgrade`; used by
+    setup.py and `strata launch`, which skip it for a --dsv41-package.  `installed` is the strata-dsv41 in use and
+    `feed` a --feed argument (else the feed `strata update` reads).  Returns the engine to run: `installed` unchanged
+    when it is a build of the person's own (STRATA_DSV41_EXE), is not in an engine-dsv41 folder, the feed cannot be
+    reached within 10 s, nothing is newer, or anything fails."""
+    root = Path(installed).parent.parent
+    if (os.environ.get("STRATA_DSV41_EXE") or "").strip() or root.name != DIR:
+        return installed
+    try:
+        from strata_control import updater
+        source = updater.feed_source(feed, root.parent)
+        if not source_reachable(source):
+            return installed
+        return upgrade(root, source, installed=installed, emit=emit) or installed
+    except Exception:                       # noqa: BLE001 - an upgrade check never stops a setup or a launch
+        return installed
+
+
 def source_reachable(source: str, timeout: float = 10.0) -> bool:
     """Can the feed `source` be reached within `timeout` seconds?  A folder or file: it exists.  A URL: any HTTP answer counts (a 404 is an answer);
     no answer, a refused or timed-out connection does not.  One quick check instead of minutes of retries."""
@@ -207,7 +226,7 @@ def upgrade(dest: Path, source: str, *, installed: Path | None = None, hardware:
     check it as `install` does (signature, hashes, every file), put it NEXT TO the old one, start it once (`--version`), and only then remove the older
     folders (one generation).  Returns the new strata-dsv41, or None: nothing newer, the feed cannot be read (silent: a launch never waits on the
     network), or the newer one could not be installed (one plain line, the installed engine keeps running).  Versions compare numerically
-    (0.1.49 < 0.1.49.1).  The caller does not call this for a --dsv41-package or a STRATA_DSV41_EXE."""
+    (0.1.49 < 0.1.49.1)."""
     from strata_control import feed as feedmod, updater
     from strata_common import signing
     from strata_base import transfer

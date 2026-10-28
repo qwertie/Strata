@@ -144,6 +144,8 @@ def _is_config(path: Path) -> bool:
 
 
 def config_files(directory: Path) -> list[Path]:
+    """Lists the model run configs (``strata-<model>.json``, not the server's ``.shared-settings.json``) in a folder, by
+    name; none when the folder cannot be read."""
     try:
         return sorted(p for p in directory.iterdir() if _is_config(p))
     except OSError:

@@ -74,6 +74,14 @@ def kind_of(source: str) -> str:
     return "path"
 
 
+def is_local(source: str) -> bool:
+    """Tells whether `source` needs no internet: a folder, a file or a loopback address (an unsupported scheme: no)."""
+    try:
+        return kind_of(source) in ("path", "file") or _is_loopback(urllib.parse.urlparse(source).hostname or "")
+    except TransferError:
+        return False
+
+
 def check_url_policy(url: str, environ=None) -> None:
     environ = os.environ if environ is None else environ
     parsed = urllib.parse.urlparse(url)
