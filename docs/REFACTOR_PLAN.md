@@ -120,7 +120,7 @@ Found during the work; each needs a decision or a later step.
   differently from `engine_component`'s (it keeps cards with 2 GB or more and reads the vendor from the provider name).
 - **SYCL's upstream merge script.** `sycl/tools/merge_upstream.py` maps upstream paths straight onto `sycl/`; after the
   A3 moves the paths no longer line up, so a merge needs the path map in [UPSTREAM_PORTING.md](UPSTREAM_PORTING.md).
-- **Two CPU worker pools, not merged in A4.** They share an idea (one 64-bit claim word tagged with the batch, so a
+- **Two CPU worker pools, not merged.** They share an idea (one 64-bit claim word tagged with the batch, so a
   late worker cannot take a job of the next batch; spin, then sleep), but differ where the speed is decided:
 
   | | DeepSeek `ds4::Pool` (`ds4_pool.hpp`) | Qwen `ExpertPool` (`src/kernels/cpu/pool.cpp`) |
@@ -128,16 +128,17 @@ Found during the work; each needs a decision or a later step.
   | Jobs | any `fn(i)` through `std::function`; `start`/`help`/`wait` run two pools (two NUMA nodes) at once | expert jobs in 7 modes (whole experts, row parts, native rows), one scratch per worker |
   | Claim | `generation << 32 \| index`, the job count in its own atomic | `epoch \| njobs \| index`; per NUMA slice with `STRATA_NUMA_SPLIT` |
   | End of a batch | the caller waits for `done` | the host waits for `done` and for every worker to park |
-  | Idle workers | spin 200 µs, then sleep | spin 20 ms (`STRATA_POOL_SPIN_US`), then sleep |
+  | Idle workers | spin 20 ms (the CPU lane) or 50 µs (the prompt path's readers), then sleep | spin 20 ms (`STRATA_POOL_SPIN_US`), then sleep |
   | Placement | the caller's CPU list, hard affinity, Windows processor group 0 | its own: topology, hybrid cores, `--pool-cores`, `--host-core`, processor groups |
   | Stalls | none | 60 s without progress stops the engine through the watchdog hooks of `include/strata/common/state/progress.hpp` |
 
-  A merge design: a `WorkerPool` in `src/base/platform/` with the threads, the pinning, the tagged claim, the spin
-  time as a setting, an optional park barrier and a stall callback the owner installs (so the watchdog hooks stay in
-  layer 1: `ExpertPool` installs one that prints `diag` and calls `release_gpu_waits`). `ExpertPool` keeps its modes,
-  scratch and NUMA slices on top of it, and `ds4::Pool` becomes a thin `run(n, fn)` with a 200 µs spin and no
-  barrier. It needs a DeepSeek and a Qwen3.8 decode and prompt speed run before and after, which this PC could not
-  give for A4 (no DeepSeek model here, and the Qwen server owned the GPU).
+  What the two have in common is only the waiting: the threads, the spin, the sleep and the wake-up. A
+  `WorkerPool` with that and nothing else was written on 2026-10-29 (not compiled or run): every other row of the
+  table stays with its owner, so the owner hands it three hooks (a thread's start, its turn at a batch, its sleep).
+  It made the code longer: the pool header had 159 non-blank lines, `ExpertPool` and `ds4::Pool` shrank by 151,
+  so +8 lines in all (`tools/loc_report.py`). Sharing more (the claim word, the park barrier, the stall wait) means
+  one claim layout for both, which would change `ExpertPool`'s issue #29 protocol or `ds4::Pool`'s 32-bit job count,
+  and the NUMA paths of both cannot be measured on a one-node PC. Not worth doing for the line count alone.
 - **DeepSeek's sampler is its own.** `include/strata/models/deepseekv41/sampler.hpp` is not a copy of
   `include/strata/kernels/sampler.hpp`: it declares `src/models/deepseekv41/vendor/sampler.cu` (581 lines), whose
   `sample_tokens` is engine 0.1.20's one-block kernel (kept in the shared `sampler.cu` behind
