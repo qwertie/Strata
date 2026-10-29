@@ -37,7 +37,7 @@ session on an NVIDIA machine. Changes nobody can test come last.
 | A2 | Python: `strata_base/`, `strata_common/`; `serve/` becomes `strata_server/`; remove the import cycles between `serve/`, `strata_control/` and `strata_cli/`; one copy of the helpers repeated in `setup.py` and `tools/` | 2–5K | |
 | A3 | Move every whole file whose new place is already clear, without changing it: the folders `src/platform`, `src/artifact`, `src/spec`, `src/dsv41`, `src/qwen35`, `src/ngram`, `src/plan`; from `src/core/`, the runtime files to `src/base/gpu`, the conversation files to `src/common/state` and the Qwen3.8-only files to `src/models/qwen38`; the matching files in `sycl/`. Files that must be split wait for their step. | 0 | |
 | A4 | DeepSeek's own copies of host code: `ds4_os.hpp`, `ds4_pool.hpp`, `include/strata/models/deepseekv41/sampler.hpp` | ~1K | `ds4_os.hpp` done; the pool and the sampler wait (open issues) |
-| A5 | The `src/base/gpu` runtime interface (the shared code must not call the CUDA runtime directly), then `src/common/state`, `src/common/serve`, `src/common/spec` and the one-GPU parts of `src/common/experts`. These are also the base for the planned paged-KV engine. | 3–7K | |
+| A5 | The `src/base/gpu` runtime interface (the shared code must not call the CUDA runtime directly), then `src/common/state`, `src/common/serve`, `src/common/spec` and the one-GPU parts of `src/common/experts`. These are also the base for the planned paged-KV engine. | 3–7K | serve: Qwen3.8 and Qwen3.6 done, DeepSeek waits for its model; state: descriptor done, Qwen3.6 on it |
 | A6 | SYCL: the 7 files that are 95% or more the same as their `src/` original become shared | ~2.4K | done: 8 files (see [UPSTREAM_PORTING.md](UPSTREAM_PORTING.md)) |
 
 ### Phase B: changes NVIDIA-only code; one batched test session on an NVIDIA machine
@@ -150,6 +150,10 @@ Found during the work; each needs a decision or a later step.
   sampling path, which skips MTP drafting (`src/models/qwen36/q36_engine.cu`). Measured 2026-10-28 on the Strix Halo,
   UD-Q4_K_XL, 2,000-token prompt: 47 tok/s decode with the penalty, 65 tok/s with `presence_penalty: 0`. Older than the
   refactor; may be intended.
+- **A Qwen3.6 prompt read that never ended.** On 2026-10-28, in one of four server runs of the build before
+  `9f3ac8a3` (UD-Q4_K_XL, Strix Halo), a greedy 2,031-token prompt read gave no output for 341 s, after the same
+  request had taken 2.5 s in the run before; the server ended the engine (`engine_silence_s`).
+  Not seen again; cause unknown.
 
 ## Running engines and GPU tests on this PC
 
@@ -179,3 +183,6 @@ alternating runs of the two builds. Models on this PC: Qwen3.8 IQ3_S (`strata-iq
 | A3 | `0bb91482` | 492,909 | −239 | 98 files moved out of `src/core` (moves only) |
 | A4 | `874ed84c` | 492,906 | −242 | DeepSeek's OS helpers moved to `base/platform`; pools not merged (see open issues) |
 | A6 | `89a96beb` | 491,154 | −1,994 | 8 SYCL copies replaced by the shared sources (−1,752) |
+| A5 | `b17c98fd` | 491,394 | −1,754 | the shared command loop (`src/common/serve`), Qwen3.8 on it |
+| A5 | `57a2e1e0` | 491,316 | −1,832 | Qwen3.6 on the shared command loop |
+| A5 | `9f3ac8a3` | 491,505 | −1,643 | the state descriptor (`state_layout.hpp`), Qwen3.6 on it |
