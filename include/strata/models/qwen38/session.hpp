@@ -14,7 +14,7 @@
 // lets the CPU expert pool start while the GPU is still working on the next layer.
 #pragma once
 
-#include "strata/core/hit_hook.hpp"
+#include "strata/common/experts/hit_hook.hpp"
 #include "strata/models/qwen38/layer.hpp"
 #include "strata/kernels/cpu/pool.hpp"
 

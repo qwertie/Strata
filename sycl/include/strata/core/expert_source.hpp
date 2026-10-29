@@ -22,8 +22,9 @@
 #pragma once
 
 #include "strata/core/expert_cache.hpp"
-#include "strata/core/exchange_storage.hpp"
-#include "strata/core/hit_hook.hpp"
+#include "strata/common/experts/exchange_storage.hpp"
+#include "strata/common/experts/hit_hook.hpp"
+#include "strata/common/experts/ram_tier.hpp"
 #include "strata/kernels/cpu/pool.hpp"
 
 #include <atomic>
@@ -47,74 +48,6 @@ namespace strata::core {
 class PeerExperts;   // multi-GPU: the second GPU's expert tier (peer_experts.hpp)
 class RemoteExperts;
 struct LoadStats;
-
-namespace detail {
-
-/// Sentinel used by the pure complement planner for a blob that remains in the mmap fallback.
-inline constexpr uint64_t kNoCacheComplement = ~uint64_t{0};
-
-/// Required cgroup-v2 usage counters for the conservative cache-reclaim allowance.
-struct CgroupMemoryStat {
-    uint64_t current = 0;
-    uint64_t inactive_file = 0;
-    uint64_t file_dirty = 0;
-    uint64_t file_writeback = 0;
-    bool valid = false;
-};
-
-/// Calculate additional bytes under a finite cgroup limit after reclaiming only clean inactive file cache.
-/// Returns false when the required memory.stat counters were unavailable.
-bool cgroup_available_bytes(uint64_t limit, const CgroupMemoryStat& stat, uint64_t& bytes);
-
-/// #633: the RAM this process can get.  `available`: MemAvailable (Windows: the available physical memory), lowered
-/// to the room under the tightest cgroup limit; `cgroup_limit`: that tightest limit itself (v2 memory.max of the group
-/// and its ancestors, or v1 memory.limit_in_bytes), ~0 when there is none - what a container can never exceed.
-struct HostMemory {
-    uint64_t available = 0;
-    uint64_t cgroup_limit = ~uint64_t{0};
-    uint64_t commit = ~uint64_t{0};   ///< available Windows commit capacity; ~0 when not reported
-};
-
-/// Linux reads `meminfo`, `self_cgroup` and the cgroup tree under `cgroup_root` (the parameters are for tests; the
-/// defaults are the real files).  cgroup v2 as before (an unreadable limit of a group that has one fails); cgroup v1's
-/// memory controller (`<root>/memory/<path>`: memory.limit_in_bytes - memory.usage_in_bytes); no cgroup line at all is
-/// MemAvailable alone.  False when the RAM cannot be determined.
-bool host_available_memory(HostMemory& m, const std::string& meminfo = "/proc/meminfo",
-                           const std::string& self_cgroup = "/proc/self/cgroup",
-                           const std::string& cgroup_root = "/sys/fs/cgroup");
-
-/// Bound a resident budget by RAM and commit capacity after headroom; leave 256 MiB more when clamping.
-/// Pass UINT64_MAX for commit when the platform does not report it.
-uint64_t clamp_resident_budget(uint64_t requested, uint64_t physical, uint64_t commit, uint64_t headroom);
-
-/// Build compact offsets for experts absent from both the primary GPU cache and an optional second GPU tier.
-/// Kept CPU-only so selection and byte accounting can be tested without initializing a GPU.
-bool make_cache_complement_plan(
-    int64_t n_layers, int64_t n_expert, const std::vector<uint64_t>& layer_blob_bytes,
-    const std::vector<std::pair<int32_t, int32_t>>& primary_gpu_pairs,
-    const std::vector<std::pair<int32_t, int32_t>>& additional_gpu_pairs,
-    std::vector<uint64_t>& offsets, uint64_t& bytes, std::string& err);
-
-/// Resolve one blob through the compact copy when present, otherwise preserve its exact mapped-file fallback.
-const uint8_t* cache_complement_blob_or_fallback(
-    size_t index, const std::vector<uint64_t>& offsets, const uint8_t* complement_host,
-    const uint8_t* mapped_fallback);
-
-/// The resident RAM mode: which GPU-cache slots' experts are kept in RAM too.  The prompt path lends the cache's
-/// LAST slots (from `lend_from` on; a short prompt lends only the last few), and a lent slot's expert is streamed
-/// from RAM during the prompt and copied back into its slot after it.  `base_bytes` (every expert no slot holds)
-/// must fit `budget`; slots are then added from the end down to `lend_from` while they still fit.  Returns the
-/// first slot kept in RAM (`slot_bytes.size()` = none), or -1 when `base_bytes` alone exceeds `budget`.
-int64_t choose_resident_keep_from(const std::vector<uint64_t>& slot_bytes, uint64_t base_bytes, uint64_t budget,
-                                  int64_t lend_from);
-
-/// The adaptive tier swapped `in` into a GPU slot and `out` out of it: `out` takes `in`'s place in the compact copy
-/// (the caller copies out's bytes there).  False, and nothing changed, unless `in` is in the copy and `out` is not.
-bool exchange_cache_complement(std::vector<uint64_t>& offsets, size_t in, size_t out);
-
-}  // namespace detail
-
-
 
 /// Where one routed expert's bytes come from.
 ///

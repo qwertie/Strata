@@ -92,6 +92,7 @@ set(STRATA_METAL_HOST_SOURCES
   ${S}/base/gpu/device.cu ${S}/base/gpu/pinned.cu ${S}/base/gpu/runtime.cu ${S}/base/gpu/graph.cpp ${S}/base/gpu/vmm.cpp
   ${S}/base/platform/memory.cpp
   ${S}/common/state/conversation_memory.cpp ${S}/common/state/conversation_file.cpp
+  ${S}/common/experts/expert_profile.cpp ${S}/common/experts/ram_tier.cpp
   ${S}/core/weights.cpp ${S}/core/layout.cpp ${S}/core/expert_source.cpp ${S}/core/remote_experts.cpp
   ${S}/core/expert_cache.cpp ${S}/core/peer_experts.cpp ${S}/core/arch_defaults.cpp
   ${S}/models/qwen38/layer.cpp ${S}/models/qwen38/session.cpp ${S}/models/qwen38/native_head.cpp

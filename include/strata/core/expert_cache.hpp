@@ -37,41 +37,6 @@ namespace strata::core {
 /// in the two places that use it.
 inline constexpr int32_t kNotResident = -1;
 
-/// **THE STATIC RESIDENCY PLAN, READ BACK FROM THE FILE `tools/make_profile.py` WROTE.**
-///
-/// `profile.bin` is `STRP`, then `version, n_layers, n_expert, slots, n_ranked`, then `n_ranked` `(layer,
-/// expert)` pairs ranked by descending routing frequency, then a `n_layers x n_expert` frequency table.
-///
-/// **WHY A PROFILE AND NOT THE COMPULSORY-MISS POLICY THIS ENGINE ALREADY HAD.**  Compulsory-miss fills with
-/// the first `S` DISTINCT experts the run happens to route, which on this workload is whatever the prompt
-/// touched first - it measured `h = 0.4864`.  A profile ranked by frequency over a whole trace is what the
-/// plan's `0.6447` refers to, and the CPU's half of the drain is linear in `h`, so the gap is worth about
-/// 4 ms of drain.  The point of reading it from a file is that a profile built on ONE prompt can be scored on
-/// ANOTHER, which is the only way to know whether it transfers.
-///
-/// The frequency table is not returned: it is the profile's own working, and the engine measures `h` by
-/// running rather than by re-deriving what the file claims.
-bool read_expert_profile(const std::string& path, int64_t n_layers, int64_t n_expert,
-                         std::vector<std::pair<int32_t, int32_t>>& ranked, int64_t& slots, std::string& err);
-
-/// #477 (--expert-profile-save): what the adaptive tier learned, as a profile ranking EVERY (layer, expert) pair -
-/// the experts resident in VRAM now first (where the swaps left the cache), then the rest; within each, by `heat`
-/// (the routing the adaptive tier counted since the start, descending), then by `prior` (the profile the engine
-/// started from: an expert this run never routed keeps its old place), then by index.  A start from it begins
-/// where this one ended; one with more slots adds the hottest of the rest, one with fewer keeps the hottest.
-/// `resident` and `heat`: n_layers x n_expert entries (`heat` may be empty: no counts, the prior decides).
-std::vector<std::pair<int32_t, int32_t>> rank_learned_profile(int64_t n_layers, int64_t n_expert,
-                                                              const std::vector<uint8_t>& resident,
-                                                              const std::vector<double>& heat,
-                                                              const std::vector<std::pair<int32_t, int32_t>>& prior);
-
-/// #477: writes `ranked` in tools/make_profile.py's format, byte for byte: `STRP`, `1, n_layers, n_expert,
-/// n_ranked, n_ranked` (uint32), the pairs (uint16 layer, uint16 expert), then the n_layers x n_expert int32 table
-/// of each pair's rank (-1: not ranked).  Atomically: a `<path>.tmp` beside it, renamed over `path` once complete,
-/// so a reader (the next start) never sees half a file.  False with `err` when it could not be written.
-bool write_expert_profile(const std::string& path, int64_t n_layers, int64_t n_expert,
-                          const std::vector<std::pair<int32_t, int32_t>>& ranked, std::string& err);
-
 /// Free device memory for the expert cache.  On a unified memory system - one memory for the CPU and the GPU, such as
 /// the DGX Spark (GB10); CUDA reports it as cudaDevAttrIntegrated - cudaMemGetInfo counts only MemFree, not the page cache - which, with the experts read from the GGUF in place, is mostly those
 /// files' clean pages and gives way to a device allocation.  There the figure is MemAvailable less 6 GiB for the OS
@@ -186,8 +151,7 @@ public:
     void layer_slot_range(int64_t layer, int64_t& lo, int64_t& hi) const;
 
     /// The device address of one slot.
-    uint8_t* device_slot(int32_t slot);
-    const uint8_t* device_slot(int32_t slot) const;
+    uint8_t* device_slot(int32_t slot) const;
 
     /// Copies `(layer, expert)`'s blob from `host_blob` into `slot` on `stream`.  Asynchronous: the caller
     /// orders it.  Returns false if the indices are out of range rather than reading past the arena.
@@ -240,6 +204,7 @@ private:
     std::size_t blocking_staging_bytes_ = 0;
 #endif
     int64_t slot_end(int64_t n) const { return off_.empty() ? n * blob_ : (int64_t) off_[(size_t) n]; }
+    void reset_layer_cursors();
     bool open_segmented(uint64_t want, std::string& err);
     void release_segmented();
     uint8_t* base_ = nullptr;

@@ -590,6 +590,7 @@ if(STRATA_ENABLE_CUDA OR STRATA_ENABLE_HIP)
   # about arithmetic, and this one knows the ORDER the arithmetic happens in.
   add_library(strata_engine STATIC src/base/gpu/vmm.cpp
     src/common/state/conversation_memory.cpp src/common/state/conversation_file.cpp
+    src/common/experts/expert_profile.cpp src/common/experts/ram_tier.cpp
     src/core/expert_source.cpp src/core/remote_experts.cpp src/core/remote_expert_opt.cu src/core/expert_cache.cpp
     src/core/peer_experts.cpp src/core/arch_defaults.cpp src/core/nv_defaults.cpp
     src/models/qwen38/layer.cpp src/models/qwen38/session.cpp src/models/qwen38/native_head.cpp
@@ -1568,7 +1569,7 @@ if(STRATA_BUILD_TESTS)
   add_executable(adapt_async_default_test src/models/qwen38/adapt_async_default_test.cpp)
   target_include_directories(adapt_async_default_test PRIVATE include)
   add_test(NAME adapt_async_default_test COMMAND adapt_async_default_test)
-  add_executable(uma_cache_test src/core/uma_cache_test.cpp)
+  add_executable(uma_cache_test src/common/experts/uma_cache_test.cpp)
   target_include_directories(uma_cache_test PRIVATE include)
   add_test(NAME uma_cache_test COMMAND uma_cache_test)
   add_executable(request_test src/common/serve/request_test.cpp)

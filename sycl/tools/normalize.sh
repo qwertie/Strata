@@ -24,7 +24,9 @@ done < <(find src include third_party -type f 2>/dev/null)
 # or a SYCL-only file, never in a copy (docs/UPSTREAM_PORTING.md "Special cases")
 shared=(include/strata/base/gpu/graph.hpp include/strata/kernels/bf16_bits.hpp include/strata/kernels/f16_bits.hpp
         include/strata/kernels/rope.hpp include/strata/kernels/rope_scaling.hpp include/strata/models/qwen38/session.hpp
-        src/base/platform/direct_file.cpp src/models/qwen38/ngram/ple_reader.cpp)
+        src/base/platform/direct_file.cpp src/models/qwen38/ngram/ple_reader.cpp
+        include/strata/common/experts/exchange_storage.hpp src/common/experts/expert_profile.cpp
+        src/common/experts/ram_tier.cpp)
 rm -f "${shared[@]}"
 find . -type d -empty -delete
 find src include -type f -exec sed -i -E 's/DPCT([0-9]{4}):[0-9]+:/DPCT\1:/' {} +

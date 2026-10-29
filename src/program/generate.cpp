@@ -28,6 +28,7 @@
 #include "strata/common/serve/loop.hpp"
 #include "strata/common/serve/request.hpp"
 #include "strata/core/expert_cache.hpp"
+#include "strata/common/experts/expert_profile.hpp"
 #include "strata/models/qwen38/conversation_snapshot.hpp"
 #include "strata/common/state/conversation_file.hpp"
 #include "strata/common/state/session_save_reclaim.hpp"
@@ -37,7 +38,7 @@
 #include "strata/core/foresight_swap.hpp"
 #include "strata/base/gpu/pinned.hpp"
 #include "strata/base/gpu/pin_budget.hpp"
-#include "strata/core/uma_cache.hpp"
+#include "strata/common/experts/uma_cache.hpp"
 #include "strata/core/remote_experts.hpp"
 #include "strata/base/gpu/on_device.hpp"
 #include "strata/core/peer_experts.hpp"
@@ -177,6 +178,16 @@ std::string vram_free_note() {
     std::snprintf(buf, sizeof buf, " (%llu MiB of %llu MiB VRAM free on this GPU)", (unsigned long long) (free_b >> 20),
                   (unsigned long long) (total_b >> 20));
     return buf;
+}
+
+// Gets the share (%) of an expert cache's slots the prompt path may borrow with --prefill auto.  At 8192-token chunks
+// nearly every expert streams anyway, so a lent slot costs little: 90% when the copies are DMA from pinned RAM (Q2_0
+// 8192 + a 384-slot ring: 1283 tok/s), 85% when host copies are the limit (lending more only streams more through
+// them).  Read when called: the pinned share is set once the RAM copy is known.  STRATA_PREFILL_LEND_PCT overrides
+// (tuning).
+int64_t get_auto_lend_pct() {
+    const char* v = std::getenv("STRATA_PREFILL_LEND_PCT");
+    return v ? (int64_t) std::atoi(v) : (int64_t) (strata::prefill::Prefill::pinned_share() >= 0.9 ? 90 : 85);
 }
 
 // STRATA_PIPE_BYIELD_NODRAIN=1 (read once; off by default): with the pipelined groups, a BYIELD that reaches the main
@@ -4209,11 +4220,11 @@ int main(int argc, char** argv) {
         std::vector<std::pair<int32_t, int32_t>> prof;
         int64_t pslots = 0;
         std::string perr;
-        const bool remote = o.expert_cache_remote[0] > 0 || o.expert_cache_remote[1] > 0 || o.expert_cache_remote[2] > 0;
-        if (remote || o.expert_profile.empty() ||
+        if (remote_caches || o.expert_profile.empty() ||
             !strata::core::read_expert_profile(o.expert_profile, g.n_layers, g.n_expert, prof, pslots, perr)) {
             std::fprintf(stderr, "strata generate: --split-skip-if-fits: %s; the split stays\n",
-                         remote ? "remote expert caches are in use" : perr.empty() ? "no expert profile" : perr.c_str());
+                         remote_caches ? "remote expert caches are in use"
+                                       : perr.empty() ? "no expert profile" : perr.c_str());
         } else {
             const auto& lay = strata::kernels::cpu::expert_layout();
             int64_t pairs_bytes = 0;
@@ -4277,15 +4288,14 @@ int main(int argc, char** argv) {
 #else
         on = false;
 #endif
-        const bool helpers_a = o.expert_cache_remote[0] > 0 || o.expert_cache_remote[1] > 0 || o.expert_cache_remote[2] > 0;
-        on = on && !o.mtp.empty() && o.spec >= 2 && o.batch == 0 && o.peer_device < 0 && !helpers_a && !o.adapt_async;
+        on = on && !o.mtp.empty() && o.spec >= 2 && o.batch == 0 && o.peer_device < 0 && !remote_caches &&
+             !o.adapt_async;
         o.pipeline_windows = on ? 2 : 0;
         if (on)
             std::fprintf(stderr, "strata generate: --pipeline-windows 2 is on by default for a layer split of %zu stages "
                                  "(--pipeline-windows 0 or STRATA_PIPELINE_AUTO=0 turns it off)\n", split_devs.size() + 1);
     }
     if (o.pipeline_windows > 0) {
-        const bool helpers = o.expert_cache_remote[0] > 0 || o.expert_cache_remote[1] > 0 || o.expert_cache_remote[2] > 0;
         const char* off = !o.serve ? "it needs --serve"
                         : split_same ? "it needs each stage of the layer split on its own GPU"
                         : !multi_gpu ? "it needs a layer split on two GPUs"
@@ -4295,7 +4305,7 @@ int main(int argc, char** argv) {
                         : o.mtp.empty() || o.spec < 2 ? "it needs the MTP drafter (--mtp, --spec)"
                         : o.batch != 0 ? "not with --batch slots"
                         : o.peer_device >= 1 ? "not with --peer-device"
-                        : helpers ? "not with the helper caches (--expert-cache-device1..3, --remote-expert-opt)"
+                        : remote_caches ? "not with the helper caches (--expert-cache-device1..3, --remote-expert-opt)"
                         : nullptr;
         if (off != nullptr) {
             std::fprintf(stderr, "strata generate: --pipeline-windows %d is off: %s\n", o.pipeline_windows, off);
@@ -4686,11 +4696,7 @@ int main(int argc, char** argv) {
         };
         // the predicted window time (ms) of a placement, and the routed mass its caches hold
         std::vector<int64_t> held_cnt((size_t) ns, 0);   // per-stage fill count, for the startability gate
-        const int64_t kAutoLendPct = [] {
-            const char* v = std::getenv("STRATA_PREFILL_LEND_PCT");
-            return v ? (int64_t) std::atoi(v)
-                     : (int64_t) (strata::prefill::Prefill::pinned_share() >= 0.9 ? 90 : 85);
-        }();
+        const int64_t kAutoLendPct = get_auto_lend_pct();
         auto predict = [&](const std::vector<int64_t>& at, double& held_mass, int64_t& held) -> double {
             // THE CARVE, PRICED: a placement gives stage i the layers [lb, le), and that range's session is a
             // real cost on its device - subtracted here so the search knows what it leaves for experts.  This
@@ -5858,8 +5864,7 @@ int main(int argc, char** argv) {
         if (const char* pn = std::getenv("STRATA_PIN_BY_NEED"); pn != nullptr && pn[0] != '\0' && pn[0] != '0') {
             const char* off_why = profile.empty() ? "it needs --expert-profile (the ranking)"
                                 : multi_gpu || o.peer_device >= 1 ? "not with a layer split or a peer GPU"
-                                : std::any_of(o.expert_cache_remote.begin(), o.expert_cache_remote.end(),
-                                              [](int n) { return n > 0; }) ? "not with helper caches on other GPUs"
+                                : remote_caches ? "not with helper caches on other GPUs"
                                 : nullptr;
             if (off_why != nullptr) {
                 std::fprintf(stderr, "strata generate: pin by need: off (%s); the prefix pinning stays\n", off_why);
@@ -6058,8 +6063,7 @@ int main(int argc, char** argv) {
         return mib + 64;   // a margin for the allocator
     };
     if (o.expert_cache < 0) {
-        size_t free_b = 0, total_b = 0;
-        free_b = strata::core::device_free_bytes(); (void) total_b;
+        size_t free_b = strata::core::device_free_bytes();
         if (free_b == 0 && o.prefill_head_alias) {
             (void) cudaGetLastError();
             free_b = strata::core::device_free_bytes();
@@ -6068,7 +6072,8 @@ int main(int argc, char** argv) {
         {   // An integrated GPU's "free VRAM" is system RAM (the BIOS carve-out plus the GTT pool, nearly all of the RAM when the kernel was told
             // ttm.pages_limit), and the cache copies experts into that same RAM on top of the arena: sized from the pool alone it can ask for
             // more than the OS has left, and the OOM killer takes the engine or the desktop.  So the AUTO size counts that RAM once: the
-            // cache gets at most what the OS reports available less a reserve for the desktop (include/strata/core/uma_cache.hpp).
+            // cache gets at most what the OS reports available less a reserve for the desktop
+            // (include/strata/common/experts/uma_cache.hpp).
             // A recommendation: --expert-cache N is kept as asked, STRATA_UMA_RESERVE_GIB=0 gives the old sizing.
             cudaDeviceProp up{};
             int ud = 0;
@@ -6224,8 +6229,7 @@ int main(int argc, char** argv) {
         // an explicit cache size leaves room for the prompt path's buffers and the reserve, or the first prompt
         // fails with "device buffers ... do not fit" (with borrowing - the default with a profile - the path lends
         // slots instead and `prefill_mib` is 0, so only the reserve is checked)
-        size_t free_b = 0, total_b = 0;
-        free_b = strata::core::device_free_bytes(); (void) total_b;
+        size_t free_b = strata::core::device_free_bytes();
         const int64_t prefill_mib = owned_prefill_mib();
         const int64_t reserve = (((int64_t) o.vram_reserve_mib + prefill_mib) << 20) + pipe_first;
         const int64_t fit = std::max<int64_t>(((int64_t) free_b - reserve) / (int64_t) strata::kernels::cpu::expert_layout().max_blob, 0);
@@ -6272,8 +6276,7 @@ int main(int argc, char** argv) {
                          (double) ((uint64_t) q * per_layer_bytes) / 1073741824.0);
         }
     } else if (native_pack && o.expert_cache > 0 && !profile.empty()) {
-        size_t free_b = 0, total_b = 0;
-        free_b = strata::core::device_free_bytes(); (void) total_b;
+        size_t free_b = strata::core::device_free_bytes();
         const auto& lay = strata::kernels::cpu::expert_layout();
         // what the uniform sizing granted, in the 256-byte slots the loop below counts: the blob formats of 1280 / 2560
         // rows are whole multiples of 256 already; an NVFP4 blob's 16-byte scale tail is not, and the unrounded budget
@@ -6303,8 +6306,7 @@ int main(int argc, char** argv) {
     if (o.vram_elastic) {
         const char* why = !o.serve ? "it works between requests of --serve"
                         : multi_gpu ? "a layer split has a cache per GPU"
-                        : std::any_of(o.expert_cache_remote.begin(), o.expert_cache_remote.end(),
-                                      [](int n) { return n > 0; }) ? "the helper caches on other GPUs"
+                        : remote_caches ? "the helper caches on other GPUs"
                         : o.vram_segment_mib < 64 ? "--vram-segment-mib is below 64" : nullptr;
 #if defined(STRATA_USE_HIP)
         if (why == nullptr) why = "it is NVIDIA-only for now";
@@ -6411,8 +6413,7 @@ int main(int argc, char** argv) {
             if (!auto_cache || attempt - failed >= 6) break;
             cudaMemset(xcache.device_slot(0), 0, (size_t) xcache.bytes());
             cudaDeviceSynchronize();
-            size_t free_b = 0, total_b = 0;
-            free_b = strata::core::device_free_bytes(); (void) total_b;
+            size_t free_b = strata::core::device_free_bytes();
             const int64_t want = ((int64_t) o.vram_reserve_mib << 20) + pipe_first;
             if ((int64_t) free_b >= want - (64ll << 20)) break;
             // short by (want - free); a figure of 0 only says "at least": the first two such reads give back 1 GiB
@@ -6637,11 +6638,7 @@ int main(int argc, char** argv) {
     }();
     if (multi_gpu && split_auto && split_probe && !split_at.empty()) {
         const int ns = (int) stages.size() + 1;
-        const int64_t kPct = [] {
-            const char* v = std::getenv("STRATA_PREFILL_LEND_PCT");
-            return v ? (int64_t) std::atoi(v)
-                     : (int64_t) (strata::prefill::Prefill::pinned_share() >= 0.9 ? 90 : 85);
-        }();
+        const int64_t kPct = get_auto_lend_pct();
         const int64_t c = 512;
         bool probe_ok = true;
         int probe_dev = 0;
@@ -6796,6 +6793,36 @@ int main(int argc, char** argv) {
         for (int r = 0; r < drive.d.remote_count; ++r)
             if (drive.d.remote[r]->holds(l, e)) return true;
         return false;
+    };
+    // The swaps an adaptive round would make, best first: in each layer the most-routed experts without a VRAM
+    // slot (`res` < 0, routed at least twice, not `held_elsewhere(layer, expert)`) take the slots of the
+    // least-routed resident ones while the gain is at least `min_gain`.
+    struct Swap { float gain; int32_t layer, in, out; };
+    auto choose_swaps = [&](const std::vector<float>& usage, const std::vector<int32_t>& res, float min_gain,
+                            auto&& held_elsewhere) {
+        std::vector<Swap> swaps;
+        std::vector<std::pair<float, int32_t>> cand, vict;
+        for (int64_t l = 0; l < g.n_layers; ++l) {
+            cand.clear();
+            vict.clear();
+            const float* u = usage.data() + l * g.n_expert;
+            const int32_t* r = res.data() + l * g.n_expert;
+            for (int32_t e = 0; e < (int32_t) g.n_expert; ++e) {
+                if (r[e] < 0) { if (u[e] >= 2.0f && !held_elsewhere(l, e)) cand.emplace_back(u[e], e); }
+                else vict.emplace_back(u[e], e);
+            }
+            if (cand.empty() || vict.empty()) continue;
+            std::sort(cand.begin(), cand.end(), [](auto& a, auto& b) { return a.first > b.first; });
+            const size_t nc = std::min(cand.size(), vict.size());
+            std::partial_sort(vict.begin(), vict.begin() + (ptrdiff_t) nc, vict.end(),
+                              [](auto& a, auto& b) { return a.first < b.first; });
+            for (size_t i = 0; i < nc; ++i) {
+                if (cand[i].first < vict[i].first + min_gain) break;
+                swaps.push_back({cand[i].first - vict[i].first, (int32_t) l, cand[i].second, vict[i].second});
+            }
+        }
+        std::sort(swaps.begin(), swaps.end(), [](const Swap& a, const Swap& b) { return a.gain > b.gain; });
+        return swaps;
     };
     for (int r = 0; r < 3; ++r) if (o.expert_cache_remote[(size_t) r] > 0)
         drive.d.remote[drive.d.remote_count++] = &remote_experts[(size_t) r];
@@ -7551,32 +7578,82 @@ int main(int argc, char** argv) {
         if (const char* t = std::getenv("STRATA_TEST_PINNED_SHARE")) share = std::atof(t);   // tests: the Windows-like ring rule
         strata::prefill::Prefill::set_pinned_share(share);
     }
-    // bytes -> slots for CUDA0's cache: exact when it knows its per-slot offsets (a native pack's blobs differ
-    // per layer), otherwise max_blob each.
-    auto slots_from_bytes = [&](uint64_t need) -> int64_t {
-        const int64_t blob = (int64_t) strata::kernels::cpu::expert_layout().max_blob;
-        int64_t k = (int64_t) ((need + (uint64_t) blob - 1) / (uint64_t) blob);
-        if (xcache.slot_offsets() != nullptr) {   // sized slots: take slots from the end until they hold `need`
-            k = 0;
-            while (k < xcache.slots() &&
-                   (uint64_t) (xcache.bytes() - (int64_t) xcache.slot_offsets()[xcache.slots() - k]) < need) ++k;
+    // ---- WHO BORROWS, AND FROM WHOSE CACHE.  One entry per prompt path: CUDA0's (layers [0, split_at[0]),
+    // which is the whole model without a split) borrowing the tail of CUDA0's cache, then one per stage
+    // borrowing the tail of ITS OWN cache.  A loan is sized by the exact `Prefill::bytes_needed` for the
+    // chunk, is laid out by `Prefill::relayout`, and is refilled before any window reads - so outside the
+    // prompt the whole cache is expert cache.  THIS IS THE POINT OF THE STRUCT: the loan used to exist only
+    // for CUDA0, and `no_prefill_borrow` made every stage instead withhold a chunk-sized reserve from its
+    // cache for the entire session, which is what cost the 4-way its context (see the note at the top of the
+    // layer-split block).  A stage may only lend the rows for ITS OWN layers: `host_res` is one table whose
+    // slot values are indices into whichever cache owns the layer, so a loan that marked rows by slot number
+    // alone would hand CUDA0 a slot belonging to another stage's cache.
+    struct PfPart {
+        strata::core::ExpertCache* cache = nullptr;
+        const strata::core::SessionState* ses = nullptr;
+        strata::prefill::Prefill* sp = nullptr;
+        int dev = -1;                  // -1: leave the device alone (CUDA0)
+        int64_t lb = 0, le = 0;        // the layers whose rows this cache holds - the only rows it may lend
+        int32_t first = -1;            // the first slot it may lend, for the chunk that was chosen
+        int32_t first_now = -1;        // where its buffers are laid out now
+        int64_t lent_chunk = 0;
+        std::vector<std::pair<int32_t, int32_t>> lent;
+    };
+    std::vector<PfPart> pf_parts;   // the serve path's, filled there
+    // the slots chunk c's buffers borrow from one cache: exact when it knows its per-slot offsets (a native pack's
+    // blobs differ per layer), otherwise max_blob each
+    auto part_slots = [&](const PfPart& p, int64_t c) -> int64_t {
+        return strata::program::split_lend_slots(p.cache->slots(), p.cache->bytes(), p.cache->slot_offsets(),
+                                                 (uint64_t) strata::kernels::cpu::expert_layout().max_blob,
+                                                 strata::prefill::Prefill::bytes_needed(g, *p.ses, c, srcp != nullptr));
+    };
+    // the bytes of one cache's slots from `first` to its end
+    auto part_bytes = [&](const PfPart& p, int32_t first) -> uint64_t {
+        const strata::core::ExpertCache& xc = *p.cache;
+        return xc.slot_offsets() ? (uint64_t) (xc.bytes() - (int64_t) xc.slot_offsets()[first])
+                                 : (uint64_t) (xc.slots() - first) *
+                                       (uint64_t) strata::kernels::cpu::expert_layout().max_blob;
+    };
+    const PfPart cuda0_part{&xcache, &ss};   // CUDA0's cache alone: what plan_lend and generate's prompt price
+    auto lend_slots = [&](int64_t c) { return part_slots(cuda0_part, c); };
+    // STRATA_REFILL_PARTS=1 (gfx1151's table): a lent slot of a GGUF read in place is refilled from the pieces in the mapping.
+    // The default assembles the blob in a staging buffer first (a 4 MB copy on this thread), then copies that.
+    static const bool refill_parts = [] { const char* v = std::getenv("STRATA_REFILL_PARTS"); return v != nullptr && std::atoi(v) != 0; }();
+    // The two halves of giving a loan back: the rows `p` lent are refilled into the SAME slots of its own cache, on its
+    // own device, and the residency table is restored (the caller uploads it).  Split so that a layer split can queue
+    // every stage's copies before it waits for any (#340).
+    auto refill_loan_issue = [&](PfPart& p, std::string& e) -> bool {
+        const strata::core::OnDevice on(p.dev);
+        for (const auto& [i, slot] : p.lent) {   // D-4: queued, one wait (STRATA_REFILL_BLOCKING=1: each)
+            strata::core::BlobPart parts[3];
+            const int np = refill_parts && !refill_blocking() ? srcp->blob_parts(i / g.n_expert, i % g.n_expert, parts) : 0;
+            if (np > 0) {   // the GGUF read in place: the tensors' pieces go from the mapping to the slot, no assembled copy
+                if (!p.cache->fill_slot_queued_parts(slot, parts, np, e)) return false;
+                host_res[(size_t) i] = slot;
+                continue;
+            }
+            const uint8_t* b = srcp->blob_stable(i / g.n_expert, i % g.n_expert);
+            const int64_t nb = (int64_t) strata::kernels::cpu::expert_layout().blob_bytes(i / g.n_expert);
+            if (b == nullptr || !(refill_blocking() ? p.cache->fill_slot_blocking(slot, b, e, nb)
+                                                    : p.cache->fill_slot_queued(slot, b, e, nb)))
+                return false;
+            if (!refill_blocking()) srcp->note_async_read(b, nullptr);   // #1237
+            host_res[(size_t) i] = slot;
         }
-        return k;
+        return true;
     };
-    // ...and its inverse, for the ring's room: the bytes the cache's last `k` slots hold.  k can arrive <= 0: the
-    // caller's lend budget is `min(slots - 128, pct * slots / 100)` and goes negative on a cache smaller than 128
-    // slots, where `slots - k` would index slot_offsets() past its end.  Such a cache lends nothing, so say so.
-    auto bytes_from_slots = [&](int64_t k) -> uint64_t {
-        if (k <= 0) return 0;
-        if (xcache.slot_offsets() != nullptr)
-            return (uint64_t) (xcache.bytes() - (int64_t) xcache.slot_offsets()[xcache.slots() - k]);
-        return (uint64_t) k * (uint64_t) strata::kernels::cpu::expert_layout().max_blob;
+    auto refill_loan_wait = [&](PfPart& p, std::string& e) -> bool {
+        const strata::core::OnDevice on(p.dev);
+        if (!p.cache->sync_queued(e)) return false;
+#if defined(_WIN32)
+        // The copies have landed: the file pages touched by the loan need not stay in the working set.
+        for (const auto& [i, slot] : p.lent)
+            srcp->release(i / g.n_expert, i % g.n_expert);
+#endif
+        p.lent.clear();
+        p.lent_chunk = 0;
+        return true;
     };
-    auto lend_slots = [&](int64_t c) -> int64_t {
-        return slots_from_bytes(strata::prefill::Prefill::bytes_needed(g, ss, c, srcp != nullptr));
-    };
-    // `lend_bytes` went with the single-cache serve loan: a participant's loan is priced by `part_bytes` from its
-    // OWN cache, and the only other user of the old helper was the serve path's own relayout.
     auto request_chunk = [](int64_t tokens, int64_t max_chunk) -> int64_t {
         if (tokens <= 0 || max_chunk <= 0) return 0;
         const int64_t rounded = tokens > std::numeric_limits<int64_t>::max() - 255
@@ -7610,20 +7687,11 @@ int main(int argc, char** argv) {
         if (plan <= 0 || plan >= cap || tokens <= 0) return equal_chunk(tokens, cap);
         return strata::program::prefill_plan::balanced_chunk(tokens, cap, plan);
     };
-    // The prompt path's chunk and the slots it borrows for its buffers: the requested chunk halved until it fits,
-    // or with --prefill auto the largest chunk whose buffers take at most kAutoLendPct % of the slots (a
-    // lent slot's expert is streamed during the prompt and refilled after it; measured on a 12 GB card, 32K Q2_0
-    // prompt: 4096 791 tok/s, 6144 878, 8192 973 with 69% of the slots lent).  A request lends only what its own
-    // prompt needs (Prefill::relayout), so a big chunk costs short prompts nothing.  0 = none fits.
-    // at 8192-token chunks nearly every expert streams anyway, so a lent slot costs little: 90% when the
-    // copies are DMA from pinned RAM (Q2_0 8192 + a 384-slot ring: 1283 tok/s), 85% when host copies are the
-    // limit (lending more only streams more through them).  STRATA_PREFILL_LEND_PCT overrides (tuning).
-    // Hoisted out of plan_lend: the serve path's per-stage loans obey the same cap, one participant at a time.
-    const int64_t kAutoLendPct = [] {
-        const char* v = std::getenv("STRATA_PREFILL_LEND_PCT");
-        return v ? (int64_t) std::atoi(v)
-                 : (int64_t) (strata::prefill::Prefill::pinned_share() >= 0.9 ? 90 : 85);
-    }();
+    // The share (%) of a cache's slots the buffers of an auto chunk may borrow: a lent slot's expert is streamed during
+    // the prompt and refilled after it (measured on a 12 GB card, 32K Q2_0 prompt: 4096 791 tok/s, 6144 878, 8192 973
+    // with 69% of the slots lent).  A request lends only what its own prompt needs (Prefill::relayout), so a big chunk
+    // costs short prompts nothing.  Every participant's loan obeys the same cap.
+    const int64_t kAutoLendPct = get_auto_lend_pct();
     // The largest chunk --prefill auto may pick: the operator's ceiling (--prefill auto:N) and never past the
     // context, but a bare `auto` always reaches 8192.  32768 and 16384 stay opt-in (#282): a 32K prompt with
     // IQ2_XS (RTX 5090, 64K context) read at 5,624 tok/s in 8192-token chunks and 6,465 in one 32768 chunk (40K
@@ -7689,82 +7757,112 @@ int main(int argc, char** argv) {
         }
         return best;
     };
-    auto plan_lend = [&](int64_t& chunk) -> int64_t {
-        auto slots_for = lend_slots;
-        // 0.1.39's list with its ring (also the size up to which a prompt keeps that ring under #583)
-        auto old_rule = [&]() -> int64_t {
-            strata::prefill::Prefill::set_ring_budget(0, 0);
-            static constexpr int64_t kAutoChunks[] = {32768, 16384, 8192, 6144, 4096, 3072, 2048, 1024, 512, 256};
-            for (const int64_t c : kAutoChunks) {
-                // above 8192: only when asked for, and only when a prompt of the context can use it
-                if (c > 8192 && (c > o.prefill_auto_max || c > o.max_context)) continue;
-                if (o.prefill_auto_cap > 0 && c > o.prefill_auto_cap) continue;   // #1630
-                const int64_t k = slots_for(c);
-                if (k + 128 <= xcache.slots() && k * 100 <= kAutoLendPct * xcache.slots()) return c;
-            }
-            return 0;
-        };
-        if (o.prefill_auto && !strata::prefill::Prefill::ring_bytes_enabled()) {   // STRATA_RING_BYTES=0: 0.1.39's list
-            const int64_t c = old_rule();
-            if (c > 0) { chunk = c; return slots_for(c); }
-            return 0;
-        }
-        if (o.prefill_auto) {   // the default since 0.1.39b (#583)
-            // The chunk and the ring are one budget, and the ring is the better buy.  Measured on this 4-way
-            // IQ3_S rig (2x RTX 3060 + 2x RTX 5060, CUDA3 lending at its 90% cap) on a 120K prompt: 8960 tokens
-            // with the 17-slot ring that leaves reads at 963 tok/s, 8192/130 at 1,008, 7168 with the ring full at
-            // its 199-slot byte budget at 1,000, and 5632/199 at 915.  A ring slot is worth ~0.53 tok/s there and
-            // a chunk token ~0.05, so the 69 slots between a full ring and 8192's 130 are worth more than the
-            // 512 chunk tokens they cost - and once the ring IS full, shrinking the chunk further buys nothing.
-            // So: the largest chunk that still leaves the ring full.  Only a rig where no chunk at all can afford
-            // one falls back to the old rule, which takes the largest chunk whose ring clears kRingMin (the
-            // value at or below which ring_slots() returns STAGE and streaming is off).
-            constexpr int64_t kRingMin = 16;
-            const int64_t small = old_rule();   // 0.1.39's chunk (and its ring for the prompts that fit it)
-            const int64_t ring_max = strata::prefill::Prefill::ring_cap_for(small);
-            const int64_t budget = std::min(xcache.slots() - 128, kAutoLendPct * xcache.slots() / 100);
-            // The room is a BYTE budget.  A ring slot is max_blob bytes (`carve` lays out one whole blob each),
-            // while these cache slots hold their own layer's blob, which is smaller than max_blob unless the cache
-            // happens to hold the pack's biggest layer - on the 4-way IQ3_S rig that is 2.15 MiB a slot against a
-            // 2.54 MiB max_blob.  Counting the room in slots priced the ring at 0.85x what it costs, `fits` then
-            // rejected the whole chunk instead of shrinking the ring, and the scan stopped a step short: measured
-            // against chunk 6144/ring 199, 8192 was refused where the same bytes afford a ~87-slot ring.
-            const int64_t blob = (int64_t) strata::kernels::cpu::expert_layout().max_blob;
-            const uint64_t avail = bytes_from_slots(budget);
-            auto room_of = [&](int64_t t) -> int64_t {
-                const uint64_t nonring = strata::prefill::Prefill::bytes_needed_no_ring(g, ss, t, srcp != nullptr);
-                return std::min((int64_t) ((avail - std::min(avail, nonring)) / (uint64_t) blob), ring_max);
-            };
-            // `room_of` is capped at ring_max, so "the ring is full" is exactly room == ring_max, and both that
-            // test and the ones below it only get harder as t grows - the bisection stays valid.
-            auto scan = [&](int64_t floor) -> int64_t {
-                return biggest_chunk(auto_ceiling, [&](int64_t t) -> bool {
-                    const int64_t room = room_of(t);
-                    if (room < floor) return false;
-                    strata::prefill::Prefill::set_ring_budget((int) room, 0);
-                    // ring_slots() now returns `room` - unless STRATA_PREFILL_RING overrides it, in which case the
-                    // chunk has to fit THAT ring, which is the pre-fix rule and the A/B arm
-                    const int64_t k = slots_for(t);
-                    return k + 128 <= xcache.slots() && k * 100 <= kAutoLendPct * xcache.slots();
-                });
-            };
-            int64_t c = scan(ring_max);
-            if (c == 0 && ring_max < strata::prefill::Prefill::ring_default_slots()) c = scan(kRingMin);
-            // a prompt that fits 0.1.39's chunk keeps 0.1.39's ring (one chunk: the smaller ring only slowed it)
-            if (small >= c) {   // the scan bought nothing: 0.1.39's choice
-                strata::prefill::Prefill::set_ring_budget(0, 0);
-                if (small > 0) { chunk = small; return slots_for(small); }
-                return 0;
-            }
-            strata::prefill::Prefill::set_ring_budget((int) room_of(c), small);
-            chunk = c;
-            return slots_for(c);
-        }
-        for (int64_t c = chunk; c >= 256; c /= 2) {
-            const int64_t k = slots_for(c);
-            if (k + 128 <= xcache.slots()) { chunk = c; return k; }
+    // Whether one participant can lend chunk c: a loan must leave the 128-slot floor.  The percentage cap
+    // (`cap`) is an AUTO-chunk rule and only the auto scan applies it - an explicit --prefill is the operator's
+    // number, and a loan of it only has to fit.
+    auto fits_one = [&](const PfPart& p, int64_t c, bool cap) -> bool {
+        const int64_t k = part_slots(p, c);
+        if (k <= 0 || k + 128 > p.cache->slots()) return false;
+        return !(cap && k * 100 > kAutoLendPct * p.cache->slots());
+    };
+    // `only`: one participant alone (CUDA0's for plan_lend, and #448: what one GPU would choose); null: every one
+    auto fits = [&](int64_t c, bool cap, const PfPart* only = nullptr) -> bool {
+        if (only != nullptr) return fits_one(*only, c, cap);
+        for (const PfPart& p : pf_parts)
+            if (!fits_one(p, c, cap)) return false;
+        return true;
+    };
+    // The chunk and the ring are one budget.  The ring used to be a fixed 384 slots taken off the top
+    // before the chunk was considered: 506 MiB on a Q2_0 pack, where it was tuned, but 1,912 MiB on
+    // Q8_0, more than half an 8 GB card's cache - which is what kept that card at a 1024-token chunk.
+    // Size the chunk first and hand the ring what the smallest participant leaves over, up to the ring's
+    // byte budget - but hand it ALL of it: the ring is the better buy per byte.  Measured on a 4-way IQ3_S rig
+    // (2x RTX 3060 + 2x RTX 5060, CUDA3 lending at its 90% cap) on a 120K prompt: 8960 tokens with the 17-slot
+    // ring that leaves reads at 963 tok/s, 8192/130 at 1,008, 7168 with the ring full at its 199-slot byte
+    // budget at 1,000, and 5632/199 at 915.  A ring slot is worth ~0.53 tok/s there and a chunk token ~0.05.
+    // So the chunk to take is the largest one that still leaves the ring full, not the largest one that leaves
+    // it anything at all.  kRingMin is the fallback floor for a rig where no chunk can afford a full ring;
+    // ring_slots() returns STAGE at or below it, which turns streaming off.
+    constexpr int64_t kRingMin = 16;
+    // The room is a BYTE budget: a ring slot is max_blob bytes (`carve` lays out one whole blob each), but a cache
+    // slot holds its own layer's blob, which on the 4-way IQ3_S rig averages 0.85 of it.  In slots the ring looked
+    // 18% cheaper than it is, and a chunk whose ring only fitted after that discount was refused outright - the scan
+    // stopped one step short while the chunk it did take had room to spare for the cap-sized ring.
+    const int64_t kBlob = (int64_t) strata::kernels::cpu::expert_layout().max_blob;
+    // the ring slots (max_blob bytes each) that p's lend budget holds beside chunk c's other buffers
+    auto part_room = [&](const PfPart& p, int64_t c) -> int64_t {
+        // clamped at 0: a cache under 128 slots has a negative lend budget, and `slots - budget` is
+        // then `slots`, which is off_[slots] - the end of the prefix sum, so that cache lends 0 bytes
+        // rather than reading one entry past its offsets
+        const int64_t budget = std::max<int64_t>(0, std::min(p.cache->slots() - 128,
+                                                            kAutoLendPct * p.cache->slots() / 100));
+        const uint64_t avail = part_bytes(p, (int32_t) (p.cache->slots() - budget));
+        const uint64_t nonring = strata::prefill::Prefill::bytes_needed_no_ring(g, *p.ses, c, srcp != nullptr);
+        return (int64_t) ((avail - std::min(avail, nonring)) / (uint64_t) kBlob);
+    };
+    auto ring_room = [&](int64_t c, const PfPart* only, int64_t cap) -> int64_t {
+        if (only != nullptr)
+            return std::min(cap, part_room(*only, c));
+        int64_t room = cap;
+        for (const PfPart& p : pf_parts)
+            room = std::min(room, part_room(p, c));
+        return room;
+    };
+    // The largest chunk on the 256-token grid that `only` - or, with null, every stage - can lend with the
+    // ring still at its full byte budget (ring_room is capped at ring_max, so that is room == ring_max),
+    // under the operator's ceiling (auto_ceiling keeps a bare `auto` at 8192, #282).  Failing that, the
+    // largest chunk whose ring clears kRingMin.
+    // 0.1.39's list with its ring: the chunk it would pick, and the size up to which a prompt keeps that ring
+    auto old_pick = [&](const PfPart* only) -> int64_t {
+        strata::prefill::Prefill::set_ring_budget(0, 0);
+        static constexpr int64_t kAutoChunks[] = {32768, 16384, 8192, 6144, 4096, 3072, 2048, 1024, 512, 256};
+        for (const int64_t c : kAutoChunks) {
+            // above 8192: only when asked for, and only when a prompt of the context can use it (#282)
+            if (c > 8192 && (c > o.prefill_auto_max || c > o.max_context)) continue;
+            if (o.prefill_auto_cap > 0 && c > o.prefill_auto_cap) continue;   // #1630
+            if (fits(c, true, only)) return c;
         }
         return 0;
+    };
+    auto scan = [&](const PfPart* only) -> int64_t {
+        if (!o.prefill_auto) {   // an explicit --prefill is the operator's number, and a loan of it only has to fit
+            for (int64_t c = o.prefill_chunk; c >= 256; c /= 2)
+                if (fits(c, false, only)) return c;
+            return 0;
+        }
+        if (!strata::prefill::Prefill::ring_bytes_enabled()) return old_pick(only);   // STRATA_RING_BYTES=0
+        const int64_t small = old_pick(only);
+        const int64_t cap = strata::prefill::Prefill::ring_cap_for(small);
+        auto probe = [&](int64_t floor) -> int64_t {
+            return biggest_chunk(auto_ceiling, [&](int64_t t) -> bool {
+                const int64_t room = ring_room(t, only, cap);
+                if (room < floor) return false;
+                strata::prefill::Prefill::set_ring_budget((int) room, 0);
+                // ring_slots() now returns `room` - unless STRATA_PREFILL_RING overrides it, in which
+                // case the chunk has to fit THAT ring, which is the pre-fix rule and the A/B arm
+                return fits(t, true, only);
+            });
+        };
+        int64_t c = probe(cap);
+        if (c == 0 && cap < strata::prefill::Prefill::ring_default_slots()) c = probe(kRingMin);
+        return std::max(c, small);   // never a smaller chunk than 0.1.39's
+    };
+    // CUDA0's loan alone (the resident RAM copy's lend region, generate's prompt): sets `chunk` to the chunk `scan`
+    // picks and the ring to what the serve path sets for it, and returns the slots that chunk borrows (0, with `chunk`
+    // unchanged, when none fits).
+    auto plan_lend = [&](int64_t& chunk) -> int64_t {
+        const int64_t c = scan(&cuda0_part);
+        if (o.prefill_auto && strata::prefill::Prefill::ring_bytes_enabled()) {
+            // a prompt that fits 0.1.39's chunk keeps 0.1.39's ring (one chunk: the smaller ring only slowed it)
+            const int64_t small = old_pick(&cuda0_part);
+            if (c > small)
+                strata::prefill::Prefill::set_ring_budget(
+                    (int) ring_room(c, &cuda0_part, strata::prefill::Prefill::ring_cap_for(small)), small);
+        }
+        if (c <= 0)
+            return 0;
+        chunk = c;
+        return lend_slots(c);
     };
     // ---- #2824: THE PROMPT PLAN PRICES THE HOST.  The scans above ask whether a loan fits the GPU cache.  But a lent
     // slot's expert is not in VRAM for the length of the prompt: it comes from the RAM copy if the copy kept it, else from
@@ -8210,7 +8308,7 @@ int main(int argc, char** argv) {
                         if ((uint64_t) fb >= need + (3ull << 29)) continue;
                     } else (void) cudaGetLastError();
                 }
-                // its tail slots, as the scan's `cache_slots_for` counts them
+                // its tail slots, as the scan's `part_slots` counts them
                 int64_t k = strata::program::split_lend_slots(
                     xc.slots(), xc.bytes(), xc.slot_offsets(),
                     (uint64_t) strata::kernels::cpu::expert_layout().max_blob, need);
@@ -8470,49 +8568,12 @@ int main(int argc, char** argv) {
         void* borrow = nullptr;
         uint64_t borrow_bytes = 0;
         int32_t lend_first = -1;          // the first slot the prompt path may borrow (its largest chunk)
-        // ---- WHO BORROWS, AND FROM WHOSE CACHE.  One entry per prompt path: CUDA0's (layers [0, split_at[0]),
-        // which is the whole model without a split) borrowing the tail of CUDA0's cache, then one per stage
-        // borrowing the tail of ITS OWN cache.  A loan is sized by the exact `Prefill::bytes_needed` for the
-        // chunk, is laid out by `Prefill::relayout`, and is refilled before any window reads - so outside the
-        // prompt the whole cache is expert cache.  THIS IS THE POINT OF THE STRUCT: the loan used to exist only
-        // for CUDA0, and `no_prefill_borrow` made every stage instead withhold a chunk-sized reserve from its
-        // cache for the entire session, which is what cost the 4-way its context (see the note at the top of the
-        // layer-split block).  A stage may only lend the rows for ITS OWN layers: `host_res` is one table whose
-        // slot values are indices into whichever cache owns the layer, so a loan that marked rows by slot number
-        // alone would hand CUDA0 a slot belonging to another stage's cache.
-        struct PfPart {
-            strata::core::ExpertCache* cache = nullptr;
-            const strata::core::SessionState* ses = nullptr;
-            strata::prefill::Prefill* sp = nullptr;
-            int dev = -1;                  // -1: leave the device alone (CUDA0)
-            int64_t lb = 0, le = 0;        // the layers whose rows this cache holds - the only rows it may lend
-            int32_t first = -1;            // the first slot it may lend, for the chunk that was chosen
-            int32_t first_now = -1;        // where its buffers are laid out now
-            int64_t lent_chunk = 0;
-            std::vector<std::pair<int32_t, int32_t>> lent;
-        };
-        // bytes -> slots for one cache: exact when it knows its per-slot offsets (a native pack's blobs differ
-        // per layer), otherwise max_blob each.
-        auto cache_slots_for = [&](const strata::core::ExpertCache& xc, uint64_t need) -> int64_t {
-            return strata::program::split_lend_slots(xc.slots(), xc.bytes(), xc.slot_offsets(),
-                                                     (uint64_t) strata::kernels::cpu::expert_layout().max_blob, need);
-        };
-        auto part_slots = [&](const PfPart& p, int64_t c) -> int64_t {
-            return cache_slots_for(*p.cache, strata::prefill::Prefill::bytes_needed(g, *p.ses, c, srcp != nullptr));
-        };
-        auto part_bytes = [&](const PfPart& p, int32_t first) -> uint64_t {
-            strata::core::ExpertCache& xc = *p.cache;
-            return xc.slot_offsets() ? (uint64_t) (xc.bytes() - (int64_t) xc.slot_offsets()[first])
-                                     : (uint64_t) (xc.slots() - first) *
-                                           (uint64_t) strata::kernels::cpu::expert_layout().max_blob;
-        };
         // #340: a layer split whose caches already hold most experts streams few of them through the prompt path, so
         // the 384-slot ring (sized for a card that streams nearly every expert of a chunk) only makes every stage's
         // loan bigger: 96 slots (0.1.30's ring here) when >= 75% of the (layer, expert) pairs are resident.  One GPU
         // keeps the pinned-share rule.  STRATA_SPLIT_RING=N: N slots on a split; 0: the pinned-share rule.
         // (decided above, before the lend regions were sized: a no-op here unless the resident RAM mode skipped it)
         decide_split_ring();
-        std::vector<PfPart> pf_parts;
         int64_t pf_plan_chunk = 0;   // #2824: the host-aware plan's chunk for prompts longer than o.prefill_chunk (0: none)
         // a cache too small to lend the prompt path its buffers would make it allocate them on top - on a card
         // whose cache already filled its reserve, that is the over-subscription the auto sizing avoids - so the
@@ -8521,90 +8582,6 @@ int main(int argc, char** argv) {
             pf_parts.push_back({&xcache, &ss, &sp, -1, 0, multi_gpu ? split_at[0] : g.n_layers, -1, -1, 0, {}});
             for (auto& st : stages)
                 pf_parts.push_back({&st->cache, &st->ss, &st->sp, st->dev, st->lb, st->le, -1, -1, 0, {}});
-            // The two tests plan_lend makes for CUDA0 alone, one participant at a time: a loan must leave the
-            // 128-slot floor.  The percentage cap is an AUTO-chunk rule and only the auto scan applies it - an
-            // explicit --prefill is the operator's number, and a loan of it only has to fit.  With one participant
-            // (no split) this reduces to plan_lend exactly, so the single-GPU loan is unchanged from main.
-            auto fits_one = [&](const PfPart& p, int64_t c, bool cap) -> bool {
-                const int64_t k = part_slots(p, c);
-                if (k <= 0 || k + 128 > p.cache->slots()) return false;
-                return !(cap && k * 100 > kAutoLendPct * p.cache->slots());
-            };
-            // `only`: CUDA0's cache alone (#448: what one GPU would choose, for the log below); null: every one
-            auto fits = [&](int64_t c, bool cap, const PfPart* only = nullptr) -> bool {
-                if (only != nullptr) return fits_one(*only, c, cap);
-                for (const PfPart& p : pf_parts)
-                    if (!fits_one(p, c, cap)) return false;
-                return true;
-            };
-            // The chunk and the ring are one budget.  The ring used to be a fixed 384 slots taken off the top
-            // before the chunk was considered: 506 MiB on a Q2_0 pack, where it was tuned, but 1,912 MiB on
-            // Q8_0, more than half an 8 GB card's cache - which is what kept that card at a 1024-token chunk.
-            // Size the chunk first and hand the ring what the smallest participant leaves over, up to the ring's
-            // byte budget - but hand it ALL of it, as in plan_lend: the ring is the better buy per byte (the
-            // measurements are there), so the chunk to take is the largest one that still leaves the ring full,
-            // not the largest one that leaves it anything at all.  kRingMin is the fallback floor for a rig where
-            // no chunk can afford a full ring; ring_slots() returns STAGE at or below it, which turns streaming
-            // off.
-            constexpr int64_t kRingMin = 16;
-            // The room is a BYTE budget, as in plan_lend: a ring slot is max_blob bytes, but a cache slot holds
-            // its own layer's blob, which on this rig averages 0.85 of it.  In slots the ring looked 18% cheaper
-            // than it is, and a chunk whose ring only fitted after that discount was refused outright - the scan
-            // stopped one step short while the chunk it did take had room to spare for the cap-sized ring.
-            const int64_t kBlob = (int64_t) strata::kernels::cpu::expert_layout().max_blob;
-            auto ring_room = [&](int64_t c, const PfPart* only, int64_t cap) -> int64_t {
-                int64_t room = cap;
-                for (const PfPart& p : pf_parts) {
-                    if (only != nullptr && &p != only) continue;
-                    // clamped at 0: a cache under 128 slots has a negative lend budget, and `slots - budget` is
-                    // then `slots`, which is off_[slots] - the end of the prefix sum, so that cache lends 0 bytes
-                    // rather than reading one entry past its offsets
-                    const int64_t budget = std::max<int64_t>(0, std::min(p.cache->slots() - 128,
-                                                                        kAutoLendPct * p.cache->slots() / 100));
-                    const uint64_t avail = part_bytes(p, (int32_t) (p.cache->slots() - budget));
-                    const uint64_t nonring = strata::prefill::Prefill::bytes_needed_no_ring(g, *p.ses, c, srcp != nullptr);
-                    room = std::min(room, (int64_t) ((avail - std::min(avail, nonring)) / (uint64_t) kBlob));
-                }
-                return room;
-            };
-            // The largest chunk on the 256-token grid that `only` - or, with null, every stage - can lend with the
-            // ring still at its full byte budget (ring_room is capped at ring_max, so that is room == ring_max),
-            // under the operator's ceiling (auto_ceiling keeps a bare `auto` at 8192, #282).  Failing that, the
-            // largest chunk whose ring clears kRingMin.
-            // 0.1.39's list with its ring: the chunk it would pick, and the size up to which a prompt keeps that ring
-            auto old_pick = [&](const PfPart* only) -> int64_t {
-                strata::prefill::Prefill::set_ring_budget(0, 0);
-                static constexpr int64_t kAutoChunks[] = {32768, 16384, 8192, 6144, 4096, 3072, 2048, 1024, 512, 256};
-                for (const int64_t c : kAutoChunks) {
-                    if (c > 8192 && (c > o.prefill_auto_max || c > o.max_context)) continue;   // #282, as plan_lend
-                    if (o.prefill_auto_cap > 0 && c > o.prefill_auto_cap) continue;   // #1630
-                    if (fits(c, true, only)) return c;
-                }
-                return 0;
-            };
-            auto scan = [&](const PfPart* only) -> int64_t {
-                if (!o.prefill_auto) {   // an explicit --prefill is the operator's number, and a loan of it only has to fit
-                    for (int64_t c = o.prefill_chunk; c >= 256; c /= 2)
-                        if (fits(c, false, only)) return c;
-                    return 0;
-                }
-                if (!strata::prefill::Prefill::ring_bytes_enabled()) return old_pick(only);   // STRATA_RING_BYTES=0
-                const int64_t small = old_pick(only);
-                const int64_t cap = strata::prefill::Prefill::ring_cap_for(small);
-                auto probe = [&](int64_t floor) -> int64_t {
-                    return biggest_chunk(auto_ceiling, [&](int64_t t) -> bool {
-                        const int64_t room = ring_room(t, only, cap);
-                        if (room < floor) return false;
-                        strata::prefill::Prefill::set_ring_budget((int) room, 0);
-                        // ring_slots() now returns `room` - unless STRATA_PREFILL_RING overrides it, in which
-                        // case the chunk has to fit THAT ring, which is the pre-fix rule and the A/B arm
-                        return fits(t, true, only);
-                    });
-                };
-                int64_t c = probe(cap);
-                if (c == 0 && cap < strata::prefill::Prefill::ring_default_slots()) c = probe(kRingMin);
-                return std::max(c, small);   // never a smaller chunk than 0.1.39's
-            };
             int64_t chunk = scan(nullptr);
             // #448: a small card in a layer split caps every stage's chunk (an RTX 3080's 512-slot cache held a
             // 32 GB card's split to 512 tokens: prompts 6.2x slower, decode the same).  Named when it bites, so the
@@ -10339,29 +10316,9 @@ int main(int argc, char** argv) {
         auto adapt = [&]() -> bool {
             if (!pending.empty()) return true;   // the previous swaps are still in flight
             if (remote_opt && !remote_opt->adapt(drive.d.usage, host_res, pending, o.adapt_swaps, *srcp)) return false;
-            struct Swap { float gain; int32_t layer, in, out; };
-            std::vector<Swap> swaps;
-            std::vector<std::pair<float, int32_t>> cand, vict;
-            for (int64_t l = 0; l < g.n_layers; ++l) {
-                cand.clear();
-                vict.clear();
-                const float* u = drive.d.usage.data() + l * g.n_expert;
-                const int32_t* r = host_res.data() + l * g.n_expert;
-                for (int32_t e = 0; e < (int32_t) g.n_expert; ++e) {
-                    if (r[e] < 0) { if (u[e] >= 2.0f && !(peer.valid() && peer.has(l, e)) && !(remote_opt && remote_opt->owns(l, e)) && !helper_holds(l, e)) cand.emplace_back(u[e], e); }
-                    else vict.emplace_back(u[e], e);
-                }
-                if (cand.empty() || vict.empty()) continue;
-                std::sort(cand.begin(), cand.end(), [](auto& a, auto& b) { return a.first > b.first; });
-                const size_t nc = std::min(cand.size(), vict.size());
-                std::partial_sort(vict.begin(), vict.begin() + (ptrdiff_t) nc, vict.end(),
-                                  [](auto& a, auto& b) { return a.first < b.first; });
-                for (size_t i = 0; i < nc; ++i) {
-                    if (cand[i].first < vict[i].first + o.adapt_min_gain) break;
-                    swaps.push_back({cand[i].first - vict[i].first, (int32_t) l, cand[i].second, vict[i].second});
-                }
-            }
-            std::sort(swaps.begin(), swaps.end(), [](const Swap& a, const Swap& b) { return a.gain > b.gain; });
+            std::vector<Swap> swaps = choose_swaps(drive.d.usage, host_res, o.adapt_min_gain, [&](int64_t l, int32_t e) {
+                return (peer.valid() && peer.has(l, e)) || (remote_opt && remote_opt->owns(l, e)) || helper_holds(l, e);
+            });
             if ((int) swaps.size() > o.adapt_swaps) swaps.resize((size_t) o.adapt_swaps);
             if (aov) {   // 0.1.43: the copies go in layer order and each layer's landing is told to the verify window
                 std::stable_sort(swaps.begin(), swaps.end(), [](const Swap& a, const Swap& b) { return a.layer < b.layer; });
@@ -10613,31 +10570,8 @@ int main(int argc, char** argv) {
             h.used = true;
         };
         auto a_pick = [&]() {   // step 1's choice (host work)
-            struct C { float gain; int32_t layer, in, out; };
-            std::vector<C> all;
-            std::vector<std::pair<float, int32_t>> cand, vict;
-            for (int64_t l = 0; l < g.n_layers; ++l) {
-                cand.clear();
-                vict.clear();
-                const float* u = a_usage.data() + l * g.n_expert;
-                const int32_t* r = a_res.data() + l * g.n_expert;
-                for (int32_t e = 0; e < (int32_t) g.n_expert; ++e) {
-                    if (r[e] < 0) { if (u[e] >= 2.0f && !helper_holds(l, e)) cand.emplace_back(u[e], e); }
-                    else vict.emplace_back(u[e], e);
-                }
-                if (cand.empty() || vict.empty()) continue;
-                std::sort(cand.begin(), cand.end(), [](auto& a, auto& b) { return a.first > b.first; });
-                const size_t nc = std::min(cand.size(), vict.size());
-                std::partial_sort(vict.begin(), vict.begin() + (ptrdiff_t) nc, vict.end(),
-                                  [](auto& a, auto& b) { return a.first < b.first; });
-                for (size_t i = 0; i < nc; ++i) {
-                    if (cand[i].first < vict[i].first + o.adapt_min_gain) break;
-                    all.push_back({cand[i].first - vict[i].first, (int32_t) l, cand[i].second, vict[i].second});
-                }
-            }
-            std::sort(all.begin(), all.end(), [](const C& a, const C& b) { return a.gain > b.gain; });
             aswaps.clear();
-            for (const C& c : all) {
+            for (const Swap& c : choose_swaps(a_usage, a_res, o.adapt_min_gain, helper_holds)) {
                 if ((int64_t) aswaps.size() >= a_cap) break;
                 const int32_t slot = a_res[(size_t) c.layer * g.n_expert + c.out];
                 if (slot < 0) continue;
@@ -13176,46 +13110,13 @@ int main(int argc, char** argv) {
             // the arena, the residency table is restored, and one upload puts it on every device.  A stage refills
             // through its own cache and its own device - a slot refilled into the wrong cache would leave that
             // stage's cache holding an expert it does not own, which is silent and produces plausible tokens.
-            // (split in two halves so a layer split can queue every stage's copies before it waits for any: #340)
-            // STRATA_REFILL_PARTS=1 (gfx1151's table): a lent slot of a GGUF read in place is refilled from the pieces in the mapping.
-            // The default assembles the blob in a staging buffer first (a 4 MB copy on this thread), then copies that.
-            static const bool refill_parts = [] { const char* v = std::getenv("STRATA_REFILL_PARTS"); return v != nullptr && std::atoi(v) != 0; }();
             auto refill_issue = [&](PfPart& p, std::string& e) -> bool {
                 tr("refill start", (long long) p.lent.size());
-                const strata::core::OnDevice on(p.dev);
-                for (const auto& [i, slot] : p.lent) {   // D-4: queued, one wait (STRATA_REFILL_BLOCKING=1: each)
-                    strata::core::BlobPart parts[3];
-                    const int np = refill_parts && !refill_blocking() ? srcp->blob_parts(i / g.n_expert, i % g.n_expert, parts) : 0;
-                    if (np > 0) {   // the GGUF read in place: the tensors' pieces go from the mapping to the slot, no assembled copy
-                        if (!p.cache->fill_slot_queued_parts(slot, parts, np, e)) return false;
-                        host_res[(size_t) i] = slot;
-                        continue;
-                    }
-                    const uint8_t* b = srcp->blob_stable(i / g.n_expert, i % g.n_expert);
-                    const int64_t nb = (int64_t) strata::kernels::cpu::expert_layout().blob_bytes(i / g.n_expert);
-                    if (b == nullptr || !(refill_blocking() ? p.cache->fill_slot_blocking(slot, b, e, nb)
-                                                            : p.cache->fill_slot_queued(slot, b, e, nb)))
-                        return false;
-                    if (!refill_blocking()) srcp->note_async_read(b, nullptr);   // #1237
-                    host_res[(size_t) i] = slot;
-                }
-                return true;
-            };
-            auto refill_wait = [&](PfPart& p, std::string& e) -> bool {
-                const strata::core::OnDevice on(p.dev);
-                if (!p.cache->sync_queued(e)) return false;
-#if defined(_WIN32)
-                // The copies have landed: the file pages touched by the loan need not stay in the working set.
-                for (const auto& [i, slot] : p.lent)
-                    srcp->release(i / g.n_expert, i % g.n_expert);
-#endif
-                p.lent.clear();
-                p.lent_chunk = 0;
-                return true;
+                return refill_loan_issue(p, e);
             };
             auto refill_one = [&](PfPart& p, std::string& e) -> bool {
                 if (p.lent.empty()) return true;
-                return refill_issue(p, e) && refill_wait(p, e);
+                return refill_issue(p, e) && refill_loan_wait(p, e);
             };
             // #340: with several stages every stage's copies go out first (each card on its own link), then each is
             // waited for - the same copies into the same slots, so the same cache; one stage: refill_one exactly.
@@ -13230,7 +13131,7 @@ int main(int argc, char** argv) {
                     for (PfPart& p : pf_parts)
                         if (!p.lent.empty() && !refill_issue(p, e)) return false;
                     for (PfPart& p : pf_parts)
-                        if (!p.lent.empty() && !refill_wait(p, e)) return false;
+                        if (!p.lent.empty() && !refill_loan_wait(p, e)) return false;
                 } else {
                     for (PfPart& p : pf_parts)
                         if (!p.lent.empty() && !refill_one(p, e)) return false;
@@ -15580,7 +15481,7 @@ int main(int argc, char** argv) {
     double prefill_batched_ms = 0;
     std::FILE* final_r = o.dump_final_r.empty() ? nullptr : std::fopen(o.dump_final_r.c_str(), "wb");
     std::vector<float> final_r_host(final_r ? (size_t) (g.hc * g.n_embd) : 0);
-    std::vector<std::pair<int32_t, int32_t>> lent;     // (residency index, slot) lent to the prompt path
+    PfPart loan{&xcache, &ss};   // CUDA0's slots lent to the prompt path
     const int64_t n_batched = (o.prefill_until > 0 && o.prefill_until < n_prompt - 1) ? o.prefill_until : n_prompt - 1;
     if (o.prefill_chunk > 0 && n_prompt > 1) {
         void* borrow = nullptr;
@@ -15593,13 +15494,10 @@ int main(int argc, char** argv) {
                 const int64_t vram_chunk = chunk;
                 chunk = host_plan_chunk(
                     chunk, (uint64_t) std::max<int64_t>(0, (int64_t) xcache.bytes()), xcache.slots(),
-                    [&](int64_t c) {
-                        const int64_t kk = lend_slots(c);
-                        return kk + 128 <= xcache.slots() && kk * 100 <= kAutoLendPct * xcache.slots();
-                    },
+                    [&](int64_t c) { return fits_one(cuda0_part, c, true); },
                     [&](int64_t c, uint64_t& bytes, int64_t& slots) {
                         slots = lend_slots(c);
-                        bytes = bytes_from_slots(slots);
+                        bytes = part_bytes(cuda0_part, (int32_t) (xcache.slots() - slots));
                     },
                     [&](int64_t) { return strata::prefill::Prefill::ring_cap_for(4096); },
                     [&] { int64_t c2 = chunk_in; (void) plan_lend(c2); }, n_batched);
@@ -15628,7 +15526,6 @@ int main(int argc, char** argv) {
             } else if (chunk != o.prefill_chunk) {
                 k = 0;                                 // a fixed chunk that does not fit: its own buffers, as before
             }
-            const int64_t blob = (int64_t) strata::kernels::cpu::expert_layout().max_blob;
 #if defined(STRATA_GPU_METAL)
             k = 0;   // Metal: no loan of expert-cache slots (the prompt buffers are the Metal window's own); the refill after it copied into given-back allocations
 #endif
@@ -15640,13 +15537,12 @@ int main(int argc, char** argv) {
                 if (!kvg_ensure(n_prompt + o.max_new + 64, [] { cudaDeviceSynchronize(); })) return 1;
                 for (size_t i = 0; i < host_res.size(); ++i)
                     if (host_res[i] >= first) {
-                        lent.emplace_back((int32_t) i, host_res[i]);
+                        loan.lent.emplace_back((int32_t) i, host_res[i]);
                         host_res[i] = strata::core::kNotResident;
                     }
                 res_put(d_res);
                 borrow = xcache.device_slot(first);
-                borrow_bytes = xcache.slot_offsets() ? (uint64_t) (xcache.bytes() - (int64_t) xcache.slot_offsets()[first])
-                                                     : (uint64_t) k * (uint64_t) blob;
+                borrow_bytes = part_bytes(cuda0_part, first);
                 std::fprintf(stderr, "strata generate: prompt path borrows %lld cache slots (%.2f GiB)\n", (long long) k,
                              (double) borrow_bytes / 1073741824.0);
             }
@@ -15691,29 +15587,15 @@ int main(int argc, char** argv) {
             return 1;
         }
         // refill the lent slots from the arena and give them back to the decode tier
-        if (!lent.empty()) {
+        if (!loan.lent.empty()) {
             const Clock::time_point tr = Clock::now();
-            for (const auto& [i, slot] : lent) {   // D-4: queued, one wait (STRATA_REFILL_BLOCKING=1: each)
-                const uint8_t* b = srcp->blob_stable(i / g.n_expert, i % g.n_expert);
-                const int64_t nb = (int64_t) strata::kernels::cpu::expert_layout().blob_bytes(i / g.n_expert);
-                if (b == nullptr || !(refill_blocking() ? xcache.fill_slot_blocking(slot, b, err, nb)
-                                                        : xcache.fill_slot_queued(slot, b, err, nb))) {
-                    std::fprintf(stderr, "strata generate: refilling a lent slot failed: %s\n", err.c_str());
-                    return 1;
-                }
-                if (!refill_blocking()) srcp->note_async_read(b, nullptr);   // #1237
-                host_res[(size_t) i] = slot;
-            }
-            if (!xcache.sync_queued(err)) {
+            const size_t n_lent = loan.lent.size();
+            if (!refill_loan_issue(loan, err) || !refill_loan_wait(loan, err)) {
                 std::fprintf(stderr, "strata generate: refilling the lent slots failed: %s\n", err.c_str());
                 return 1;
             }
-#if defined(_WIN32)
-            for (const auto& [i, slot] : lent)
-                srcp->release(i / g.n_expert, i % g.n_expert);
-#endif
             res_put(d_res);
-            std::fprintf(stderr, "strata generate: %zu lent slots refilled in %.1f ms\n", lent.size(),
+            std::fprintf(stderr, "strata generate: %zu lent slots refilled in %.1f ms\n", n_lent,
                          std::chrono::duration<double, std::milli>(Clock::now() - tr).count());
         }
 #if defined(STRATA_HAVE_DFLASH2)
@@ -16168,29 +16050,7 @@ int main(int argc, char** argv) {
                 return true;   // the previous swaps are still in flight
             }
             if (trace_adapt) std::fprintf(stderr, "strata: ADAPT round=%lld considering\n", (long long) adapt_rounds);
-            struct Swap { float gain; int32_t layer, in, out; };
-            std::vector<Swap> swaps;
-            std::vector<std::pair<float, int32_t>> cand, vict;
-            for (int64_t l = 0; l < g.n_layers; ++l) {
-                cand.clear();
-                vict.clear();
-                const float* u = drive.d.usage.data() + l * g.n_expert;
-                const int32_t* r = host_res.data() + l * g.n_expert;
-                for (int32_t e = 0; e < (int32_t) g.n_expert; ++e) {
-                    if (r[e] < 0) { if (u[e] >= 2.0f && !helper_holds(l, e)) cand.emplace_back(u[e], e); }
-                    else vict.emplace_back(u[e], e);
-                }
-                if (cand.empty() || vict.empty()) continue;
-                std::sort(cand.begin(), cand.end(), [](auto& a, auto& b) { return a.first > b.first; });
-                const size_t nc = std::min(cand.size(), vict.size());
-                std::partial_sort(vict.begin(), vict.begin() + (ptrdiff_t) nc, vict.end(),
-                                  [](auto& a, auto& b) { return a.first < b.first; });
-                for (size_t i = 0; i < nc; ++i) {
-                    if (cand[i].first < vict[i].first + 1.5f) break;
-                    swaps.push_back({cand[i].first - vict[i].first, (int32_t) l, cand[i].second, vict[i].second});
-                }
-            }
-            std::sort(swaps.begin(), swaps.end(), [](const Swap& a, const Swap& b) { return a.gain > b.gain; });
+            std::vector<Swap> swaps = choose_swaps(drive.d.usage, host_res, 1.5f, helper_holds);
             if ((int) swaps.size() > o.adapt_swaps) swaps.resize((size_t) o.adapt_swaps);
             // this (non-serve) path refills CUDA0's cache only, so its copies back read CUDA0's cache too
             if (!resident_stage_swaps(src, host_res, g.n_expert, swaps,

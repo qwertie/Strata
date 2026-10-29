@@ -31,6 +31,7 @@
 #include "strata/base/gpu/device.hpp"
 #include "strata/core/remote_expert_opt.hpp"
 #include "strata/core/expert_cache.hpp"
+#include "strata/common/experts/expert_profile.hpp"
 #include "strata/models/qwen38/conversation_snapshot.hpp"
 #include "strata/common/state/conversation_file.hpp"
 #include "strata/common/state/conversation_memory.hpp"

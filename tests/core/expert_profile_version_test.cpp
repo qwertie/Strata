@@ -1,7 +1,7 @@
 // read_expert_profile refuses a profile whose header version is not 1, naming the version it found, the one it
 // reads, and the file - before the geometry check, since the fields after the version are only known to be a
 // version 1 layout.  A version 1 file still loads.  CPU only: no device is touched.
-#include "strata/core/expert_cache.hpp"
+#include "strata/common/experts/expert_profile.hpp"
 
 #include <cstdint>
 #include <cstdio>

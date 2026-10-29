@@ -1,4 +1,4 @@
-// include/strata/core/uma_cache.hpp - sizing the GPU expert cache on a device whose memory IS the system RAM.
+// include/strata/common/experts/uma_cache.hpp - sizing the GPU expert cache on a device whose memory IS the system RAM.
 //
 // On a Strix Halo (or any APU) "free VRAM" is the GPU-addressable pool: the BIOS carve-out plus the GTT, up to nearly all of the RAM when
 // the kernel was told ttm.pages_limit (docs/STRIX_HALO.md recommends 112 GiB of a 128 GiB box).  The expert arena (every expert, in RAM) is

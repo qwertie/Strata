@@ -263,6 +263,7 @@ strata_resolve(_engine src/models/qwen38/layer.cpp src/models/qwen38/session.cpp
                        src/core/arch_defaults.cpp
                        src/base/gpu/vmm.cpp   # the port's stub: no driver VMM on Level Zero
                        src/common/state/conversation_file.cpp
+                       src/common/experts/expert_profile.cpp src/common/experts/ram_tier.cpp
                        src/core/peer_experts.cpp src/core/remote_expert_opt_stub.cpp)         # 0.1.36+: --peer-device (a stub in the port: no second GPU tier yet)
 add_library(strata_engine STATIC ${_engine} ${CMAKE_CURRENT_SOURCE_DIR}/src/core/gguf_expert_source.cpp
             ${CMAKE_CURRENT_SOURCE_DIR}/src/base/gpu/copy_queue.cpp)   # 0.1.43: a queue on the copy engine

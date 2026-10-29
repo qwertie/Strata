@@ -1,5 +1,5 @@
-// src/core/uma_cache_test.cpp - the RAM reserve of an integrated GPU's auto expert cache (no GPU needed).
-#include "strata/core/uma_cache.hpp"
+// src/common/experts/uma_cache_test.cpp - the RAM reserve of an integrated GPU's auto expert cache (no GPU needed).
+#include "strata/common/experts/uma_cache.hpp"
 
 #include <cstdio>
 
