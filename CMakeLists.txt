@@ -341,7 +341,8 @@ target_link_libraries(strata-plan PRIVATE strata_plan)
 # Only built when a GPU backend is on, so the Phase 1 targets keep working without a toolkit.
 if(STRATA_ENABLE_CUDA OR STRATA_ENABLE_HIP)
   add_library(strata_core STATIC src/base/gpu/device.cu src/base/gpu/pinned.cu src/base/gpu/graph.cpp
-                               src/base/platform/memory.cpp src/core/weights.cpp src/core/layout.cpp)
+                               src/base/platform/memory.cpp src/core/weights.cpp src/core/layout.cpp
+                               src/base/gpu/runtime.cu)
   target_include_directories(strata_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
   # the DFlash2 drafter (src/models/qwen38/dflash2.cpp, src/kernels/cuda/dflash2.cu) exists in the CUDA and HIP builds; the Metal and SYCL builds compile without it
   target_compile_definitions(strata_core PUBLIC STRATA_HAVE_DFLASH2=1)
@@ -1573,6 +1574,9 @@ if(STRATA_BUILD_TESTS)
   add_executable(request_test src/common/serve/request_test.cpp)
   target_link_libraries(request_test PRIVATE strata_serve)
   add_test(NAME request_test COMMAND request_test)
+  add_executable(state_layout_test src/common/state/state_layout_test.cpp)
+  target_include_directories(state_layout_test PRIVATE include)
+  add_test(NAME state_layout_test COMMAND state_layout_test)
   add_executable(suffix_drafter_test src/common/spec/suffix_drafter_test.cpp)
   target_link_libraries(suffix_drafter_test PRIVATE strata_spec)
   add_test(NAME suffix_drafter_test COMMAND suffix_drafter_test)

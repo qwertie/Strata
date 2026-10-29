@@ -11382,7 +11382,6 @@ int main(int argc, char** argv) {
         int admit_slot = -1;               ///< the slot the request being read will continue in (BGEN)
         long long admit_max_new = 0;
         auto batch_on = [&] { for (const BSlot& b : bs) if (b.active) return true; return false; };
-        // the session a request just left behind (its prompt) -> slot b's sessions, on every stage
         // the main sessions and the slot sessions of a stage live on the same device and are carved alike, so
         // a slot copy can go device to device (the same bytes into the same places as the checkpoint/K-V image
         // round trip through host memory, which costs ~40-90 ms per admission on a 4-card split); each device is
@@ -11422,67 +11421,32 @@ int main(int argc, char** argv) {
             if (!sync_all()) { e = "batch slot copy: device sync failed"; return false; }
             return true;
         };
-        auto copy_to_slot = [&](int b, const std::vector<int32_t>& ids, std::string& e) -> bool {
-            const int64_t upto = (int64_t) ids.size();
-            if (slot_copy_direct) {
-                if (!direct_slot_copy(true, b, ids, e)) return false;
-            } else
-            for (size_t k = 0; k < bslot_ss.size(); ++k) {
-                strata::core::SessionState& from = k == 0 ? ss : stages[k - 1]->ss;
-                strata::core::SessionState& to = *bslot_ss[k][(size_t) b];
-                const strata::core::OnDevice on_k(k == 0 ? 0 : stages[k - 1]->dev);
-                if (cudaDeviceSynchronize() != cudaSuccess) { e = "batch admission: device sync failed"; return false; }
-                strata::core::ConversationCheckpoint ck;
-                ck.ids = ids;
-                if (!strata::core::conversation_checkpoint_save(ck, from, g, e) ||
-                    !strata::core::conversation_checkpoint_restore(ck, to, g, e))
-                    return false;
-                for (int64_t j = 0; j < from.qsa_alloc; ++j) {
-                    strata::core::ConversationKv img;
-                    if (!strata::core::conversation_kv_save(img, from.qsa_states[from.qsa_ord0 + j], g, upto, true, e))
-                        return false;
-                    if (cudaDeviceSynchronize() != cudaSuccess) { e = "batch admission: device sync failed"; return false; }
-                    if (!strata::core::conversation_kv_restore(img, to.qsa_states[to.qsa_ord0 + j], g, upto, true, e))
-                        return false;
-                }
-                if (cudaDeviceSynchronize() != cudaSuccess) { e = "batch admission: device sync failed"; return false; }
-            }
-            if (batch_mtp) {
-                // Admission first builds the solo draft KV; copy it into the slot before drafting.  Both drafters' K/V
-                // are on the drafter's device (the last stage's GPU with a layer split): the copy's ring refill is a
-                // kernel launch there.
-                const strata::core::OnDevice on_mtp(mtp.device());
-                strata::core::ConversationKv image;
-                if (!mtp.idle(e) || !slot_mtp[(size_t) b]->idle(e) ||
-                    !strata::core::conversation_kv_save(image, mtp.kv_state(), draft_geometry, upto, false, e) ||
-                    !strata::core::conversation_kv_restore(image, slot_mtp[(size_t) b]->kv_state(),
-                                                           draft_geometry, upto, false, e) ||
-                    cudaDeviceSynchronize() != cudaSuccess)
-                    return false;
-                slot_mtp[(size_t) b]->set_prompt_len(upto);
-            }
-            return true;
-        };
-        // slot b's sessions -> the main ones (the reverse of copy_to_slot): a request that continues the
-        // conversation an idle slot holds reads on from there.  Every stage, the same calls.
-        // `at`: one of the slot's checkpoints - only the K/V up to it is copied and its state restored instead
-        auto copy_from_slot = [&](int b, const ConvCheckpoint* at, std::string& e) -> bool {
-            const int64_t upto = at != nullptr ? (int64_t) at->ids.size() : (int64_t) bs[(size_t) b].ids.size();
+        // the main sessions -> slot b's (`into_slot`; the session a request just left behind, its prompt `ids`) or
+        // slot b's -> the main ones (a request that continues the conversation an idle slot holds reads on from
+        // there), on every stage.  `at`: one of the slot's checkpoints - only the K/V up to it is copied and its state
+        // restored instead
+        auto copy_slot = [&](bool into_slot, int b, const std::vector<int32_t>& ids, const ConvCheckpoint* at,
+                             std::string& e) -> bool {
+            const int64_t upto = at != nullptr ? (int64_t) at->ids.size() : (int64_t) ids.size();
             if (at != nullptr && at->stage_parts.size() != stages.size()) { e = "a checkpoint without its stage parts"; return false; }
+            const char* sync_failed = into_slot ? "batch admission: device sync failed"
+                                                : "batch slot restore: device sync failed";
             if (slot_copy_direct && at == nullptr) {
-                if (!direct_slot_copy(false, b, bs[(size_t) b].ids, e)) return false;
+                if (!direct_slot_copy(into_slot, b, ids, e)) return false;
             } else
             for (size_t k = 0; k < bslot_ss.size(); ++k) {
-                strata::core::SessionState& from = *bslot_ss[k][(size_t) b];
-                strata::core::SessionState& to = k == 0 ? ss : stages[k - 1]->ss;
+                strata::core::SessionState& main_ss = k == 0 ? ss : stages[k - 1]->ss;
+                strata::core::SessionState& slot_ss = *bslot_ss[k][(size_t) b];
+                strata::core::SessionState& from = into_slot ? main_ss : slot_ss;
+                strata::core::SessionState& to = into_slot ? slot_ss : main_ss;
                 const strata::core::OnDevice on_k(k == 0 ? 0 : stages[k - 1]->dev);
-                if (cudaDeviceSynchronize() != cudaSuccess) { e = "batch slot restore: device sync failed"; return false; }
+                if (cudaDeviceSynchronize() != cudaSuccess) { e = sync_failed; return false; }
                 if (at != nullptr) {
                     if (!strata::core::conversation_checkpoint_restore(k == 0 ? *at : at->stage_parts[k - 1], to, g, e))
                         return false;
                 } else {
                     strata::core::ConversationCheckpoint ck;
-                    ck.ids = bs[(size_t) b].ids;
+                    ck.ids = ids;
                     if (!strata::core::conversation_checkpoint_save(ck, from, g, e) ||
                         !strata::core::conversation_checkpoint_restore(ck, to, g, e))
                         return false;
@@ -11491,23 +11455,26 @@ int main(int argc, char** argv) {
                     strata::core::ConversationKv img;
                     if (!strata::core::conversation_kv_save(img, from.qsa_states[from.qsa_ord0 + j], g, upto, true, e))
                         return false;
-                    if (cudaDeviceSynchronize() != cudaSuccess) { e = "batch slot restore: device sync failed"; return false; }
+                    if (cudaDeviceSynchronize() != cudaSuccess) { e = sync_failed; return false; }
                     if (!strata::core::conversation_kv_restore(img, to.qsa_states[to.qsa_ord0 + j], g, upto, true, e))
                         return false;
                 }
-                if (cudaDeviceSynchronize() != cudaSuccess) { e = "batch slot restore: device sync failed"; return false; }
+                if (cudaDeviceSynchronize() != cudaSuccess) { e = sync_failed; return false; }
             }
             if (batch_mtp) {
-                // A returning solo request resumes from its slot's draft KV (on the drafter's device, as above).
+                // Admission first builds the solo draft KV; copy it into the slot before drafting, and a returning solo
+                // request resumes from its slot's.  Both drafters' K/V are on the drafter's device (the last stage's
+                // GPU with a layer split): the copy's ring refill is a kernel launch there.
+                strata::core::MtpDrafter& from = into_slot ? mtp : *slot_mtp[(size_t) b];
+                strata::core::MtpDrafter& to = into_slot ? *slot_mtp[(size_t) b] : mtp;
                 const strata::core::OnDevice on_mtp(mtp.device());
                 strata::core::ConversationKv image;
-                if (!slot_mtp[(size_t) b]->idle(e) || !mtp.idle(e) ||
-                    !strata::core::conversation_kv_save(image, slot_mtp[(size_t) b]->kv_state(),
-                                                        draft_geometry, upto, false, e) ||
-                    !strata::core::conversation_kv_restore(image, mtp.kv_state(), draft_geometry, upto, false, e) ||
+                if (!from.idle(e) || !to.idle(e) ||
+                    !strata::core::conversation_kv_save(image, from.kv_state(), draft_geometry, upto, false, e) ||
+                    !strata::core::conversation_kv_restore(image, to.kv_state(), draft_geometry, upto, false, e) ||
                     cudaDeviceSynchronize() != cudaSuccess)
                     return false;
-                mtp.set_prompt_len(upto);
+                to.set_prompt_len(upto);
             }
             return true;
         };
@@ -12761,7 +12728,7 @@ int main(int argc, char** argv) {
             if (slot_source >= 0) {
                 lent_slot = -1;   // (a longer start than the main session's)
                 const auto t0 = Clock::now();
-                if (!copy_from_slot(slot_source, slot_ck, err)) {
+                if (!copy_slot(false, slot_source, bs[(size_t) slot_source].ids, slot_ck, err)) {
                     // the main session may be half written: read this prompt from the start
                     std::fprintf(stderr, "strata batch: restoring slot %d failed (%s); reading the prompt\n",
                                  slot_source, err.c_str());
@@ -13488,7 +13455,7 @@ int main(int argc, char** argv) {
                     std::string ye;
                     const auto ty = Clock::now();
                     std::vector<int32_t> pre(ids.begin(), ids.begin() + q);
-                    if (can && copy_to_slot(ys, pre, ye)) {
+                    if (can && copy_slot(true, ys, pre, nullptr, ye)) {
                         BSlot& sl = bs[(size_t) ys];
                         sl = BSlot{};
                         sl.ids = std::move(pre);
@@ -15381,7 +15348,7 @@ int main(int argc, char** argv) {
                 bool cont = !cancelled && produced_n == 1 && admit_max_new > 1 && std::strcmp(finish, "length") == 0 &&
                             (int64_t) live.size() == p;
                 const auto tc0 = Clock::now();
-                if (cont && !copy_to_slot(admit_slot, live, err)) {
+                if (cont && !copy_slot(true, admit_slot, live, nullptr, err)) {
                     std::fprintf(stderr, "strata serve: batch admission failed: %s\n", err.c_str());
                     bs[(size_t) admit_slot].cached = false;   // its sessions may be half written
                     cont = false;

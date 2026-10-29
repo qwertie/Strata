@@ -5,8 +5,52 @@ swapping to RAM or disk, conversation files. Headers: `include/strata/common/sta
 
 The conversation cache, buffers, files and memory checks, the session-save reclaim, the conversation listing
 (`token_listing`) and the progress heartbeat came here from `src/core/`. The snapshot code (`conversation_snapshot`,
-`conversation_state`) is still Qwen3.8's, in `src/models/qwen38/`. **A5** makes it model-neutral, moves it here and
-replaces DeepSeek's own conversation slots.
+`conversation_state`) is still Qwen3.8's, in `src/models/qwen38/`.
+
+## The state descriptor (`state_layout.hpp`)
+
+A model describes the memory one conversation keeps as a `StateLayout`: a list of `StateRegion`s, each one buffer.
+
+| `RegionKind` | Size at N tokens | Examples |
+|---|---|---|
+| `fixed` | `unit_bytes` | a GDN/SSM recurrent state, a conv history, the last hidden row, DeepSeek's window ring |
+| `per_token` | `rows` x N x `unit_bytes` | K or V (`rows` = KV heads, head-major) |
+| `per_block` | `rows` x (N / `block`) x `unit_bytes` | DeepSeek's compressed K/V and index keys, Qwen3.8's pooled index keys |
+
+In a session, each row of a growing region has room for the session's whole context (`cells`). The shared code does
+the bookkeeping on the description alone:
+
+- `bytes_for(N)`: the size of a session at its context, or of a conversation of N tokens (`LIST_CONVERSATIONS`).
+- `alloc_state`: one zeroed device buffer per region (`StateBuffers`).
+- `copy_state`: the first N tokens' state from one place to another: session to session on the device, or session to
+  a packed host image (`get_host_image`) and back. A packed image is what parking a conversation in RAM or writing it
+  to a file needs. `for_each_region_copy` gives the rectangles without copying (the unit test copies them with
+  `memcpy`).
+- `clear_fixed_state`: a new conversation's start.
+
+A model split across devices describes one layout per device. Device memory and copies go through
+`include/strata/base/gpu/runtime.hpp`, not the CUDA runtime.
+
+### How the engines map onto it
+
+- **Qwen3.6** (`src/models/qwen36/q36_engine.cu`) uses it: per layer K and V (`per_token`) or the conv history and
+  the recurrent state (`fixed`), the MTP block's K and V, the last hidden row. `alloc_session`, `copy_session` (a
+  conversation read in one batch session that continues in another), `reset` and the session size it reports are
+  the shared calls.
+- **Qwen3.8** (`src/program/generate.cpp`, `src/models/qwen38/`) does not use it yet. Its session (`session_init`)
+  carves the state and the scratch buffers from one allocation, its K/V is paged (int8 with scales under
+  `--kv int8`) and partly streamed from host memory, and its snapshot code (`conversation_state.cpp`,
+  `conversation_snapshot.cpp`) writes the session file format, which must not change. Its running state maps onto
+  `fixed` regions (the GDN rows, the PLE history, and per QSA layer the indexer tail, dead row and block position),
+  its K and V and their scales onto `per_token` regions and its pooled index keys onto `per_block`. It moves when the
+  paged K/V pool comes: a page pool replaces a growing region's rows, and `copy_state` then copies page by page.
+- **DeepSeek V4.1** (`src/models/deepseekv41/`) does not use it yet (its model cannot be run here to check it). Its
+  slot (`slot_bytes`, `slot_save`, `slot_load` in `ds4_model.cu`) maps onto one layout per device: per layer the
+  window ring and the compressor's partial group (`c_kv`, `c_score`) as `fixed` regions, per KV source the
+  compressed K/V and the index keys as `per_block` regions with `block` = the source's ratio. The slot file's format
+  puts a length before each region (bytes for the ring, floats for the partial group, rows for a source), so the
+  file writer keeps those. Its conversation slots in RAM and on disk (`ds4_main.cpp`) then become the conversation
+  cache's.
 
 See [docs/ARCHITECTURE.md](../../../docs/ARCHITECTURE.md) for the layers and
 [docs/REFACTOR_PLAN.md](../../../docs/REFACTOR_PLAN.md) for the steps.

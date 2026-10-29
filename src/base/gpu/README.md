@@ -10,8 +10,11 @@ The HIP compat headers are two different sets, each put first on the include pat
 What is here so far came unchanged from `src/core/` (and `gfx_arch.hpp` from `include/strata/kernels/`): the device
 arena and device facts (`device`), the pinned host arena and its budget (`pinned`, `pin_budget`, `pinned_ring`),
 graphs (`graph`, `host_graph_launch`), virtual memory (`vmm`), batched copies (`dma_batch`), `on_device`, and the
-hardware traits (`emulate`, `sm75_series`, `sm120_series`, `tc_sm75`, `gfx12_platform_defaults`, `gfx_arch`). **A5**
-adds the runtime interface, so that shared code stops calling the CUDA runtime directly.
+hardware traits (`emulate`, `sm75_series`, `sm120_series`, `tc_sm75`, `gfx12_platform_defaults`, `gfx_arch`).
+
+`runtime.hpp` is the runtime interface that shared code calls instead of the CUDA runtime. So far it has what
+`src/common/state` needs: device memory, 2D copies and memsets; **A5** adds the rest (streams, events) as shared code
+needs them.
 
 See [docs/ARCHITECTURE.md](../../../docs/ARCHITECTURE.md) for the layers and
 [docs/REFACTOR_PLAN.md](../../../docs/REFACTOR_PLAN.md) for the steps.

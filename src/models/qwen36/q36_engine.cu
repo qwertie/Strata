@@ -20,6 +20,7 @@
 #include "strata/models/common/family_layout.hpp"
 #include "strata/common/serve/loop.hpp"
 #include "strata/common/serve/request.hpp"
+#include "strata/common/state/state_layout.hpp"
 #include "strata/common/state/token_listing.hpp"
 #include "strata/kernels/fused_gdn.hpp"
 #include "strata/kernels/iq_kernels.hpp"
@@ -69,6 +70,14 @@ namespace MMQ = strata::prefill::mmq;
             std::exit(1);                                                                                              \
         }                                                                                                              \
     } while (0)
+
+/// Ends the engine, as CK does, when a step of the shared state code (`what`) failed.
+void exit_unless(bool ok, const char* what) {
+    if (ok)
+        return;
+    std::fprintf(stderr, "strata-q36: %s failed: %s\n", what, cudaGetErrorString(cudaGetLastError()));
+    std::exit(1);
+}
 
 using Clock = std::chrono::steady_clock;
 double ms_since(Clock::time_point t) { return std::chrono::duration<double, std::milli>(Clock::now() - t).count(); }
@@ -1192,7 +1201,8 @@ struct Engine {
     // recurrent state and KV cache, so N requests run at once: their rows share one decode window (forward_rows).  The
     // members conv / S / kc / vc / pos / hlast above are the CURRENT session's (select() swaps them).
     struct Sess {
-        std::vector<float*> conv, S, kc, vc;
+        strata::core::StateBuffers state;      // its regions of `layout`
+        std::vector<float*> conv, S, kc, vc;   // per state index: its regions in `state` (null where it has none)
         float* hlast = nullptr;
         int64_t pos = 0;
         int32_t rdelta = 0;                 // rotary offset of the text after the last picture (see k_attn_prep)
@@ -1203,8 +1213,9 @@ struct Engine {
     };
     std::vector<Sess> sess;
     int n_sess = 1, cur = 0;
-    // a session's size: its recurrent state, and its K/V per cell of context (LIST_CONVERSATIONS reports both)
-    uint64_t sess_fixed_bytes = 0, sess_cell_bytes = 0;
+    // a session's memory: per state index (the layers, then the MTP block) its K and V (an attention layer) or its
+    // conv history and recurrent state (a GDN layer), then the last hidden row
+    strata::core::StateLayout layout;
     uint64_t use_clock = 0;
     // device tables for batch rows: per state index (layer, then the MTP block) the session pointers
     float **d_conv_tab = nullptr, **d_S_tab = nullptr, **d_kc_tab = nullptr, **d_vc_tab = nullptr;
@@ -1286,29 +1297,38 @@ struct Engine {
         }
     }
 
-    void alloc_session(Sess& ss) const {
+    /// Fills `layout` for the model.
+    void describe_session() {
         const auto& g = m->g;
-        const size_t C = (size_t) g.ssm_conv_channels;
+        using strata::core::RegionKind;
+        const auto add_kv = [&] {
+            for (int i = 0; i < 2; ++i)
+                layout.add(RegionKind::per_token, (uint64_t) g.head_dim * 4, (uint64_t) g.n_head_kv);
+        };
         for (const Layer& L : m->layers) {
             if (L.attn) {
-                ss.conv.push_back(nullptr);
-                ss.S.push_back(nullptr);
-                ss.kc.push_back(dalloc((size_t) g.n_head_kv * ctx * g.head_dim));
-                ss.vc.push_back(dalloc((size_t) g.n_head_kv * ctx * g.head_dim));
-            } else {
-                ss.conv.push_back(dalloc(C * (g.ssm_d_conv - 1)));
-                ss.S.push_back(dalloc((size_t) g.ssm_v_heads * g.ssm_state_size * g.ssm_state_size));
-                ss.kc.push_back(nullptr);
-                ss.vc.push_back(nullptr);
+                add_kv();
+                continue;
             }
+            layout.add(RegionKind::fixed, (uint64_t) g.ssm_conv_channels * (g.ssm_d_conv - 1) * 4);
+            layout.add(RegionKind::fixed, (uint64_t) g.ssm_v_heads * g.ssm_state_size * g.ssm_state_size * 4);
         }
-        if (m->has_mtp) {   // the MTP block's own K / V (an attention layer at index n_layers)
-            ss.conv.push_back(nullptr);
-            ss.S.push_back(nullptr);
-            ss.kc.push_back(dalloc((size_t) g.n_head_kv * ctx * g.head_dim));
-            ss.vc.push_back(dalloc((size_t) g.n_head_kv * ctx * g.head_dim));
+        if (m->has_mtp)   // the MTP block's own K / V (an attention layer at state index n_layers)
+            add_kv();
+        layout.add(RegionKind::fixed, (uint64_t) g.n_embd * 4);
+    }
+    void alloc_session(Sess& ss) const {
+        exit_unless(strata::core::alloc_state(layout, ctx, ss.state), "allocating a session");
+        for (size_t r = 0; r + 1 < layout.regions.size(); r += 2) {
+            float* a = (float*) ss.state.at[r];
+            float* b = (float*) ss.state.at[r + 1];
+            const bool attn = layout.regions[r].kind == strata::core::RegionKind::per_token;
+            ss.conv.push_back(attn ? nullptr : a);
+            ss.S.push_back(attn ? nullptr : b);
+            ss.kc.push_back(attn ? a : nullptr);
+            ss.vc.push_back(attn ? b : nullptr);
         }
-        ss.hlast = dalloc((size_t) g.n_embd);
+        ss.hlast = (float*) ss.state.at.back();
     }
 
     /// The current session: `i`'s state, cache and position become the engine's (conv / S / kc / vc / pos / hlast).
@@ -1448,13 +1468,9 @@ struct Engine {
         }
         sess.resize((size_t) n_sess);
         gsets.resize((size_t) n_sess);
-        {   // the sessions' caches: said before they fail (a slot's K / V at the context, fp32, for the attention layers and
-            // the MTP block, and its recurrent state)
-            size_t n_attn = m->has_mtp ? 1 : 0, n_gdn = 0;
-            for (const Layer& L : m->layers) (L.attn ? n_attn : n_gdn) += 1;
-            sess_cell_bytes = (uint64_t) (g.n_head_kv * g.head_dim * 2 * 4) * n_attn;
-            sess_fixed_bytes = (uint64_t) g.ssm_v_heads * g.ssm_state_size * g.ssm_state_size * 4 * n_gdn;
-            const size_t per = (size_t) (sess_cell_bytes * (uint64_t) ctx + sess_fixed_bytes);
+        describe_session();
+        {   // the sessions' memory, said before it fails
+            const size_t per = (size_t) layout.bytes_for(ctx);
             size_t fr0 = 0, tot0 = 0;
             CK(cudaMemGetInfo(&fr0, &tot0));
             if (n_sess > 1)
@@ -1511,12 +1527,7 @@ struct Engine {
 
     /// The recurrent state and the cache to a fresh sequence.
     void reset() {
-        const auto& g = m->g;
-        for (size_t l = 0; l < conv.size(); ++l) {
-            if (conv[l]) CK(cudaMemsetAsync(conv[l], 0, (size_t) g.ssm_conv_channels * (g.ssm_d_conv - 1) * 4, st));
-            if (S[l]) CK(cudaMemsetAsync(S[l], 0, (size_t) g.ssm_v_heads * g.ssm_state_size * g.ssm_state_size * 4, st));
-        }
-        CK(cudaMemsetAsync(hlast, 0, (size_t) g.n_embd * 4, st));
+        exit_unless(strata::core::clear_fixed_state(layout, sess[(size_t) cur].state, st), "clearing a session");
         CK(cudaStreamSynchronize(st));
         pos = 0;
         sess[(size_t) cur].pos = 0;
@@ -2651,25 +2662,9 @@ struct Engine {
     void copy_session(int src, int dst) {
         if (src == dst) return;
         sess[(size_t) cur].pos = pos;
-        const auto& g = m->g;
         const Sess& a = sess[(size_t) src];
         Sess& b = sess[(size_t) dst];
-        const size_t C = (size_t) g.ssm_conv_channels;
-        const size_t row = (size_t) ctx * g.head_dim * 4;
-        for (size_t l = 0; l < a.conv.size(); ++l) {
-            if (a.conv[l]) {
-                CK(cudaMemcpyAsync(b.conv[l], a.conv[l], C * (g.ssm_d_conv - 1) * 4, cudaMemcpyDeviceToDevice, st));
-                CK(cudaMemcpyAsync(b.S[l], a.S[l], (size_t) g.ssm_v_heads * g.ssm_state_size * g.ssm_state_size * 4,
-                                   cudaMemcpyDeviceToDevice, st));
-            }
-            if (a.kc[l] && a.pos > 0) {
-                CK(cudaMemcpy2DAsync(b.kc[l], row, a.kc[l], row, (size_t) a.pos * g.head_dim * 4, (size_t) g.n_head_kv,
-                                     cudaMemcpyDeviceToDevice, st));
-                CK(cudaMemcpy2DAsync(b.vc[l], row, a.vc[l], row, (size_t) a.pos * g.head_dim * 4, (size_t) g.n_head_kv,
-                                     cudaMemcpyDeviceToDevice, st));
-            }
-        }
-        CK(cudaMemcpyAsync(b.hlast, a.hlast, (size_t) g.n_embd * 4, cudaMemcpyDeviceToDevice, st));
+        exit_unless(strata::core::copy_state(layout, a.state, b.state, a.pos, st), "copying a session");
         CK(cudaStreamSynchronize(st));
         b.pos = a.pos;
         b.rdelta = a.rdelta;
@@ -3648,8 +3643,7 @@ struct Serve {
                 const uint64_t n = ss.live.size();
                 held.push_back({E.n_sess > 1 ? "slot" + std::to_string(i) : std::string("main"), "vram",
                                 ss.active ? "decoding" : ss.live.empty() ? "empty" : "holding", ss.live.data(), n, cap,
-                                E.sess_fixed_bytes + E.sess_cell_bytes * cap,
-                                n ? E.sess_fixed_bytes + E.sess_cell_bytes * n : 0});
+                                E.layout.bytes_for((int64_t) cap), n ? E.layout.bytes_for((int64_t) n) : 0});
             }
             return held;
         };
