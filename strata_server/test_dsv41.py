@@ -436,6 +436,13 @@ class Api(ApiBase):
         status, r = self.chat(reasoning_effort="extreme")
         self.assertEqual(status, 400)
 
+    def test_medium_reaches_the_template_as_a_number(self):
+        """The IST-DAS packs' template knows no "medium" and refused every medium request (a 400 in Claude Code and
+        Codex at medium effort); this fixture (Unsloth's) knows it, so the prompt alone cannot show that."""
+        self.start("ok")
+        self.assertEqual(frontend.effort_kwargs("medium"), {"reasoning_effort": 62})
+        self.assertEqual(frontend.budget_effort(4000), {"reasoning_effort": 62})
+
     def test_anthropic_budget_picks_the_effort(self):
         self.start("ok")
         status, r = self.post("/v1/messages", {"model": "x", "max_tokens": 300, "thinking": {"type": "enabled", "budget_tokens": 1000},
