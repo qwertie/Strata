@@ -14,7 +14,6 @@ The engine is a small script behind the same manifest-declared entry point a rea
 from __future__ import annotations
 
 import argparse
-import hashlib
 import json
 import os
 import signal
@@ -31,9 +30,10 @@ sys.path.insert(0, str(ROOT))
 
 import psutil  # noqa: E402
 
-from strata_control import components, runtime  # noqa: E402
-from strata_common import engine_component as ec, procs, profiles  # noqa: E402
+from strata_control import runtime  # noqa: E402
+from strata_common import procs, profiles  # noqa: E402
 from strata_base.loopback import free_port  # noqa: E402
+from tests.terminal.fake_engine import install_fake_engine, write_byte_tokenizer  # noqa: E402
 
 WINDOWS = os.name == "nt"
 LINUX = sys.platform.startswith("linux")
@@ -95,25 +95,6 @@ def port_open(port: int) -> bool:
         return s.connect_ex(("127.0.0.1", port)) == 0
 
 
-def install_fake_engine(components_dir: Path) -> Path:
-    folder = components_dir / "engine" / f"0.1.45-{components.host_platform()}-{BACKEND}"
-    folder.mkdir(parents=True)
-    (folder / "engine_main.py").write_text(FAKE_ENGINE, encoding="utf-8")
-    if WINDOWS:
-        entry = "engine.cmd"
-        (folder / entry).write_bytes(f'@echo off\r\n"{sys.executable}" "%~dp0engine_main.py" %*\r\n'.encode())
-    else:
-        entry = "engine"
-        (folder / entry).write_text(f'#!/bin/sh\nexec "{sys.executable}" "$(dirname "$0")/engine_main.py" "$@"\n')
-        (folder / entry).chmod(0o755)
-    files = [{"path": name, "sha256": hashlib.sha256((folder / name).read_bytes()).hexdigest(),
-              "bytes": (folder / name).stat().st_size} for name in (entry, "engine_main.py")]
-    (folder / ec.MANIFEST).write_text(json.dumps({
-        "schema_version": 1, "id": "strata-engine", "version": "0.1.45", "platform": components.host_platform(),
-        "backend": BACKEND, "entrypoint": entry, "files": files}), encoding="utf-8")
-    return folder
-
-
 def vram_used_mib() -> int | None:
     try:
         out = subprocess.run(["nvidia-smi", "--query-gpu=memory.used", "--format=csv,noheader,nounits"],
@@ -156,14 +137,8 @@ class Rig:
             self.config = root / "run.json"
             self.config.write_text(json.dumps(cfg), encoding="utf-8")
         else:
-            install_fake_engine(self.components)
-            from tools.strata_tokenizer import BYTE_TO_UNICODE
-            tokenizer = root / "tokenizer"
-            tokenizer.mkdir()
-            tokens = [BYTE_TO_UNICODE[i] for i in range(256)] + ["ab", "<|im_start|>", "<|im_end|>", "<|endoftext|>"]
-            (tokenizer / "vocab.json").write_text(json.dumps({token: i for i, token in enumerate(tokens)}))
-            (tokenizer / "merges.txt").write_text("a b")
-            (tokenizer / "token_type.json").write_text(json.dumps([0] * 257 + [3, 3, 3]))
+            install_fake_engine(self.components, FAKE_ENGINE, BACKEND)
+            tokenizer = write_byte_tokenizer(root / "tokenizer")
             self.config = root / "run.json"
             self.config.write_text(json.dumps({"exe": "component:strata-engine", "backend": BACKEND,
                                                "tokenizer": str(tokenizer), "args": [], "cwd": str(root),

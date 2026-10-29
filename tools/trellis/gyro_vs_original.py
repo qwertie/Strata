@@ -12,7 +12,6 @@ Reported: relative MSE and SQNR of each against W'.
 from __future__ import annotations
 
 import argparse
-import mmap
 import pathlib
 import sys
 import time
@@ -23,7 +22,7 @@ HERE = pathlib.Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE.parent))
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[2]))   # the repository: strata_common
 sys.path.insert(0, str(HERE))
-from strata_common import gguf_reader  # noqa: E402
+from build_swap import open_rotated  # noqa: E402
 import hf_slice  # noqa: E402
 import tqenc  # noqa: E402
 
@@ -46,17 +45,8 @@ def main() -> int:
     ap.add_argument("--threads", type=int, default=0)
     a = ap.parse_args()
 
-    g = gguf_reader.GGUFFile(a.gguf)
-    fh = open(a.gguf, "rb")
-    mm = mmap.mmap(fh.fileno(), 0, access=mmap.ACCESS_READ)
-    by_name = {t.name: t for t in g.tensors}
-    sw = [int(x) for x in g.metadata["prism.hadamard.sign_widths"]]
-    sv = np.array(g.metadata["prism.hadamard.sign_values"], dtype=np.float32)
-    signs, at = {}, 0
-    for w in sw:
-        signs[w] = sv[at:at + w]
-        at += w
-    print("sign widths", sw)
+    g, mm, by_name, signs = open_rotated(a.gguf)
+    print("sign widths", list(signs))
     repo = hf_slice.Repo(a.repo)
     cfgs = a.cfg.split(",")
     tot = {k: [0.0, 0.0] for k in ["agentionai"] + cfgs}

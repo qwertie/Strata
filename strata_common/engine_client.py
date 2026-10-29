@@ -2214,16 +2214,9 @@ def gpu_list(cfg: dict) -> list[int]:
     numbers them; [] when it names none."""
     roles, _ = gpu_roles.saved_roles(cfg)       # "gpu_roles" (Main / Helper / Off per card) wins unless "gpu" was edited by hand
     if roles is not None:
-        legacy = _gpu_numbers(cfg.get("gpu"))
+        legacy = gpu_roles.card_numbers(cfg.get("gpu"))
         return legacy if legacy else gpu_roles.engine_order(roles)     # Main LAST; Off cards left out; [] when every card is Off
-    return _gpu_numbers(cfg.get("gpu"))
-
-
-def _gpu_numbers(g) -> list[int]:
-    if g is None or g == "":
-        return []
-    items = g if isinstance(g, (list, tuple)) else str(g).split(",")
-    return [int(str(x).strip()) for x in items if str(x).strip() != ""]
+    return gpu_roles.card_numbers(cfg.get("gpu"))
 
 
 def gpu_roles_active(cfg: dict) -> bool:
@@ -2452,34 +2445,10 @@ def hip_visible(cfg: dict) -> list[int]:
 
 
 def gpu_speed_scores(indices: list[int]) -> dict[int, float] | None:
-    """Multiprocessors x max clock for each NVIDIA card, numbered as nvidia-smi numbers them (the CUDA driver API,
-    which every driver ships: no toolkit needed); None when it cannot say for every one of them."""
-    code = (
-        "import ctypes,sys,os\n"
-        "os.environ['CUDA_DEVICE_ORDER']='PCI_BUS_ID'\n"
-        "lib=ctypes.CDLL('nvcuda.dll' if os.name=='nt' else 'libcuda.so.1')\n"
-        "assert lib.cuInit(0)==0\n"
-        "n=ctypes.c_int()\n"
-        "assert lib.cuDeviceGetCount(ctypes.byref(n))==0\n"
-        "for i in range(n.value):\n"
-        "    d=ctypes.c_int()\n"
-        "    assert lib.cuDeviceGet(ctypes.byref(d),i)==0\n"
-        "    sm=ctypes.c_int(); mhz=ctypes.c_int()\n"
-        "    lib.cuDeviceGetAttribute(ctypes.byref(sm),16,d)\n"
-        "    lib.cuDeviceGetAttribute(ctypes.byref(mhz),13,d)\n"
-        "    print(i,sm.value,mhz.value)\n")
-    try:
-        env = dict(os.environ)
-        env["CUDA_DEVICE_ORDER"] = "PCI_BUS_ID"
-        env.pop("CUDA_VISIBLE_DEVICES", None)
-        r = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, timeout=30, env=env)
-        got = {}
-        for line in r.stdout.splitlines():
-            i, sm, khz = (int(x) for x in line.split())
-            got[i] = float(sm) * float(khz)
-    except (OSError, ValueError, subprocess.SubprocessError):
-        return None
-    return got if all(i in got and got[i] > 0 for i in indices) else None
+    """Multiprocessors x max clock for each NVIDIA card (gpu_roles.nvidia_speeds); None when it cannot say for every
+    one of `indices`."""
+    got = gpu_roles.nvidia_speeds(timeout=30)
+    return got if all(i in got for i in indices) else None
 
 
 def hip_speed_scores(indices: list[int], root: str = "/sys/class/kfd/kfd/topology/nodes") -> dict[int, float] | None:

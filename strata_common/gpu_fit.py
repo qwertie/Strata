@@ -48,6 +48,25 @@ SECOND_MODEL_SENTENCE = ("Running two models at the same time, one on each make 
                          "Strata runs one model at a time on the cards of one make.")
 
 
+#: The nvidia-smi command whose answer parse_nvidia_cards reads (setup.py and tools/strata_mcp.py run it).
+NVIDIA_SMI_CARDS = ["nvidia-smi", "--query-gpu=index,name,memory.total,compute_cap,driver_version",
+                    "--format=csv,noheader,nounits"]
+
+
+def parse_nvidia_cards(text: str) -> list[dict]:
+    """Reads the answer to NVIDIA_SMI_CARDS: one card per line, as {"index", "name", "vram_gb" (GiB), "arch" ("89" for
+    compute capability 8.9), "driver"}; a line that does not parse is skipped."""
+    found = []
+    for line in text.strip().splitlines():
+        try:
+            idx, name, mem, cc, drv = [x.strip() for x in line.split(",")]
+            found.append({"index": int(idx), "name": name, "vram_gb": float(mem) / 1024.0, "arch": cc.replace(".", ""),
+                          "driver": drv})
+        except ValueError:
+            continue
+    return found
+
+
 def vendor_of_backend(backend: str | None) -> str | None:
     return BACKEND_VENDOR.get(str(backend or "").lower())
 

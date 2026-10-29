@@ -20,7 +20,7 @@ from pathlib import Path
 from strata_common import profiles
 from strata_control import recipes
 from strata_common.profiles import ProfileError
-from strata_base import posix_owner
+from strata_base import atomic as _atomic_mod, posix_owner
 
 
 MAX_RECORDS = 500
@@ -370,7 +370,7 @@ def finish(profile: str, operation_id: str, state: str, result: dict) -> dict:
         now = time.time()
         record.update({"state": state, "finished_at": now, "result": result})
         record["events"].append({"seq": len(record["events"]) + 1, "at": now, "state": state})
-        profiles._atomic(path, _bytes(record))
+        _atomic_mod.write_bytes(path, _bytes(record))
     return record
 
 

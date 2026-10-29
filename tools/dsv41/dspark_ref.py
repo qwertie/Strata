@@ -95,7 +95,8 @@ def freqs(dim, n, base):
     return torch.polar(torch.ones_like(a), a)
 
 
-def rope(x, fc, inverse=False):
+def rope(x: torch.Tensor, fc: torch.Tensor, inverse: bool = False) -> torch.Tensor:
+    """Rotates adjacent pairs as complex numbers.  x [T, d] or [T, h, d]; fc [T, d/2]."""
     c = torch.view_as_complex(x.float().reshape(*x.shape[:-1], -1, 2).contiguous())
     if inverse:
         fc = fc.conj()

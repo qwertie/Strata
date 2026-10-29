@@ -9,7 +9,6 @@ per layer and role, the mean over experts, in dB.
 from __future__ import annotations
 
 import argparse
-import mmap
 import pathlib
 import sys
 
@@ -19,9 +18,8 @@ HERE = pathlib.Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE.parent))
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[2]))   # the repository: strata_common
 sys.path.insert(0, str(HERE))
-from strata_common import gguf_reader  # noqa: E402
 import tqenc  # noqa: E402
-from build_swap import bf16, load_h  # noqa: E402
+from build_swap import bf16, load_h, open_rotated  # noqa: E402
 
 
 def main() -> int:
@@ -35,16 +33,7 @@ def main() -> int:
     ap.add_argument("--threads", type=int, default=16)
     ap.add_argument("--gpu", action="store_true")
     a = ap.parse_args()
-    g = gguf_reader.GGUFFile(a.gguf)
-    fh = open(a.gguf, "rb")
-    mm = mmap.mmap(fh.fileno(), 0, access=mmap.ACCESS_READ)
-    by = {t.name: t for t in g.tensors}
-    sw = [int(x) for x in g.metadata["prism.hadamard.sign_widths"]]
-    sv = np.array(g.metadata["prism.hadamard.sign_values"], dtype=np.float32)
-    signs, at = {}, 0
-    for w in sw:
-        signs[w] = sv[at:at + w]
-        at += w
+    g, mm, by, signs = open_rotated(a.gguf)
     powers = [float(x) for x in a.powers.split(",")]
     experts = [int(x) for x in a.experts.split(",")]
     res = {}

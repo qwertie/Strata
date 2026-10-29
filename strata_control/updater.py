@@ -211,15 +211,7 @@ class State:
     def save(self) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self.data["schema_version"] = 1
-        descriptor, temp = tempfile.mkstemp(prefix=".state-", suffix=".tmp", dir=self.path.parent)
-        try:
-            with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
-                json.dump(self.data, stream, indent=1, sort_keys=True)
-                stream.write("\n")
-            _atomic_mod.replace(temp, self.path)
-        finally:
-            if os.path.exists(temp):
-                os.unlink(temp)
+        _atomic_mod.write_bytes(self.path, (json.dumps(self.data, indent=1, sort_keys=True) + "\n").encode("utf-8"))
 
 
 # ---------------------------------------------------------------------------------------------- hardware
@@ -1291,9 +1283,8 @@ def update_control(ctx: Context, feed: feedmod.Feed, state: State) -> dict:
         previous = active_control(root)
         section["previous"] = previous
         pointer = control_dir(root) / "active.json"
-        temp = pointer.with_suffix(".tmp")
-        temp.write_text(json.dumps({"version": pkg.version, "folder": pkg.version, "sha256": pkg.sha256}), encoding="utf-8")
-        _atomic_mod.replace(temp, pointer)
+        _atomic_mod.write_text(pointer, json.dumps({"version": pkg.version, "folder": pkg.version,
+                                                    "sha256": pkg.sha256}))
         keep = {pkg.version} | ({previous["folder"]} if previous else set())
         for entry_dir in control_dir(root).iterdir():
             if entry_dir.is_dir() and entry_dir.name not in keep:

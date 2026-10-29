@@ -11,7 +11,6 @@ from __future__ import annotations
 
 import json
 import os
-import tempfile
 import time
 from strata_base import atomic as _atomic_mod
 from pathlib import Path
@@ -36,30 +35,6 @@ def _path(name: str) -> Path:
     return preset_dir() / f"{slug(name)}.json"
 
 
-def _private_write(path: Path, payload: bytes) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    fd, tmp = tempfile.mkstemp(prefix=".launch-", suffix=".tmp", dir=path.parent)
-    try:
-        with os.fdopen(fd, "wb") as fh:
-            fh.write(payload)
-            fh.flush()
-            os.fsync(fh.fileno())
-        try:
-            os.chmod(tmp, 0o600)
-        except OSError:
-            pass
-        _atomic_mod.replace(tmp, path)
-    finally:
-        if os.path.exists(tmp):
-            os.unlink(tmp)
-    if os.name == "nt":
-        try:
-            from strata_base import private_files
-            private_files.restrict_to_current_user(path, directory=False)
-        except Exception:                                    # noqa: BLE001 - a file the user can read is still theirs
-            pass
-
-
 def now_text() -> str:
     now = time.time()
     return time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(now)) + f".{int((now % 1) * 1000000):06d}"
@@ -81,7 +56,9 @@ def save(settings: LaunchSettings, name: str | None = None) -> LaunchSettings:
     previous = load(name, missing_ok=True)
     s = settings.copy(name=name)
     s.created = (previous.created if previous else None) or s.created or now_text()
-    _private_write(path, (json.dumps(s.to_dict(), indent=2, ensure_ascii=False, sort_keys=True) + "\n").encode("utf-8"))
+    path.parent.mkdir(parents=True, exist_ok=True)
+    text = json.dumps(s.to_dict(), indent=2, ensure_ascii=False, sort_keys=True) + "\n"
+    _atomic_mod.write_bytes(path, text.encode("utf-8"), private=True)
     return s
 
 

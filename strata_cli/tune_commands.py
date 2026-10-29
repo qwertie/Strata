@@ -150,9 +150,7 @@ def _write_status(path: str | None, payload: dict[str, Any]) -> None:
     if not path:
         return
     try:
-        tmp = path + ".tmp"
-        Path(tmp).write_text(json.dumps(payload, ensure_ascii=False, default=str), encoding="utf-8")
-        _atomic_mod.replace(tmp, path)
+        _atomic_mod.write_text(path, json.dumps(payload, ensure_ascii=False, default=str))
     except OSError:
         pass
 

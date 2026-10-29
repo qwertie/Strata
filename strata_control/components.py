@@ -53,6 +53,7 @@ SCHEMA_VERSION = 1
 
 from strata_common.targets import BACKEND_MATRIX, ComponentError, backend_supported, host_platform  # noqa: E402,F401
 from strata_base import atomic as _atomic_mod
+from strata_base.hashing import sha256_file
 #: Component kinds, so a manifest cannot claim a role the architecture does not have.
 KINDS = ("application", "runtime", "agent-runtime", "tuning", "engine", "prepared-data")
 
@@ -85,16 +86,11 @@ class Artifact:
                 f"{self.name} is {len(payload)} bytes, the manifest declares {self.bytes}")
 
     def verify_file(self, path: Path) -> None:
-        digest = hashlib.sha256()
-        size = 0
-        with Path(path).open("rb") as fh:
-            for block in iter(lambda: fh.read(1 << 20), b""):
-                digest.update(block)
-                size += len(block)
-        if digest.hexdigest() != self.sha256:
+        got = sha256_file(path)
+        if got != self.sha256:
             raise ComponentError(
-                f"{path.name} does not match its manifest: expected {self.sha256[:16]}…, "
-                f"got {digest.hexdigest()[:16]}…")
+                f"{path.name} does not match its manifest: expected {self.sha256[:16]}…, got {got[:16]}…")
+        size = Path(path).stat().st_size
         if self.bytes and size != self.bytes:
             raise ComponentError(f"{path.name} is {size} bytes, the manifest declares {self.bytes}")
 
@@ -425,9 +421,7 @@ class ComponentStore:
         return data
 
     def _save_state(self, data: dict[str, Any]) -> None:
-        temp = self.state_path.parent / (self.state_path.name + ".tmp")
-        temp.write_text(json.dumps(data, indent=1, sort_keys=True) + "\n", encoding="utf-8")
-        _atomic_mod.replace(temp, self.state_path)
+        _atomic_mod.write_text(self.state_path, json.dumps(data, indent=1, sort_keys=True) + "\n")
 
     # ------------------------------------------------------------------ cache and installation
 

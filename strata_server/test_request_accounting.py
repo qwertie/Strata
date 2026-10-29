@@ -9,9 +9,9 @@ import urllib.request
 from pathlib import Path
 
 from strata_server.frontend import ChatTemplate
-from strata_server.server import ByteTokenizer, Service, request_timings, serve
+from strata_server.server import ByteTokenizer, Service, request_timings
 from strata_common.engine_client import EngineDied, add_carry, carry_leg
-from strata_server.test_server import ThinkingEngine
+from strata_server.test_server import ThinkingEngine, start_http
 
 
 class ClockedThinkingEngine(ThinkingEngine):
@@ -57,12 +57,7 @@ class RequestAccounting(unittest.TestCase):
         tok = ByteTokenizer()
         self.engine = ClockedThinkingEngine(tok)
         self.svc = Service(self.engine, tok, ChatTemplate(Path(__file__).with_name("chat_template.jinja")))
-        self.httpd = serve(self.svc, port=0)
-        self.base = f"http://127.0.0.1:{self.httpd.server_address[1]}"
-
-    def tearDown(self):
-        self.httpd.shutdown()
-        self.httpd.server_close()
+        self.httpd, self.base = start_http(self, self.svc)
 
     def request(self, path, body=None):
         req = urllib.request.Request(self.base + path, data=json.dumps(body).encode() if body else None,

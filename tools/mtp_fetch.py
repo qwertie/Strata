@@ -30,6 +30,7 @@ import urllib.request
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from strata_base import tls  # noqa: E402
+from strata_base.file_lock import try_lock_file  # noqa: E402
 from strata_base.hashing import sha256_file  # noqa: E402
 
 tls.install()       # #3722: the operating system's certificates
@@ -197,13 +198,7 @@ def lock_folder(out, wait=900.0):
     told = False
     while True:
         try:
-            if os.name == "nt":
-                import msvcrt
-                f.seek(0)
-                msvcrt.locking(f.fileno(), msvcrt.LK_NBLCK, 1)
-            else:
-                import fcntl
-                fcntl.flock(f.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            try_lock_file(f.fileno())
             return f
         except OSError:
             if time.monotonic() > end:

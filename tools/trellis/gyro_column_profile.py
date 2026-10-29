@@ -5,7 +5,6 @@ profile (rotated basis) between experts and between gate and up of one layer, fo
 from __future__ import annotations
 
 import argparse
-import mmap
 import pathlib
 import sys
 
@@ -15,7 +14,7 @@ HERE = pathlib.Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE.parent))
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[2]))   # the repository: strata_common
 sys.path.insert(0, str(HERE))
-from strata_common import gguf_reader  # noqa: E402
+from build_swap import open_rotated  # noqa: E402
 import hf_slice  # noqa: E402
 import tqenc  # noqa: E402
 
@@ -27,16 +26,7 @@ def main() -> int:
     ap.add_argument("--layer", type=int, default=10)
     ap.add_argument("--experts", default="0,1,2,3")
     a = ap.parse_args()
-    g = gguf_reader.GGUFFile(a.gguf)
-    fh = open(a.gguf, "rb")
-    mm = mmap.mmap(fh.fileno(), 0, access=mmap.ACCESS_READ)
-    by = {t.name: t for t in g.tensors}
-    sw = [int(x) for x in g.metadata["prism.hadamard.sign_widths"]]
-    sv = np.array(g.metadata["prism.hadamard.sign_values"], dtype=np.float32)
-    signs, at = {}, 0
-    for w in sw:
-        signs[w] = sv[at:at + w]
-        at += w
+    g, mm, by, signs = open_rotated(a.gguf)
     repo = hf_slice.Repo(a.repo)
     pre = "model.language_model.layers.%d.mlp.experts." % a.layer
     prof = {}   # (who, role, expert) -> per-column mean squared error / mean

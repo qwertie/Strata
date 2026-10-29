@@ -11,6 +11,7 @@ medians.  Decode numbers move run to run (the adaptive expert tier, the OS), so 
 from __future__ import annotations
 
 import argparse
+import contextlib
 import json
 import os
 import random
@@ -48,6 +49,47 @@ def post(port: int, prompt: str, max_tokens: int) -> dict:
         return json.loads(r.read())
 
 
+def parse_arms(specs: list[str]) -> list[tuple[str, dict]]:
+    """Splits each arm, NAME:key=value,..., into its name and its settings (see the module's doc)."""
+    arms = []
+    for s in specs:
+        name, _, kv = s.partition(":")
+        arms.append((name, dict(x.split("=", 1) for x in kv.split(",") if x)))
+    return arms
+
+
+@contextlib.contextmanager
+def arm_server(base: dict, name: str, settings: dict, port: int, rnd: int, prefix: str):
+    """Runs strata_server/server.py on `port` with the run config `base` changed by one arm's `settings`, from the
+    time it answers until the with-block ends. `prefix` names the temporary config and engine log;
+    agent_turns_bench.py uses this too."""
+    cfg = dict(base)
+    e = dict(settings)
+    if "exe" in e:
+        cfg["exe"] = e.pop("exe")
+    if "xargs" in e:                       # extra engine arguments, ';'-separated
+        cfg["args"] = list(base["args"]) + e.pop("xargs").split(";")
+    cfg["port"] = port
+    cfg["log"] = str(Path(tempfile.gettempdir()) / f"{prefix}_{name}_r{rnd}.log")
+    cpath = Path(tempfile.gettempdir()) / f"{prefix}_{name}.json"
+    cpath.write_text(json.dumps(cfg, indent=1))
+    proc = subprocess.Popen([sys.executable, str(ROOT / "strata_server" / "server.py"), "--engine", "strata",
+                             "--config", str(cpath), "--port", str(port)], cwd=str(ROOT), env=dict(os.environ, **e),
+                            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    try:
+        t0 = time.time()
+        wait_ready(port, proc)
+        print(f"round {rnd} {name}: ready in {time.time() - t0:.0f} s", flush=True)
+        yield
+    finally:
+        proc.terminate()
+        try:
+            proc.wait(60)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+        time.sleep(5)
+
+
 def wait_ready(port: int, proc: subprocess.Popen, timeout: float = 1800) -> None:
     t0 = time.time()
     while time.time() - t0 < timeout:
@@ -75,35 +117,14 @@ def main() -> int:
     ap.add_argument("--log", default="ab_engine.jsonl")
     a = ap.parse_args()
     base = json.loads(Path(a.config).read_text())
-    arms = []
-    for s in a.arms:
-        name, _, kv = s.partition(":")
-        env = dict(x.split("=", 1) for x in kv.split(",") if x)
-        arms.append((name, env))
+    arms = parse_arms(a.arms)
     reqs = [(f"chat{i}", p) for i, p in enumerate(PROMPTS)] + [("long", long_prompt(a.long_words))]
     out = open(a.log, "a")
     res: dict = {n: {} for n, _ in arms}
     for rnd in range(a.rounds):
         order = arms if rnd % 2 == 0 else arms[::-1]
         for name, env in order:
-            cfg = dict(base)
-            e = dict(env)
-            if "exe" in e:
-                cfg["exe"] = e.pop("exe")
-            if "xargs" in e:                       # extra engine arguments, ';'-separated
-                cfg["args"] = list(base["args"]) + e.pop("xargs").split(";")
-            cfg["port"] = a.port
-            cfg["log"] = str(Path(tempfile.gettempdir()) / f"ab_{name}_r{rnd}.log")
-            cpath = Path(tempfile.gettempdir()) / f"ab_{name}.json"
-            cpath.write_text(json.dumps(cfg, indent=1))
-            penv = dict(os.environ, **e)
-            proc = subprocess.Popen([sys.executable, str(ROOT / "strata_server" / "server.py"), "--engine", "strata", "--config",
-                                     str(cpath), "--port", str(a.port)], cwd=str(ROOT), env=penv,
-                                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-            try:
-                t0 = time.time()
-                wait_ready(a.port, proc)
-                print(f"round {rnd} {name}: ready in {time.time() - t0:.0f} s", flush=True)
+            with arm_server(base, name, env, a.port, rnd, "ab"):
                 for tag, p in reqs:
                     r = post(a.port, p, a.max_new)
                     t = r.get("timings", {})
@@ -116,13 +137,6 @@ def main() -> int:
                     res[name].setdefault(tag, []).append(row)
                     print(f"  {tag:6s} decode {row['decode']} tok/s  prompt {row['prompt']} tok/s ({row['prompt_n']})  "
                           f"n {row['n']}", flush=True)
-            finally:
-                proc.terminate()
-                try:
-                    proc.wait(60)
-                except subprocess.TimeoutExpired:
-                    proc.kill()
-                time.sleep(5)
     print("\nmedians over rounds:")
     for tag, _ in reqs:
         cells = []

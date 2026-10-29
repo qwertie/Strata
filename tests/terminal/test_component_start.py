@@ -6,7 +6,6 @@ the package -> the engine runs from the component folder -> stop ends it. It als
 fetch: with an empty component folder and the no-acquire switch set, a start fails with the typed message, starts no
 engine, and the state ends up stopped."""
 
-import hashlib
 import io
 import json
 import os
@@ -22,6 +21,7 @@ from strata_cli.cli import main
 from strata_control import components, runtime
 from strata_common import engine_component as ec, profiles
 from strata_common import engine_client  # noqa: E402
+from tests.terminal.fake_engine import install_fake_engine, write_byte_tokenizer
 
 WINDOWS = os.name == "nt"
 FAKE_ENGINE = (
@@ -35,25 +35,6 @@ FAKE_ENGINE = (
     "        print('T 97', flush=True)\n"
     "        print('DONE 1 1 1.0 1.0 length 0 0 0', flush=True)\n"
     "        if slot is not None: print(f'BADM {slot} 0', flush=True)\n")
-
-
-def install_fake_engine(components_dir: Path) -> Path:
-    folder = components_dir / "engine" / f"0.1.45-{components.host_platform()}-cuda"
-    folder.mkdir(parents=True)
-    (folder / "engine_main.py").write_text(FAKE_ENGINE, encoding="utf-8")
-    if WINDOWS:
-        entry = "engine.cmd"
-        (folder / entry).write_bytes(f'@echo off\r\n"{sys.executable}" "%~dp0engine_main.py" %*\r\n'.encode())
-    else:
-        entry = "engine"
-        (folder / entry).write_text(f'#!/bin/sh\nexec "{sys.executable}" "$(dirname "$0")/engine_main.py" "$@"\n')
-        (folder / entry).chmod(0o755)
-    files = [{"path": name, "sha256": hashlib.sha256((folder / name).read_bytes()).hexdigest(),
-              "bytes": (folder / name).stat().st_size} for name in (entry, "engine_main.py")]
-    (folder / ec.MANIFEST).write_text(json.dumps({
-        "schema_version": 1, "id": "strata-engine", "version": "0.1.45", "platform": components.host_platform(),
-        "backend": "cuda", "entrypoint": entry, "files": files}), encoding="utf-8")
-    return folder
 
 
 @unittest.skipUnless(os.name in ("posix", "nt"), "no qualified owner transport on this platform")
@@ -71,13 +52,7 @@ class ComponentStart(unittest.TestCase):
         env.start()
         self.addCleanup(env.stop)
         os.environ.pop("STRATA_API_KEY", None)
-        from tools.strata_tokenizer import BYTE_TO_UNICODE
-        tokenizer = self.root / "tokenizer"
-        tokenizer.mkdir()
-        tokens = [BYTE_TO_UNICODE[i] for i in range(256)] + ["ab", "<|im_start|>", "<|im_end|>", "<|endoftext|>"]
-        (tokenizer / "vocab.json").write_text(json.dumps({token: i for i, token in enumerate(tokens)}))
-        (tokenizer / "merges.txt").write_text("a b")
-        (tokenizer / "token_type.json").write_text(json.dumps([0] * 257 + [3, 3, 3]))
+        tokenizer = write_byte_tokenizer(self.root / "tokenizer")
         self.config = self.root / "run.json"
         self.config.write_text(json.dumps({"exe": "component:strata-engine", "backend": "cuda",
                                             "tokenizer": str(tokenizer), "args": [], "cwd": str(self.root),
@@ -99,7 +74,7 @@ class ComponentStart(unittest.TestCase):
         return code, json.loads(out.getvalue())
 
     def test_start_runs_the_engine_from_the_component_folder_and_stop_ends_it(self):
-        folder = install_fake_engine(self.components)
+        folder = install_fake_engine(self.components, FAKE_ENGINE, "cuda")
         code, started = self._cli("runtime", "start", "--profile", "app", "--wait", "30", "--shutdown-timeout", "2")
         self.assertEqual(code, 0, started)
         self.assertEqual(started["state"], "ready")
@@ -180,7 +155,7 @@ class ComponentStart(unittest.TestCase):
                          "looking for an engine must not create or fetch anything")
 
     def test_a_tampered_engine_is_not_started(self):
-        folder = install_fake_engine(self.components)
+        folder = install_fake_engine(self.components, FAKE_ENGINE, "cuda")
         (folder / "engine_main.py").write_text(FAKE_ENGINE + "# changed\n", encoding="utf-8")
         code, result = self._cli("runtime", "start", "--profile", "app", "--wait", "20", "--shutdown-timeout", "2")
         self.assertNotEqual(code, 0)
@@ -189,7 +164,7 @@ class ComponentStart(unittest.TestCase):
     def test_the_package_folder_is_first_on_the_library_path(self):
         from strata_server import server
         from strata_common import engine_client
-        folder = install_fake_engine(self.components)
+        folder = install_fake_engine(self.components, FAKE_ENGINE, "cuda")
         cfg = server.with_component_engine({"exe": "component:strata-engine", "backend": "cuda", "lib_dirs": ["/other"]})
         self.assertEqual(Path(cfg["exe"]).parent.resolve(), folder.resolve())
         self.assertEqual(cfg["lib_dirs"][0], str(folder / ("engine.cmd" if WINDOWS else "engine")).rsplit(os.sep, 1)[0])
@@ -208,7 +183,7 @@ class ComponentStart(unittest.TestCase):
     def test_a_picture_reader_path_from_an_older_engine_folder_follows_the_installed_package(self):
         """After an engine update the folder name changes; the run config's absolute vision exe must not stop the server."""
         from strata_server import server
-        folder = install_fake_engine(self.components)
+        folder = install_fake_engine(self.components, FAKE_ENGINE, "cuda")
         reader = folder / "strata-vision"
         reader.write_text("x", encoding="utf-8")
         gone = str(self.components / "engine" / "0.0.1-old" / "strata-vision")
@@ -225,7 +200,7 @@ class ComponentStart(unittest.TestCase):
     def test_the_build_json_lib_dirs_follow_the_package_folder(self):
         """The Windows HIP package keeps the ROCm DLLs in rocm/bin (BUILD.json lib_dirs): strata.exe does not load without them on PATH."""
         from strata_server import server
-        folder = install_fake_engine(self.components)
+        folder = install_fake_engine(self.components, FAKE_ENGINE, "cuda")
         (folder / "rocm" / "bin").mkdir(parents=True)
         (folder / "BUILD.json").write_text(json.dumps({"lib_dirs": ["rocm/bin", "../escape", "missing", "/abs"]}), encoding="utf-8")
         cfg = server.with_component_engine({"exe": "component:strata-engine", "backend": "cuda", "lib_dirs": ["/other"]})
@@ -239,7 +214,7 @@ class ComponentStart(unittest.TestCase):
         report = inspect(self.config)
         engine = next(row for row in report["components"] if row["name"] == "engine")
         self.assertEqual(engine["status"], "missing")
-        install_fake_engine(self.components)
+        install_fake_engine(self.components, FAKE_ENGINE, "cuda")
         report = inspect(self.config)
         engine = next(row for row in report["components"] if row["name"] == "engine")
         self.assertEqual(engine["status"], "ok")

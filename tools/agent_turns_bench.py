@@ -19,18 +19,15 @@ from __future__ import annotations
 
 import argparse
 import json
-import os
 import statistics
 import subprocess
 import sys
-import tempfile
-import time
 import urllib.request
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from ab_engine import wait_ready  # noqa: E402
+from ab_engine import arm_server, parse_arms  # noqa: E402
 
 SYSTEM = ("You are an autonomous coding agent working in the user's repository. You can read files, search the code, "
           "edit files and run commands with the tools below. Work step by step: read the code you need before changing "
@@ -149,10 +146,7 @@ def main() -> int:
     ap.add_argument("--log", default="agent_turns_bench.jsonl")
     a = ap.parse_args()
     base = json.loads(Path(a.config).read_text())
-    arms = []
-    for s in a.arms:
-        name, _, kv = s.partition(":")
-        arms.append((name, dict(x.split("=", 1) for x in kv.split(",") if x)))
+    arms = parse_arms(a.arms)
     work = turns()
     if a.max_turns:
         work = work[:a.max_turns]
@@ -160,23 +154,7 @@ def main() -> int:
     res: dict = {n: {} for n, _ in arms}
     for rnd in range(a.rounds):
         for name, env in (arms if rnd % 2 == 0 else arms[::-1]):
-            cfg = dict(base)
-            e = dict(env)
-            if "exe" in e:
-                cfg["exe"] = e.pop("exe")
-            if "xargs" in e:
-                cfg["args"] = list(base["args"]) + e.pop("xargs").split(";")
-            cfg["port"] = a.port
-            cfg["log"] = str(Path(tempfile.gettempdir()) / f"agent_turns_{name}_r{rnd}.log")
-            cpath = Path(tempfile.gettempdir()) / f"agent_turns_{name}.json"
-            cpath.write_text(json.dumps(cfg, indent=1))
-            proc = subprocess.Popen([sys.executable, str(ROOT / "strata_server" / "server.py"), "--engine", "strata", "--config",
-                                     str(cpath), "--port", str(a.port)], cwd=str(ROOT), env=dict(os.environ, **e),
-                                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-            try:
-                t0 = time.time()
-                wait_ready(a.port, proc)
-                print(f"round {rnd} {name}: ready in {time.time() - t0:.0f} s", flush=True)
+            with arm_server(base, name, env, a.port, rnd, "agent_turns"):
                 for tag, msgs in work:
                     r = post(a.port, msgs, a.max_new, a.seed)
                     t = r.get("timings", {})
@@ -187,13 +165,6 @@ def main() -> int:
                     out.flush()
                     res[name].setdefault(tag, []).append(row)
                     print(f"  {tag:16s} decode {row['decode']} tok/s  prompt {row['prompt_n']} tokens", flush=True)
-            finally:
-                proc.terminate()
-                try:
-                    proc.wait(60)
-                except subprocess.TimeoutExpired:
-                    proc.kill()
-                time.sleep(5)
     first = arms[0][0]
 
     def per_turn(name: str, tag: str) -> float:

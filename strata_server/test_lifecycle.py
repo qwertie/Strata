@@ -11,7 +11,8 @@ from pathlib import Path
 from unittest import mock
 
 from strata_server.frontend import ChatTemplate
-from strata_server.server import ByteTokenizer, Service, serve
+from strata_server.server import ByteTokenizer, Service
+from strata_server.test_server import start_http
 from strata_common.engine_client import EngineDied, EngineStuck, MockEngine, StrataEngine
 
 
@@ -130,12 +131,7 @@ class Lifecycle(unittest.TestCase):
         tok = ByteTokenizer()
         self.engine = ResidentEngine(tok)
         self.svc = Service(self.engine, tok, ChatTemplate(Path(__file__).parent / "chat_template.jinja"))
-        self.httpd = serve(self.svc, port=0)
-        self.base = f"http://127.0.0.1:{self.httpd.server_address[1]}"
-
-    def tearDown(self):
-        self.httpd.shutdown()
-        self.httpd.server_close()
+        self.httpd, self.base = start_http(self, self.svc)
 
     def request(self, path, body=None, headers=None):
         req = urllib.request.Request(self.base + path, data=json.dumps(body).encode() if body is not None else None,

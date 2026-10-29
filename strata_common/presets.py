@@ -22,7 +22,6 @@ from __future__ import annotations
 import json
 import os
 import re
-import tempfile
 import time
 import uuid
 from pathlib import Path
@@ -50,22 +49,10 @@ def preset_dir() -> Path:
     return profiles.profile_dir().parent / "presets"
 
 
-def _atomic(path: Path, payload: bytes) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    fd, tmp = tempfile.mkstemp(prefix=f".{path.name}-", suffix=".tmp", dir=path.parent)
-    try:
-        with os.fdopen(fd, "wb") as fh:
-            fh.write(payload)
-            fh.flush()
-            os.fsync(fh.fileno())
-        _atomic_mod.replace(tmp, path)
-    finally:
-        if os.path.exists(tmp):
-            os.unlink(tmp)
-
-
 def _write_json(path: Path, obj: Any) -> None:
-    _atomic(path, (json.dumps(obj, indent=2, ensure_ascii=False, sort_keys=True) + "\n").encode("utf-8"))
+    path.parent.mkdir(parents=True, exist_ok=True)
+    text = json.dumps(obj, indent=2, ensure_ascii=False, sort_keys=True) + "\n"
+    _atomic_mod.write_bytes(path, text.encode("utf-8"))
 
 
 def _read_json(path: Path, default: Any) -> Any:

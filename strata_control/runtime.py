@@ -40,7 +40,7 @@ except ImportError:  # Windows has no qualified owner transport yet.
 
 from strata_control import launch_plan, owner_transport, readiness
 from strata_common import paths, procs, profiles
-from strata_base import posix_owner, private_files, winproc
+from strata_base import atomic as _atomic_mod, posix_owner, private_files, winproc
 from strata_common import launch_identity
 from strata_common.profiles import ProfileError
 
@@ -786,7 +786,7 @@ class Host:
                     started = winproc.process_started(pid)     # one more try: the child may not be queryable yet
                 if started is not None:
                     payload["started"] = started   # tells this process from a later one with the same number
-        profiles._atomic(_child_marker(self.name, self.token), (json.dumps(payload) + "\n").encode())
+        _atomic_mod.write_bytes(_child_marker(self.name, self.token), (json.dumps(payload) + "\n").encode())
 
     def _plan(self) -> tuple[dict, list[str], Path, bytes]:
         plan, args = launch_plan.make_launch_plan(self.name)

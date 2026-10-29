@@ -20,8 +20,6 @@ from __future__ import annotations
 
 import datetime as dt
 import json
-import os
-import tempfile
 import uuid
 from pathlib import Path
 
@@ -54,15 +52,7 @@ def _read(path: Path) -> dict:
 
 def _write(path: Path, data: dict) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    descriptor, temp = tempfile.mkstemp(prefix=".recheck-", suffix=".tmp", dir=path.parent)
-    try:
-        with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
-            json.dump(data, stream, indent=1, sort_keys=True)
-            stream.write("\n")
-        _atomic_mod.replace(temp, path)
-    finally:
-        if os.path.exists(temp):
-            os.unlink(temp)
+    _atomic_mod.write_bytes(path, (json.dumps(data, indent=1, sort_keys=True) + "\n").encode("utf-8"))
 
 
 def pending(base: Path | None = None) -> list[dict]:

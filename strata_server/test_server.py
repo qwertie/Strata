@@ -35,6 +35,15 @@ ANSWER = "xy" * 1000                             # longer than the old 1024 fall
 #                                                one token repeated, which the server ends at 256)
 
 
+def start_http(case: unittest.TestCase, svc: Service) -> tuple:
+    """Serves `svc` over HTTP on a free local port until the test `case` ends; returns the server and its base URL.
+    The other server tests use it too."""
+    httpd = serve(svc, port=0)
+    case.addCleanup(httpd.server_close)
+    case.addCleanup(httpd.shutdown)
+    return httpd, f"http://127.0.0.1:{httpd.server_address[1]}"
+
+
 class RecordingEngine(MockEngine):
     def generate(self, ids, max_new, sampling, cancel, embeddings=None):
         self.last_max_new = max_new
@@ -2094,10 +2103,7 @@ class IncrementalPrompts(unittest.TestCase):
 
     def test_counting_tokens_leaves_the_kept_prompts_alone(self):
         svc = self.service(conversation_cache_slots=2)
-        httpd = serve(svc, port=0)
-        self.addCleanup(httpd.server_close)
-        self.addCleanup(httpd.shutdown)
-        self.base = f"http://127.0.0.1:{httpd.server_address[1]}"
+        _, self.base = start_http(self, svc)
         main = self.conversation(0)
         status, b = self.post("/v1/chat/completions", {"model": "m", "max_tokens": 8, "messages": main})
         self.assertEqual(status, 200, b)
@@ -3028,12 +3034,7 @@ class LiveRate(unittest.TestCase):
         self.tok = ByteTokenizer()
         self.engine = MockEngine(self.tok, "x" * self.TOKENS, max_context=CTX, delay_s=self.PACE_S)
         self.svc = Service(self.engine, self.tok, ChatTemplate(ROOT / "strata_server/chat_template.jinja"))
-        self.httpd = serve(self.svc, port=0)
-        self.base = f"http://127.0.0.1:{self.httpd.server_address[1]}"
-
-    def tearDown(self):
-        self.httpd.shutdown()
-        self.httpd.server_close()
+        self.httpd, self.base = start_http(self, self.svc)
 
     def metrics(self):
         with urllib.request.urlopen(self.base + "/metrics", timeout=10) as r:
@@ -3164,12 +3165,7 @@ class PromptProgress(unittest.TestCase):
         self.engine.total = self.TOTAL
         self.engine.reused = 4096                     # RESUME: the conversation checkpoint's reused prefix
         self.svc = Service(self.engine, tok, ChatTemplate(ROOT / "strata_server/chat_template.jinja"))
-        self.httpd = serve(self.svc, port=0)
-        self.base = f"http://127.0.0.1:{self.httpd.server_address[1]}"
-
-    def tearDown(self):
-        self.httpd.shutdown()
-        self.httpd.server_close()
+        self.httpd, self.base = start_http(self, self.svc)
 
     def stream(self, **req):
         body = json.dumps({"model": "m", "max_tokens": self.TOKENS, "stream": True,
@@ -3889,12 +3885,7 @@ class SharingTheGpu(unittest.TestCase):
         tok = ByteTokenizer()
         self.engine = UnloadableEngine(tok, "</think>\n\nok", max_context=CTX)
         self.svc = Service(self.engine, tok, ChatTemplate(ROOT / "strata_server/chat_template.jinja"))
-        self.httpd = serve(self.svc, port=0)
-        self.base = f"http://127.0.0.1:{self.httpd.server_address[1]}"
-
-    def tearDown(self):
-        self.httpd.shutdown()
-        self.httpd.server_close()
+        self.httpd, self.base = start_http(self, self.svc)
 
     def req(self, path, body=None):
         r = urllib.request.Request(self.base + path, data=None if body is None else json.dumps(body).encode(),
@@ -4134,12 +4125,7 @@ class ReasoningCloseRetry(unittest.TestCase):
         self.tok = ByteTokenizer()
         self.engine = EndsInsideThinkingEngine(self.tok)
         self.svc = Service(self.engine, self.tok, ChatTemplate(ROOT / "strata_server/chat_template.jinja"))
-        self.httpd = serve(self.svc, port=0)
-        self.base = f"http://127.0.0.1:{self.httpd.server_address[1]}"
-
-    def tearDown(self):
-        self.httpd.shutdown()
-        self.httpd.server_close()
+        self.httpd, self.base = start_http(self, self.svc)
 
     def chat(self):
         body = {"model": "m", "messages": [{"role": "user", "content": "2+2?"}], "max_tokens": 300}
@@ -4187,12 +4173,7 @@ class ThinkingBudget(unittest.TestCase):
         self.tok = ByteTokenizer()
         self.engine = ThinkingEngine(self.tok)
         self.svc = Service(self.engine, self.tok, ChatTemplate(ROOT / "strata_server/chat_template.jinja"))
-        self.httpd = serve(self.svc, port=0)
-        self.base = f"http://127.0.0.1:{self.httpd.server_address[1]}"
-
-    def tearDown(self):
-        self.httpd.shutdown()
-        self.httpd.server_close()
+        self.httpd, self.base = start_http(self, self.svc)
 
     def post(self, path, body):
         req = urllib.request.Request(self.base + path, data=json.dumps(body).encode(), headers={
@@ -4459,12 +4440,7 @@ class ForcedToolChoice(unittest.TestCase):
         self.tok = ByteTokenizer()
         self.engine = CallingEngine(self.tok)
         self.svc = Service(self.engine, self.tok, ChatTemplate(ROOT / "strata_server/chat_template.jinja"))
-        self.httpd = serve(self.svc, port=0)
-        self.base = f"http://127.0.0.1:{self.httpd.server_address[1]}"
-
-    def tearDown(self):
-        self.httpd.shutdown()
-        self.httpd.server_close()
+        self.httpd, self.base = start_http(self, self.svc)
 
     def openai(self, **extra):
         body = {"model": "m", "messages": [{"role": "user", "content": "2+2?"}], "max_tokens": 400,

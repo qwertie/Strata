@@ -22,7 +22,7 @@ class Sites(unittest.TestCase):
             # updater._move_dir keeps its own longer retry loop
             bare = [l for l in bare if not (rel.endswith("updater.py") and "source, destination" in l)]
             self.assertEqual(bare, [], rel)
-            self.assertIn("_atomic_mod.replace(", text, rel)
+            self.assertRegex(text, r"_atomic_mod\.(replace|write_bytes|write_text)\b", rel)
 
 
 class Retry(unittest.TestCase):

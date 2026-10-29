@@ -1635,17 +1635,9 @@ def progress_words_for(step, lines, download):
 
 
 def own_nvidia_gpus() -> list:
-    s = run_quiet(["nvidia-smi", "--query-gpu=index,name,memory.total,compute_cap,driver_version",
-                   "--format=csv,noheader,nounits"])
-    found = []
-    for line in s.strip().splitlines():
-        try:
-            idx, name, mem, cc, drv = [x.strip() for x in line.split(",")]
-            found.append({"index": int(idx), "name": name, "vram_gb": float(mem) / 1024.0,
-                          "arch": cc.replace(".", ""), "driver": drv})
-        except ValueError:
-            continue
-    return found
+    """Lists the NVIDIA cards as setup.gpus() does, for when setup.py is not loaded or fails."""
+    from strata_common import gpu_fit
+    return gpu_fit.parse_nvidia_cards(run_quiet(gpu_fit.NVIDIA_SMI_CARDS))
 
 
 def nvidia_display_active() -> dict:

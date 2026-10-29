@@ -22,7 +22,7 @@ from pathlib import Path
 
 from strata_common import profiles
 from strata_common.profiles import ProfileError
-from strata_base import posix_owner
+from strata_base import atomic as _atomic_mod, posix_owner
 
 
 KINDS = frozenset({"runtime.restart", "engine.calibrate.measure", "components.verify"})
@@ -232,8 +232,8 @@ def save(profile: str, name: str, proposed: dict, expected_revision: str) -> tup
                     backup.read_bytes() != old:
                 raise ProfileError("recipe history conflicts with the saved revision", 5)
         else:
-            profiles._atomic(backup, old)
-        profiles._atomic(path, _bytes(proposed))
+            _atomic_mod.write_bytes(backup, old)
+        _atomic_mod.write_bytes(path, _bytes(proposed))
     return load(profile, name)
 
 

@@ -357,9 +357,7 @@ class Tuner:
         }
 
     def save(self) -> None:
-        tmp = self.state_file.with_suffix(".tmp")
-        tmp.write_text(json.dumps(self.to_dict(), indent=2), encoding="utf-8")
-        atomic.replace(tmp, self.state_file)
+        atomic.write_text(self.state_file, json.dumps(self.to_dict(), indent=2))
 
     def _report_or_none(self) -> dict[str, Any] | None:
         if self.state not in ("completed", "cancelled", "failed"):

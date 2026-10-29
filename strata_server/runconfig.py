@@ -178,9 +178,7 @@ def save(path: str | Path, cfg: dict) -> Path:
     path = Path(path)
     bak = path.with_name(path.name + ".bak")
     shutil.copyfile(path, bak)
-    tmp = path.with_name(path.name + ".tmp")
-    tmp.write_text(json.dumps(cfg, indent=1), encoding="utf-8")
-    _atomic_mod.replace(tmp, path)
+    _atomic_mod.write_text(path, json.dumps(cfg, indent=1))
     return bak
 
 

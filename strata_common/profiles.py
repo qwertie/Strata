@@ -210,29 +210,6 @@ def _lock(name: str):
                 fcntl.flock(stream.fileno(), fcntl.LOCK_UN)
 
 
-def _atomic(path: Path, data: bytes) -> None:
-    fd, temp_name = tempfile.mkstemp(prefix=f".{path.stem}-", suffix=".tmp", dir=path.parent)
-    try:
-        with os.fdopen(fd, "wb") as stream:
-            stream.write(data)
-            stream.flush()
-            os.fsync(stream.fileno())
-        _atomic_mod.replace(temp_name, path)
-        if os.name != "nt":
-            try:
-                parent_fd = os.open(path.parent, os.O_RDONLY)
-                try:
-                    os.fsync(parent_fd)
-                finally:
-                    os.close(parent_fd)
-            except OSError:
-                # Replacement already succeeded; do not report a failed save after it changed the profile.
-                pass
-    finally:
-        if os.path.exists(temp_name):
-            os.unlink(temp_name)
-
-
 def create(name: str, source_config: str) -> tuple[dict, str]:
     name = _name(name)
     try:
@@ -245,7 +222,7 @@ def create(name: str, source_config: str) -> tuple[dict, str]:
         path = _path(name)
         if path.exists() or path.is_symlink():
             raise ProfileError(f"profile {name!r} already exists")
-        _atomic(path, _bytes(profile))
+        _atomic_mod.write_bytes(path, _bytes(profile))
     return load(name)
 
 
@@ -290,8 +267,8 @@ def save(name: str, proposed: dict, *, expected_revision: str,
             raise ProfileError("profile changed during edit; reload it before saving", 6)
         old_path = history / f"{revision}.json"
         if not old_path.exists():
-            _atomic(old_path, old)
-        _atomic(_path(name), _bytes(proposed))
+            _atomic_mod.write_bytes(old_path, old)
+        _atomic_mod.write_bytes(_path(name), _bytes(proposed))
     return load(name)
 
 

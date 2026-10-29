@@ -18,7 +18,6 @@ import os
 import re
 import subprocess
 import sys
-import tempfile
 import threading
 import time
 from strata_base import atomic as _atomic_mod
@@ -532,24 +531,7 @@ def derive_config(base: dict, s: S.LaunchSettings, *, bool_flags: frozenset[str]
 
 def write_private(path: Path, data: dict) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    fd, tmp = tempfile.mkstemp(prefix=".launch-cfg-", suffix=".tmp", dir=path.parent)
-    try:
-        with os.fdopen(fd, "wb") as fh:
-            fh.write((json.dumps(data, indent=1, ensure_ascii=False) + "\n").encode("utf-8"))
-        try:
-            os.chmod(tmp, 0o600)
-        except OSError:
-            pass
-        _atomic_mod.replace(tmp, path)
-    finally:
-        if os.path.exists(tmp):
-            os.unlink(tmp)
-    if WINDOWS:
-        try:
-            from strata_base import private_files
-            private_files.restrict_to_current_user(path, directory=False)
-        except Exception:                                    # noqa: BLE001
-            pass
+    _atomic_mod.write_bytes(path, (json.dumps(data, indent=1, ensure_ascii=False) + "\n").encode("utf-8"), private=True)
 
 
 def launch_dir() -> Path:

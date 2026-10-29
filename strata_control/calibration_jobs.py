@@ -13,7 +13,7 @@ from contextlib import contextmanager
 from pathlib import Path
 
 from strata_control import calibration, journal
-from strata_common import profiles
+from strata_base import atomic as _atomic_mod
 from strata_common.profiles import ProfileError
 from strata_base import posix_owner
 from strata_base.file_lock import try_lock_file, unlock_file
@@ -158,8 +158,8 @@ def _save_progress(profile: str, job_id: str, stage: str, completed: int, total:
         raise ProfileError("calibration progress is invalid", 5)
     value = {"schema_version": 1, "job_id": job_id, "stage": stage,
              "completed": completed, "total": total, "updated_at": time.time()}
-    profiles._atomic(_progress_path(profile, job_id),
-                     (json.dumps(value, sort_keys=True, allow_nan=False) + "\n").encode("utf-8"))
+    _atomic_mod.write_bytes(_progress_path(profile, job_id),
+                            (json.dumps(value, sort_keys=True, allow_nan=False) + "\n").encode("utf-8"))
 
 
 def _load_progress(profile: str, job_id: str) -> dict | None:

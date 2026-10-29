@@ -23,6 +23,7 @@ from strata_control import bench
 from strata_common.client import Endpoint
 from strata_control import calibration, journal, management, owner_transport, recipes, runtime
 from strata_common import procs, profiles
+from tests.terminal.fake_engine import write_byte_tokenizer
 
 
 WINDOWS = os.name == "nt"
@@ -65,14 +66,7 @@ class RuntimeTests(unittest.TestCase):
             wrapper = self.root / "engine.cmd"
             wrapper.write_bytes(f'@echo off\r\n"{sys.executable}" "{engine}" %*\r\n'.encode())
             engine = wrapper
-        from tools.strata_tokenizer import BYTE_TO_UNICODE
-        tokenizer = self.root / "tokenizer"
-        tokenizer.mkdir()
-        tokens = [BYTE_TO_UNICODE[i] for i in range(256)] + [
-            "ab", "<|im_start|>", "<|im_end|>", "<|endoftext|>"]
-        (tokenizer / "vocab.json").write_text(json.dumps({token: i for i, token in enumerate(tokens)}))
-        (tokenizer / "merges.txt").write_text("a b")
-        (tokenizer / "token_type.json").write_text(json.dumps([0] * 257 + [3, 3, 3]))
+        tokenizer = write_byte_tokenizer(self.root / "tokenizer")
         self.config = self.root / "run.json"
         self.config.write_text(json.dumps({"exe": str(engine), "tokenizer": str(tokenizer),
                                             "args": [], "cwd": str(self.root), "model_name": "fake",

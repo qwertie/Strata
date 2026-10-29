@@ -32,7 +32,7 @@ sys.path.insert(0, str(HERE))
 import engram_hash as EH  # noqa: E402
 import exl3_torch as ET  # noqa: E402
 from st import SafeTensors  # noqa: E402
-from dspark_ref import fp8_round, rms  # noqa: E402
+from dspark_ref import fp8_round, rms, rope  # noqa: E402
 
 
 # ------------------------------------------------------------------ the reference kernels' roundings
@@ -82,16 +82,6 @@ def freqs_cis(dim, seqlen, original_seq_len, base, factor, beta_fast, beta_slow,
         freqs = freqs / factor * (1 - smooth) + freqs * smooth
     f = torch.outer(torch.arange(seqlen, dtype=torch.float32), freqs)
     return torch.polar(torch.ones_like(f), f).to(dev)
-
-
-def rope(x: torch.Tensor, fc: torch.Tensor, inverse: bool = False) -> torch.Tensor:
-    """Adjacent pairs as complex numbers.  x [T, d] or [T, h, d]; fc [T, d/2]."""
-    c = torch.view_as_complex(x.float().reshape(*x.shape[:-1], -1, 2).contiguous())
-    if inverse:
-        fc = fc.conj()
-    if x.ndim == 3:
-        fc = fc[:, None, :]
-    return torch.view_as_real(c * fc).flatten(-2)
 
 
 # ------------------------------------------------------------------ the model

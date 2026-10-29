@@ -357,9 +357,7 @@ class TimeSkipRun:
         }
 
     def save(self) -> None:
-        tmp = self.state_file.with_suffix(".tmp")
-        tmp.write_text(json.dumps(self.to_dict(), indent=2), encoding="utf-8")
-        atomic.replace(tmp, self.state_file)
+        atomic.write_text(self.state_file, json.dumps(self.to_dict(), indent=2))
 
     @staticmethod
     def load(root: Path, run_id: str) -> dict[str, Any]:

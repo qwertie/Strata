@@ -15,6 +15,7 @@ Modes (all from the ORIGINAL Qwen weights, rotated into the file's basis with th
 from __future__ import annotations
 
 import argparse
+import mmap
 import os
 import pathlib
 import sys
@@ -53,6 +54,25 @@ def q8_0_quantize(w: np.ndarray) -> np.ndarray:
 
 def bf16(raw: np.ndarray) -> np.ndarray:
     return (raw.astype(np.uint32) << 16).view(np.float32)
+
+
+def open_rotated(path: str):
+    """Opens a rotated GGUF (gguf_reader) and maps its bytes read-only; returns the file, the map, its tensors by
+    name and hadamard_signs. The other trellis scripts use it."""
+    g = gguf_reader.GGUFFile(path)
+    with open(path, "rb") as fh:
+        mm = mmap.mmap(fh.fileno(), 0, access=mmap.ACCESS_READ)
+    return g, mm, {t.name: t for t in g.tensors}, hadamard_signs(g)
+
+
+def hadamard_signs(g) -> dict:
+    """Gets the GGUF's sign vectors (prism.hadamard.sign_widths / sign_values), keyed by their width."""
+    sv = np.array(g.metadata["prism.hadamard.sign_values"], dtype=np.float32)
+    signs, at = {}, 0
+    for w in (int(x) for x in g.metadata["prism.hadamard.sign_widths"]):
+        signs[w] = sv[at:at + w]
+        at += w
+    return signs
 
 
 def load_h(dump_dir, layer, kind, power):
@@ -100,13 +120,7 @@ def main() -> int:
     link = var / gg.name
     if not link.exists():
         link.symlink_to(gg)
-    g = gguf_reader.GGUFFile(a.gguf)
-    sw = [int(x) for x in g.metadata["prism.hadamard.sign_widths"]]
-    sv = np.array(g.metadata["prism.hadamard.sign_values"], dtype=np.float32)
-    signs, at = {}, 0
-    for w in sw:
-        signs[w] = sv[at:at + w]
-        at += w
+    signs = hadamard_signs(gguf_reader.GGUFFile(a.gguf))
     if a.mode == "q8":
         gu_t = d_t = 8
         row_gu, row_d = N_EMBD // 32 * 34, N_FF // 32 * 34

@@ -9,6 +9,7 @@ to wait that split second and try again; any other error, and a PermissionError 
 from __future__ import annotations
 
 import os
+import tempfile
 import time
 from pathlib import Path
 from typing import Union
@@ -40,6 +41,39 @@ def write_text(path: PathLike, text: str, *, encoding: str = "utf-8") -> None:
     tmp = target.with_suffix(target.suffix + ".tmp") if target.suffix else target.with_name(target.name + ".tmp")
     tmp.write_text(text, encoding=encoding)
     replace(tmp, target)
+
+
+def write_bytes(path: PathLike, data: bytes, *, private: bool = False) -> None:
+    """Replaces the file's contents in one step: `data` goes to a temporary file in the same folder, reaches the disk
+    and is then renamed over `path` (see replace), so neither a crash nor a reader ever sees half a file. The folder
+    must exist. `private`: on Windows the file also gets an ACL that shuts out other accounts (best effort; elsewhere
+    the temporary file's mode 0600 is kept)."""
+    target = Path(path)
+    descriptor, temp = tempfile.mkstemp(prefix=f".{target.name}-", suffix=".tmp", dir=target.parent)
+    try:
+        with os.fdopen(descriptor, "wb") as stream:
+            stream.write(data)
+            stream.flush()
+            os.fsync(stream.fileno())
+        replace(temp, target)
+        if os.name != "nt":
+            try:
+                folder = os.open(target.parent, os.O_RDONLY)
+                try:
+                    os.fsync(folder)
+                finally:
+                    os.close(folder)
+            except OSError:
+                pass                           # the file is already replaced: a failed folder sync is no failed save
+    finally:
+        if os.path.exists(temp):
+            os.unlink(temp)
+    if private and os.name == "nt":
+        try:
+            from strata_base import private_files
+            private_files.restrict_to_current_user(target, directory=False)
+        except Exception:                              # noqa: BLE001 - a file the user can read is still theirs
+            pass
 
 
 def write_new(path: Path, data: bytes) -> None:

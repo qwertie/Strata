@@ -20,6 +20,7 @@ from strata_common import acquisition, engine_component as ec, signing
 from strata_control import feed as feedmod, preset_marks, updater
 from strata_common.targets import host_platform
 from tests.terminal import update_fixture as fx
+from tests.terminal.fake_engine import write_byte_tokenizer
 
 PLATFORM = host_platform()
 WINDOWS = os.name == "nt"
@@ -91,13 +92,7 @@ class UpdaterCase(unittest.TestCase):
             pass
 
     def _run_config(self):
-        from tools.strata_tokenizer import BYTE_TO_UNICODE
-        tokenizer = self.root / "tokenizer"
-        tokenizer.mkdir()
-        tokens = [BYTE_TO_UNICODE[i] for i in range(256)] + ["ab", "<|im_start|>", "<|im_end|>", "<|endoftext|>"]
-        (tokenizer / "vocab.json").write_text(json.dumps({token: i for i, token in enumerate(tokens)}))
-        (tokenizer / "merges.txt").write_text("a b")
-        (tokenizer / "token_type.json").write_text(json.dumps([0] * 257 + [3, 3, 3]))
+        tokenizer = write_byte_tokenizer(self.root / "tokenizer")
         self.config = self.root / "run.json"
         self.config.write_text(json.dumps({"exe": "/some/old/engine", "backend": "cuda", "tokenizer": str(tokenizer), "args": [],
                                            "cwd": str(self.root), "model_name": "fake", "host": "127.0.0.1", "port": 0}))

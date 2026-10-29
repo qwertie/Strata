@@ -16,7 +16,6 @@ import os
 import re
 import socket
 import stat
-import tempfile
 import threading
 import time
 import uuid
@@ -28,6 +27,7 @@ from strata_control.discovery import own_settings_file
 from strata_control.doctor import inspect as inspect_components
 from strata_common.profiles import ProfileError
 from strata_base import atomic as _atomic_mod
+from strata_base.hashing import sha256_file
 from strata_base import posix_owner
 
 
@@ -78,14 +78,6 @@ def _tools_available() -> bool:
         folder = Path(raw).expanduser()
         return (folder / "setup.py").is_file() and (folder / "tools" / "calibrate.py").is_file()
     return False
-
-
-def _digest(path: Path) -> str:
-    result = hashlib.sha256()
-    with path.open("rb") as stream:
-        for block in iter(lambda: stream.read(1024 * 1024), b""):
-            result.update(block)
-    return result.hexdigest()
 
 
 def _target(ref: str) -> tuple[Path, dict | None, str | None, dict]:
@@ -160,8 +152,8 @@ def _identity(path: Path, cfg: dict, profile: dict | None, revision: str | None)
                 raise ProfileError(f"component changed during calibration: {item['name']}", 5) from None
             files.append({"name": item["name"], "path": str(file_path),
                           "size": details.st_size, "modified_ns": details.st_mtime_ns})
-    return {"source_sha256": _digest(path), "engine_sha256": _digest(engine),
-            "suite_sha256": _digest(Path(cal.__file__)), "hardware_key": _hardware_key(cfg),
+    return {"source_sha256": sha256_file(path), "engine_sha256": sha256_file(engine),
+            "suite_sha256": sha256_file(Path(cal.__file__)), "hardware_key": _hardware_key(cfg),
             "model_name": cfg.get("model_name"), "backend": cfg.get("backend"), "gpu": cfg.get("gpu"),
             "profile_id": profile["id"] if profile else None, "profile_revision": revision,
             "required_file_metadata": files, "model_integrity": "metadata_only_unverified"}
@@ -273,7 +265,7 @@ def measure(ref: str, output: Path, *, exclusive_ack: bool = False, say=print, r
         if current_path != path or (expected_profile_revision is not None and
                                     revision != expected_profile_revision) or \
                 (expected_source_sha256 is not None and
-                 _digest(current_path) != expected_source_sha256):
+                 sha256_file(current_path) != expected_source_sha256):
             raise ProfileError("calibration source changed after review; review again", 6)
         return _measure_locked(ref, path, profile, revision, cfg, output, say=say, runner=runner,
                                job_id=job_id, progress=progress, cancel_event=cancel_event)
@@ -402,17 +394,8 @@ def _smoke(cfg: dict, source_path: Path) -> int:
         cal.close(engine)
 
 
-def _replace_bytes(path: Path, payload: bytes) -> None:
-    descriptor, temp = tempfile.mkstemp(prefix=f".{path.name}-", suffix=".tmp", dir=path.parent)
-    try:
-        with os.fdopen(descriptor, "wb") as stream:
-            stream.write(payload)
-            stream.flush()
-            os.fsync(stream.fileno())
-        _atomic_mod.replace(temp, path)
-    finally:
-        if os.path.exists(temp):
-            os.unlink(temp)
+#: The writer of the config and settings files; a module attribute so a test can make one write fail.
+_replace_bytes = _atomic_mod.write_bytes
 
 
 def _settings_candidate(hardware_key: str, result: dict) -> tuple[Path, bytes | None, bytes]:

@@ -67,6 +67,7 @@ from strata_base import tls
 
 tls.install()      # #3722: HTTPS checks the server against the operating system's certificates (what Chrome and curl.exe do)
 from strata_base import atomic, transfer
+from strata_base.hashing import sha256_file
 from strata_common import draft_layer
 from strata_common import engine_component as EC
 from strata_common.engine_component import AMD_IGPU_PCI
@@ -75,7 +76,7 @@ from strata_base.path_compare import same_drive, same_folder
 from strata_control.discovery import config_files, in_app_mode, in_trash, own_settings_file as settings_path
 from strata_control import models_move
 from strata_common import user_args
-from strata_common.gpu_fit import SPLIT_MIN_VRAM_GB, SPLIT_PROMPT_VRAM_GB
+from strata_common.gpu_fit import NVIDIA_SMI_CARDS, SPLIT_MIN_VRAM_GB, SPLIT_PROMPT_VRAM_GB, parse_nvidia_cards
 from strata_common.catalog import (  # noqa: F401 - tools/ and the tests read the tables as setup.<NAME> too
     CODER_FILES, CONTEXTS, DSV41_ALL_FILES, DSV41_CONTEXT, DSV41_DSPARK, DSV41_EARLIER_SHA256, DSV41_ENGRAM_META,
     DSV41_FILES, DSV41_FIRST_NAMES, DSV41_ISTA_ENGRAM, DSV41_ISTA_FILES, DSV41_ISTA_REPO, DSV41_ISTA_SHARD,
@@ -873,17 +874,7 @@ def _cpuid_avx2() -> bool:
 
 def gpus():
     """Every NVIDIA GPU, numbered as nvidia-smi numbers them (by PCI bus, the order the engine is told to use)."""
-    s = out(["nvidia-smi", "--query-gpu=index,name,memory.total,compute_cap,driver_version",
-             "--format=csv,noheader,nounits"])
-    found = []
-    for line in s.strip().splitlines():
-        try:
-            idx, name, mem, cc, drv = [x.strip() for x in line.split(",")]
-            found.append({"index": int(idx), "name": name, "vram_gb": float(mem) / 1024.0, "arch": cc.replace(".", ""),
-                          "driver": drv})
-        except ValueError:
-            continue
-    return found
+    return parse_nvidia_cards(out(NVIDIA_SMI_CARDS))
 
 
 def gpu_drives_display(g) -> bool:
@@ -4376,15 +4367,8 @@ def verify_engine_archive(z: Path, asset: str, base: str) -> None:
     if have != size:
         drop_download(z)
         raise UnverifiedEngine(f"{z.name} is {have:,} bytes, not the published {size:,}")
-    h = hashlib.sha256()
-    with open(z, "rb") as f:
-        while True:
-            b = f.read(16 << 20)
-            if not b:
-                break
-            h.update(b)
-    if h.hexdigest() != sha:
-        got = h.hexdigest()
+    got = sha256_file(z)
+    if got != sha:
         drop_download(z)
         raise UnverifiedEngine(f"{z.name} has the wrong SHA-256 ({got}, expected {sha})")
     ok(f"{z.name}: SHA-256 checksum verified against GitHub's ({sha[:12]}...)")
@@ -5502,9 +5486,7 @@ def data_folder_in_place() -> tuple:
 def write_config(path: Path, cfg: dict):
     """A run config, written whole or not at all (#459): to a temporary file first, then moved over the old one, so
     a setup stopped half-way (a closed window, a full disk) never leaves an empty strata-*.json behind."""
-    tmp = path.with_name(path.name + ".tmp")
-    tmp.write_text(json.dumps(cfg, indent=1), encoding="utf-8")
-    atomic.replace(tmp, path)
+    atomic.write_text(path, json.dumps(cfg, indent=1))
 
 
 # #629: the run config's keys setup writes itself (and rewrites on every setup run); any other key is the user's - a

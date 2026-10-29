@@ -13,7 +13,8 @@ from unittest import mock
 
 import strata_server.server as server
 from strata_server.frontend import ChatTemplate
-from strata_server.server import ByteTokenizer, Service, serve
+from strata_server.server import ByteTokenizer, Service
+from strata_server.test_server import start_http
 from strata_common.engine_client import MockEngine
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -23,9 +24,7 @@ class QueueKeepAlive(unittest.TestCase):
     def setUp(self):
         tok = ByteTokenizer()
         self.svc = Service(MockEngine(tok, "ok"), tok, ChatTemplate(ROOT / "strata_server/chat_template.jinja"))
-        self.httpd = serve(self.svc, port=0)
-        self.addCleanup(self.httpd.server_close)
-        self.addCleanup(self.httpd.shutdown)
+        self.httpd, _ = start_http(self, self.svc)
         p = mock.patch.object(server, "QUEUE_BEAT_S", 0.1)
         p.start()
         self.addCleanup(p.stop)

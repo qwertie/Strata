@@ -33,9 +33,7 @@ from __future__ import annotations
 
 import hashlib
 import json
-import os
 import shutil
-import tempfile
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -57,20 +55,6 @@ class ApplyError(RuntimeError):
 
 def _sha256(payload: bytes) -> str:
     return hashlib.sha256(payload).hexdigest()
-
-
-def _atomic_write(path: Path, payload: bytes) -> None:
-    """Replace a file's contents in one step, so a crash cannot leave it half-written."""
-    descriptor, temp = tempfile.mkstemp(prefix=f".{path.name}-", suffix=".tmp", dir=path.parent)
-    try:
-        with os.fdopen(descriptor, "wb") as stream:
-            stream.write(payload)
-            stream.flush()
-            os.fsync(stream.fileno())
-        _atomic_mod.replace(temp, path)
-    finally:
-        if os.path.exists(temp):
-            os.unlink(temp)
 
 
 # --------------------------------------------------------------------------- args and configs
@@ -349,7 +333,7 @@ def apply_recommendation(*, job: dict[str, Any], config_path: Path,
     (directory / "candidate.json").write_bytes(
         (json.dumps(candidate, indent=1, ensure_ascii=False) + "\n").encode("utf-8"))
 
-    _atomic_write(config_path, (json.dumps(candidate, indent=1, ensure_ascii=False) + "\n").encode("utf-8"))
+    _atomic_mod.write_bytes(config_path, (json.dumps(candidate, indent=1, ensure_ascii=False) + "\n").encode("utf-8"))
 
     record = {
         "schema_version": SCHEMA_VERSION,
@@ -394,7 +378,7 @@ def rollback(*, application_id: str, state_dir: Path) -> dict[str, Any]:
         raise ApplyError(
             "the run configuration changed after this apply, so restoring would discard a newer "
             "change; nothing was written", 409)
-    _atomic_write(target, before.read_bytes())
+    _atomic_mod.write_bytes(target, before.read_bytes())
     record["rolled_back"] = True
     record["rolled_back_at"] = time.time()
     record_path.write_text(json.dumps(record, indent=2) + "\n", encoding="utf-8")

@@ -361,7 +361,8 @@ def sentence(cards: list[dict], vendor: str | None = None) -> str:
 
 # ---- reading saved settings (server, launch, app) ---------------------------------------------------------------------------------------
 
-def _int_list(g: Any) -> list[int]:
+def card_numbers(g: Any) -> list[int]:
+    """Reads a "gpu" setting (a list, or text such as "0,2") as card numbers; [] when it is empty or missing."""
     if g is None or g == "":
         return []
     items = g if isinstance(g, (list, tuple)) else str(g).split(",")
@@ -394,7 +395,7 @@ def saved_roles(cfg: dict) -> tuple[dict[int, str] | None, str | None]:
     if roles is None:
         return None, ("run settings: gpu_roles is not {card: main|helper|off} with one main; ignored" if cfg.get("gpu_roles") is not None else None)
     try:
-        gl = _int_list(cfg.get("gpu"))
+        gl = card_numbers(cfg.get("gpu"))
     except ValueError:
         return None, "run settings: gpu is not a card number or a list; gpu_roles ignored"
     on = [i for i, r in roles.items() if r != "off"]

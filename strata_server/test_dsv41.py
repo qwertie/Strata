@@ -23,8 +23,9 @@ import strata_tokenizer as ST  # noqa: E402
 from strata_server import frontend, server  # noqa: E402
 from strata_server.dsml import DsmlOutputParser, DsmlTranslator, to_dsml_force  # noqa: E402
 from strata_server.frontend import ChatTemplate, OutputParser, openai_to_messages  # noqa: E402
-from strata_server.server import (FAMILY_MODEL_NAMES, REASONING_WRAP_UP, Service, default_model_name, model_card_sampling,  # noqa: E402
-    serve)
+from strata_server.server import (FAMILY_MODEL_NAMES, REASONING_WRAP_UP, Service, default_model_name,  # noqa: E402
+    model_card_sampling)
+from strata_server.test_server import start_http  # noqa: E402
 from strata_common.engine_client import MockEngine  # noqa: E402
 from strata_common import engine_client  # noqa: E402
 
@@ -311,12 +312,9 @@ class ApiBase(unittest.TestCase):
         svc = Service(engine, tok, ChatTemplate(TEMPLATE), model_name=default_model_name({"arch": "deepseek41"}))
         svc.model_arch = "deepseek41"
         svc.set_family("deepseek41")
-        httpd = serve(svc, port=0)
-        self.addCleanup(httpd.server_close)
-        self.addCleanup(httpd.shutdown)
+        _, self.base = start_http(self, svc)
         self.addCleanup(frontend.use_family, None)
         self.engine, self.svc = engine, svc
-        self.base = f"http://127.0.0.1:{httpd.server_address[1]}"
         return engine
 
     def post(self, path, body, raw=False):
