@@ -37,7 +37,7 @@ session on an NVIDIA machine. Changes nobody can test come last.
 | A2 | Python: `strata_base/`, `strata_common/`; `serve/` becomes `strata_server/`; remove the import cycles between `serve/`, `strata_control/` and `strata_cli/`; one copy of the helpers repeated in `setup.py` and `tools/` | 2–5K | |
 | A3 | Move every whole file whose new place is already clear, without changing it: the folders `src/platform`, `src/artifact`, `src/spec`, `src/dsv41`, `src/qwen35`, `src/ngram`, `src/plan`; from `src/core/`, the runtime files to `src/base/gpu`, the conversation files to `src/common/state` and the Qwen3.8-only files to `src/models/qwen38`; the matching files in `sycl/`. Files that must be split wait for their step. | 0 | |
 | A4 | DeepSeek's own copies of host code: `ds4_os.hpp`, `ds4_pool.hpp`, `include/strata/models/deepseekv41/sampler.hpp` | ~1K | `ds4_os.hpp` done; the pool and the sampler wait (open issues) |
-| A5 | The `src/base/gpu` runtime interface (the shared code must not call the CUDA runtime directly), then `src/common/state`, `src/common/serve`, `src/common/spec` and the one-GPU parts of `src/common/experts`. These are also the base for the planned paged-KV engine. | 3–7K | serve: Qwen3.8 and Qwen3.6 done, DeepSeek waits for its model; state: descriptor done, Qwen3.6 on it |
+| A5 | The `src/base/gpu` runtime interface (the shared code must not call the CUDA runtime directly), then `src/common/state`, `src/common/serve`, `src/common/spec` and the one-GPU parts of `src/common/experts`. These are also the base for the planned paged-KV engine. | 3–7K | serve: Qwen3.8 and Qwen3.6 done, DeepSeek waits for its model; state: descriptor done, Qwen3.6 and Qwen3.8's running state on it, Qwen3.8's K/V left |
 | A6 | SYCL: the 7 files that are 95% or more the same as their `src/` original become shared | ~2.4K | done: 8 files (see [UPSTREAM_PORTING.md](UPSTREAM_PORTING.md)) |
 
 ### Phase B: changes NVIDIA-only code; one batched test session on an NVIDIA machine
@@ -186,3 +186,4 @@ alternating runs of the two builds. Models on this PC: Qwen3.8 IQ3_S (`strata-iq
 | A5 | `b17c98fd` | 491,394 | −1,754 | the shared command loop (`src/common/serve`), Qwen3.8 on it |
 | A5 | `57a2e1e0` | 491,316 | −1,832 | Qwen3.6 on the shared command loop |
 | A5 | `9f3ac8a3` | 491,505 | −1,643 | the state descriptor (`state_layout.hpp`), Qwen3.6 on it |
+| A5 | `27083334` | 491,519 | −1,629 | Qwen3.8's running state on the descriptor (its K/V not yet) |
