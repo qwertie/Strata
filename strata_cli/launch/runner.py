@@ -2095,7 +2095,8 @@ class Runner:
             if old:
                 self.notices.append("DeepSeek runs on this install's own engine package, not the one the model's earlier settings named.")
         libs = [d for d in (cfg.get("lib_dirs") or []) if "engine-dsv41" not in str(d)]
-        cfg["lib_dirs"] = [*libs, str(Path(found).parent)]          # its own folder carries the libraries it needs
+        from strata_common import engine_component as ec
+        cfg["lib_dirs"] = [*libs, *ec.package_lib_dirs(Path(found).parent)]   # its own package carries the libraries it needs
 
     def upgrade_dsv41_engine(self, found: Path) -> Path:
         """Gets the DeepSeek engine to launch: a newer package from the signed feed when there is one

@@ -144,6 +144,20 @@ class OwnEngine(unittest.TestCase):
             self.assertEqual(cfg["lib_dirs"], ["C:/cuda", str(own.parent)])
             self.assertTrue(f.notices)
 
+    def test_the_library_folders_its_build_json_names_come_too(self):
+        # the Windows AMD package keeps hipblas.dll and the other ROCm DLLs in rocm/bin; without it on PATH the engine
+        # does not start (0xC0000135), and setup reported "the model's pack is not complete ()"
+        import tempfile
+        with tempfile.TemporaryDirectory() as d:
+            own = Path(d) / "engine-dsv41" / "0.1.52-x" / "strata-dsv41.exe"
+            (own.parent / "rocm" / "bin").mkdir(parents=True)
+            own.write_bytes(b"x")
+            (own.parent / "BUILD.json").write_text('{"lib_dirs": ["rocm/bin"]}', encoding="utf-8")
+            fn, f = self.fake(d, own)
+            cfg = {"arch": "deepseek41", "exe": str(own), "lib_dirs": []}
+            fn(f, cfg)
+            self.assertEqual(cfg["lib_dirs"], [str(own.parent), str(own.parent / "rocm" / "bin")])
+
     def test_nothing_changes_for_qwen_or_when_this_install_has_no_package(self):
         fn, f = self.fake("x", Path("/p/strata-dsv41.exe"))
         cfg = {"arch": "qwen4exp", "exe": "component:strata-engine", "lib_dirs": ["a"]}

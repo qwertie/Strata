@@ -7378,7 +7378,7 @@ def install_dsv41(a, family, gpu, hip, amd, cuda_tk, multi, port, ram, adopted, 
         from strata_control import dsv41_engine
         exe = dsv41_engine.try_upgrade(exe, emit=lambda m: say("  " + m))
     if exe is not None and exe.parent != Path(eng):
-        lib_dirs = [*lib_dirs, str(exe.parent)]            # its own package carries the libraries it needs
+        lib_dirs = [*lib_dirs, *EC.package_lib_dirs(exe.parent)]   # its own package carries the libraries it needs
     if exe is None:
         if os.environ.get("STRATA_VERBOSE") == "1" or "--verbose" in sys.argv:
             say("  Details for developers: build it with cmake -DSTRATA_BUILD_DSV41=ON and point STRATA_DSV41_EXE at it.")
