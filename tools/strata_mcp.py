@@ -1229,8 +1229,8 @@ class Strata:
         return words
 
     def dsv41_left_gb(self, model, default: float) -> float:
-        """GB of this DeepSeek set's files still to be downloaded: the files already in Strata's models folder (the right size; the first release's
-        names count too) are done, so the disk check asks only for the rest.  Files the person keeps elsewhere (--model-path) are handled by the plan.
+        """GB of this DeepSeek set's files still to be downloaded: the files already in Strata's models folder (the right size; any complete layout of
+        the set counts) are done, so the disk check asks only for the rest.  Files the person keeps elsewhere (--model-path) are handled by the plan.
         `default`: what to answer when the tables cannot be read (the whole download)."""
         S = self.setup_module()
         try:
@@ -1238,14 +1238,14 @@ class Strata:
             md = fam["models"][model]
             models = self.data_dir() / "models"
             folder, shared = models / (fam["tag"] + model), models / (fam["tag"] + "shared")
-            left = 0
-            for where, names in ((folder, md["shards"]), (shared, md.get("shared", []))):
-                for n in names:
-                    for cand in (n, getattr(S, "DSV41_LEGACY_NAMES", {}).get(n)):
-                        if cand and (where / cand).is_file() and (where / cand).stat().st_size == S.DSV41_ALL_FILES[cand][0]:
-                            break
-                    else:
-                        left += S.DSV41_ALL_FILES[n][0]
+            sizes = S.DSV41_ALL_FILES
+
+            def have(where, n):
+                return bool(n) and (where / n).is_file() and (where / n).stat().st_size == sizes[n][0]
+            shards = next((names for names in md["layouts"] if all(have(folder, n) for n in names)), md["shards"])
+            left = sum(sizes[n][0] for n in shards if not have(folder, n))
+            left += sum(sizes[n][0] for n in md["shared"]
+                        if not (have(shared, n) or have(shared, S.DSV41_FIRST_NAMES.get(n))))
             return left / 1e9
         except Exception:                                    # noqa: BLE001 - a hint for the menu: when unsure, count the whole download
             return default

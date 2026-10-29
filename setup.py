@@ -77,12 +77,12 @@ from strata_control import models_move
 from strata_common import user_args
 from strata_common.gpu_fit import SPLIT_MIN_VRAM_GB, SPLIT_PROMPT_VRAM_GB
 from strata_common.catalog import (  # noqa: F401 - tools/ and the tests read the tables as setup.<NAME> too
-    CODER_FILES, CONTEXTS, DSV41_ALL_FILES, DSV41_CONTEXT, DSV41_DSPARK, DSV41_FILES, DSV41_ISTA_ENGRAM,
-    DSV41_ISTA_FILES, DSV41_ISTA_REPO, DSV41_ISTA_SHARD, DSV41_LEGACY_FILES, DSV41_LEGACY_NAMES, DSV41_SHARD,
-    DSV41_SHARED, FAMILIES, FP4LOCAL_ENGINE, FP4LOCAL_PREPARED, GYRO_ENGINE, GYRO_FILES, HF, HF_DEFAULT,
+    CODER_FILES, CONTEXTS, DSV41_ALL_FILES, DSV41_CONTEXT, DSV41_DSPARK, DSV41_EARLIER_SHA256, DSV41_ENGRAM_META,
+    DSV41_FILES, DSV41_FIRST_NAMES, DSV41_ISTA_ENGRAM, DSV41_ISTA_FILES, DSV41_ISTA_REPO, DSV41_ISTA_SHARD,
+    DSV41_OLDER_FILES, DSV41_SHARD, DSV41_SHARED, FAMILIES, FP4LOCAL_ENGINE, FP4LOCAL_PREPARED, GYRO_ENGINE, GYRO_FILES, HF, HF_DEFAULT,
     HF_REVISIONS, ISTA_FILES, MMPROJ, MODELS, MULTI_FILE_FAMILIES, NVFP4_ENGINE, NVFP4_FP4LOCAL_REPO, NVFP4_REPOS,
     OWN_PATH_FAMILIES, PREVIEW_FAMILIES, REPO_PINS, UNSLOTH_BIG_SHARDS, UNSLOTH_ENGINE, UNSLOTH_IQ4_XS_SHARDS,
-    UNSLOTH_SHARDS, hf, hf_endpoint)
+    UNSLOTH_SHARDS, hf, hf_endpoint, pick_dsv41_layout)
 
 ROOT = Path(__file__).resolve().parent
 # The desktop app runs this installer under Strata Control (its bundled Python, STRATA_CONTROL_INSTALL=1). The source
@@ -2452,13 +2452,13 @@ def own_gguf_is_whole(path: Path) -> bool:
         return False
 
 
-def verify_sha256(s: Path, size: int, sha: str, own: bool = False, repair=None) -> None:
+def verify_sha256(s: Path, size: int, sha: str, own: bool = False, repair=None, also: str | None = None) -> None:
     """A shard's size and SHA-256 against the pinned values (the Unsloth file); the result is kept in its finish mark,
     so the ~5 minutes of hashing 111 GB happen once.  A wrong file is deleted, so the next run downloads it again.
     `repair` (a downloaded file's own re-reader, see repair_download): the wrong file is first compared with the server
-    piece by piece and only the damaged pieces are written again, then it is checked a second time."""
-    m = s.with_name(s.name + ".done")
-    if m.exists() and f"sha256 {sha}" in m.read_text(encoding="utf-8", errors="replace"):
+    piece by piece and only the damaged pieces are written again, then it is checked a second time.  `also`: the
+    SHA-256 the file had at an earlier revision of its repository (DSV41_EARLIER_SHA256), accepted too."""
+    if sha256_marked(s, sha, also):
         return
     have = s.stat().st_size if s.exists() else -1
     if own and have > 0 and have != size and own_gguf_is_whole(s):
@@ -2473,7 +2473,7 @@ def verify_sha256(s: Path, size: int, sha: str, own: bool = False, repair=None) 
         fail(f"{s.name} is {have:,} bytes, not {size:,}", "delete it and run setup again (the download restarts)")
     say(f"  checking {s.name} (SHA-256, {size / 1e9:.1f} GB) ...")
     digest = _hash_file(s, size)
-    if digest != sha and repair is not None and not own:
+    if digest not in (sha, also) and repair is not None and not own:
         say(f"  Some parts of {s.name} were damaged; downloading only those parts again.")
         res = repair()
         if res is not None:
@@ -2481,7 +2481,7 @@ def verify_sha256(s: Path, size: int, sha: str, own: bool = False, repair=None) 
             digest = _hash_file(s, size)
         else:
             say("  The damaged parts could not be found this way.")
-    if digest != sha:
+    if digest not in (sha, also):
         if own and own_gguf_is_whole(s):
             warn(f"{s.name} is not the published file (SHA-256 {digest[:12]}..., expected {sha[:12]}...) but it is a complete GGUF file, so "
                  "Strata uses it as it is; it may be another version or a fine-tune, so check a few answers before you rely on it")
@@ -2490,10 +2490,18 @@ def verify_sha256(s: Path, size: int, sha: str, own: bool = False, repair=None) 
             fail(f"{s.name} does not match the published file (SHA-256 {digest}, expected {sha})",
                  "it may be damaged or another version; your file was left as it is. Copy the whole published file into the folder")
         s.unlink(missing_ok=True)
-        m.unlink(missing_ok=True)
+        s.with_name(s.name + ".done").unlink(missing_ok=True)
         fail(f"{s.name} has the wrong SHA-256 ({digest}, expected {sha}): deleted",
              "run setup again to download it again")
-    mark(s, f"sha256 {sha}")
+    mark(s, f"sha256 {digest}")
+
+
+def sha256_marked(path: Path, *shas) -> bool:
+    """Tells whether the finish mark of `path` records one of the SHA-256 values `shas` (None is skipped): whether the
+    file was checked before."""
+    m = path.with_name(path.name + ".done")
+    text = m.read_text(encoding="utf-8", errors="replace") if m.exists() else ""
+    return any(sha and f"sha256 {sha}" in text for sha in shas)
 
 
 def ready_files(model: str) -> list:
@@ -7160,25 +7168,13 @@ def dsv41_folder(a, fam: dict, tag: str, model: str = "UD-Q8_K_XL") -> Path:
     if a.gguf_dir:
         folder = Path(a.gguf_dir)
         d = fam["models"][model]
-        names = [n for s in d["shards"] for n in (s, DSV41_LEGACY_NAMES.get(s)) if n]
-        if any((folder / n).exists() for n in names):
+        if any((folder / n).exists() for names in d["layouts"] for n in names):
             return folder
         for sub in (d.get("subdir"), d.get("legacy_subdir"), model):          # the set's own folder inside (the first release used 2.00bpw/, 2.25bpw/)
             if sub and (folder / sub).is_dir():
                 return folder / sub
         return folder
     return Path(a.models_dir) / tag
-
-
-def dsv41_pick(folder: Path, name: str) -> Path:
-    """`name` in `folder`, or the file it was called in the first release (DSV41_LEGACY_NAMES; the same weights) when only that one is there;
-    else `name` (where it will be downloaded to)."""
-    if (folder / name).exists():
-        return folder / name
-    old = DSV41_LEGACY_NAMES.get(name)
-    if old and (folder / old).exists():
-        return folder / old
-    return folder / name
 
 
 def dsv41_shared_dir(a, fam: dict) -> Path:
@@ -7191,7 +7187,7 @@ def dsv41_find_shared(a, name: str, folder: Path, shared: Path) -> Path:
     """The file `name` (an Engram, the drafter, ...) the person already has: in the shared folder, beside the shards, or (--gguf-dir) in the
     folder above them or one folder level down from either; else where it will be downloaded to (the shared folder).  The size must be the
     pinned one, so a half-copied file is not taken for the file."""
-    names = [n for n in (name, DSV41_LEGACY_NAMES.get(name)) if n]            # today's name, and the first release's (the same weights)
+    names = [n for n in (name, DSV41_FIRST_NAMES.get(name)) if n]             # today's name, and the first release's (the same weights)
     roots = [shared, folder]
     if a.gguf_dir:
         base = Path(a.gguf_dir)
@@ -7216,13 +7212,15 @@ def dsv41_find_shared(a, name: str, folder: Path, shared: Path) -> Path:
     return shared / name
 
 
-def dsv41_pack_cmd(folder: Path, shards: list, engram: Path, meta: Path, dspark: Path, pack: Path) -> list:
+def dsv41_pack_cmd(folder: Path, shards: list, engram: Path, dspark: Path, pack: Path,
+                   meta: Path | None = None) -> list:
     """The pack recipe for an official IST-DAS set - this and nothing else: another one (--skip-tensors / --dense-override + engram_fold)
     packs without an error and gives garbage text (P2003, 2026-10-23).  The drafter's noise token (128799) and markov rank (256) are stated:
-    the IST-DAS GGUFs do not carry them, and a pack with noise id 0 drafts deep less often (decode ~10% slower with DSpark).  --shards names the four files, so an Engram or another
-    set in the same folder is not read as part of the model."""
+    the IST-DAS GGUFs do not carry them, and a pack with noise id 0 drafts deep less often (decode ~10% slower with DSpark).  --shards names the
+    layout's files, so an Engram or another set in the same folder is not read as part of the model.  `meta`: the GGUF with the Engram's hash
+    parameters, for an older layout whose shard 1 lacks them (DSV41_ENGRAM_META)."""
     return [sys.executable, str(ROOT / "tools" / "dsv41" / "pack_gguf.py"), "--model", str(folder), "--shards", *[Path(n).name for n in shards],
-            "--engram", str(engram), "--engram-meta", str(meta), "--dspark-gguf", str(dspark),
+            "--engram", str(engram), *(["--engram-meta", str(meta)] if meta else []), "--dspark-gguf", str(dspark),
             "--dspark-noise-token", "128799", "--dspark-markov-rank", "256", "--out", str(pack)]
 
 
@@ -7297,23 +7295,28 @@ def install_dsv41(a, family, gpu, hip, amd, cuda_tk, multi, port, ram, adopted, 
         model = names[int(ask("Which version?", [str(i) for i in range(1, len(names) + 1)], str(names.index(rec) + 1), a.yes)) - 1]
     ok(f"size: {model}")
     md = fam["models"][model]
-    say("  Its GGUF files: " + ("IST-DAS / ISTA-DASLab (huggingface.co/ISTA-DASLab/DeepSeek-V4.1-Flash-1017-GSQ-RCO-GGUF), with the DSpark drafter and a small metadata file from Unsloth"
+    say("  Its GGUF files: " + ("IST-DAS / ISTA-DASLab (huggingface.co/ISTA-DASLab/DeepSeek-V4.1-Flash-1017-GSQ-RCO-GGUF), with the DSpark drafter from Unsloth"
                               if md.get("recipe") == "ista" else "Unsloth (huggingface.co/unsloth/DeepSeek-V4.1-Flash-1017-GGUF)"))
     ista = md.get("recipe") == "ista"
     tag = fam["tag"] + model
     cards = dsv41_cards(gpu, all_cards, bool(a.gpu is not None or a.gpus))
     ctx = a.context or DSV41_CONTEXT
     folder = dsv41_folder(a, fam, tag, model)
-    shards = [dsv41_pick(folder, n) for n in md["shards"]]
+    layout = pick_dsv41_layout(md, lambda n: (folder / n).exists())
+    if not a.gguf_dir and any(not (folder / n).exists() for n in layout):
+        layout = md["shards"]                       # an older layout is only ever used whole: it is not downloaded
+    older = layout != md["shards"]
+    shards = [folder / n for n in layout]
     shared_dir = dsv41_shared_dir(a, fam)
-    shared = [dsv41_find_shared(a, n, folder, shared_dir) for n in md.get("shared", [])]
+    shared = [dsv41_find_shared(a, n, folder, shared_dir)
+              for n in [*md["shared"], *([DSV41_ENGRAM_META] if older else [])]]
     own_files = {f: bool(a.gguf_dir) or f.parent != shared_dir for f in shared}         # a file found outside setup's own folder is the person's
 
     def partial(f: Path) -> int:
         p = f.with_name(f.name + ".part")
         return p.stat().st_size if p.is_file() else 0
 
-    left = sum(0 if f.exists() and (done(f) or a.gguf_dir or own_files.get(f) or f.name in DSV41_LEGACY_FILES) else fam["sha256"][f.name][0] - partial(f)
+    left = sum(0 if f.exists() and (done(f) or a.gguf_dir or own_files.get(f) or f.name in DSV41_OLDER_FILES) else fam["sha256"][f.name][0] - partial(f)
                for f in [*shards, *shared]) / 1e9
     probe = folder if folder.exists() else (folder.parent if folder.parent.exists() else Path(a.models_dir))
     free = free_gb(probe)
@@ -7326,8 +7329,8 @@ def install_dsv41(a, family, gpu, hip, amd, cuda_tk, multi, port, ram, adopted, 
             f"is {left * 1e9 / 50e6 / 3600:.1f} hours. Files you already have: --gguf-dir DIR.")
     else:
         say("  Nothing to download: the files are already here.")
-    unchecked = [f for f in [*shards, *shared] if f.exists() and f"sha256 {fam['sha256'][f.name][1]}" not in
-                 (f.with_name(f.name + ".done").read_text(encoding="utf-8", errors="replace") if done(f) else "")]
+    unchecked = [f for f in [*shards, *shared]
+                 if f.exists() and not sha256_marked(f, fam["sha256"][f.name][1], DSV41_EARLIER_SHA256.get(f.name))]
     if unchecked:
         gb = sum(fam["sha256"][f.name][0] for f in unchecked) / 1e9
         say(f"  The files already here ({gb:.0f} GB) are checked against their SHA-256 once, now: about {max(1, round(gb / 55))} minutes on a fast "
@@ -7390,18 +7393,19 @@ def install_dsv41(a, family, gpu, hip, amd, cuda_tk, multi, port, ram, adopted, 
             ok(f"{f.name} already downloaded")
         else:
             if a.gguf_dir and not f.exists():
-                fail(f"{f} is missing", f"put {f.name} in {folder}, or drop --gguf-dir to download it")
-            if not a.gguf_dir and f.name not in DSV41_LEGACY_FILES:      # (a first-release file is checked, never fetched under its old name)
+                fail(f"{f} is missing", f"put {f.name} in {folder} (every shard of one download: a set's files of different "
+                     "releases do not mix), or drop --gguf-dir to download it")
+            if not a.gguf_dir:
                 download((md.get("hf") or fam["hf"]) + f.name, f)
-        if f.name in DSV41_LEGACY_FILES:
-            ok(f"{f.name}: a file of the first release of this set (the same weights); it is used as it is")
-        verify_sha256(f, *fam["sha256"][f.name], own=bool(a.gguf_dir) or f.name in DSV41_LEGACY_FILES)
-    for f in shared:                                  # the Engram, the drafter, the metadata shard: once for every official set
+        if older:
+            ok(f"{f.name}: a file of an earlier release of this set (the same weights); it is used as it is")
+        verify_sha256(f, *fam["sha256"][f.name], own=bool(a.gguf_dir) or older)
+    for f in shared:                                  # the Engram, the drafter (and an older layout's metadata shard)
         if f.exists() and (done(f) or own_files[f]):
             ok(f"{f.name} already here ({f.parent})")
         else:
             download(DSV41_SHARED[f.name] + f.name, f)
-        verify_sha256(f, *fam["sha256"][f.name], own=own_files[f])
+        verify_sha256(f, *fam["sha256"][f.name], own=own_files[f], also=DSV41_EARLIER_SHA256.get(f.name))
     ok(f"model files: {folder} ({len(shards)} shards" + (f"; shared files: {shared_dir if any(not own_files[f] for f in shared) else shared[0].parent}" if shared else "") + ")")
 
     step(6, "preparing the model for Strata")
@@ -7416,7 +7420,8 @@ def install_dsv41(a, family, gpu, hip, amd, cuda_tk, multi, port, ram, adopted, 
             have_pack = False
     if not have_pack:
         if ista:
-            run(dsv41_pack_cmd(folder, [f.name for f in shards], shared[0], shared[1], shared[2], pack))
+            engram, dspark, *engram_meta = shared
+            run(dsv41_pack_cmd(folder, layout, engram, dspark, pack, *engram_meta))
         else:
             run([sys.executable, str(ROOT / "tools" / "dsv41" / "pack_gguf.py"), "--model", str(folder), "--out", str(pack)])
     if ista:

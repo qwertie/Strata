@@ -67,7 +67,7 @@ class SharedFolderMmproj(unittest.TestCase):
             self.assertIsNone(PG.find_mmproj(model))
 
     def test_setup_does_not_name_an_mmproj_for_the_official_sets(self):
-        cmd = setup.dsv41_pack_cmd(Path("/m/set"), ["a.gguf"], Path("/s/e.gguf"), Path("/s/m.gguf"), Path("/s/d.gguf"), Path("/p"))
+        cmd = setup.dsv41_pack_cmd(Path("/m/set"), ["a.gguf"], Path("/s/e.gguf"), Path("/s/d.gguf"), Path("/p"))
         self.assertNotIn("--mmproj", cmd)                                  # the folder scan above decides, by the projector type
 
 
@@ -92,6 +92,17 @@ class OwnDeepSeekFiles(unittest.TestCase):
             ud = [setup.DSV41_SHARD.format(i=i) for i in range(1, 10)]
             self.touch_set(d / "c" / "UD-Q8_K_XL", ud)
             self.assertEqual(Runner.deepseek_set_in(d / "c")[0], "UD-Q8_K_XL")
+
+    def test_a_folder_names_the_parts_of_the_layout_it_holds_and_never_mixes_them(self):
+        from strata_cli.launch.runner import Runner
+        md = setup.MULTI_FILE_FAMILIES["deepseek41"]["models"]["IST-DAS-2.00bpw"]
+        new, four = md["layouts"][:2]
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            self.touch_set(d / "four", four)
+            self.assertEqual(Runner.find_deepseek_layout(md, d / "four"), (four, []))
+            self.touch_set(d / "mixed", [*new[:4], four[3]])
+            self.assertEqual(Runner.find_deepseek_layout(md, d / "mixed"), (new, [new[4]]))
 
     def test_other_models_files_are_not_deepseeks(self):
         from strata_cli.launch.runner import Runner

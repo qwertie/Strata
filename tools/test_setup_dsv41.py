@@ -171,7 +171,7 @@ class Install(unittest.TestCase):
             self.calls.append(("config", path.name))
 
         patches = [mock.patch.object(setup, "download", lambda url, dst, what=None: self.calls.append(("get", url, dst))),
-                   mock.patch.object(setup, "verify_sha256", lambda s, size, sha, own=False: self.calls.append(("sha", s.name, own))),
+                   mock.patch.object(setup, "verify_sha256", lambda s, size, sha, own=False, also=None: self.calls.append(("sha", s.name, own))),
                    mock.patch.object(setup, "free_gb", lambda p: 900.0),
                    mock.patch.object(setup, "github_reachable", lambda timeout=10.0: self.github_up),
                    mock.patch.object(setup, "pip_install", lambda *a, **k: None),
@@ -401,30 +401,39 @@ class OfficialSets(unittest.TestCase):
         fam = setup.MULTI_FILE_FAMILIES["deepseek41"]
         self.assertEqual(list(fam["models"]), ["IST-DAS-2.00bpw", "IST-DAS-2.25bpw", "IST-DAS-1.75bpw", "UD-Q8_K_XL"])         # the official sets first
         repo = "ISTA-DASLab/DeepSeek-V4.1-Flash-1017-GSQ-RCO-GGUF"
-        self.assertEqual(setup.HF_REVISIONS[repo], "cb02422c900df489cea5833e8a92171224059b3c")
+        self.assertEqual(setup.HF_REVISIONS[repo], "65d53bc8be65123e255ff02f3ded958b6dbf54fd")
         self.assertIs(setup.REPO_PINS[repo], setup.DSV41_ISTA_FILES)
         self.assertNotIn("helcig/tmp-oct26-2", setup.HF_REVISIONS)           # the first release's repository is only remembered as local names
         self.assertEqual(setup.DSV41_ISTA_REPO, repo)
-        self.assertEqual(len(setup.DSV41_ISTA_FILES), 13)                      # 3 x 4 shards + the Engram
+        self.assertEqual(len(setup.DSV41_ISTA_FILES), 16)                      # 3 x 5 shards + the Engram
         for n, (size, sha) in setup.DSV41_ISTA_FILES.items():
             self.assertRegex(sha, r"^[0-9a-f]{64}$", n)
         eng = setup.DSV41_ISTA_FILES["DeepSeek-V4.1-Flash-Engram-IQ4_NL.gguf"]
-        self.assertEqual(eng, (110_595_290_816, "eb19f30d368d393784e1fc54fdfaffc427ebb2110bf3762fdf5a8fbb9a2d740a"))
+        self.assertEqual(eng, (110_595_290_816, "3dac4c54893ad7aa89103c0028500eadc78e74112cef3a2930a97e67dc9fb4f3"))
+        self.assertEqual(setup.DSV41_EARLIER_SHA256[setup.DSV41_ISTA_ENGRAM],          # the 4-shard layout's: the same size, another header
+                         "eb19f30d368d393784e1fc54fdfaffc427ebb2110bf3762fdf5a8fbb9a2d740a")
         self.assertEqual(setup.DSV41_ALL_FILES["dspark-DeepSeek-V4.1-Flash-1017-Q8_0.gguf"],
                          (7_976_914_240, "6ba6ac1b331c540691a209e7fc97dec2a24e295acb1e755c84c7d24a4373927a"))
         sums = {m: sum(setup.DSV41_ALL_FILES[n][0] for n in fam["models"][m]["shards"]) for m in list(fam["models"])[:3]}
-        self.assertEqual(sums, {"IST-DAS-2.00bpw": 138238893056, "IST-DAS-2.25bpw": 155225824256, "IST-DAS-1.75bpw": 120721120256})
+        self.assertEqual(sums, {"IST-DAS-2.00bpw": 138238967104, "IST-DAS-2.25bpw": 155225898368, "IST-DAS-1.75bpw": 120721194336})
         self.assertEqual(sums["IST-DAS-1.75bpw"], dsv41_fit.ISTA_SETS["IST-DAS-1.75bpw"]["set_bytes"])
         self.assertEqual(sums["IST-DAS-2.00bpw"], dsv41_fit.ISTA_SETS["IST-DAS-2.00bpw"]["set_bytes"])
         self.assertEqual(sums["IST-DAS-2.25bpw"], dsv41_fit.ISTA_SETS["IST-DAS-2.25bpw"]["set_bytes"])
         self.assertEqual(setup.DSV41_ISTA_FILES["DeepSeek-V4.1-Flash-Engram-IQ4_NL.gguf"][0], dsv41_fit.ISTA_ENGRAM_BYTES)
         for m in ("IST-DAS-2.00bpw", "IST-DAS-2.25bpw"):                        # both sets name the same shared files: the Engram is downloaded once
-            self.assertEqual(fam["models"][m]["shared"], [setup.DSV41_ISTA_ENGRAM, setup.DSV41_SHARD.format(i=1), setup.DSV41_DSPARK])
+            self.assertEqual(fam["models"][m]["shared"], [setup.DSV41_ISTA_ENGRAM, setup.DSV41_DSPARK])
             for n in fam["models"][m]["shared"]:
                 self.assertIn(n, setup.DSV41_SHARED)
                 self.assertIn(n, setup.DSV41_ALL_FILES)
-        self.assertRegex(setup.DSV41_SHARED[setup.DSV41_ISTA_ENGRAM], r"ISTA-DASLab/DeepSeek-V4.1-Flash-1017-GSQ-RCO-GGUF/resolve/cb02422c[0-9a-f]{32}/$")
-        self.assertRegex(fam["models"]["IST-DAS-2.25bpw"]["hf"], r"ISTA-DASLab/DeepSeek-V4.1-Flash-1017-GSQ-RCO-GGUF/resolve/cb02422c[0-9a-f]{32}/$")
+        self.assertRegex(setup.DSV41_SHARED[setup.DSV41_ISTA_ENGRAM], r"ISTA-DASLab/DeepSeek-V4.1-Flash-1017-GSQ-RCO-GGUF/resolve/65d53bc8[0-9a-f]{32}/$")
+        self.assertRegex(fam["models"]["IST-DAS-2.25bpw"]["hf"], r"ISTA-DASLab/DeepSeek-V4.1-Flash-1017-GSQ-RCO-GGUF/resolve/65d53bc8[0-9a-f]{32}/$")
+
+    def test_shards_1_to_5_of_6_are_the_set_and_shard_6_is_the_engram(self):
+        md = setup.MULTI_FILE_FAMILIES["deepseek41"]["models"]["IST-DAS-2.00bpw"]
+        self.assertEqual(md["shards"], [f"DeepSeek-V4.1-Flash-1017-GSQ-RCO-IQ2_XXS-{i:05d}-of-00006.gguf" for i in range(1, 6)])
+        self.assertNotIn("DeepSeek-V4.1-Flash-1017-GSQ-RCO-IQ2_XXS-00006-of-00006.gguf", setup.DSV41_ALL_FILES)
+        self.assertEqual(md["shared"][0], setup.DSV41_ISTA_ENGRAM)
+        self.assertEqual(setup.DSV41_ISTA_FILES[md["shards"][0]][0], 5_780_704)          # shard 1: the metadata only
 
     def test_shipped_profiles_match_their_hashes(self):
         import hashlib
@@ -436,12 +445,14 @@ class OfficialSets(unittest.TestCase):
 
     def test_the_pack_recipe_is_the_plain_one(self):
         folder, pack = Path("/m/set"), Path("/d/pack")
-        names = [f"DeepSeek-V4.1-Flash-1017-GSQ-RCO-IQ2_XXS-{i:05d}-of-00004.gguf" for i in range(1, 5)]
-        cmd = setup.dsv41_pack_cmd(folder, names, Path("/s/engram-IQ4_NL.gguf"), Path("/s/meta.gguf"), Path("/s/dspark.gguf"), pack)
+        names = [f"DeepSeek-V4.1-Flash-1017-GSQ-RCO-IQ2_XXS-{i:05d}-of-00006.gguf" for i in range(1, 6)]
+        cmd = setup.dsv41_pack_cmd(folder, names, Path("/s/engram-IQ4_NL.gguf"), Path("/s/dspark.gguf"), pack)
         self.assertTrue(cmd[1].endswith("pack_gguf.py"))
         self.assertEqual(cmd[2:], ["--model", str(folder), "--shards", *names, "--engram", str(Path("/s/engram-IQ4_NL.gguf")),
-                                   "--engram-meta", str(Path("/s/meta.gguf")), "--dspark-gguf", str(Path("/s/dspark.gguf")),
+                                   "--dspark-gguf", str(Path("/s/dspark.gguf")),
                                    "--dspark-noise-token", "128799", "--dspark-markov-rank", "256", "--out", str(pack)])
+        older = setup.dsv41_pack_cmd(folder, names, Path("/s/e.gguf"), Path("/s/d.gguf"), pack, Path("/s/meta.gguf"))
+        self.assertEqual(older[older.index("--engram-meta") + 1], str(Path("/s/meta.gguf")))      # an older layout's shard 1 lacks the hash parameters
         for bad in ("--skip-tensors", "--dense-override", "--override-experts", "--tq-experts"):      # these give garbage text on the official sets
             self.assertNotIn(bad, cmd)
 
@@ -495,29 +506,47 @@ class SharedFiles(unittest.TestCase):
             self.assertEqual(got, f)
 
 
-class LegacyFiles(unittest.TestCase):
-    """Files of the first release (model-2.00bpw-0000N-of-00004.gguf, engram-IQ4_NL.gguf, often in a 2.00bpw/ folder) are the same weights: accepted."""
+class OlderLayouts(unittest.TestCase):
+    """The files of a set's earlier layouts (4 shards, 2026-10-24 to 10-28; the first release's model-2.00bpw-0000N-of-00004.gguf and
+    engram-IQ4_NL.gguf, often in a 2.00bpw/ folder) are the same weights: a folder with every file of one layout is accepted, never a mix."""
 
-    def test_the_old_pins_are_the_old_files_and_the_unchanged_shards_match_today_s(self):
+    def test_the_old_pins_are_the_old_files_and_the_unchanged_shards_match(self):
+        old = setup.DSV41_OLDER_FILES
         for i in (2, 3, 4):                                                   # same bytes: same size and SHA-256 under both names
-            new = setup.DSV41_ISTA_SHARD.format(quant="IQ2_XXS", i=i)
-            self.assertEqual(setup.DSV41_ALL_FILES[new], setup.DSV41_LEGACY_FILES["model-2.00bpw-%05d-of-00004.gguf" % i])
-            new = setup.DSV41_ISTA_SHARD.format(quant="IQ2_XS", i=i)
-            self.assertEqual(setup.DSV41_ALL_FILES[new], setup.DSV41_LEGACY_FILES["model-2.25bpw-%05d-of-00004.gguf" % i])
-        self.assertNotEqual(setup.DSV41_ALL_FILES[setup.DSV41_ISTA_SHARD.format(quant="IQ2_XXS", i=1)],
-                            setup.DSV41_LEGACY_FILES["model-2.00bpw-00001-of-00004.gguf"])        # shard 1 and the Engram differ in their header only
-        self.assertNotIn("model-2.00bpw-00001-of-00004.gguf", setup.DSV41_ISTA_FILES)                 # (never downloaded under the old names)
-        self.assertNotIn("model-2.00bpw-00001-of-00004.gguf", setup.REPO_PINS["ISTA-DASLab/DeepSeek-V4.1-Flash-1017-GSQ-RCO-GGUF"])
+            four = setup.DSV41_ISTA_SHARD.format(quant="IQ2_XXS", i=i, n=4)
+            self.assertEqual(old[four], old["model-2.00bpw-%05d-of-00004.gguf" % i])
+            four = setup.DSV41_ISTA_SHARD.format(quant="IQ2_XS", i=i, n=4)
+            self.assertEqual(old[four], old["model-2.25bpw-%05d-of-00004.gguf" % i])
+        self.assertNotEqual(old[setup.DSV41_ISTA_SHARD.format(quant="IQ2_XXS", i=1, n=4)],
+                            old["model-2.00bpw-00001-of-00004.gguf"])        # shard 1 and the Engram differ in their header only
+        pinned = setup.REPO_PINS["ISTA-DASLab/DeepSeek-V4.1-Flash-1017-GSQ-RCO-GGUF"]
+        self.assertFalse(set(old) & set(pinned))                              # (never downloaded under the old names)
+        for m, md in setup.MULTI_FILE_FAMILIES["deepseek41"]["models"].items():
+            self.assertIs(md["layouts"][0], md["shards"], m)                  # the newest layout is the one downloaded
+            for layout in md["layouts"][1:]:
+                self.assertTrue(all(n in old for n in layout), m)
 
-    def test_pick_prefers_today_s_name_then_the_old_one(self):
+    def test_a_folder_s_layout_is_a_whole_one_else_the_download(self):
+        md = setup.MULTI_FILE_FAMILIES["deepseek41"]["models"]["IST-DAS-2.00bpw"]
+        new, four, first = md["layouts"]
+        self.assertIs(setup.pick_dsv41_layout(md, lambda n: False), new)
+        for layout in md["layouts"]:
+            for names in (layout, [*layout, setup.DSV41_ISTA_ENGRAM, *new[:2]]):         # stray files of another layout do not matter
+                self.assertIs(setup.pick_dsv41_layout(md, set(names).__contains__), layout)
+        self.assertEqual(len(four), 4)
+        self.assertEqual(first, [f"model-2.00bpw-{i:05d}-of-00004.gguf" for i in range(1, 5)])
+        self.assertEqual(len(setup.MULTI_FILE_FAMILIES["deepseek41"]["models"]["IST-DAS-1.75bpw"]["layouts"]), 2)    # 1.75 had no first release
+
+    def test_the_4_shard_layout_s_engram_passes_its_check(self):
         with tempfile.TemporaryDirectory() as d:
-            folder = Path(d)
-            new = setup.DSV41_ISTA_SHARD.format(quant="IQ2_XXS", i=2)
-            self.assertEqual(setup.dsv41_pick(folder, new), folder / new)                  # nothing there: where it will be downloaded
-            (folder / "model-2.00bpw-00002-of-00004.gguf").write_bytes(b"x")
-            self.assertEqual(setup.dsv41_pick(folder, new).name, "model-2.00bpw-00002-of-00004.gguf")
-            (folder / new).write_bytes(b"y")
-            self.assertEqual(setup.dsv41_pick(folder, new).name, new)
+            f = Path(d) / setup.DSV41_ISTA_ENGRAM
+            f.write_bytes(b"old header")
+            import hashlib
+            old = hashlib.sha256(b"old header").hexdigest()
+            with mock.patch.object(setup, "say", lambda *a, **k: None):
+                setup.verify_sha256(f, 10, "0" * 64, also=old)              # neither deleted nor refused
+                self.assertTrue(f.exists())
+                self.assertTrue(setup.sha256_marked(f, "0" * 64, old))
 
     def test_the_folder_of_the_first_release_is_found_from_the_parent(self):
         with tempfile.TemporaryDirectory() as d:
@@ -549,14 +578,14 @@ class Smallest(unittest.TestCase):
         fam = setup.MULTI_FILE_FAMILIES["deepseek41"]
         d = fam["models"]["IST-DAS-1.75bpw"]
         self.assertEqual(d["recipe"], "ista")
-        self.assertEqual(d["shards"], [f"DeepSeek-V4.1-Flash-1017-GSQ-RCO-IQ1_M-{i:05d}-of-00004.gguf" for i in range(1, 5)])
-        self.assertEqual(d["shared"], fam["models"]["IST-DAS-2.00bpw"]["shared"])              # the same Engram, drafter and metadata shard
-        self.assertEqual(setup.DSV41_ISTA_FILES[d["shards"][0]],
-                         (39358830464, "6e3f0d5ff53d00428ec32c079db9e8255cb410ccaa435e5342aaa8a47fe1339d"))
-        self.assertEqual(setup.DSV41_ISTA_FILES[d["shards"][3]][0], 2188841824)
-        self.assertEqual(sum(setup.DSV41_ISTA_FILES[n][0] for n in d["shards"]), 120_721_120_256)
-        self.assertTrue(all(n not in setup.DSV41_LEGACY_NAMES.values() for n in d["shards"]))     # no first-release names for it
-        cmd = setup.dsv41_pack_cmd(Path("/m"), d["shards"], Path("/s/e.gguf"), Path("/s/m.gguf"), Path("/s/d.gguf"), Path("/p"))
+        self.assertEqual(d["shards"], [f"DeepSeek-V4.1-Flash-1017-GSQ-RCO-IQ1_M-{i:05d}-of-00006.gguf" for i in range(1, 6)])
+        self.assertEqual(d["shared"], fam["models"]["IST-DAS-2.00bpw"]["shared"])              # the same Engram and drafter
+        self.assertEqual(setup.DSV41_ISTA_FILES[d["shards"][1]],
+                         (39340012896, "be4ceb1caf1bed28e886860cf6a52adc8f5ca9eb0d2098ade39bb4179d48b323"))
+        self.assertEqual(setup.DSV41_ISTA_FILES[d["shards"][4]][0], 2969539840)
+        self.assertEqual(sum(setup.DSV41_ISTA_FILES[n][0] for n in d["shards"]), 120_721_194_336)
+        self.assertEqual(sum(setup.DSV41_OLDER_FILES[n][0] for n in d["layouts"][1]), 120_721_120_256)     # its 4-shard layout
+        cmd = setup.dsv41_pack_cmd(Path("/m"), d["shards"], Path("/s/e.gguf"), Path("/s/d.gguf"), Path("/p"))
         self.assertIn("--dspark-noise-token", cmd)
         self.assertNotIn("--skip-tensors", cmd)
 
@@ -605,20 +634,19 @@ class InstallOfficial(Install):
         get = [c for c in self.calls if c[0] == "get"]
         folder = self.root / "models" / "deepseek-v4.1-flash-IST-DAS-2.00bpw"
         shared = self.root / "models" / "deepseek-v4.1-flash-shared"
-        self.assertEqual([c[2] for c in get][:4], [folder / f"DeepSeek-V4.1-Flash-1017-GSQ-RCO-IQ2_XXS-{i:05d}-of-00004.gguf" for i in range(1, 5)])
-        self.assertEqual([c[2] for c in get][4:], [shared / setup.DSV41_ISTA_ENGRAM, shared / setup.DSV41_SHARD.format(i=1),
-                                                  shared / setup.DSV41_DSPARK])
-        self.assertTrue(get[0][1].endswith("/DeepSeek-V4.1-Flash-1017-GSQ-RCO-IQ2_XXS-00001-of-00004.gguf"))
+        self.assertEqual([c[2] for c in get][:5], [folder / f"DeepSeek-V4.1-Flash-1017-GSQ-RCO-IQ2_XXS-{i:05d}-of-00006.gguf" for i in range(1, 6)])
+        self.assertEqual([c[2] for c in get][5:], [shared / setup.DSV41_ISTA_ENGRAM, shared / setup.DSV41_DSPARK])     # no metadata shard
+        self.assertTrue(get[0][1].endswith("/DeepSeek-V4.1-Flash-1017-GSQ-RCO-IQ2_XXS-00001-of-00006.gguf"))
         self.assertNotIn("/2.00bpw/", get[0][1])             # the repository is flat
         self.assertEqual(sum(1 for c in self.calls if c[0] == "sha"), 7)
         pack = [c for c in self.calls if c[0] == "run"][-1][1]
-        self.assertIn("--engram-meta", pack)
+        self.assertNotIn("--engram-meta", pack)              # shard 1 carries the Engram's hash parameters
         self.assertNotIn("--skip-tensors", pack)
 
     def test_the_second_set_does_not_download_the_engram_again(self):
         shared = self.root / "models" / "deepseek-v4.1-flash-shared"
         shared.mkdir(parents=True)
-        shared_names = (setup.DSV41_ISTA_ENGRAM, setup.DSV41_SHARD.format(i=1), setup.DSV41_DSPARK)
+        shared_names = (setup.DSV41_ISTA_ENGRAM, setup.DSV41_DSPARK)
         for n in shared_names:
             (shared / n).write_bytes(b"x")
             (shared / (n + ".done")).write_text("ok")
@@ -627,7 +655,7 @@ class InstallOfficial(Install):
             rc, out = self.install_ista(model="IST-DAS-2.25bpw")
         self.assertEqual(rc, 0, out)
         got = [c[2].name for c in self.calls if c[0] == "get"]
-        self.assertEqual(got, [f"DeepSeek-V4.1-Flash-1017-GSQ-RCO-IQ2_XS-{i:05d}-of-00004.gguf" for i in range(1, 5)])      # only the four shards
+        self.assertEqual(got, [f"DeepSeek-V4.1-Flash-1017-GSQ-RCO-IQ2_XS-{i:05d}-of-00006.gguf" for i in range(1, 6)])      # only the five shards
 
     def test_the_first_releases_files_are_used_as_they_are_nothing_is_downloaded_but_the_small_files(self):
         own = self.root / "own"
@@ -638,7 +666,7 @@ class InstallOfficial(Install):
         (sub / "engram-IQ4_NL.gguf").write_bytes(b"E")
         (own / "dspark").mkdir()
         (own / "dspark" / setup.DSV41_DSPARK).write_bytes(b"D")
-        tiny = {n: (4, "0" * 64) for n in setup.DSV41_LEGACY_FILES if n.startswith("model-2.00bpw")}
+        tiny = {n: (4, "0" * 64) for n in setup.DSV41_OLDER_FILES if n.startswith("model-2.00bpw")}
         tiny["engram-IQ4_NL.gguf"] = (1, "0" * 64)
         tiny[setup.DSV41_DSPARK] = (1, "0" * 64)
         with mock.patch.dict(setup.DSV41_ALL_FILES, tiny):
@@ -652,6 +680,49 @@ class InstallOfficial(Install):
         self.assertTrue(pack[pack.index("--engram") + 1].endswith("engram-IQ4_NL.gguf"))
         self.assertIn("model", pack[pack.index("--model") + 1] + "model")
         self.assertEqual(Path(pack[pack.index("--model") + 1]), sub)
+        self.assertIn("--engram-meta", pack)
+
+    def own_folder(self, names) -> Path:
+        own = self.root / "own"
+        own.mkdir(parents=True)
+        for n in [*names, setup.DSV41_ISTA_ENGRAM, setup.DSV41_DSPARK]:
+            (own / n).write_bytes(b"G")
+        tiny = mock.patch.dict(setup.DSV41_ALL_FILES, {n: (1, "0" * 64) for n in (setup.DSV41_ISTA_ENGRAM, setup.DSV41_DSPARK)})
+        tiny.start()                                                            # (the shared files are found by their pinned size)
+        self.addCleanup(tiny.stop)
+        return own
+
+    def test_a_folder_of_the_new_layout_downloads_nothing(self):
+        md = setup.MULTI_FILE_FAMILIES["deepseek41"]["models"][ISTA]
+        own = self.own_folder(md["shards"])
+        rc, out = self.install_ista(gguf_dir=str(own))
+        self.assertEqual(rc, 0, out)
+        self.assertEqual([c for c in self.calls if c[0] == "get"], [])
+        self.assertIn("Nothing to download", out)
+        pack = [c for c in self.calls if c[0] == "run"][-1][1]
+        self.assertEqual(pack[pack.index("--shards") + 1:pack.index("--engram")], md["shards"])
+        self.assertEqual(pack[pack.index("--engram") + 1], str(own / setup.DSV41_ISTA_ENGRAM))     # shard 6
+        self.assertNotIn("--engram-meta", pack)
+
+    def test_a_folder_of_the_4_shard_layout_is_used_with_the_metadata_shard(self):
+        md = setup.MULTI_FILE_FAMILIES["deepseek41"]["models"][ISTA]
+        own = self.own_folder(md["layouts"][1])
+        rc, out = self.install_ista(gguf_dir=str(own))
+        self.assertEqual(rc, 0, out)
+        self.assertEqual([c[2].name for c in self.calls if c[0] == "get"], [setup.DSV41_ENGRAM_META])
+        self.assertIn("an earlier release of this set", out)
+        pack = [c for c in self.calls if c[0] == "run"][-1][1]
+        self.assertEqual(pack[pack.index("--shards") + 1:pack.index("--engram")], md["layouts"][1])
+        self.assertIn("--engram-meta", pack)
+
+    def test_a_folder_that_mixes_layouts_is_refused(self):
+        md = setup.MULTI_FILE_FAMILIES["deepseek41"]["models"][ISTA]
+        own = self.own_folder([*md["shards"][:4], md["layouts"][1][3]])
+        rc, out = self.install_ista(gguf_dir=str(own))
+        self.assertEqual(rc, 1, out)
+        self.assertIn(f"{md['shards'][4]} is missing", out)
+        self.assertIn("do not mix", out)
+        self.assertEqual([c for c in self.calls if c[0] in ("get", "run")], [])
 
     def test_pack_info_profile_smoke_and_the_launch_flags(self):
         rc, out = self.install_ista()
@@ -703,9 +774,9 @@ class InstallSmallest(InstallOfficial):
         rc, out = self.install_ista(model="IST-DAS-1.75bpw", ram=36.0)
         self.assertEqual(rc, 0, out)
         get = [c for c in self.calls if c[0] == "get"]
-        self.assertEqual([c[2].name for c in get][:4], [f"DeepSeek-V4.1-Flash-1017-GSQ-RCO-IQ1_M-{i:05d}-of-00004.gguf" for i in range(1, 5)])
+        self.assertEqual([c[2].name for c in get][:5], [f"DeepSeek-V4.1-Flash-1017-GSQ-RCO-IQ1_M-{i:05d}-of-00006.gguf" for i in range(1, 6)])
         self.assertTrue(get[0][1].startswith(setup.hf(setup.DSV41_ISTA_REPO)))
-        self.assertIn("cb02422c900df489cea5833e8a92171224059b3c", get[0][1])
+        self.assertIn("65d53bc8be65123e255ff02f3ded958b6dbf54fd", get[0][1])
         self.assertIn("239 GB", out)
         a = self.cfg["args"]
         self.assertEqual(a[a.index("--dspark") + 1], "auto")

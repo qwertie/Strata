@@ -260,17 +260,16 @@ class DiskCountsOnlyTheRest(unittest.TestCase):
         self.s.data_dir = lambda: Path(self.tmp.name)
         self.hw = {"ram_gb": 64.0, "gpus": [CARD], "engine_vendor": "nvidia", "disk_free_gb": 176.0}
 
-    def put_files(self, model="IST-DAS-2.00bpw", legacy=False):
+    def put_files(self, model="IST-DAS-2.00bpw", layout=0):
         S = self.s.setup_module()
         fam = S.MULTI_FILE_FAMILIES["deepseek41"]
         md = fam["models"][model]
         models = Path(self.tmp.name) / "models"
         sizes = {}
-        for where, names in ((models / (fam["tag"] + model), md["shards"]), (models / (fam["tag"] + "shared"), md["shared"])):
+        shared = [S.DSV41_FIRST_NAMES.get(n, n) if layout == 2 else n for n in md["shared"]]       # layout 2: the first release
+        for where, names in ((models / (fam["tag"] + model), md["layouts"][layout]), (models / (fam["tag"] + "shared"), shared)):
             where.mkdir(parents=True, exist_ok=True)
-            for n in names:
-                name = S.DSV41_LEGACY_NAMES.get(n, n) if legacy and n in S.DSV41_LEGACY_NAMES else n
-                real = S.DSV41_ALL_FILES[name][0]
+            for name in names:
                 (where / name).write_bytes(b"x" * 8)
                 sizes[name] = (8, S.DSV41_ALL_FILES[name][1])
         return sizes
@@ -281,10 +280,11 @@ class DiskCountsOnlyTheRest(unittest.TestCase):
             words = self.s.dsv41_words(self.hw, "IST-DAS-2.00bpw")
         self.assertNotIn("free disk space", words)
 
-    def test_the_first_releases_names_count_too(self):
+    def test_the_older_layouts_count_too(self):
         S = self.s.setup_module()
-        with mock.patch.dict(S.DSV41_ALL_FILES, self.put_files(legacy=True)):
-            self.assertNotIn("free disk space", self.s.dsv41_words(self.hw, "IST-DAS-2.00bpw"))
+        for layout in (1, 2):                                                   # the 4-shard files and the first release's names
+            with self.subTest(layout=layout), mock.patch.dict(S.DSV41_ALL_FILES, self.put_files(layout=layout)):
+                self.assertNotIn("free disk space", self.s.dsv41_words(self.hw, "IST-DAS-2.00bpw"))
 
     def test_with_nothing_in_place_176_gb_is_tight_for_the_257_gb_set(self):
         words = self.s.dsv41_words(self.hw, "IST-DAS-2.00bpw")
@@ -294,12 +294,12 @@ class DiskCountsOnlyTheRest(unittest.TestCase):
     def test_only_part_of_the_files_means_only_the_rest_is_counted(self):
         S = self.s.setup_module()
         sizes = self.put_files()
-        first = S.MULTI_FILE_FAMILIES["deepseek41"]["models"]["IST-DAS-2.00bpw"]["shards"][0]
+        second = S.MULTI_FILE_FAMILIES["deepseek41"]["models"]["IST-DAS-2.00bpw"]["shards"][1]
         part = dict(sizes)
-        part[first] = (S.DSV41_ALL_FILES[first][0], sizes[first][1])          # shard 1 is not here at its real size: the rest of the files are
-        (Path(self.tmp.name) / "models" / ("deepseek-v4.1-flash-IST-DAS-2.00bpw") / first).unlink()
+        part[second] = (S.DSV41_ALL_FILES[second][0], sizes[second][1])       # shard 2 is not here at its real size: the rest of the files are
+        (Path(self.tmp.name) / "models" / ("deepseek-v4.1-flash-IST-DAS-2.00bpw") / second).unlink()
         with mock.patch.dict(S.DSV41_ALL_FILES, part):
-            hw = {**self.hw, "disk_free_gb": 46.0}                               # shard 1 is 39.1 GB: 46 GB is enough for it plus the 6 GB of room
+            hw = {**self.hw, "disk_free_gb": 46.0}                               # shard 2 is 39.5 GB: 46 GB is enough for it plus the 6 GB of room
             self.assertNotIn("free disk space", self.s.dsv41_words(hw, "IST-DAS-2.00bpw"))
             hw = {**self.hw, "disk_free_gb": 44.0}
             self.assertIn("free disk space", self.s.dsv41_words(hw, "IST-DAS-2.00bpw"))

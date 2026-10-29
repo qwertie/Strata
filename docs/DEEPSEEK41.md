@@ -33,20 +33,28 @@ perplexity +7.3% (code +3.2%, agent work +2.2%). IQ1_M: perplexity +21% (KL 0.21
 
 | File | Size | What it is |
 | --- | ---: | --- |
-| IQ1_M shards (1.75 bpw), 4 files | 121 GB | the model, smallest set |
-| IQ2_XXS shards (2.00 bpw), 4 files | 138 GB | the model, middle set |
-| IQ2_XS shards (2.25 bpw), 4 files | 155 GB | the model, largest set |
-| IQ4_NL: `DeepSeek-V4.1-Flash-Engram-IQ4_NL.gguf` | 111 GB | the 4-bit Engram lookup table the model reads from RAM or SSD. Not a model to pick: all three sets use this one file, and it is already in their download sizes |
+| IQ1_M shards (1.75 bpw): `...-IQ1_M-00001-of-00006.gguf` to `-00005-of-00006` | 121 GB | the model, smallest set |
+| IQ2_XXS shards (2.00 bpw): `...-IQ2_XXS-00001-of-00006.gguf` to `-00005-of-00006` | 138 GB | the model, middle set |
+| IQ2_XS shards (2.25 bpw): `...-IQ2_XS-00001-of-00006.gguf` to `-00005-of-00006` | 155 GB | the model, largest set |
+| IQ4_NL: `DeepSeek-V4.1-Flash-Engram-IQ4_NL.gguf` | 111 GB | shard 6 of every set: the 4-bit Engram lookup table the model reads from RAM or SSD. There is no file named `-00006-of-00006`. Not a model to pick: all three sets use this one file, and it is already in their download sizes |
 | DSpark drafter (Q8_0) | 8 GB | the small draft model (Unsloth) |
 
 121 + 111 + 8 = 239 GB for 1.75; 138 + 111 + 8 = 257 GB for 2.00; 155 + 111 + 8 = 274 GB for 2.25.
+
+Shard 1 (5.8 MB) holds only the settings and the tokenizer; shards 2 to 5 hold the weights. ISTA-DASLab published the sets in this
+layout on 2026-10-28. Files you downloaded earlier still work, as they are: the 4-shard layout (`...-00001-of-00004.gguf` to
+`-00004-of-00004`, 2026-10-24 to 10-28) and the first release's names (`model-2.00bpw-00001-of-00004.gguf`, `engram-IQ4_NL.gguf`).
+A folder must hold every file of one layout: shards of different layouts do not mix. Any of the Engram's versions works with any
+layout (they differ only in their header). For an older layout setup also fetches Unsloth's 5.8 MB first shard, whose settings
+the older shard 1 lacks.
 
 Measured: an RTX 5070 (12 GB) with 64 GB of RAM and a 3.6 GB/s NVMe drive answers at about 4.7 tokens/s and reads prompts at 121
 tokens/s (4K) to 231 tokens/s (8K, layer-major path); an RTX 3060 (12 GB) with 46 GB of RAM about 8 to 10 tokens/s (code 9.9, agent work 7.8; 149 tokens/s at 8K; DSpark stays off there, `--dspark on` adds 2-13%); four R9700 about 48
 tokens/s on 2.00 and 80 on 2.25 (code, with the shipped hot-expert profile). Under about 40 GB of RAM it is untested and slow; setup says so and still installs.
 
 Setup downloads with resume and SHA-256, packs the model with the plain recipe (`pack_gguf.py --model SET --shards ... --engram
-engram-IQ4_NL.gguf --engram-meta <UD shard 1> --dspark-gguf dspark-...-Q8_0.gguf`; do not add `--skip-tensors` or `--dense-override`:
+DeepSeek-V4.1-Flash-Engram-IQ4_NL.gguf --dspark-gguf dspark-...-Q8_0.gguf`, plus `--engram-meta <UD shard 1>` for an older layout;
+the pack is a few MB that point into the files where they are, nothing is copied; do not add `--skip-tensors` or `--dense-override`:
 that packs without an error and gives garbage text), copies the shipped hot-expert profile (`data/dsv41/profile-2.00.bin` or `-2.25.bin`)
 into the pack as `expert-profile.bin`, checks `strata-dsv41 --pack-info` (every file present) and answers a 16-token test question
 (`tools/dsv41/smoke.py`, the text must name Paris). The start script passes `--dspark auto` (never `off`: `off` still loads the drafter

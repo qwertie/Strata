@@ -557,10 +557,10 @@ class ModelScreen(Base):
         if found is None:
             return False
         model, d, folder = found
-        missing = Runner.missing_deepseek_parts(d, folder)
+        layout, missing = Runner.find_deepseek_layout(d, folder)
         if missing:
-            self.say(f"These are DeepSeek-V4.1-Flash {d.get('label', model)} files, but {len(missing)} of {len(d['shards'])} parts are not in {folder} "
-                     f"(first missing: {missing[0]}). Put every part in the folder, or pick a model from the list.", True)
+            self.say(f"These are DeepSeek-V4.1-Flash {d.get('label', model)} files, but {len(missing)} of {len(layout)} parts are not in {folder} "
+                     f"(first missing: {missing[0]}). Put every part of one download in the folder, or pick a model from the list.", True)
             return True
         s = self.ctx.settings
         s.model_path, s.family, s.model = str(folder), "deepseek41", model

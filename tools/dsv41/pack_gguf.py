@@ -331,9 +331,10 @@ def find_mmproj(model: pathlib.Path):
 
 
 def is_engram_file(g) -> bool:
-    """The Engram table's GGUF: general.architecture 'engram' (the first release) or 'deepseek41-engram' (ISTA-DASLab's final files)."""
+    """The Engram table's GGUF: general.architecture 'engram' (the first release) or 'deepseek41-engram' (ISTA-DASLab's 4-shard layout),
+    or no architecture but an engram.source key (the 6-shard layout's shard 6, which carries the split's keys instead)."""
     arch = str(g.kv.get("general.architecture") or "")
-    return arch == "engram" or arch.endswith("-engram")
+    return arch == "engram" or arch.endswith("-engram") or any(k.endswith(".engram.source") for k in g.kv)
 
 
 def model_kv(gs):
@@ -452,7 +453,7 @@ def main() -> int:
         raise SystemExit("%s: no .gguf files" % model if not shards else
                          "%s: not there" % next(p for p in shards if not p.is_file()))
     gs = [Gguf(p) for p in shards]
-    if not a.shards:                       # a folder's *.gguf: the Engram table (architecture 'engram', today 'deepseek41-engram') is not a model shard
+    if not a.shards:                       # a folder's *.gguf: the Engram table (is_engram_file) is not a model shard
         keep = [i for i, g in enumerate(gs) if not is_engram_file(g)]
         shards, gs = [shards[i] for i in keep], [gs[i] for i in keep]
         if not gs:
@@ -462,7 +463,9 @@ def main() -> int:
         arch = next((g.kv.get("general.architecture") for g in gs), None)
         raise SystemExit("%s: not a DeepSeek-V4.1 GGUF (architecture %r)" % (model, arch))
     split = int(kv.get("split.count", 1))
-    if split != len(shards):
+    # ISTA-DASLab's 6-shard layout counts the shared Engram file (--engram, any version of it) as the split's last shard
+    engram_split = int(bool(a.engram) and split - 1 not in {int(g.kv.get("split.no", 0)) for g in gs})
+    if split != len(shards) + engram_split:
         counts = sorted({m.group(1) for m in (re.search(r"-of-(\d{5})\.gguf$", p.name) for p in shards) if m})
         raise SystemExit("%s: %d of the %d shards are here" % (model, len(shards), split) if len(counts) < 2 else
                          "%s: the shards of more than one GGUF split (-of-%s): name the model's own with --shards" %

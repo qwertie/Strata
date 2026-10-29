@@ -624,8 +624,8 @@ def _dsv41_files(folder: Path) -> dict[str, int]:
 
 
 def _dsv41_plan(path: Path, details) -> dict | None:
-    """The preview of a folder (or one file) of an official DeepSeek-V4.1-Flash set: the IST-DAS 1.75 / 2.00 / 2.25 shards, under their
-    official names or the first release's, with or without the n-gram table (Engram). Recognised from the pinned names and sizes
+    """The preview of a folder (or one file) of an official DeepSeek-V4.1-Flash set: the IST-DAS 1.75 / 2.00 / 2.25 shards, in any of
+    their layouts, with or without the n-gram table (Engram). Recognised from the pinned names and sizes
     (strata_control/dsv41_sets.py); None when nothing here is a DeepSeek file, so every other preview is exactly what it was."""
     from strata_control import dsv41_sets
     picked = path if stat.S_ISREG(details.st_mode) else None
@@ -670,9 +670,10 @@ def _dsv41_plan(path: Path, details) -> dict | None:
         messages.append(f"This is DeepSeek-V4.1-Flash, {row['label']}: all {len(row['present'])} model files are here"
                         + (", and the n-gram table." if row["engram"] else "."))
         if not row["engram"]:
-            messages.append("The n-gram table (111 GB) is not in this folder: setup downloads it, or put engram-IQ4_NL.gguf beside the model files.")
+            messages.append("The n-gram table (111 GB) is not in this folder: setup downloads it, or put DeepSeek-V4.1-Flash-Engram-IQ4_NL.gguf "
+                            "beside the model files.")
         if row["legacy"]:
-            messages.append("These are the file names of the first release; Strata uses them as they are.")
+            messages.append("These are the files of an earlier release of this set; Strata uses them as they are.")
         messages.append("Strata checks the files once when it sets them up (about 5 minutes on a fast drive); nothing is copied or downloaded for them.")
     sizes = _dsv41_files(place)
     wanted = list(row["present"]) + ([row["engram"]] if row["engram"] else [])

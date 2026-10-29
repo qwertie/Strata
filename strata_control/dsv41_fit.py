@@ -49,19 +49,18 @@ MEASURED = ("4 x Radeon AI PRO R9700 (32 GB) with 251 GB of RAM: prompts of 3,00
             "at 25-31 tokens a second (--tp 2); one answer at a time")
 
 
-# The two official IST-DAS sets (ISTA-DASLab/DeepSeek-V4.1-Flash-1017-GSQ-RCO-GGUF, catalog.DSV41_ISTA_FILES): 4 shards each (the experts as IQ1_M / IQ2 / IQ3 types, the
-# dense weights Q8_0 / Q5_K), plus ONE Engram (110.6 GB, IQ4_NL, shared by both sets, stays on the SSD) and the DSpark drafter (8.0 GB).
+# The two official IST-DAS sets (ISTA-DASLab/DeepSeek-V4.1-Flash-1017-GSQ-RCO-GGUF, catalog.DSV41_ISTA_FILES): 5 shards each (the experts as IQ1_M / IQ2 / IQ3 types, the
+# dense weights Q8_0 / Q5_K), plus ONE Engram (their shard 6: 110.6 GB, IQ4_NL, shared by the sets, stays on the SSD) and the DSpark drafter (8.0 GB).
 # Measured 2026-10-23 (f-dsv41-rel): quality against the original model (final files, 4,995 positions: ppl +15.5% for 2.00 [code +8.6%, agent +5.3%], +7.3% for 2.25 [code +3.2%, agent +2.2%]
 # on 2.25); speed on the owner PC (RTX 5070 12 GB, 64 GB RAM, 3.6 GB/s NVMe): answers ~4.7 tokens a second, prompts 121 tokens a second at 4K and
 # 231 tokens a second at 8K; RTX 3060 12 GB with 46 GB of RAM (the engine held to 36 GB): answers ~7.2 tokens a second on 2.00; 4 x Radeon AI PRO
 # R9700: answers ~31 tokens a second, prompts 330-373 tokens a second at 8K.
 ISTA_ENGRAM_BYTES = catalog.DSV41_ISTA_FILES[catalog.DSV41_ISTA_ENGRAM][0]
 ISTA_DSPARK_BYTES = catalog.DSV41_FILES[catalog.DSV41_DSPARK][0]
-ISTA_META_BYTES = catalog.DSV41_FILES[_UD_SHARDS[0]][0]   # the first shard of UD-Q8_K_XL: only the metadata --engram-meta reads
 
 
 def _ista_set_bytes(model: str) -> int:
-    """Adds up the pinned sizes of an official set's four shards.  Defined above its callers: ISTA_SETS calls it."""
+    """Adds up the pinned sizes of the shards setup downloads for an official set.  Defined above its callers: ISTA_SETS calls it."""
     shards = catalog.MULTI_FILE_FAMILIES["deepseek41"]["models"][model]["shards"]
     return sum(catalog.DSV41_ISTA_FILES[n][0] for n in shards)
 
@@ -101,7 +100,7 @@ def variant_key(model: str | None) -> str | None:
 
 def ista_download_bytes(model: str, have_engram: bool = False) -> int:
     v = variant(model)
-    return v["set_bytes"] + ISTA_DSPARK_BYTES + ISTA_META_BYTES + (0 if have_engram else ISTA_ENGRAM_BYTES)
+    return v["set_bytes"] + ISTA_DSPARK_BYTES + (0 if have_engram else ISTA_ENGRAM_BYTES)
 
 
 def recommend(ram_gb: float | None, disk_free_gb: float | None = None) -> str:

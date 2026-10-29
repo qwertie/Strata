@@ -30,7 +30,7 @@ from strata_cli.launch import access as acc
 from strata_cli.launch import modelstate
 from strata_cli.launch import settings as S
 from strata_cli.launch.catalog import Catalog, CatalogUnavailable
-from strata_common.catalog import DSV41_LEGACY_NAMES, GYRO_ENGINE, MULTI_FILE_FAMILIES
+from strata_common.catalog import GYRO_ENGINE, MULTI_FILE_FAMILIES, pick_dsv41_layout
 
 ROOT = Path(__file__).resolve().parents[2]
 WINDOWS = os.name == "nt"
@@ -1251,7 +1251,7 @@ class Runner:
     @staticmethod
     def deepseek_set_in(model_path, prefer: str | None = None):
         """(set name, its catalog entry, the folder) when `model_path` (a folder, the folder above the set's own folder, or one shard) holds shards
-        of an official DeepSeek-V4.1-Flash set - recognised by the pinned shard names (the first release's names too), never by the generic GGUF
+        of an official DeepSeek-V4.1-Flash set - recognised by the pinned shard names (of any of its layouts), never by the generic GGUF
         fingerprint table, which does not know DeepSeek (its shard 8 is a table, not a layer: "could not be read", #3914) - else None."""
         if not model_path:
             return None
@@ -1262,18 +1262,17 @@ class Runner:
             d = fam["models"][m]
             subs = [d.get("subdir"), d.get("legacy_subdir"), m]
             folders = [p, *[p / x for x in subs if x]] if p.is_dir() else [p.parent]
-            names = [n for s in d["shards"] for n in (s, DSV41_LEGACY_NAMES.get(s)) if n]
-            folder = next((f for f in folders if any((f / n).exists() for n in names)), None)
+            folder = next((f for f in folders if any((f / n).exists() for names in d["layouts"] for n in names)), None)
             if folder is not None:
                 return m, d, folder
         return None
 
     @staticmethod
-    def missing_deepseek_parts(entry: dict, folder: Path) -> list[str]:
-        """Lists the shards of a DeepSeek set entry (deepseek_set_in) that `folder` holds under neither today's name
-        nor the first release's."""
-        return [n for n in entry["shards"] if not (folder / n).exists()
-                and not (n in DSV41_LEGACY_NAMES and (folder / DSV41_LEGACY_NAMES[n]).exists())]
+    def find_deepseek_layout(entry: dict, folder: Path) -> tuple[list[str], list[str]]:
+        """Finds the layout of a DeepSeek set entry (deepseek_set_in) that `folder` holds the most of: (its shard
+        names, those of them not there)."""
+        layout = pick_dsv41_layout(entry, lambda n: (folder / n).exists())
+        return layout, [n for n in layout if not (folder / n).exists()]
 
     def deepseek_files(self) -> bool:
         """--model-path names DeepSeek-V4.1-Flash's shards (a folder, the repository's folder with the set's own folder inside - UD-Q8_K_XL,
@@ -1291,12 +1290,13 @@ class Runner:
         if s.family and s.family != "deepseek41":
             raise LaunchError(f"These are DeepSeek-V4.1-Flash's files, not {s.family} {s.model}'s.",
                               "Leave --model out, or use --model " + model + ".", 2)
-        missing = self.missing_deepseek_parts(d, folder)
+        layout, missing = self.find_deepseek_layout(d, folder)
         if missing:
-            parts = {4: "four", 9: "nine"}.get(len(d["shards"]), str(len(d["shards"])))
+            parts = {4: "four", 5: "five", 9: "nine"}.get(len(layout), str(len(layout)))
             raise LaunchError(f"DeepSeek-V4.1-Flash {d.get('label', model)} is in {parts} parts and {len(missing)} of them are not in {folder} "
                               f"(first missing: {missing[0]}).",
-                              "Put every part in the folder (or drop --model-path and let Strata download them). "
+                              "Put every part of one download in the folder (parts of different releases do not mix), "
+                              "or drop --model-path and let Strata download them. "
                               "Nothing was downloaded or changed.", 5)
         s.family, s.model, s.model_path = "deepseek41", model, str(folder)
         self.emit("model", f"These files are DeepSeek-V4.1-Flash {model}; they are used where they are.", None)

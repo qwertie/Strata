@@ -1,10 +1,10 @@
 """The model catalog: every model family and size Strata offers, the files they are made of and the pins that check
 those files (the Hugging Face revision, the size and the SHA-256 of each).
 
-Data and the two URL helpers it is built with, standard library only: setup.py (which runs before any package is
-installed), the Terminal, Control and the MCP server read the same tables from here.  The download, install and fit
-logic that uses them is setup.py's.  The download folders in FAMILIES and the other tables are built when this module is
-first imported, from HF_ENDPOINT as it is then.
+Data, the two URL helpers it is built with and the DeepSeek layout helpers, standard library only: setup.py (which runs
+before any package is installed), the Terminal, Control and the MCP server read the same tables from here.  The
+download, install and fit logic that uses them is setup.py's.  The download folders in FAMILIES and the other tables
+are built when this module is first imported, from HF_ENDPOINT as it is then.
 """
 from __future__ import annotations
 
@@ -22,7 +22,7 @@ HF_REVISIONS = {
     "unsloth/Qwen3.6-35B-A3B-MTP-GGUF": "5bc3e238d916f48a861bac2f8a1990a0e9b7e98d",                  # 2026-10-12
     "agentionai/Qwen3.8-Flash-Next-Gyro-GGUF": "1ada08422e404aca51ab9df665f089f34c419c6b",           # 2026-10-13
     "unsloth/DeepSeek-V4.1-Flash-1017-GGUF": "f924b94f19c1fea02c06a65c8475b0a45e2b88b1",             # 2026-10-20 (the port's reference)
-    "ISTA-DASLab/DeepSeek-V4.1-Flash-1017-GSQ-RCO-GGUF": "cb02422c900df489cea5833e8a92171224059b3c",    # 2026-10-24 (ISTA-DASLab's final 1.75 / 2.00 / 2.25 bpw sets and Engram)
+    "ISTA-DASLab/DeepSeek-V4.1-Flash-1017-GSQ-RCO-GGUF": "65d53bc8be65123e255ff02f3ded958b6dbf54fd",    # 2026-10-28 (6 shards)
 }
 
 
@@ -464,16 +464,46 @@ DSV41_FILES = {
     "dspark-DeepSeek-V4.1-Flash-1017-Q8_0.gguf": (7976914240, "6ba6ac1b331c540691a209e7fc97dec2a24e295acb1e755c84c7d24a4373927a"),
     "mmproj-BF16.gguf": (972208288, "9a1ef7c40d0d702c7ed8c5f863f60abae64091387ba3fce0ad19ce9beeda3bf9"),
 }
-# The two OFFICIAL IST-DAS sets (ISTA-DASLab/DeepSeek-V4.1-Flash-1017-GSQ-RCO-GGUF at the revision above, a flat repository; Hub LFS sha256 = what the
-# files hash to): IQ2_XXS is the 2.00 bpw set, IQ2_XS the 2.25 bpw set and IQ1_M the 1.75 bpw set, 4 shards each, plus ONE Engram table (110.6 GB, the same file for both sets:
-# downloaded once into the shared folder) and the DSpark drafter and the 5.8 MB metadata shard of Unsloth's set that pack_gguf --engram-meta reads
-# (both pinned in DSV41_FILES above).  This is the set a normal PC runs (64 GB RAM + a 12 GB card; docs/DEEPSEEK41.md); the UD-Q8_K_XL entry stays
-# for the big machines.
+# The OFFICIAL IST-DAS sets (ISTA-DASLab/DeepSeek-V4.1-Flash-1017-GSQ-RCO-GGUF at the revision above, a flat
+# repository; Hub LFS sha256 = what the files hash to): IQ2_XXS is the 2.00 bpw set, IQ2_XS the 2.25 bpw set and IQ1_M
+# the 1.75 bpw set.  Each is one GGUF split of 6 shards: shard 1 holds the metadata only (the Engram's hash parameters
+# included, so pack_gguf needs no --engram-meta), shards 2-5 the tensors, and shard 6 is the ONE Engram table every set
+# shares (110.6 GB, DeepSeek-V4.1-Flash-Engram-IQ4_NL.gguf: there is no file named ...-00006-of-00006.gguf; downloaded
+# once into the shared folder).  The DSpark drafter comes from Unsloth's repository (pinned in DSV41_FILES above).
+# This is the set a normal PC runs (64 GB RAM + a 12 GB card; docs/DEEPSEEK41.md); the UD-Q8_K_XL entry stays for the
+# big machines.
 DSV41_ISTA_REPO = "ISTA-DASLab/DeepSeek-V4.1-Flash-1017-GSQ-RCO-GGUF"
 DSV41_ISTA_ENGRAM = "DeepSeek-V4.1-Flash-Engram-IQ4_NL.gguf"
-DSV41_ISTA_SHARD = "DeepSeek-V4.1-Flash-1017-GSQ-RCO-{quant}-{i:05d}-of-00004.gguf"
+DSV41_ISTA_SHARD = "DeepSeek-V4.1-Flash-1017-GSQ-RCO-{quant}-{i:05d}-of-{n:05d}.gguf"
 DSV41_DSPARK = "dspark-DeepSeek-V4.1-Flash-1017-Q8_0.gguf"
 DSV41_ISTA_FILES = {
+    "DeepSeek-V4.1-Flash-1017-GSQ-RCO-IQ1_M-00001-of-00006.gguf": (5780704, "3e8ddd11441edd4bc19bacaef5dbe38818af2cbdf0820fb70f1d2d851fcc192a"),
+    "DeepSeek-V4.1-Flash-1017-GSQ-RCO-IQ1_M-00002-of-00006.gguf": (39340012896, "be4ceb1caf1bed28e886860cf6a52adc8f5ca9eb0d2098ade39bb4179d48b323"),
+    "DeepSeek-V4.1-Flash-1017-GSQ-RCO-IQ1_M-00003-of-00006.gguf": (38698805888, "758c66ba65236e8ce0820c21a7b6f9b2947681df8cc509f672a77722e8191b9a"),
+    "DeepSeek-V4.1-Flash-1017-GSQ-RCO-IQ1_M-00004-of-00006.gguf": (39707055008, "04a5bea2b38eb576f49efc19c0a677768d6e2a8ea5772d72fb6cb79e1733a212"),
+    "DeepSeek-V4.1-Flash-1017-GSQ-RCO-IQ1_M-00005-of-00006.gguf": (2969539840, "7c8dbee99890f05dbc420eba6f44393f5228d06248fe61e1ae8ed002449c7549"),
+    "DeepSeek-V4.1-Flash-1017-GSQ-RCO-IQ2_XS-00001-of-00006.gguf": (5780704, "0182a2a1f42d319a0dbc6e34aa82a063880c069fe3aafbbea86018f386e64e5f"),
+    "DeepSeek-V4.1-Flash-1017-GSQ-RCO-IQ2_XS-00002-of-00006.gguf": (39581533600, "5c88039fa640460a9fc3465a6dfcd162a4083dd738d55e5b52e025be14555a08"),
+    "DeepSeek-V4.1-Flash-1017-GSQ-RCO-IQ2_XS-00003-of-00006.gguf": (39417972640, "0fddebfd05f0a36cfd107ba5dfd2547e64df61adbab39560a5a5f5521ca099a5"),
+    "DeepSeek-V4.1-Flash-1017-GSQ-RCO-IQ2_XS-00004-of-00006.gguf": (39079187648, "c577a43c6e6e615838a1655a0b162541edeac6f36542f08c4a9593a70dcaf500"),
+    "DeepSeek-V4.1-Flash-1017-GSQ-RCO-IQ2_XS-00005-of-00006.gguf": (37141423776, "851d8605bf504962054d17ea8a0d9e2e0a228d085d396bd865a4de9f16d90fbd"),
+    "DeepSeek-V4.1-Flash-1017-GSQ-RCO-IQ2_XXS-00001-of-00006.gguf": (5780704, "f356f198561f56df36f7ab92d7238a926646d76de992c34f15bcb939a5f529b9"),
+    "DeepSeek-V4.1-Flash-1017-GSQ-RCO-IQ2_XXS-00002-of-00006.gguf": (39535781184, "25af3785ccf925f54137e1ead4c481a8952315dc0b1af6519a99407f67bce8f3"),
+    "DeepSeek-V4.1-Flash-1017-GSQ-RCO-IQ2_XXS-00003-of-00006.gguf": (39736712000, "8168d0998fc494def2e1952d83c131425a108660aae9d29190f5a8670ab62b48"),
+    "DeepSeek-V4.1-Flash-1017-GSQ-RCO-IQ2_XXS-00004-of-00006.gguf": (39036908384, "9eb9b4de1968f150dfc207eb31c27be9cd9b5666a9a6246bde8a22b184b4bee0"),
+    "DeepSeek-V4.1-Flash-1017-GSQ-RCO-IQ2_XXS-00005-of-00006.gguf": (19923784832, "7e35f6b4e6fc46f6c4b152b593d84d683c5ece695ae6ad734f556198c041bec1"),
+    "DeepSeek-V4.1-Flash-Engram-IQ4_NL.gguf": (110595290816, "3dac4c54893ad7aa89103c0028500eadc78e74112cef3a2930a97e67dc9fb4f3"),
+}
+# The files of the sets' earlier layouts, which people downloaded before: the same weights, accepted from "files
+# already here" (size and SHA-256 checked against these pins) and never downloaded.  Not in REPO_PINS: nothing is
+# fetched under these names.
+#  - 2026-10-24 to 10-28 (revision cb02422c): 4 shards a set (...-0000N-of-00004.gguf), tensors in shard 1 too;
+#  - the first release (helcig/tmp-oct26-2, 2026-10-23): model-2.00bpw-0000N-of-00004.gguf, model-2.25bpw-...,
+#    engram-IQ4_NL.gguf, usually in a 2.00bpw/ or 2.25bpw/ folder.  Its shards 2-4 are the same bytes as the 4-shard
+#    layout's; shard 1 and the Engram differ in their header.
+# Their shard 1 lacks the Engram's hash parameters: their packs read them from Unsloth's metadata shard
+# (DSV41_ENGRAM_META).
+DSV41_OLDER_FILES = {
     "DeepSeek-V4.1-Flash-1017-GSQ-RCO-IQ1_M-00001-of-00004.gguf": (39358830464, "6e3f0d5ff53d00428ec32c079db9e8255cb410ccaa435e5342aaa8a47fe1339d"),
     "DeepSeek-V4.1-Flash-1017-GSQ-RCO-IQ1_M-00002-of-00004.gguf": (39176113248, "34d68c99fdae9948f9f0af0dafe308e805ce0a78d2c48641b24cc57242fdc0af"),
     "DeepSeek-V4.1-Flash-1017-GSQ-RCO-IQ1_M-00003-of-00004.gguf": (39997334720, "a08468c83955e0c4d3a9eb3f7b86c45b7bbac55d99c4640039a296a8a4b327ea"),
@@ -486,13 +516,6 @@ DSV41_ISTA_FILES = {
     "DeepSeek-V4.1-Flash-1017-GSQ-RCO-IQ2_XXS-00002-of-00004.gguf": (39388449504, "cec1b2c3da429dc768b8bb9bc4dc4403d81f74d34db660a6a34ee3e555bf2c70"),
     "DeepSeek-V4.1-Flash-1017-GSQ-RCO-IQ2_XXS-00003-of-00004.gguf": (39246891616, "9d9c2140fcb134a0b9a74dedd0e5167e68077af6d08ce7f856bce112f0a35dd3"),
     "DeepSeek-V4.1-Flash-1017-GSQ-RCO-IQ2_XXS-00004-of-00004.gguf": (20527837312, "9b790a2297ed3cdede379fc984f4a52bb95f3b23724c797af11d1fa6a69db059"),
-    "DeepSeek-V4.1-Flash-Engram-IQ4_NL.gguf": (110595290816, "eb19f30d368d393784e1fc54fdfaffc427ebb2110bf3762fdf5a8fbb9a2d740a"),
-}
-# The files the first release of these sets was downloaded as (helcig/tmp-oct26-2, 2026-10-23: model-2.00bpw-0000N-of-00004.gguf, model-2.25bpw-...,
-# engram-IQ4_NL.gguf, usually in a 2.00bpw/ or 2.25bpw/ folder): testers and our boxes have them.  They are the same weights: shards 2-4 are the
-# same bytes as today's, and shard 1 and the Engram differ only in their GGUF header (metadata).  setup accepts them from "files already here"
-# (size and SHA-256 checked against these pins) and never downloads them.  Not in REPO_PINS: nothing is fetched under these names.
-DSV41_LEGACY_FILES = {
     "model-2.00bpw-00001-of-00004.gguf": (39075713728, "78ab9efc46a26647c3e94b322c99cd7e2af261dd28b38f2712e128562db1ef47"),
     "model-2.00bpw-00002-of-00004.gguf": (39388449504, "cec1b2c3da429dc768b8bb9bc4dc4403d81f74d34db660a6a34ee3e555bf2c70"),
     "model-2.00bpw-00003-of-00004.gguf": (39246891616, "9d9c2140fcb134a0b9a74dedd0e5167e68077af6d08ce7f856bce112f0a35dd3"),
@@ -503,19 +526,21 @@ DSV41_LEGACY_FILES = {
     "model-2.25bpw-00004-of-00004.gguf": (36771591232, "e5b2f8781fab688cd4bc3bc7a69651b5dbb90ed94965657c6bead8bb4774f3cf"),
     "engram-IQ4_NL.gguf": (110595290720, "1f17d8ae37e9df3bb45f7ef1b4fcd1706d7b759af0413c117bf8e92aed459281"),
 }
-# today's name -> the name it had in the first release
-DSV41_LEGACY_NAMES = {
-    **{DSV41_ISTA_SHARD.format(quant="IQ2_XXS", i=i): "model-2.00bpw-%05d-of-00004.gguf" % i for i in range(1, 5)},
-    **{DSV41_ISTA_SHARD.format(quant="IQ2_XS", i=i): "model-2.25bpw-%05d-of-00004.gguf" % i for i in range(1, 5)},
-    DSV41_ISTA_ENGRAM: "engram-IQ4_NL.gguf",
-}
+# A file's SHA-256 at an earlier revision of its repository, with the same name and size: accepted as that file.  The
+# Engram of the 4-shard layout differs from today's in its header only (8 ranges of its tensor data compared equal,
+# 2026-10-29).
+DSV41_EARLIER_SHA256 = {DSV41_ISTA_ENGRAM: "eb19f30d368d393784e1fc54fdfaffc427ebb2110bf3762fdf5a8fbb9a2d740a"}
+# a shared file -> its name in the first release
+DSV41_FIRST_NAMES = {DSV41_ISTA_ENGRAM: "engram-IQ4_NL.gguf"}
+DSV41_ENGRAM_META = DSV41_SHARD.format(i=1)       # only its metadata is read (pack_gguf --engram-meta)
 # the files every official set shares (name -> where it comes from); they live in models/deepseek-v4.1-flash-shared, once
 DSV41_SHARED = {
     DSV41_ISTA_ENGRAM: hf(DSV41_ISTA_REPO),
-    DSV41_SHARD.format(i=1): hf(DSV41_REPO) + "UD-Q8_K_XL/",      # only its metadata is read (pack_gguf --engram-meta)
+    DSV41_ENGRAM_META: hf(DSV41_REPO) + "UD-Q8_K_XL/",
     DSV41_DSPARK: hf(DSV41_REPO),
 }
-DSV41_ALL_FILES = {**DSV41_FILES, **DSV41_ISTA_FILES, **DSV41_LEGACY_FILES}
+DSV41_ALL_FILES = {**DSV41_FILES, **DSV41_ISTA_FILES, **DSV41_OLDER_FILES}
+_UD_SHARDS = [DSV41_SHARD.format(i=i) for i in range(1, 10)]
 DSV41_CONTEXT = 8192          # the context the engine was checked at (4096 and 8192; 64K is not tried yet)
 MULTI_FILE_FAMILIES = {
     "deepseek41": {"title": "DeepSeek-V4.1-Flash", "by": "DeepSeek; the 2-bit GGUFs by IST-DAS, UD-Q8_K_XL by Unsloth", "arch": "deepseek41",
@@ -525,40 +550,58 @@ MULTI_FILE_FAMILIES = {
                    "license": "DeepSeek's model license: https://huggingface.co/unsloth/DeepSeek-V4.1-Flash-1017-GGUF",
                    "models": {"UD-Q8_K_XL": {"about": "Unsloth Dynamic 8-bit: the experts in MXFP4 as DeepSeek made them, the rest "
                                                        "in BF16 (the checkpoint's own precision)",
-                              "ram_gb": 306, "shards": [DSV41_SHARD.format(i=i) for i in range(1, 10)]}},
+                              "ram_gb": 306, "shards": _UD_SHARDS}},
                    "sha256": DSV41_ALL_FILES, "vision": False}
 }
-# The official sets first (a normal PC), Unsloth's 508 GB set last.  Each model: its shards, the sub-folder they are in at the repository
-# (and in a --gguf-dir folder), the files shared with the other set ("shared"), the pack recipe and the shipped expert profile.
+
+
+def make_ista_set(quant: str, first_release: str | None = None) -> dict:
+    """Builds the file part of an official IST-DAS set's entry in MULTI_FILE_FAMILIES (`quant`: the IQ type its shards
+    are named after; `first_release`: the set's name in the first release, "2.00bpw", when it had one).  Its "layouts"
+    are every shard list the set was published as, newest first: a folder holds the set when it holds every file of one
+    of them (never a mix).  The first is what setup downloads ("shards"); the others' files are pinned in
+    DSV41_OLDER_FILES."""
+    layouts = [[DSV41_ISTA_SHARD.format(quant=quant, i=i, n=6) for i in range(1, 6)],
+               [DSV41_ISTA_SHARD.format(quant=quant, i=i, n=4) for i in range(1, 5)]]
+    if first_release:
+        layouts.append(["model-%s-%05d-of-00004.gguf" % (first_release, i) for i in range(1, 5)])
+    return {"recipe": "ista", "subdir": None, "legacy_subdir": first_release, "hf": hf(DSV41_ISTA_REPO),
+            "shards": layouts[0], "layouts": layouts, "shared": [DSV41_ISTA_ENGRAM, DSV41_DSPARK]}
+
+
+def pick_dsv41_layout(md: dict, has) -> list:
+    """Picks the layout of a DeepSeek set's entry `md` (its "layouts") that a folder holds, `has(name)` saying whether a
+    file is there: a complete one when there is one, else the one with the most files there, the newest on a tie (the
+    download layout when the folder holds none).  Used by setup, the Terminal and the MCP server alike."""
+    return min(md["layouts"], key=lambda names: (not all(map(has, names)), -sum(map(has, names))))
+
+
+# The official sets first (a normal PC), Unsloth's 508 GB set last.  Each model: its shards ("shards", what setup
+# downloads, and "layouts", every list of them a folder may hold), the sub-folder they are in at the repository (and in
+# a --gguf-dir folder), the files shared with the other sets ("shared"; an older layout needs DSV41_ENGRAM_META too),
+# the pack recipe and the shipped expert profile.
 MULTI_FILE_FAMILIES["deepseek41"]["models"] = {
     "IST-DAS-2.00bpw": {
         "label": "IST-DAS 2.00 bpw",
         "about": "the smaller official version: 138 GB of model + 111 GB n-gram table + 8 GB drafter (257 GB of disk). Runs on a PC with "
                  "a 12 GB card and 40-64 GB of RAM at about 5-7 tokens a second; quality about 15.5% above the original model's "
                  "perplexity (code and agent work 5-9%)",
-        "ram_gb": 40, "recipe": "ista", "subdir": None, "legacy_subdir": "2.00bpw", "profile": "profile-2.00.bin", "hf": hf(DSV41_ISTA_REPO),
-        "shards": [DSV41_ISTA_SHARD.format(quant="IQ2_XXS", i=i) for i in range(1, 5)],
-        "shared": [DSV41_ISTA_ENGRAM, DSV41_SHARD.format(i=1), DSV41_DSPARK]},
+        "ram_gb": 40, "profile": "profile-2.00.bin", **make_ista_set("IQ2_XXS", "2.00bpw")},
     "IST-DAS-2.25bpw": {
         "label": "IST-DAS 2.25 bpw",
         "about": "the better official version: 155 GB of model + 111 GB n-gram table + 8 GB drafter (274 GB of disk, 17 GB more than "
                  "2.00). About the same speed; quality about 7.3% above the original model's perplexity (code and agent work 2-3%)",
-        "ram_gb": 44, "recipe": "ista", "subdir": None, "legacy_subdir": "2.25bpw", "profile": "profile-2.25.bin", "hf": hf(DSV41_ISTA_REPO),
-        "shards": [DSV41_ISTA_SHARD.format(quant="IQ2_XS", i=i) for i in range(1, 5)],
-        "shared": [DSV41_ISTA_ENGRAM, DSV41_SHARD.format(i=1), DSV41_DSPARK]},
+        "ram_gb": 44, "profile": "profile-2.25.bin", **make_ista_set("IQ2_XS", "2.25bpw")},
     "IST-DAS-1.75bpw": {
         "label": "IST-DAS 1.75 bpw",
         "about": "the smallest official version: 121 GB of model + 111 GB n-gram table + 8 GB drafter (239 GB of disk, 18 GB less than 2.00). Runs "
                  "where 2.00 is tight (a 12 GB card and 32-40 GB of RAM). Smallest: fine for code and agent work, noticeably weaker on plain prose; pick 2.00 if it fits",
-        "ram_gb": 34, "recipe": "ista", "subdir": None, "legacy_subdir": None, "profile": "profile-2.00.bin", "hf": hf(DSV41_ISTA_REPO),
-        "shards": [DSV41_ISTA_SHARD.format(quant="IQ1_M", i=i) for i in range(1, 5)],
-        "shared": [DSV41_ISTA_ENGRAM, DSV41_SHARD.format(i=1), DSV41_DSPARK]},
+        "ram_gb": 34, "profile": "profile-2.00.bin", **make_ista_set("IQ1_M")},
     "UD-Q8_K_XL": {
         "label": "Unsloth UD-Q8_K_XL",
         "about": "Unsloth Dynamic 8-bit: the experts in MXFP4 as DeepSeek made them, the rest in BF16 (the checkpoint's own precision); "
                  "508 GB, for machines with hundreds of GB of RAM or several cards",
-        "ram_gb": 306, "recipe": "ud", "subdir": "UD-Q8_K_XL", "shards": [DSV41_SHARD.format(i=i) for i in range(1, 10)],
-        "shared": []},
+        "ram_gb": 306, "recipe": "ud", "subdir": "UD-Q8_K_XL", "shards": _UD_SHARDS, "layouts": [_UD_SHARDS], "shared": []},
 }
 
 # Every model file Strata downloads has a fixed size and SHA-256: (repository, file name) -> (bytes, sha256).  download()
