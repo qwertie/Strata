@@ -37,7 +37,7 @@ session on an NVIDIA machine. Changes nobody can test come last.
 | A2 | Python: `strata_base/`, `strata_common/`; `serve/` becomes `strata_server/`; remove the import cycles between `serve/`, `strata_control/` and `strata_cli/`; one copy of the helpers repeated in `setup.py` and `tools/` | 2–5K | |
 | A3 | Move every whole file whose new place is already clear, without changing it: the folders `src/platform`, `src/artifact`, `src/spec`, `src/dsv41`, `src/qwen35`, `src/ngram`, `src/plan`; from `src/core/`, the runtime files to `src/base/gpu`, the conversation files to `src/common/state` and the Qwen3.8-only files to `src/models/qwen38`; the matching files in `sycl/`. Files that must be split wait for their step. | 0 | |
 | A4 | DeepSeek's own copies of host code: `ds4_os.hpp`, `ds4_pool.hpp`, `include/strata/models/deepseekv41/sampler.hpp` | ~1K | `ds4_os.hpp` done; the pool and the sampler wait (open issues) |
-| A5 | The `src/base/gpu` runtime interface (the shared code must not call the CUDA runtime directly), then `src/common/state`, `src/common/serve`, `src/common/spec` and the one-GPU parts of `src/common/experts`. These are also the base for the planned paged-KV engine. | 3–7K | serve: Qwen3.8 and Qwen3.6 done, DeepSeek waits for its model; state: descriptor done, Qwen3.6 and Qwen3.8's running state on it, Qwen3.8's K/V left; spec: window planner; experts: one-GPU helpers (ExpertCache waits for the runtime interface) |
+| A5 | The `src/base/gpu` runtime interface (the shared code must not call the CUDA runtime directly), then `src/common/state`, `src/common/serve`, `src/common/spec` and the one-GPU parts of `src/common/experts`. These are also the base for the planned paged-KV engine. | 3–7K | serve: all three engines; state: descriptor done, Qwen3.6 and Qwen3.8's running state on it, Qwen3.8's K/V left; spec: window planner; experts: one-GPU helpers (ExpertCache waits for the runtime interface) |
 | A6 | SYCL: the 7 files that are 95% or more the same as their `src/` original become shared | ~2.4K | done: 8 files (see [UPSTREAM_PORTING.md](UPSTREAM_PORTING.md)) |
 
 ### Phase B: changes NVIDIA-only code; one batched test session on an NVIDIA machine
@@ -154,6 +154,10 @@ Found during the work; each needs a decision or a later step.
   `9f3ac8a3` (UD-Q4_K_XL, Strix Halo), a greedy 2,031-token prompt read gave no output for 341 s, after the same
   request had taken 2.5 s in the run before; the server ended the engine (`engine_silence_s`).
   Not seen again; cause unknown.
+- **DeepSeek is not deterministic on this PC.** Two runs of the same build give different long answers at
+  temperature 0 through the server (2026-10-29, IQ2_XXS, Strix Halo): the experts kept in graphics memory are counted
+  from free VRAM at start, and each run rewrites the pack's `expert-profile.bin`. Engine changes to DeepSeek can
+  therefore be compared token for token only on short answers or with `--expert-profile none --no-expert-cache`.
 
 ## Running engines and GPU tests on this PC
 
@@ -162,7 +166,7 @@ Windows loads the driver's `System32mdhip64_7.dll` before anything on `PATH`, s
 into a folder together with `engine\*.dll` (as `engine\strata.exe` is installed) and run it there. End-to-end checks
 use a copy of the run config with `"exe"` pointing at the engine under test and the server on another port (8091), with
 alternating runs of the two builds. Models on this PC: Qwen3.8 IQ3_S (`strata-iq3_s.json`) and Qwen3.6 UD-Q4_K_XL
-(`C:\AI-models\Strata-data\models\qwen36-UD-Q4_K_XL`); DeepSeek V4.1 is being downloaded (2026-10-28).
+(`C:\AI-models\Strata-data\models\qwen36-UD-Q4_K_XL`); DeepSeek V4.1 IST-DAS 2.00 bpw (`C:\AI-models\DeepSeek-V4.1-Flash`, run config `strata-deepseek-v4.1-flash-ist-das-2.00bpw.json`; build `strata-dsv41` with `STRATA_BUILD_DSV41=ON`).
 
 ## Results
 
@@ -189,3 +193,4 @@ alternating runs of the two builds. Models on this PC: Qwen3.8 IQ3_S (`strata-iq
 | A5 | `27083334` | 491,519 | −1,629 | Qwen3.8's running state on the descriptor (its K/V not yet) |
 | A5 | `dc7d7c9f` | 491,494 | −1,654 | one window planner for both Qwen3.8 decode loops (`src/common/spec`) |
 | A5 | `268c2fd2` | 490,818 | −2,330 | one-GPU expert-store helpers shared (`src/common/experts`), SYCL copies dropped |
+| A5 | `62bb0aac` | 490,952 | −2,196 | DeepSeek on the shared command loop (after the DeepSeek 6-shard support, +146, and two DeepSeek fixes) |
