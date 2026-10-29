@@ -15,22 +15,16 @@ and `BDONE` lines.
 
 ## Which engine uses it
 
-**Qwen3.8** (`src/program/generate.cpp`) and **Qwen3.6** (`Serve` in `src/models/qwen36/q36_engine.cu`) use all of
-it. Qwen3.6 keeps two habits of its own: it skips empty lines, and it answers QUIT with `ERR expected: GEN ...` and
-ends when stdin does (the server sends `STOP`, `QUIT` and then closes stdin). Its `Engine::spec_step` takes the stop
-check as a function. **A5** moves DeepSeek onto it next. What it needs:
+**Qwen3.8** (`src/program/generate.cpp`), **Qwen3.6** (`Serve` in `src/models/qwen36/q36_engine.cu`) and
+**DeepSeek V4.1** (`serve` in `src/models/deepseekv41/ds4_main.cpp`) use it. Their own habits:
 
-**DeepSeek V4.1** (`src/models/deepseekv41/ds4_main.cpp`):
-
-- `Lines` becomes `Input`. `Lines` also takes `STOP <anything>` as STOP, and raises the stop flag at QUIT and when
-  stdin ends: `Input` needs an option for that (a constructor flag, off for the Qwen engines, which queue such lines
-  and answer them `ERR`), or DeepSeek drops it (the server sends a bare STOP, and STOP before QUIT). Its model's
-  `set_cancel` takes `[&in] { return in.is_stop_requested(); }`, as Qwen3.6's `spec_step` does.
-- Its loop becomes a `Loop` with `list_conversations` only (no batch slots).
-- `parse_gen` becomes `parse_request_line` plus `read_sampling_key` (it sets `top_k = 64` in its `Sampling` before
-  reading the keys; it reads `spec`, `dspark_conf`, `pin` and `dspark_cum` itself). DeepSeek takes the first word
-  without `=` as the picture file and allows keys after it; `parse_request_line` stops reading keys at the file, so
-  it needs a flag that reads `key=value` words after the file too.
+- Qwen3.6 skips empty lines, and answers QUIT with `ERR expected: GEN ...` and ends when stdin does (the server sends
+  `STOP`, `QUIT` and then closes stdin). Its `Engine::spec_step` takes the stop check as a function.
+- DeepSeek has no batch slots: its `Loop` has `list_conversations` only. Its `Input` is made with
+  `quit_ends_request`, so QUIT and the end of stdin also end a running request, and `STOP <anything>` counts as
+  STOP. It reads its lines with `parse_request_line(..., keys_after_file)` (keys may follow GENI's picture file),
+  refuses a line without max_new (`has_max_new`), and sets `top_k = 64` before it reads the sampling keys. Its
+  model's `set_cancel` asks `is_stop_requested`.
 
 Not shared yet: the `DONE` line has 15 fields and named ones (`chunk=`, ...) on Qwen3.8, 15 on Qwen3.6 and 10 on
 DeepSeek; a shared writer would have to keep each engine's fields.

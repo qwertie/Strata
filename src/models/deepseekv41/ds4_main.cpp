@@ -22,15 +22,15 @@
 #include "strata/base/platform/os.hpp"
 #include "ds4_packinfo.hpp"
 #include "ds4_slotmeta.hpp"
+#include "strata/common/serve/loop.hpp"
+#include "strata/common/serve/request.hpp"
 #include "strata/common/state/token_listing.hpp"
 
 #include <algorithm>
 #include <cmath>
 #include <numeric>
-#include <atomic>
 #include <chrono>
 #include <climits>
-#include <condition_variable>
 #include <csignal>
 #include <filesystem>
 #include <memory>
@@ -40,8 +40,6 @@
 #include <cstdlib>
 #include <cstring>
 #include <deque>
-#include <iostream>
-#include <mutex>
 #include <string>
 #include <thread>
 #include <vector>
@@ -93,43 +91,6 @@ void usage() {
                  "           | --encode-image FILE.rgb --size WxH --dump-image OUT\n"
                  "           | --pack-info)\n");
 }
-
-// stdin lines on a thread, so a request can see STOP while it decodes
-struct Lines {
-    std::mutex mu;
-    std::condition_variable cv;
-    std::deque<std::string> q;
-    bool eof = false;
-    std::atomic<bool> stop{false};
-    void start() {
-        std::thread([this] {
-            std::string l;
-            while (std::getline(std::cin, l)) {
-                if (!l.empty() && l.back() == '\r') l.pop_back();
-                std::lock_guard<std::mutex> lk(mu);
-                if (l == "STOP" || l.rfind("STOP ", 0) == 0) {
-                    stop.store(true);
-                    continue;
-                }
-                if (l == "QUIT") stop.store(true);
-                q.push_back(l);
-                cv.notify_all();
-            }
-            std::lock_guard<std::mutex> lk(mu);
-            eof = true;
-            stop.store(true);
-            cv.notify_all();
-        }).detach();
-    }
-    bool next(std::string& l) {
-        std::unique_lock<std::mutex> lk(mu);
-        cv.wait(lk, [&] { return !q.empty() || eof; });
-        if (q.empty()) return false;
-        l = q.front();
-        q.pop_front();
-        return true;
-    }
-};
 
 // The drafts between two stats: each draft position (1st, 2nd, ..) - how often it was verified with every draft
 // before it kept, and how often it was kept then
@@ -206,9 +167,7 @@ bool round(strata::ds4::Model& m, int tok, int room, bool spec, float conf_min, 
 
 struct Req {
     long long max_new = 0;
-    float temperature = 0.0f, top_p = 1.0f, min_p = 0.0f;
-    int top_k = 64;
-    unsigned long long seed = 0;
+    strata::serve::Sampling smp;   // the sampling keys (top_k 64 when absent: parse_gen)
     int spec = -1;          // spec=0|1: this request drafts or not (-1: as the engine was started)
     float conf = -1.0f;     // dspark_conf=F: the drafts' confidence floor for this request (-1: the engine's)
     long long pin = 0;      // pin=N: the first N prompt tokens are a start other requests share (a system prompt and its
@@ -281,39 +240,23 @@ struct SpanCache {
     }
 };
 
-bool parse_gen(const std::string& line, Req& r, bool geni) {
-    const char* p = line.c_str() + (geni ? 5 : 4);
-    char* e = nullptr;
-    r.max_new = std::strtoll(p, &e, 10);
-    if (e == p) return false;
-    p = e;
-    for (;;) {
-        while (*p == ' ') ++p;
-        const char* s = p;
-        while (*p && *p != ' ') ++p;
-        if (p == s) break;
-        const std::string tok(s, (size_t) (p - s));
-        const size_t eq = tok.find('=');
-        if (eq == std::string::npos && geni && r.file.empty()) {
-            r.file = tok;
-            continue;
-        }
-        if (eq == std::string::npos) {
-            r.ids = parse_ids(tok);
-            break;
-        }
-        const std::string k = tok.substr(0, eq), v = tok.substr(eq + 1);
-        if (k == "temperature") r.temperature = std::strtof(v.c_str(), nullptr);
-        else if (k == "top_p") r.top_p = std::strtof(v.c_str(), nullptr);
-        else if (k == "top_k") r.top_k = std::atoi(v.c_str());
-        else if (k == "min_p") r.min_p = std::strtof(v.c_str(), nullptr);
-        else if (k == "seed") r.seed = std::strtoull(v.c_str(), nullptr, 10);
-        else if (k == "spec") r.spec = std::atoi(v.c_str()) != 0;
+// a GEN or GENI line's parts (request.hpp; keys may follow the picture file) into `r`: false when it is not one, or
+// lacks its max_new, ids or picture file
+bool parse_gen(const std::string& line, Req& r) {
+    strata::serve::RequestLine rl;
+    if (!strata::serve::parse_request_line(line, rl, true) || !rl.has_max_new) return false;
+    r.max_new = rl.max_new;
+    r.smp.top_k = 64;
+    for (const auto& [k, v] : rl.keys) {
+        if (strata::serve::read_sampling_key(k, v, r.smp)) continue;
+        if (k == "spec") r.spec = std::atoi(v.c_str()) != 0;
         else if (k == "dspark_conf") r.conf = std::strtof(v.c_str(), nullptr);
         else if (k == "pin") r.pin = std::atoll(v.c_str());
         else if (k == "dspark_cum" || k == "spec_cum") r.cum = std::strtof(v.c_str(), nullptr);
     }
-    return !r.ids.empty() && (!geni || !r.file.empty());
+    r.file = rl.file;
+    r.ids = parse_ids(rl.ids);
+    return !r.ids.empty() && (!rl.pictures || !r.file.empty());
 }
 
 int serve(strata::ds4::Model& m, const std::string& eos_list, bool spec, float conf_min, const std::string& pack) {
@@ -323,9 +266,6 @@ int serve(strata::ds4::Model& m, const std::string& eos_list, bool spec, float c
     std::printf("READY %lld stop conversations\n", (long long) m.max_context());
     std::fflush(stdout);
     std::fprintf(stderr, "maya ds4 serve: GEN <max_new> [keys] <ids>; GENI <max_new> [keys] <pictures> <ids>; STOP, QUIT, LIST_CONVERSATIONS, GET_CONTEXT_WINDOWS\n");
-    Lines in;
-    in.start();
-    std::string line;
     unsigned long long counter = 0;
     std::vector<Pic> held;   // the pictures the state holds (start, hash, span)
     SpanCache spans;
@@ -648,35 +588,37 @@ int serve(strata::ds4::Model& m, const std::string& eos_list, bool spec, float c
         std::signal(SIGPIPE, SIG_IGN);
 #endif
     }
-    while (in.next(line)) {
+    strata::serve::Input in(true);   // (a QUIT, or stdin's end, also ends a running request)
+    strata::serve::EngineHooks hooks;
+    // the conversation the model holds and the ones set aside, the least recently used of those (the next to go) first
+    hooks.list_conversations = [&] {
+        std::vector<strata::core::HeldConversation> held;
+        const std::vector<int32_t>& t = m.tokens();
+        // (its state's size is not known on this path: 0 bytes)
+        held.push_back({"main", "vram", t.empty() ? "empty" : "holding", t.data(), t.size(),
+                        (uint64_t) m.max_context(), 0, 0});
+        std::vector<size_t> order(slots.size());
+        std::iota(order.begin(), order.end(), size_t{0});
+        std::sort(order.begin(), order.end(), [&](size_t a, size_t b) { return slots[a].used < slots[b].used; });
+        for (const size_t i : order)
+            held.push_back({"parked" + std::to_string(slots[i].serial), slots[i].data ? "ram" : "disk", "parked",
+                            slots[i].tokens.data(), slots[i].tokens.size(), slots[i].tokens.size(), slots[i].bytes,
+                            slots[i].bytes});
+        return held;
+    };
+    strata::serve::Loop loop(in, hooks);
+    std::string line;
+    while (loop.next(line)) {
         if (line == "QUIT") break;
-        // the conversation the model holds and the ones set aside (token_listing.hpp), between requests: the least
-        // recently used of those (the next to go) first
-        if (strata::core::is_conversation_command(line)) {
-            std::vector<strata::core::HeldConversation> held;
-            const std::vector<int32_t>& t = m.tokens();
-            // (its state's size is not known on this path: 0 bytes)
-            held.push_back({"main", "vram", t.empty() ? "empty" : "holding", t.data(), t.size(),
-                            (uint64_t) m.max_context(), 0, 0});
-            std::vector<size_t> order(slots.size());
-            std::iota(order.begin(), order.end(), size_t{0});
-            std::sort(order.begin(), order.end(), [&](size_t a, size_t b) { return slots[a].used < slots[b].used; });
-            for (const size_t i : order)
-                held.push_back({"parked" + std::to_string(slots[i].serial), slots[i].data ? "ram" : "disk", "parked",
-                                slots[i].tokens.data(), slots[i].tokens.size(), slots[i].tokens.size(), slots[i].bytes,
-                                slots[i].bytes});
-            strata::core::answer_conversation_command(line, held);
-            continue;
-        }
         const bool geni = line.rfind("GENI ", 0) == 0;
         if (!geni && line.rfind("GEN ", 0) != 0) {
             std::printf("ERR unsupported command '%s' (GEN, GENI, STOP, QUIT, LIST_CONVERSATIONS and GET_CONTEXT_WINDOWS)\n", line.substr(0, line.find(' ')).c_str());
             std::fflush(stdout);
             continue;
         }
-        in.stop.store(false);
+        in.clear_stop();
         Req r;
-        if (!parse_gen(line, r, geni)) {
+        if (!parse_gen(line, r)) {
             std::printf("ERR expected: GEN <max_new> [keys] <id,id,...> or GENI <max_new> [keys] <file> <id,id,...>\n");
             std::fflush(stdout);
             continue;
@@ -802,10 +744,10 @@ int serve(strata::ds4::Model& m, const std::string& eos_list, bool spec, float c
         // feeds) and goes back to the state before this prompt - kept here first, in checkpoint 1, which the prompt's
         // own end overwrites as before - so the next request still shares the conversation up to it
         if (from > 0 && from < total) m.checkpoint(1);
-        m.set_cancel([&in] { return in.stop.load(); });
+        m.set_cancel([&in] { return in.is_stop_requested(); });
         bool stopped = false;
         while (ok && done < total) {
-            if (in.stop.load()) {
+            if (in.is_stop_requested()) {
                 stopped = true;
                 break;
             }
@@ -862,7 +804,7 @@ int serve(strata::ds4::Model& m, const std::string& eos_list, bool spec, float c
         const long long limit = r.max_new > 0 ? r.max_new : m.max_context() - (long long) r.ids.size();
         long long d_off = 0, d_acc = 0;
         bool cool = false;
-        int tok = m.sample(r.temperature, r.top_p, r.top_k, r.min_p, r.seed, counter++);
+        int tok = m.sample(r.smp.temperature, r.smp.top_p, r.smp.top_k, r.smp.min_p, r.smp.seed, counter++);
         std::vector<int> got;
         // STAT for the Monitor every 8 tokens and at the end, over this answer so far: the GLM engine's keys (speed, the
         // VRAM hit, promotions a token) and DeepSeek's own - experts a token on the CPU lane, MB a token the storage
@@ -897,7 +839,7 @@ int serve(strata::ds4::Model& m, const std::string& eos_list, bool spec, float c
             std::printf("%s\n", out.c_str());
         };
         for (;;) {
-            if (in.stop.load()) {
+            if (in.is_stop_requested()) {
                 finish = "cancel";
                 break;
             }
@@ -918,9 +860,8 @@ int serve(strata::ds4::Model& m, const std::string& eos_list, bool spec, float c
                 // a round whose drafts were all below the confidence floor: the next one does without the drafter
                 // (a request's spec / dspark_conf keys over the engine's: the speed calibration measures both ways)
                 const bool try_spec = (r.spec < 0 ? spec : r.spec != 0) && !cool;
-                if (!round(m, tok, room, try_spec, r.conf >= 0 ? r.conf : conf_min, r.temperature, r.top_p, r.top_k,
-                           r.min_p, r.seed, counter, got,
-                           off, acc, err, r.cum)) {
+                if (!round(m, tok, room, try_spec, r.conf >= 0 ? r.conf : conf_min, r.smp.temperature, r.smp.top_p,
+                           r.smp.top_k, r.smp.min_p, r.smp.seed, counter, got, off, acc, err, r.cum)) {
                     std::fprintf(stderr, "ds4: %s\n", err.c_str());
                     finish = "cancel";
                     break;

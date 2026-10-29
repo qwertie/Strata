@@ -47,13 +47,15 @@ A model split across devices describes one layout per device. Device memory and 
   keys) through segmented host buffers. Those parts map onto `per_token` regions and the pooled keys onto
   `per_block` (plus the spare row the next block fills). They move when the paged K/V pool comes: a page pool
   replaces a growing region's rows, and `copy_state` then copies page by page.
-- **DeepSeek V4.1** (`src/models/deepseekv41/`) does not use it yet (its model cannot be run here to check it). Its
-  slot (`slot_bytes`, `slot_save`, `slot_load` in `ds4_model.cu`) maps onto one layout per device: per layer the
-  window ring and the compressor's partial group (`c_kv`, `c_score`) as `fixed` regions, per KV source the
-  compressed K/V and the index keys as `per_block` regions with `block` = the source's ratio. The slot file's format
-  puts a length before each region (bytes for the ring, floats for the partial group, rows for a source), so the
-  file writer keeps those. Its conversation slots in RAM and on disk (`ds4_main.cpp`) then become the conversation
-  cache's.
+- **DeepSeek V4.1** (`src/models/deepseekv41/`) does not use it yet. Its slot (`slot_bytes`, `slot_save`,
+  `slot_load` in `ds4_model.cu`) maps onto one layout per device: per layer the window ring and the compressor's
+  partial group (`c_kv`, `c_score`) as `fixed` regions, per KV source the compressed K/V and the index keys as
+  `per_block` regions with `block` = the source's ratio. Describing it would delete little: the slot file is no
+  packed image (a length before each region, the identity and tokens before them, the checkpoints' host copies
+  after them), a tensor-parallel group's members each hold a copy of the ring and partial group that a load writes
+  into all of them, a source's rows are written to every device that keeps them, and the copies are synchronous
+  `cudaMemcpy` calls that `copy_state` would make asynchronous. It moves with its conversation slots in RAM and on
+  disk (`ds4_main.cpp`), when those become the conversation cache's.
 
 See [docs/ARCHITECTURE.md](../../../docs/ARCHITECTURE.md) for the layers and
 [docs/REFACTOR_PLAN.md](../../../docs/REFACTOR_PLAN.md) for the steps.

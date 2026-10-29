@@ -841,7 +841,8 @@ if(STRATA_ENABLE_CUDA OR STRATA_ENABLE_HIP)
     set_source_files_properties(${_ds4}/ds4_main.cpp PROPERTIES COMPILE_DEFINITIONS "DS4_BUILD_ID=\"${STRATA_BUILD_ID}\"")
     target_include_directories(strata-dsv41 PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include ${_strata_gpu_include_directories}
                                ${CMAKE_CURRENT_SOURCE_DIR}/third_party/ggml)
-    target_link_libraries(strata-dsv41 PRIVATE strata_dsv41_kernels ${_strata_gpu_runtime_target} ${_strata_gpu_blas_target})
+    target_link_libraries(strata-dsv41 PRIVATE strata_dsv41_kernels strata_serve ${_strata_gpu_runtime_target}
+                          ${_strata_gpu_blas_target})
     find_package(Threads REQUIRED)
     target_link_libraries(strata-dsv41 PRIVATE Threads::Threads)
     if(WIN32 AND STRATA_ENABLE_HIP)   # cudaMemGetInfo is the DXGI-budgeted hip_compat::mem_get_info (src/base/gpu/device.cu): on a Strix Halo the

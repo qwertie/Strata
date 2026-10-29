@@ -22,13 +22,15 @@ struct RequestLine {
     bool pictures = false;      ///< GENI / BGENI
     long slot = 0;              ///< BGEN's batch slot
     long long max_new = 0;      ///< the most tokens to generate (0 where the line has no number)
+    bool has_max_new = false;   ///< whether a number stood where max_new goes
     std::vector<std::pair<std::string, std::string>> keys;   ///< the key=value options, in the line's order
     std::string file;           ///< GENI's picture file; empty when no space and ids follow it
     std::string ids;            ///< the rest of the line: the prompt's token ids, comma-separated
 };
 
-/// Splits `line` into `out`; false when it is not a request line.
-bool parse_request_line(const std::string& line, RequestLine& out);
+/// Splits `line` into `out`; false when it is not a request line.  The options end at the first word without '=';
+/// with `keys_after_file` (DeepSeek's lines), more of them may follow GENI's picture file.
+bool parse_request_line(const std::string& line, RequestLine& out, bool keys_after_file = false);
 
 /// The sampling options of a request: temperature=F top_p=F top_k=N min_p=F seed=N penalty_last_n=N
 /// penalty_repeat=F penalty_freq=F penalty_present=F.

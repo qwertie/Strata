@@ -28,8 +28,8 @@ struct Input::Shared {
     size_t seen = 0;   ///< the queue's length when take_slot_controls last looked (wait_for_line's "new line")
 };
 
-Input::Input() : shared_(std::make_shared<Shared>()) {
-    std::thread([st = shared_] {
+Input::Input(bool quit_ends_request) : shared_(std::make_shared<Shared>()) {
+    std::thread([st = shared_, quit_ends_request] {
         platform::name_this_thread("strata-stdin");
         aux_cpus::pin_current_thread();
         // read(2) on the descriptor, not std::cin: glibc's exit() flushes every stdio stream and waits for
@@ -62,16 +62,20 @@ Input::Input() : shared_(std::make_shared<Shared>()) {
         };
         while (getline_fd(l)) {
             if (!l.empty() && l.back() == '\r') l.pop_back();
-            if (l == "STOP") {
+            if (l == "STOP" || (quit_ends_request && l.rfind("STOP ", 0) == 0)) {
                 st->stop.store(true);
                 continue;
             }
+            if (quit_ends_request && l == "QUIT")
+                st->stop.store(true);
             std::lock_guard<std::mutex> lk(st->mu);
             st->lines.push_back(l);
             st->cv.notify_one();
         }
         std::lock_guard<std::mutex> lk(st->mu);
         st->eof = true;
+        if (quit_ends_request)
+            st->stop.store(true);
         st->cv.notify_one();
     }).detach();
 }

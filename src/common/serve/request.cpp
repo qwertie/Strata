@@ -6,7 +6,11 @@
 
 namespace strata::serve {
 
-bool parse_request_line(const std::string& line, RequestLine& out) {
+namespace {
+void read_keys(const char*& p, std::vector<std::pair<std::string, std::string>>& keys);
+}
+
+bool parse_request_line(const std::string& line, RequestLine& out, bool keys_after_file) {
     out = RequestLine{};
     out.batch = line.rfind("BGEN", 0) == 0;
     const char* p = line.c_str() + (out.batch ? 1 : 0);
@@ -19,24 +23,16 @@ bool parse_request_line(const std::string& line, RequestLine& out) {
         p = e;
     }
     out.max_new = std::strtoll(p, &e, 10);
+    out.has_max_new = e != p;
     p = e;
-    for (;;) {   // the options, up to the first word without '='
-        while (*p == ' ') ++p;
-        const char* start = p;
-        while (*p != '\0' && *p != ' ') ++p;
-        const std::string word(start, (size_t) (p - start));
-        const size_t eq = word.find('=');
-        if (word.empty() || eq == std::string::npos) {
-            p = start;
-            break;
-        }
-        out.keys.emplace_back(word.substr(0, eq), word.substr(eq + 1));
-    }
+    read_keys(p, out.keys);
     if (out.pictures) {
         const char* gap = std::strchr(p, ' ');
         if (gap != nullptr) {
             out.file.assign(p, (size_t) (gap - p));
             p = gap;
+            if (keys_after_file)
+                read_keys(p, out.keys);
         }
     }
     out.ids = p;
@@ -70,5 +66,23 @@ std::vector<uint64_t> parse_hex_list(const std::string& text) {
     }
     return out;
 }
+
+namespace {
+/// Appends the key=value words at `p` to `keys`, up to the first word without '=', and leaves `p` at that word.
+void read_keys(const char*& p, std::vector<std::pair<std::string, std::string>>& keys) {
+    for (;;) {
+        while (*p == ' ') ++p;
+        const char* start = p;
+        while (*p != '\0' && *p != ' ') ++p;
+        const std::string word(start, (size_t) (p - start));
+        const size_t eq = word.find('=');
+        if (word.empty() || eq == std::string::npos) {
+            p = start;
+            return;
+        }
+        keys.emplace_back(word.substr(0, eq), word.substr(eq + 1));
+    }
+}
+}  // namespace
 
 }  // namespace strata::serve

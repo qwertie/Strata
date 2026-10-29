@@ -32,7 +32,11 @@ int main() {
 
     check(parse_request_line("GENI 5 /tmp/p.bin", r) && r.file.empty() && r.ids == "/tmp/p.bin",
           "GENI without ids has no file");
-    check(parse_request_line("GEN x", r) && r.max_new == 0, "no max_new reads as 0");
+    check(parse_request_line("GEN x", r) && r.max_new == 0 && !r.has_max_new, "no max_new reads as 0");
+    check(parse_request_line("GENI 5 a=1 /tmp/p.bin b=2 7,8", r, true) && r.has_max_new && r.keys.size() == 2 &&
+          r.keys[1].first == "b" && r.file == "/tmp/p.bin" && r.ids == "7,8", "keys after the file");
+    check(parse_request_line("GENI 5 /tmp/p.bin b=2 7,8", r) && r.keys.empty() && r.ids == " b=2 7,8",
+          "without keys_after_file the file ends the keys");
     check(!parse_request_line("GENX 5 1", r) && !parse_request_line("BGEN", r) && !parse_request_line("QUIT", r),
           "other lines are not requests");
 

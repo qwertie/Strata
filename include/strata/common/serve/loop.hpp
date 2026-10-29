@@ -24,8 +24,9 @@ namespace strata::serve {
 class Input {
 public:
     /// Starts the reading thread.  It may outlive this object (it can sit in a read when the process ends), so what
-    /// it shares with the engine is kept alive by both.
-    Input();
+    /// it shares with the engine is kept alive by both.  With `quit_ends_request` (DeepSeek's habit), QUIT (queued
+    /// as usual) and the end of stdin also raise the stop flag, and `STOP <anything>` counts as STOP.
+    explicit Input(bool quit_ends_request = false);
 
     /// Takes the oldest queued line, waiting for one; false once stdin has ended and the queue is empty.
     bool next(std::string& line);
