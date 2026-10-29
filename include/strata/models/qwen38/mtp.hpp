@@ -226,6 +226,10 @@ private:
     void record_top2(int j);
     std::vector<int32_t> top2_, dvocab_host_;
     std::vector<float> lg_host_;
+    /// Stages rows 0 .. T - 1 of a prompt chunk, round or chain: `tokens` at the cells from `cell0` on.
+    void put_rows(const int32_t* tokens, int T, int64_t cell0);
+    /// Stages the cell row `row` writes its K/V to (its step table entry and every head's position).
+    void put_cell(int row, int64_t cell);
     // --pipeline-windows 2 (chain_launch)
     bool stage_source_R(int T, std::string& err);   ///< set_source_R's rows into the bound buffer
     bool force_on_ = false, chain_live_ = false;

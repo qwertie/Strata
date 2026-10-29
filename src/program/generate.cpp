@@ -89,10 +89,8 @@
 #include "strata/program/prefill_plan.hpp"
 #include "strata/program/draft_kv_plan.hpp"
 #include "strata/program/message_boundary.hpp"
-#include "strata/common/spec/draft_policy.hpp"
-#include "strata/common/spec/draft_source.hpp"
-#include "strata/common/spec/suffix_drafter.hpp"
 #include "strata/common/spec/spec_start.hpp"
+#include "strata/common/spec/window_planner.hpp"
 #include "strata/program/batch_groups.hpp"
 #include "strata/kernels/cvec.hpp"
 #include "strata/common/state/progress.hpp"
@@ -1083,23 +1081,6 @@ void usage() {
                  "                       the expert arena on one CUDA GPU (no --batch) starts blocking and tries it for a\n"
                  "                       while when the swaps hold the windows up, keeping it only if it is faster; 0 = the\n"
                  "                       blocking tier always (also STRATA_ADAPT_ASYNC=0); 1 = always on.\n");
-}
-
-// --lookup-chain: the context's last tokens for the draft sources (at most 64), the MTP's pending drafts last
-int chain_tail(const strata::spec::SuffixDrafter& sfx, const int32_t* pending, int n_pending, std::vector<int32_t>& tail) {
-    const std::vector<int32_t>& h = sfx.history();
-    const int keep = std::max(0, std::min((int) h.size(), 64 - n_pending));
-    tail.assign(h.end() - keep, h.end());
-    tail.insert(tail.end(), pending, pending + n_pending);
-    return (int) tail.size();
-}
-
-// --lookup-chain: the registered extra draft sources (strata/common/spec/draft_source.hpp) see the committed context too
-void extra_sources_reset() {
-    for (auto& src : strata::spec::extra_draft_sources()) src->reset();
-}
-void extra_sources_append(const int32_t* t, size_t n) {
-    for (auto& src : strata::spec::extra_draft_sources()) src->append(t, n);
 }
 
 bool parse_i64_list(const char* s, std::vector<int64_t>& out, std::string& err) {
@@ -11176,18 +11157,10 @@ int main(int argc, char** argv) {
         if (use_mtp && S_mtp < S) mtp.set_max_drafts(S_mtp - 1);
         // --pipeline-windows 2 loads the drafter with 8 rows: the serial loop's chain keeps its own length
         else if (use_mtp && mtp.max_t() > S_mtp) mtp.set_max_drafts(S_mtp - 1);
-        strata::spec::SuffixDrafter sfx(std::max(1, o.suffix_draft), 64, (size_t) o.max_context + 4096);
-        strata::spec::DraftPolicy policy(S);   // MTP or lookup window, learned over the whole process
-        const bool spec_cost = [] { const char* v = std::getenv("STRATA_SPEC_COST"); return v != nullptr && v[0] == '1'; }();   // cost-aware MTP window (A/B arm)
-        strata::spec::DraftPolicy::ChainState chain_st;
-        int chain_rows = 1;   // the window the cost-aware rule kept in the MTP chain just drafted
-        policy.set_robust(spec_cost);
-        if (spec_cost && use_mtp)
-            mtp.set_chain_rule([&](int idx, float pj) {
-                const bool k = policy.keep_draft(chain_st, idx, pj, S_mtp);
-                chain_rows = chain_st.best_rows;
-                return k;
-            });
+        // the draft policy learns over the whole process
+        strata::spec::WindowPlanner wplan(S, S_mtp, o.suffix_draft, o.lookup_chain, o.lookup_chain_min, o.max_context);
+        if (wplan.cost_aware && use_mtp)
+            mtp.set_chain_rule([&](int idx, float pj) { return wplan.keep_draft(idx, pj); });
         // The vision path (--vision): GENI <max_new> <embeddings file> <id,id,...> carries images.  The file is one
         // or more strata-vision records (int32 'SVE1', n, nx, ny, n_embd, then n x n_embd floats) in prompt order;
         // each image's rows go to its run of <|image_pad|> tokens, whose M-RoPE positions are mtmd's: t = p,
@@ -14093,25 +14066,11 @@ int main(int argc, char** argv) {
             const size_t WS = (size_t) std::max(S, merge_T);
             std::vector<int32_t> drafts(DS, 0), window(WS), outv(WS);
             std::vector<float> dprob(DS, 0.0f);
-            std::array<float, 8> dwin_s{};   // the probabilities the current window was chosen from (STRATA_SPEC_COST)
-            std::vector<int32_t> sbuf((size_t) S, 0);
-            const bool sfx_on = o.suffix_draft > 0 || o.lookup_chain > 0;
-            if (sfx_on) {
-                sfx.reset();
-                for (int64_t t : ids) sfx.append((int32_t) t);
-            }
-            if (o.lookup_chain > 0) {
-                extra_sources_reset();
-                for (int64_t t : ids) { const int32_t t32 = (int32_t) t; extra_sources_append(&t32, 1); }
-            }
+            wplan.start(ids);
             bool first_window = true;
-            int64_t produced_n = 0, sfx_windows = 0, sfx_drafts = 0, sfx_ok = 0;
-            int64_t chain_windows = 0, chain_drafts = 0, chain_ok = 0;   // --lookup-chain's own counts
+            int64_t produced_n = 0;
             int64_t t2_rej[8] = {}, t2_hit[8] = {};   // STRATA_MTP_TOP2: rejections inside the MTP drafts by depth, runner-up hits
             int64_t dp_tested[8] = {}, dp_ok[8] = {};   // STRATA_SPEC_DEPTH=1: MTP drafts tested / accepted by depth
-            std::vector<int32_t> cbuf((size_t) S, 0), ctail;
-            strata::spec::PromptLookupSource lookup_src(sfx);
-            static const bool chain_fixed = std::getenv("STRATA_LOOKUP_CHAIN_FIXED") != nullptr;   // no policy gate
             int64_t draft_offered = 0, draft_accepted = 0;
             // what the session holds once this request is done: the prompt read so far, then every committed token
             std::vector<int32_t> consumed;
@@ -14388,10 +14347,10 @@ int main(int argc, char** argv) {
                 }();
                 auto pick_lookup = [&](PW& w, const int32_t* chain0) {
                     if (o.suffix_draft <= 0 || w.seq == 0) return;
-                    const int k = sfx.propose(2 * S - 1, pl_sbuf.data());
-                    const int match = sfx.last_match();
+                    const int k = wplan.sfx.propose(2 * S - 1, pl_sbuf.data());
+                    const int match = wplan.sfx.last_match();
                     if (k <= 0 || pl_sbuf[0] != chain0[0]) return;
-                    const strata::spec::DraftPolicy::Pick pk = policy.choose(w.T, std::min(k, S - 1), match);
+                    const strata::spec::DraftPolicy::Pick pk = wplan.policy.choose(w.T, std::min(k, S - 1), match);
                     if (!pk.lookup) return;
                     w.T = pk.t;
                     for (int i = 1; i < w.T; ++i) {
@@ -14643,8 +14602,7 @@ int main(int argc, char** argv) {
                         if (mtp.chain_poll(err) < 0) return die(err);
                     if (chain_kind != 0 && !B.launched && !B.made) B = PW{};
                     chain_kind = 0;
-                    int a = 0;
-                    while (a < A.T - 1 && A.tok[a + 1] == outp[(size_t) a]) ++a;
+                    const int a = strata::spec::accepted_prefix(A.tok + 1, outp.data(), A.T - 1);
                     if (!V1(A).pl_commit_async(a + 1, err)) return die(err);
                     for (int i = 0; i <= a; ++i) consumed.push_back(A.tok[i]);
                     draft_offered += A.T - 1;
@@ -14659,7 +14617,7 @@ int main(int argc, char** argv) {
                         std::printf("T %d\n", (int) outp[(size_t) i]);
                         strata::core::progress_beat();
                         ++produced_n;
-                        if (o.suffix_draft > 0) sfx.append(outp[(size_t) i]);
+                        if (o.suffix_draft > 0) wplan.sfx.append(outp[(size_t) i]);
                         eos = std::find(o.eos_ids.begin(), o.eos_ids.end(), (int64_t) outp[(size_t) i]) != o.eos_ids.end();
                     }
                     std::fflush(stdout);
@@ -14678,8 +14636,8 @@ int main(int argc, char** argv) {
                     {
                         const double now = ms_now();
                         const int c = A.spec ? 1 : 0;
-                        if (A.sfx) { ++sfx_windows; sfx_drafts += A.T - 1; sfx_ok += a; }
-                        if (A.seq > 0 && !last) policy.observe(A.sfx, A.T, a, A.sfx_match, now - last_verdict);
+                        if (A.sfx) wplan.lookup.add(A.T - 1, a);
+                        if (A.seq > 0 && !last) wplan.policy.observe(A.sfx, A.T, a, A.sfx_match, now - last_verdict);
                         cls_ms[c] += now - last_verdict;
                         cls_tok[c] += a + 1;
                         cls_n[c] += 1;
@@ -14801,55 +14759,24 @@ int main(int argc, char** argv) {
                 }
             }
             while (!pl_ran && !cancelled && produced_n < max_new) {
-                int T = use_mtp ? S_mtp : 1;   // no --mtp: one token a round unless a lookup draft fires
-                policy.set_context(p);
-                if (use_mtp && spec_cost && !first_window) {
-                    T = std::clamp(chain_rows, 1, S_mtp);
-                } else if (use_mtp && req_spec_min_p > 0.0) {
-                    T = 1;
-                    while (T < S_mtp && dprob[(size_t) T - 1] >= (float) req_spec_min_p) ++T;
-                }
-                if (first_window) T = merge_T > 0 ? merge_T : 1;
-                std::copy(dprob.begin(), dprob.begin() + (std::ptrdiff_t) std::min<size_t>(dprob.size(), 8), dwin_s.begin());
+                // no --mtp: one token a round unless a lookup draft fires
+                strata::spec::Window w =
+                    wplan.begin(p, use_mtp ? S_mtp : 1, use_mtp, dprob.data(), req_spec_min_p, first_window);
+                if (first_window) w.T = merge_T > 0 ? merge_T : 1;
                 const bool merged = first_window && merge_T > 0;   // the prompt's last tokens and the first token
-                // a repeat of earlier context (prompt lookup) where the MTP's own first guess agrees: the policy takes it
-                // when its expected tokens per ms, from the measured acceptance and window costs, beat the MTP window's
-                bool from_sfx = false;
-                int sfx_match = 0;
-                if (o.suffix_draft > 0 && !first_window) {
-                    const int k = sfx.propose(S - 1, sbuf.data());
-                    sfx_match = sfx.last_match();
-                    if (k > 0 && (!use_mtp || sbuf[0] == drafts[0])) {
-                        const strata::spec::DraftPolicy::Pick pk = policy.choose(T, k, sfx_match);
-                        if (pk.lookup) { T = pk.t; from_sfx = true; }
-                    }
-                }
-                // --lookup-chain: what followed an earlier occurrence of the context + the MTP's drafts, after them
-                int chain_n = 0, cm = 0;
-                if (o.lookup_chain > 0 && !first_window && !from_sfx && T < S) {
-                    int csrc = -1;
-                    const int nt = chain_tail(sfx, drafts.data(), T - 1, ctail);
-                    chain_n = strata::spec::propose_from_sources(lookup_src, ctail.data(), nt, T - 1,
-                                                                 std::min(o.lookup_chain, S - T), o.lookup_chain_min,
-                                                                 cbuf.data(), &cm, &csrc);
-                    // the policy keeps the chained tokens that pay at this machine's measured window costs
-                    if (chain_n > 0 && !chain_fixed) {
-                        double p_mtp = 1.0;
-                        for (int i = 0; i < T - 1; ++i) p_mtp *= dprob[(size_t) i];
-                        chain_n = policy.chain(T, p_mtp, chain_n, cm);
-                    }
-                }
-                const int T_mtp = T;
-                T += chain_n;
-                const bool timed_round = !first_window;
+                // a repeat of earlier context (prompt lookup) where the MTP's own first guess agrees, or the lookup
+                // chained after the MTP's drafts: taken where their expected tokens per ms beat the MTP window's
+                wplan.pick_lookup(w, drafts.data());
+                wplan.pick_chain(w, drafts.data(), S);
+                const int T_mtp = w.T, T = w.rows();
                 const Clock::time_point round0 = Clock::now();
                 if (p + T > o.max_context) break;
                 window[0] = x;
                 for (int i = 1; i < T_mtp; ++i)
                     window[(size_t) i] = merged     ? (int32_t) ids[(size_t) (p + i)]
-                                         : from_sfx ? sbuf[(size_t) i - 1]
+                                         : w.lookup ? wplan.lookup_drafts()[i - 1]
                                                     : drafts[(size_t) i - 1];
-                for (int i = 0; i < chain_n; ++i) window[(size_t) (T_mtp + i)] = cbuf[(size_t) i];
+                std::copy_n(wplan.chain_drafts(), w.chain, window.begin() + T_mtp);
                 drive.d.layers = 0;
                 drive.d.experts = 0;
                 drive.d.failed = false;
@@ -15011,7 +14938,8 @@ int main(int argc, char** argv) {
                 // STRATA_SPEC_PROB: the MTP drafts' distributions q, judged by rejection sampling (core/spec_prob.hpp);
                 // a suffix window and the lookup chain's tail are point masses and keep the exact-match rule
                 // (never on a first window: a merged one holds prompt tokens, not drafts)
-                if (use_mtp && mtp.prob() && !from_sfx && !first_window && T_mtp > 1) ver.set_spec_q(mtp.spec_q(), T_mtp - 1);
+                if (use_mtp && mtp.prob() && !w.lookup && !first_window && T_mtp > 1)
+                    ver.set_spec_q(mtp.spec_q(), T_mtp - 1);
                 if (!ver.run(T, window.data(), p, win_pool_fn, win_pool_user, outv.data(), err) || drive.d.failed) {
                     std::printf("ERR %s\n", drive.d.failed && drive.d.fail ? drive.d.fail : err.c_str());
                     return 1;
@@ -15031,13 +14959,11 @@ int main(int argc, char** argv) {
                         if (f) std::fclose(f);
                     }
                 }
-                int a = merged ? T - 1 : 0;   // a merged window commits every row, as the prompt windows do
-                while (a < T - 1 && window[(size_t) a + 1] == outv[(size_t) a]) ++a;
-                if (from_sfx) { ++sfx_windows; sfx_drafts += T - 1; sfx_ok += a; }
-                if (chain_n > 0) { ++chain_windows; chain_drafts += chain_n; chain_ok += std::max(0, a - (T_mtp - 1)); }
-                if (!from_sfx && !first_window)
+                // a merged window commits every row, as the prompt windows do
+                const int a = merged ? T - 1 : wplan.accept(w, window.data(), outv.data());
+                if (!w.lookup && !first_window)
                     for (int d = 0; d < T_mtp - 1 && d < 8 && d <= a; ++d) { ++dp_tested[d]; dp_ok[d] += d < a; }
-                if (strata::core::MtpDrafter::top2_env() && !from_sfx && !first_window && a < T_mtp - 1 && a < 8) {
+                if (strata::core::MtpDrafter::top2_env() && !w.lookup && !first_window && a < T_mtp - 1 && a < 8) {
                     ++t2_rej[a];
                     if (mtp.top2(a) == outv[(size_t) a]) ++t2_hit[a];
                 }
@@ -15079,8 +15005,7 @@ int main(int argc, char** argv) {
                     std::printf("T %d\n", (int) outv[(size_t) i]);
                     strata::core::progress_beat();
                     ++produced_n;
-                    if (sfx_on) sfx.append(outv[(size_t) i]);
-                    if (o.lookup_chain > 0) extra_sources_append(&outv[(size_t) i], 1);
+                    wplan.append(outv[(size_t) i]);
                     eos = std::find(o.eos_ids.begin(), o.eos_ids.end(), (int64_t) outv[(size_t) i]) != o.eos_ids.end();
                 }
                 std::fflush(stdout);
@@ -15137,13 +15062,7 @@ int main(int argc, char** argv) {
                     std::printf("ERR %s\n", err.c_str());
                     return 1;
                 }
-                if (spec_cost && use_mtp && timed_round && !from_sfx) policy.observe_probs(dwin_s.data(), T_mtp - 1, a);
-                if (timed_round && !eos && chain_n == 0)
-                    policy.observe(from_sfx, T, a, sfx_match,
-                                   std::chrono::duration<double, std::milli>(Clock::now() - round0).count());
-                else if (timed_round && !eos)   // a chained window: its MTP part, its chain, its cost
-                    policy.observe_chain(T_mtp, chain_n, a, cm,
-                                         std::chrono::duration<double, std::milli>(Clock::now() - round0).count());
+                wplan.observe(w, a, std::chrono::duration<double, std::milli>(Clock::now() - round0).count(), eos);
                 if (eos) { finish = "stop"; break; }
                 if (input.is_stop_requested()) { finish = "cancel"; break; }
                 x = outv[(size_t) a];
@@ -15324,8 +15243,9 @@ int main(int argc, char** argv) {
             //      every stage - not the CPU share's, the stage helper's or a --peer-device peer's)
             char chain_txt[128] = "";
             if (o.lookup_chain > 0)
-                std::snprintf(chain_txt, sizeof(chain_txt), " %lld %lld %lld %lld %lld", (long long) chain_ok,
-                              (long long) chain_drafts, (long long) sfx_ok, (long long) sfx_drafts, (long long) dec_windows);
+                std::snprintf(chain_txt, sizeof(chain_txt), " %lld %lld %lld %lld %lld",
+                              (long long) wplan.chained.ok, (long long) wplan.chained.drafts,
+                              (long long) wplan.lookup.ok, (long long) wplan.lookup.drafts, (long long) dec_windows);
             if (yielded_at >= 0) std::printf("YIELDED %d %lld\n", yielded_slot, (long long) yielded_at);
             std::printf("DONE %lld %lld %.1f %.1f %s %lld %lld %lld %lld %lld %lld %lld %.1f %lld %lld%s chunk=%lld "
                         "experts_streamed=%lld\n",
@@ -15597,12 +15517,14 @@ int main(int argc, char** argv) {
                              (unsigned long long) look, (double) miss * 4224.0 / 1048576.0,
                              over ? " - OVERFLOW (too few resident cells)" : "");
             }
-            if (sfx_windows > 0)
+            if (wplan.lookup.windows > 0)
                 std::fprintf(stderr, "strata serve: suffix drafts: %lld windows, %lld of %lld drafts accepted\n",
-                             (long long) sfx_windows, (long long) sfx_ok, (long long) sfx_drafts);
+                             (long long) wplan.lookup.windows, (long long) wplan.lookup.ok,
+                             (long long) wplan.lookup.drafts);
             if (o.lookup_chain > 0)
                 std::fprintf(stderr, "strata serve: lookup chain: %lld of %lld windows, %lld of %lld chained drafts accepted\n",
-                             (long long) chain_windows, (long long) dec_windows, (long long) chain_ok, (long long) chain_drafts);
+                             (long long) wplan.chained.windows, (long long) dec_windows,
+                             (long long) wplan.chained.ok, (long long) wplan.chained.drafts);
             if (std::getenv("STRATA_SPEC_DEPTH") != nullptr)
                 std::fprintf(stderr, "strata serve: spec depth: accepted/tested %lld/%lld %lld/%lld %lld/%lld %lld/%lld %lld/%lld\n",
                              (long long) dp_ok[0], (long long) dp_tested[0], (long long) dp_ok[1], (long long) dp_tested[1],
@@ -16348,10 +16270,6 @@ int main(int argc, char** argv) {
         }
         // STRATA_SPEC_TRACE=<file> (bench only, off by default): one line per round, "T a sfx ms p1 p2 ..." (window rows, drafts accepted,
         // lookup window, round ms, the MTP draft probabilities), for offline window-length policy studies
-        // STRATA_SPEC_COST=1 (A/B arm, bench): the MTP window by expected tokens per ms at this machine's measured row costs
-        // (DraftPolicy::keep_draft, step by step) instead of "draft probability >= --spec-min-p"
-        const bool spec_cost = [] { const char* v = std::getenv("STRATA_SPEC_COST"); return v != nullptr && v[0] == '1'; }();
-        std::vector<float> dwin((size_t) o.spec, 0.0f);   // the draft probabilities this round's window was chosen from
         std::FILE* spec_trace = nullptr;
         if (const char* tf = std::getenv("STRATA_SPEC_TRACE"); tf != nullptr && tf[0] != '\0') spec_trace = std::fopen(tf, "w");
         std::vector<double> t_cycle_ms((size_t) o.spec + 1, 0.0);
@@ -16376,11 +16294,10 @@ int main(int argc, char** argv) {
         int64_t rounds = 0, drafts_total = 0, drafts_ok = 0, corrupt_counter = 0;
         const int S_mtp = o.mtp_max_t > 0 ? std::min(o.mtp_max_t, o.spec) : o.spec;
         if (use_mtp && S_mtp < o.spec) mtp.set_max_drafts(S_mtp - 1);
-        strata::spec::SuffixDrafter sfx(std::max(1, o.suffix_draft), 64, (size_t) o.max_context + 4096);
-        strata::spec::DraftPolicy policy(o.spec);   // MTP or lookup window (see draft_policy.hpp)
-        strata::spec::DraftPolicy::ChainState chain_st;
-        int chain_rows = 1;   // STRATA_SPEC_COST: the window the cost-aware rule kept in the MTP chain just drafted
-        if (const char* tab = std::getenv("STRATA_SPEC_COST_TABLE"); spec_cost && tab != nullptr && tab[0] != '\0') {
+        strata::spec::WindowPlanner wplan(o.spec, S_mtp, o.suffix_draft, o.lookup_chain, o.lookup_chain_min,
+                                          o.max_context);
+        if (const char* tab = std::getenv("STRATA_SPEC_COST_TABLE");
+            wplan.cost_aware && tab != nullptr && tab[0] != '\0') {
             // "T1,T2,..;T1,T2,..;T1,..": the row costs of the 3 context buckets (< 6K, < 24K, longer); one list seeds the first
             double ms[strata::spec::DraftPolicy::kMaxT] = {};
             int n = 0, bucket = 0;
@@ -16390,33 +16307,15 @@ int main(int argc, char** argv) {
                 const bool end_list = *q == ';' || *q == '\0';
                 if (*q != '\0') ++q;
                 if (end_list) {
-                    policy.seed_costs(ms, n, 6.0, bucket++);
+                    wplan.policy.seed_costs(ms, n, 6.0, bucket++);
                     n = 0;
                 }
             }
         }
-        policy.set_robust(spec_cost);
-        if (spec_cost && use_mtp)
-            mtp.set_chain_rule([&](int idx, float pj) {
-                const bool k = policy.keep_draft(chain_st, idx, pj, S_mtp);
-                chain_rows = chain_st.best_rows;
-                return k;
-            });
-        std::vector<int32_t> sbuf((size_t) o.spec, 0);
-        int64_t sfx_windows = 0, sfx_drafts = 0, sfx_ok = 0;
-        int64_t chain_windows = 0, chain_drafts = 0, chain_ok = 0;   // --lookup-chain's own counts
-        std::vector<int32_t> cbuf((size_t) o.spec, 0), ctail;
-        strata::spec::PromptLookupSource lookup_src(sfx);
-        const bool sfx_on = o.suffix_draft > 0 || o.lookup_chain > 0;
-        if (sfx_on) {
-            for (int64_t t : o.tokens) sfx.append((int32_t) t);
-            for (int64_t t : produced) sfx.append((int32_t) t);
-        }
-        if (o.lookup_chain > 0) {
-            extra_sources_reset();
-            for (int64_t t : o.tokens) { const int32_t t32 = (int32_t) t; extra_sources_append(&t32, 1); }
-            for (int64_t t : produced) { const int32_t t32 = (int32_t) t; extra_sources_append(&t32, 1); }
-        }
+        if (wplan.cost_aware && use_mtp)
+            mtp.set_chain_rule([&](int idx, float pj) { return wplan.keep_draft(idx, pj); });
+        wplan.start(o.tokens);
+        for (int64_t t : produced) wplan.append((int32_t) t);
         const double pool_ms0 = drive.cpu_ms;
         const int64_t misses0 = drive.d.multi_misses, entries0 = drive.d.multi_entries;
         // STRATA_SPEC_WATCH=<seconds> (diagnostics, off by default): the serve watchdog for this loop.  A run whose verify
@@ -16484,55 +16383,24 @@ int main(int argc, char** argv) {
             const Clock::time_point t0 = Clock::now();
         retry_round:
             strata::core::progress_at("spec loop: choosing the window", (int64_t) produced.size());
-            int T = S_mtp;
-            policy.set_context(p);
-            if (use_mtp && spec_cost && !first_window) {
-                T = std::clamp(chain_rows, 1, S_mtp);
-            } else if (use_mtp && o.spec_min_p > 0.0) {
-                T = 1;
-                while (T < S_mtp && dprob[(size_t) T - 1] >= (float) o.spec_min_p) ++T;
-            }
+            strata::spec::Window w = wplan.begin(p, S_mtp, use_mtp, dprob.data(), o.spec_min_p, first_window);
 #if defined(STRATA_HAVE_DFLASH2)
             if (use_df2 && o.draft_conf > 0.0) {   // DFlash2's own confidence: the chance that every draft so far holds, from the selector's probabilities
-                T = 1;
+                w.T = 1;
                 double chain = 1.0;
-                while (T < S_mtp && (chain *= (double) dprob[(size_t) T - 1]) >= o.draft_conf) ++T;
+                while (w.T < S_mtp && (chain *= (double) dprob[(size_t) w.T - 1]) >= o.draft_conf) ++w.T;
             }
 #endif
-            if (first_window) T = 1;
-            std::copy(dprob.begin(), dprob.begin() + (std::ptrdiff_t) o.spec, dwin.begin());
-            if (!t_cycle.empty() && !first_window) T = t_cycle[(size_t) (rounds % (int64_t) t_cycle.size())];
-            bool from_sfx = false;
-            int sfx_match = 0;
-            if (o.suffix_draft > 0 && !first_window) {
-                const int k = sfx.propose(o.spec - 1, sbuf.data());
-                sfx_match = sfx.last_match();
-                if (k > 0 && (!use_mtp || sbuf[0] == drafts[0])) {
-                    const strata::spec::DraftPolicy::Pick pk = policy.choose(T, k, sfx_match);
-                    if (pk.lookup) { T = pk.t; from_sfx = true; }
-                }
-            }
+            if (first_window) w.T = 1;
+            if (!t_cycle.empty() && !first_window) w.T = t_cycle[(size_t) (rounds % (int64_t) t_cycle.size())];
+            wplan.pick_lookup(w, drafts.data());
             // The window's rows sit at p .. p + T - 1, and past the context there is no cell to verify them in: near
             // its end the window takes only the rows that fit (the admission checked the prompt and max_new, which a
             // full window can overrun)
             const int room = (int) std::min<int64_t>(win_cap, o.max_context - p);
-            T = std::min(T, room);
-            // --lookup-chain: what followed an earlier occurrence of the context + the MTP's drafts, after them
-            int chain_n = 0, cm = 0;
-            if (o.lookup_chain > 0 && use_mtp && !first_window && !from_sfx && T < room) {
-                int csrc = -1;
-                const int nt = chain_tail(sfx, drafts.data(), T - 1, ctail);
-                chain_n = strata::spec::propose_from_sources(lookup_src, ctail.data(), nt, T - 1,
-                                                             std::min(o.lookup_chain, room - T), o.lookup_chain_min,
-                                                             cbuf.data(), &cm, &csrc);
-                if (chain_n > 0 && std::getenv("STRATA_LOOKUP_CHAIN_FIXED") == nullptr) {
-                    double p_mtp = 1.0;
-                    for (int i = 0; i < T - 1; ++i) p_mtp *= dprob[(size_t) i];
-                    chain_n = policy.chain(T, p_mtp, chain_n, cm);
-                }
-            }
-            const int T_mtp = T;
-            T += chain_n;
+            w.T = std::min(w.T, room);
+            if (use_mtp) wplan.pick_chain(w, drafts.data(), room);
+            const int T_mtp = w.T, T = w.rows();
             const bool timed_round = !first_window;
             ++window_hist[(size_t) T];
             if (p + T > o.max_context) {
@@ -16542,9 +16410,9 @@ int main(int argc, char** argv) {
             window[0] = x;
             for (int i = 1; i < T; ++i) {
                 const size_t at = produced.size() - 1 + (size_t) i;
-                int32_t d = from_sfx ? sbuf[(size_t) i - 1] : use_mtp ? drafts[(size_t) i - 1]
+                int32_t d = w.lookup ? wplan.lookup_drafts()[i - 1] : use_mtp ? drafts[(size_t) i - 1]
                                                     : at < oracle.size() ? (int32_t) oracle[at] : 0;
-                if (i >= T_mtp) d = cbuf[(size_t) (i - T_mtp)];
+                if (i >= T_mtp) d = wplan.chain_drafts()[i - T_mtp];
                 if (o.spec_corrupt > 0 && (++corrupt_counter % o.spec_corrupt) == 0) d = (d + 1) % (int32_t) n_vocab;
                 window[(size_t) i] = d;
             }
@@ -16556,7 +16424,8 @@ int main(int argc, char** argv) {
             // (STRATA_ADAPT_NOWAIT=1: 0.1.37's non-blocking query, the A/B)
             if (adapt_nowait()) apply_pending(false);
                 else if (pending.empty() || ++pending_age >= adapt_lag()) apply_pending(true);
-            if (use_mtp && mtp.prob() && !from_sfx && T_mtp > 1 && o.spec_corrupt <= 0) ver.set_spec_q(mtp.spec_q(), T_mtp - 1);
+            if (use_mtp && mtp.prob() && !w.lookup && T_mtp > 1 && o.spec_corrupt <= 0)
+                ver.set_spec_q(mtp.spec_q(), T_mtp - 1);
             if (!ver.run(T, window.data(), p, &drive_pool_multi, &drive, outv.data(), err)) {
                 // The graph of a window size is captured the first time it is used, and the draft source took VRAM: when the capture runs
                 // out of memory the window gets one row narrower (the widths below it are already captured) instead of the run failing.
@@ -16594,8 +16463,7 @@ int main(int argc, char** argv) {
                     outv[(size_t) i] = (int32_t) follow[k0 + (size_t) i];
                 }
             }
-            int a = 0;
-            while (a < T - 1 && window[(size_t) a + 1] == outv[(size_t) a]) ++a;
+            const int a = wplan.accept(w, window.data(), outv.data());
             if (first_window) {
                 first_window = false;
                 ttft_ms = std::chrono::duration<double, std::milli>(Clock::now() - t_start).count();
@@ -16626,13 +16494,10 @@ int main(int argc, char** argv) {
             drafts_total += T - 1;
             drafts_ok += a;
             ++accepted_hist[(size_t) a];
-            if (from_sfx) { ++sfx_windows; sfx_drafts += T - 1; sfx_ok += a; }
-            if (chain_n > 0) { ++chain_windows; chain_drafts += chain_n; chain_ok += std::max(0, a - (T_mtp - 1)); }
             bool eos = false;
             for (int i = 0; i <= a && (int64_t) produced.size() < max_new && !eos; ++i) {
                 produced.push_back(outv[(size_t) i]);
-                if (sfx_on) sfx.append(outv[(size_t) i]);
-                if (o.lookup_chain > 0) extra_sources_append(&outv[(size_t) i], 1);
+                wplan.append(outv[(size_t) i]);
                 eos = o.stop_eos && std::find(o.eos_ids.begin(), o.eos_ids.end(), (int64_t) outv[(size_t) i]) != o.eos_ids.end();
                 if (!follow.empty()) { follow_differ += fdiff[(size_t) i]; ++follow_emitted; }
             }
@@ -16653,17 +16518,16 @@ int main(int argc, char** argv) {
             const double round_ms = std::chrono::duration<double, std::milli>(Clock::now() - t0).count();
             total_ms += round_ms;
             if (spec_trace != nullptr && timed_round) {
-                std::fprintf(spec_trace, "%d %d %d %.3f", T, a, from_sfx ? 1 : 0, round_ms);
-                for (int i = 0; i < o.spec - 1; ++i) std::fprintf(spec_trace, " %.4f", (double) dwin[(size_t) i]);
+                std::fprintf(spec_trace, "%d %d %d %.3f", T, a, w.lookup ? 1 : 0, round_ms);
+                for (int i = 0; i < o.spec - 1; ++i)
+                    std::fprintf(spec_trace, " %.4f", (double) wplan.window_probs()[i]);
                 std::fprintf(spec_trace, "\n");
             }
             if (!t_cycle.empty() && timed_round && T <= o.spec && t_cycle_seen[(size_t) T]++ > 0) {
                 t_cycle_ms[(size_t) T] += round_ms;
                 ++t_cycle_n[(size_t) T];
             }
-            if (spec_cost && use_mtp && timed_round && !from_sfx) policy.observe_probs(dwin.data(), T_mtp - 1, a);
-            if (timed_round && chain_n == 0) policy.observe(from_sfx, T, a, sfx_match, round_ms);
-            else if (timed_round) policy.observe_chain(T_mtp, chain_n, a, cm, round_ms);
+            wplan.observe(w, a, round_ms, false);
             if (rounds % 64 == 0)
                 std::fprintf(stderr, "strata generate: position %lld, %lld tokens, %lld rounds\n", (long long) p,
                              (long long) produced.size(), (long long) rounds);
@@ -16688,12 +16552,13 @@ int main(int argc, char** argv) {
             std::printf("  (min draft probability %.2f)\n", o.spec_min_p);
         }
         if (o.suffix_draft > 0)
-            std::printf("%-24s %lld windows, drafts accepted %lld of %lld\n", "suffix drafts", (long long) sfx_windows,
-                        (long long) sfx_ok, (long long) sfx_drafts);
+            std::printf("%-24s %lld windows, drafts accepted %lld of %lld\n", "suffix drafts",
+                        (long long) wplan.lookup.windows, (long long) wplan.lookup.ok, (long long) wplan.lookup.drafts);
         if (o.lookup_chain > 0)
             std::printf("%-24s %lld windows, chained drafts accepted %lld of %lld\n", "lookup chain",
-                        (long long) chain_windows, (long long) chain_ok, (long long) chain_drafts);
-        if (spec_cost) std::printf("%-24s %s\n", "spec cost table", policy.cost_table_text().c_str());
+                        (long long) wplan.chained.windows, (long long) wplan.chained.ok,
+                        (long long) wplan.chained.drafts);
+        if (wplan.cost_aware) std::printf("%-24s %s\n", "spec cost table", wplan.policy.cost_table_text().c_str());
         if (!t_cycle.empty()) {
             std::printf("%-24s", "window cost (ms/round)");
             for (size_t i = 1; i < t_cycle_ms.size(); ++i)

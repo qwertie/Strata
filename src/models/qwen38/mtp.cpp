@@ -101,6 +101,12 @@ bool mapped(size_t bytes, void** h, void** d) {
 
 strata::kernels::QsaShapes shapes_of(const ModelGeometry& g) { return qsa_shapes(g); }
 
+/// Puts `what` and the CUDA runtime's last error into `err`; returns false, for `return report_cuda_error(...)`.
+bool report_cuda_error(std::string& err, const char* what) {
+    err = std::string(what) + cudaGetErrorString(cudaGetLastError());
+    return false;
+}
+
 // 64-bit seek/tell on a `FILE*`: `fseek`/`ftell` take a 32-bit `long` on Windows and would wrap past 2 GiB.
 #if defined(_WIN32)
 #define STRATA_FILE_SEEK64(f, o, w) _fseeki64((f), (long long) (o), (w))
@@ -591,10 +597,8 @@ bool MtpDrafter::setup_coupled(std::string& err) {
         cudaMemcpy(dinv_, inv.data(), inv.size() * sizeof(int32_t), cudaMemcpyHostToDevice);
         vram_ += inv.size() * sizeof(int32_t);
     }
-    if (cudaDeviceSynchronize() != cudaSuccess) {
-        err = std::string("mtp: coupled setup: ") + cudaGetErrorString(cudaGetLastError());
-        return false;
-    }
+    if (cudaDeviceSynchronize() != cudaSuccess)
+        return report_cuda_error(err, "mtp: coupled setup: ");
     coupled_ok_ = true;
     if (spec_prob_env())
         std::fprintf(stderr, "strata mtp: probabilistic draft acceptance on (STRATA_SPEC_PROB): sampled requests draft by "
@@ -1476,20 +1480,16 @@ bool MtpDrafter::prefill(const float* R_rows, const int32_t* next_tokens, int64_
                 cudaMemcpyAsync(pos_, d_ps + c * NHp, (size_t) (T * NHp) * 4, cudaMemcpyDeviceToDevice, cs_) != cudaSuccess ||
                 cudaMemcpyAsync(Rin_, R_rows + (size_t) c * HCN, (size_t) T * HCN * sizeof(float), cudaMemcpyDeviceToDevice,
                                 cs_) != cudaSuccess ||
-                cudaGraphLaunch(prefill_dev_exec_[T], cs_) != cudaSuccess) {
-                err = std::string("mtp prefill: ") + cudaGetErrorString(cudaGetLastError());
-                return false;
-            }
+                cudaGraphLaunch(prefill_dev_exec_[T], cs_) != cudaSuccess)
+                return report_cuda_error(err, "mtp prefill: ");
         }
         if (!sync) {   // the caller orders on stream(); the records are staged (a pageable copy returns once taken)
             (void) cudaStreamQuery(cs_);
             ms_prefill += ms_since(t0);
             return true;
         }
-        if (cudaStreamSynchronize(cs_) != cudaSuccess) {
-            err = std::string("mtp prefill: ") + cudaGetErrorString(cudaGetLastError());
-            return false;
-        }
+        if (cudaStreamSynchronize(cs_) != cudaSuccess)
+            return report_cuda_error(err, "mtp prefill: ");
         ms_prefill += ms_since(t0);
         return true;
     }
@@ -1497,22 +1497,12 @@ bool MtpDrafter::prefill(const float* R_rows, const int32_t* next_tokens, int64_
         const int T = (int) std::min<int64_t>(max_t_, n - c);
         if (cell0 + c + T <= first_needed) continue;
         if (!capture_prefill(T, err)) return false;
-        for (int t = 0; t < T; ++t) {
-            const int64_t cell = cell0 + c + t;
-            h_tok_[t] = next_tokens[c + t];
-            h_step_[t * 4 + 0] = (int32_t) cell;
-            h_step_[t * 4 + 1] = (int32_t) (cell + 1);
-            h_step_[t * 4 + 2] = (int32_t) ((cell + 1) / 4);
-            h_step_[t * 4 + 3] = (int32_t) (cell + 1);
-            for (int64_t h = 0; h < g_->n_head; ++h) h_pos_[t * g_->n_head + h] = (int32_t) cell;
-        }
+        put_rows(next_tokens + c, T, cell0 + c);
         if (cudaMemcpyAsync(Rin_, R_rows + (size_t) c * HCN, (size_t) T * HCN * sizeof(float), cudaMemcpyDeviceToDevice,
                             cs_) != cudaSuccess ||
             cudaGraphLaunch(prefill_exec_[T], cs_) != cudaSuccess ||
-            cudaStreamSynchronize(cs_) != cudaSuccess) {
-            err = std::string("mtp prefill: ") + cudaGetErrorString(cudaGetLastError());
-            return false;
-        }
+            cudaStreamSynchronize(cs_) != cudaSuccess)
+            return report_cuda_error(err, "mtp prefill: ");
     }
     ms_prefill += ms_since(t0);
     return true;
@@ -1581,21 +1571,10 @@ bool MtpDrafter::draft(int T, const int32_t* tokens, int64_t p, int a, int32_t* 
     for (int j = 1; j < max_steps; ++j)
         if (!capture_step(j, cp, err)) return false;
     const Clock::time_point t0 = Clock::now();
-    const int64_t NH = g_->n_head;
-    auto put = [&](int row, int64_t cell) {
-        h_step_[row * 4 + 0] = (int32_t) cell;
-        h_step_[row * 4 + 1] = (int32_t) (cell + 1);
-        h_step_[row * 4 + 2] = (int32_t) ((cell + 1) / 4);
-        h_step_[row * 4 + 3] = (int32_t) (cell + 1);
-        for (int64_t h = 0; h < NH; ++h) h_pos_[row * NH + h] = (int32_t) cell;
-    };
-    for (int t = 0; t < T; ++t) {
-        h_tok_[t] = tokens[t];
-        put(t, p + t);
-    }
-    put(2 * max_t_ - 1, coupled_draft_cell(p, a, 0));   // p + a: draft 0's cell
+    put_rows(tokens, T, p);
+    put_cell(2 * max_t_ - 1, coupled_draft_cell(p, a, 0));   // p + a: draft 0's cell
     for (int j = 1; j < max_steps; ++j)
-        put(max_t_ + j - 1, coupled_draft_cell(p, a, j));
+        put_cell(max_t_ + j - 1, coupled_draft_cell(p, a, j));
     for (int j = 0; j < max_steps; ++j) ((volatile int32_t*) h_out_)[j] = -1;
     h_row_[0] = a;
     h_row_[1] = 0;
@@ -1619,41 +1598,41 @@ bool MtpDrafter::draft(int T, const int32_t* tokens, int64_t p, int a, int32_t* 
         pss->ple.table->prefetch_rows(rows16);
     };
 
+    auto wait_step = [&](int j) {
+        uint32_t spins = 0;
+        while (((volatile int32_t*) h_out_)[j] < 0) {
+#if defined(_WIN32) || defined(__x86_64__)
+            _mm_pause();
+#endif
+            if ((++spins & 1023u) == 0 && cudaStreamQuery(cs_) != cudaErrorNotReady) break;
+        }
+    };
+    auto take = [&](int j) {   // draft j and its probability, once the step wrote them
+        drafts[j] = ((volatile int32_t*) h_out_)[j];
+        const float pj = ((volatile float*) h_prob_)[j];
+        if (probs) probs[j] = pj;
+        return pj;
+    };
     int n = 0;
     if (min_p <= 0.0f && !chain_rule_ && max_steps > 0) {
-        if (cudaGraphLaunch(cp ? round_exec_c_[T] : round_exec_[T], cs_) != cudaSuccess) {
-            err = std::string("mtp draft: ") + cudaGetErrorString(cudaGetLastError());
-            return false;
-        }
+        if (cudaGraphLaunch(cp ? round_exec_c_[T] : round_exec_[T], cs_) != cudaSuccess)
+            return report_cuda_error(err, "mtp draft: ");
         for (int j = 1; j < max_steps; ++j) {
-            if (cudaGraphLaunch(cp ? step_exec_c_[j] : step_exec_[j], cs_) != cudaSuccess) {
-                err = std::string("mtp draft step: ") + cudaGetErrorString(cudaGetLastError());
-                return false;
-            }
+            if (cudaGraphLaunch(cp ? step_exec_c_[j] : step_exec_[j], cs_) != cudaSuccess)
+                return report_cuda_error(err, "mtp draft step: ");
         }
         (void) cudaStreamQuery(cs_);
         prefetch_ple(tokens[a]);
         progress_at("mtp draft: waiting for the GPU");   // #2065
         for (int j = 0; j + 1 < max_steps; ++j) {
-            uint32_t spins = 0;
-            while (((volatile int32_t*) h_out_)[j] < 0) {
-#if defined(_WIN32) || defined(__x86_64__)
-                _mm_pause();
-#endif
-                if ((++spins & 1023u) == 0 && cudaStreamQuery(cs_) != cudaErrorNotReady) break;
-            }
-            drafts[j] = ((volatile int32_t*) h_out_)[j];
-            if (probs) probs[j] = ((volatile float*) h_prob_)[j];
+            wait_step(j);
+            take(j);
             prefetch_ple(drafts[j]);
         }
-        if (cudaStreamSynchronize(cs_) != cudaSuccess) {
-            err = std::string("mtp draft: ") + cudaGetErrorString(cudaGetLastError());
-            return false;
-        }
-        const int last = max_steps - 1;
-        drafts[last] = ((volatile int32_t*) h_out_)[last];
-        if (probs) probs[last] = ((volatile float*) h_prob_)[last];
-        prefetch_ple(drafts[last]);
+        if (cudaStreamSynchronize(cs_) != cudaSuccess)
+            return report_cuda_error(err, "mtp draft: ");
+        take(max_steps - 1);
+        prefetch_ple(drafts[max_steps - 1]);
         n = max_steps;
     } else if (max_steps > 0) {
         g_dt.init();
@@ -1661,38 +1640,23 @@ bool MtpDrafter::draft(int T, const int32_t* tokens, int64_t p, int a, int32_t* 
         if (dt) g_dt.pre_ms += hms(t0);
         if (dt) cudaEventRecord(g_dt.eb[0], cs_);
         Clock::time_point tl = Clock::now();
-        if (cudaGraphLaunch(cp ? round_exec_c_[T] : round_exec_[T], cs_) != cudaSuccess) {
-            err = std::string("mtp draft: ") + cudaGetErrorString(cudaGetLastError());
-            return false;
-        }
+        if (cudaGraphLaunch(cp ? round_exec_c_[T] : round_exec_[T], cs_) != cudaSuccess)
+            return report_cuda_error(err, "mtp draft: ");
         if (dt) g_dt.launch_ms += hms(tl);
         if (dt) cudaEventRecord(g_dt.ea[0], cs_);
         (void) cudaStreamQuery(cs_);
         prefetch_ple(tokens[a]);
         progress_at("mtp draft: waiting for the GPU");   // #2065: a stall here read as "decode", the verify window before it
-        auto wait_step = [&](int j) {
-            uint32_t spins = 0;
-            while (((volatile int32_t*) h_out_)[j] < 0) {
-#if defined(_WIN32) || defined(__x86_64__)
-                _mm_pause();
-#endif
-                if ((++spins & 1023u) == 0 && cudaStreamQuery(cs_) != cudaErrorNotReady) break;
-            }
-        };
         tl = Clock::now();
         wait_step(0);
         if (dt) g_dt.wait0_ms += hms(tl);
-        drafts[0] = ((volatile int32_t*) h_out_)[0];
-        float pj = ((volatile float*) h_prob_)[0];
-        if (probs) probs[0] = pj;
+        float pj = take(0);
         n = 1;
         for (int j = 1; j < max_steps && (chain_rule_ ? chain_rule_(j - 1, pj) : pj >= min_p); ++j) {
             if (dt) cudaEventRecord(g_dt.eb[j], cs_);
             tl = Clock::now();
-            if (cudaGraphLaunch(cp ? step_exec_c_[j] : step_exec_[j], cs_) != cudaSuccess) {
-                err = std::string("mtp draft step: ") + cudaGetErrorString(cudaGetLastError());
-                return false;
-            }
+            if (cudaGraphLaunch(cp ? step_exec_c_[j] : step_exec_[j], cs_) != cudaSuccess)
+                return report_cuda_error(err, "mtp draft step: ");
             if (dt) g_dt.launch_ms += hms(tl);
             if (dt) cudaEventRecord(g_dt.ea[j], cs_);
             (void) cudaStreamQuery(cs_);
@@ -1700,18 +1664,14 @@ bool MtpDrafter::draft(int T, const int32_t* tokens, int64_t p, int a, int32_t* 
             tl = Clock::now();
             wait_step(j);
             if (dt) g_dt.waitj_ms += hms(tl);
-            drafts[j] = ((volatile int32_t*) h_out_)[j];
-            pj = ((volatile float*) h_prob_)[j];
-            if (probs) probs[j] = pj;
+            pj = take(j);
             ++n;
         }
         if (chain_rule_ && n >= max_steps) (void) chain_rule_(n - 1, pj);   // the last step of a full chain
         prefetch_ple(drafts[n - 1]);
         const Clock::time_point t_pre_sync = Clock::now();
-        if (cudaStreamSynchronize(cs_) != cudaSuccess) {
-            err = std::string("mtp draft: ") + cudaGetErrorString(cudaGetLastError());
-            return false;
-        }
+        if (cudaStreamSynchronize(cs_) != cudaSuccess)
+            return report_cuda_error(err, "mtp draft: ");
         if (dt) {
             float ms = 0;
             double r = 0, s = 0, gp = 0;
@@ -1736,6 +1696,21 @@ bool MtpDrafter::draft(int T, const int32_t* tokens, int64_t p, int a, int32_t* 
     ms_draft += ms_since(t0);
     ++rounds;
     return true;
+}
+
+void MtpDrafter::put_rows(const int32_t* tokens, int T, int64_t cell0) {
+    for (int t = 0; t < T; ++t) {
+        h_tok_[t] = tokens[t];
+        put_cell(t, cell0 + t);
+    }
+}
+
+void MtpDrafter::put_cell(int row, int64_t cell) {
+    h_step_[row * 4 + 0] = (int32_t) cell;
+    h_step_[row * 4 + 1] = (int32_t) (cell + 1);
+    h_step_[row * 4 + 2] = (int32_t) ((cell + 1) / 4);
+    h_step_[row * 4 + 3] = (int32_t) (cell + 1);
+    for (int64_t h = 0; h < g_->n_head; ++h) h_pos_[row * g_->n_head + h] = (int32_t) cell;
 }
 
 bool MtpDrafter::stage_source_R(int T, std::string& err) {
@@ -1783,20 +1758,9 @@ bool MtpDrafter::chain_launch(int T, const int32_t* tokens, int64_t p, int a, co
     for (int j = 1; j < n_out; ++j)
         if (step_exec_[j] == nullptr) { err = "mtp: chain graphs not prepared"; return false; }
     const Clock::time_point t0 = Clock::now();
-    const int64_t NH = g_->n_head;
-    auto put = [&](int row, int64_t cell) {
-        h_step_[row * 4 + 0] = (int32_t) cell;
-        h_step_[row * 4 + 1] = (int32_t) (cell + 1);
-        h_step_[row * 4 + 2] = (int32_t) ((cell + 1) / 4);
-        h_step_[row * 4 + 3] = (int32_t) (cell + 1);
-        for (int64_t h = 0; h < NH; ++h) h_pos_[row * NH + h] = (int32_t) cell;
-    };
-    for (int t = 0; t < T; ++t) {
-        h_tok_[t] = tokens[t];
-        put(t, p + t);
-    }
-    put(2 * max_t_ - 1, p + a);                                      // output 0's cell
-    for (int j = 1; j < n_out; ++j) put(max_t_ + j - 1, p + a + j);  // every step's cell, staged at once
+    put_rows(tokens, T, p);
+    put_cell(2 * max_t_ - 1, p + a);                                      // output 0's cell
+    for (int j = 1; j < n_out; ++j) put_cell(max_t_ + j - 1, p + a + j);  // every step's cell, staged at once
     for (int j = 0; j < 16; ++j) h_force_[j] = j < n_force ? force[j] : -1;
     h_row_[0] = a;
     h_row_[1] = 0;
@@ -1809,10 +1773,8 @@ bool MtpDrafter::chain_launch(int T, const int32_t* tokens, int64_t p, int a, co
         ok = cudaGraphLaunch(step_exec_[j], cs_) == cudaSuccess;
         if (ok && j < chain_early_) ok = cudaEventRecord(ev_step_[j], cs_) == cudaSuccess;
     }
-    if (!ok || cudaEventRecord(ev_chain_, cs_) != cudaSuccess) {
-        err = std::string("mtp chain: ") + cudaGetErrorString(cudaGetLastError());
-        return false;
-    }
+    if (!ok || cudaEventRecord(ev_chain_, cs_) != cudaSuccess)
+        return report_cuda_error(err, "mtp chain: ");
     (void) cudaStreamQuery(cs_);   // WDDM: submit now
     steps_seen_ = 0;
     chain_live_ = true;
