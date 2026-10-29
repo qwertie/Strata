@@ -704,7 +704,7 @@ if(STRATA_ENABLE_CUDA OR STRATA_ENABLE_HIP)
       add_executable(conversation_transfer_test src/models/qwen38/conversation_validation_test.cpp)
       target_compile_definitions(conversation_transfer_test PRIVATE CONVERSATION_TEST_TRANSFERS)
       target_link_options(conversation_transfer_test PRIVATE
-        -Wl,--wrap=cudaMemcpy -Wl,--wrap=cudaMemcpyAsync -Wl,--wrap=cudaStreamSynchronize
+        -Wl,--wrap=cudaMemcpy -Wl,--wrap=cudaMemcpyAsync -Wl,--wrap=cudaMemcpy2DAsync -Wl,--wrap=cudaStreamSynchronize
         -Wl,--wrap=cudaGetDevice -Wl,--wrap=cudaStreamCreateWithFlags
         -Wl,--wrap=cudaDeviceSynchronize -Wl,--wrap=cudaGetLastError)
       target_link_libraries(conversation_transfer_test PRIVATE strata_engine)

@@ -1,6 +1,7 @@
 #include "strata/models/qwen38/conversation_snapshot.hpp"
 #include "conversation_checked.hpp"
 #include "conversation_copy.hpp"
+#include "strata/common/state/state_layout.hpp"
 
 #include <algorithm>
 #include <array>
@@ -30,19 +31,80 @@ bool sync(std::string& error) {
     return false;
 }
 
-bool copy(void* dst, const void* src, size_t bytes, std::string& error, bool queued = false) {
-    if (!bytes) return true;
-    if (!dst || !src) return fail(error, "missing running-state buffer");
-    const auto status = conversation_detail::copy_nonblocking(dst, src, bytes, queued);
-    if (status == cudaSuccess) return true;
-    error = std::string("conversation snapshot running-state copy: ") + cudaGetErrorString(status);
-    return false;
+/// Copies the running state from one place to another through the private copy stream (conversation_copy.hpp),
+/// complete on return unless `queued`: then the caller synchronizes the device before it reads either place.
+bool copy_running_state(const StateLayout& layout, const StateBuffers& from, const StateBuffers& to,
+                        std::string& error, bool queued = false) {
+    cudaStream_t s = nullptr;
+    if (conversation_detail::private_stream(s) != cudaSuccess || !copy_state(layout, from, to, 0, s) ||
+        (!queued && cudaStreamSynchronize(s) != cudaSuccess))
+        return fail(error, "running-state copy failed");
+    core::progress_beat();
+    return true;
 }
 
 // The session's carve (#216): `qsa_states` keeps global ordinals and holds the owned ones
 // [qsa_ord0, qsa_ord0 + qsa_alloc); `gdn_state` holds `gdn_alloc` rows. A whole-model session owns every layer.
 size_t owned_qsa(const SessionState& ss) { return (size_t) std::max<int64_t>(ss.qsa_alloc, 0); }
 const QsaState& owned(const SessionState& ss, size_t j) { return ss.qsa_states[(size_t) ss.qsa_ord0 + j]; }
+
+/// Describes the running state a session owns as fixed regions: its GDN rows, the PLE history (none when the
+/// session has none), then per owned QSA layer the indexer tail, dead row and block position.
+StateLayout describe_running_state(const SessionState& ss, const ConversationStateSizes& z) {
+    StateLayout layout;
+    layout.add(RegionKind::fixed, z.gdn);
+    layout.add(RegionKind::fixed, ss.ple_hist ? z.ple : 0);
+    for (size_t j = 0; j < owned_qsa(ss); ++j)
+        for (size_t bytes : {z.tail, z.dead, z.block_pos})
+            layout.add(RegionKind::fixed, bytes);
+    return layout;
+}
+
+/// Gets where a session keeps the regions describe_running_state lists.
+StateBuffers get_running_state(const SessionState& ss) {
+    StateBuffers b{{(uint8_t*) ss.gdn_state, (uint8_t*) ss.ple_hist}};
+    for (size_t j = 0; j < owned_qsa(ss); ++j) {
+        const QsaState& st = owned(ss, j);
+        b.at.insert(b.at.end(), {(uint8_t*) st.idx_tail, (uint8_t*) st.idx_dead, (uint8_t*) st.idx_block_pos});
+    }
+    return b;
+}
+
+/// Gets the bytes of each of ConversationCheckpoint::running_state's vectors for session `ss`.
+std::array<uint64_t, 5> get_checkpoint_sizes(const SessionState& ss, const ConversationStateSizes& z) {
+    const uint64_t layers = owned_qsa(ss);
+    return {z.gdn, ss.ple_hist ? z.ple : 0, layers * z.tail, layers * z.dead, layers * z.block_pos};
+}
+
+/// Gets where checkpoint `c`, sized for its session, keeps the regions describe_running_state lists.  The pointers
+/// are not const because StateBuffers serves as a copy's target too; a restore only reads through them.
+StateBuffers get_running_state(const ConversationCheckpoint& c, const ConversationStateSizes& z, size_t layers) {
+    auto& w = const_cast<ConversationCheckpoint&>(c);
+    StateBuffers b{{w.gdn.data(), w.ple.data()}};
+    for (size_t j = 0; j < layers; ++j)
+        b.at.insert(b.at.end(), {&w.tails[j * z.tail], &w.dead[j * z.dead], &w.block_pos[j * z.block_pos]});
+    return b;
+}
+
+/// Puts running state `from` (a checkpoint's or another session's) into session `ss` after the tokens `ids`: its
+/// regions, its dead rows into the pooled rows the next token fills too, and the PLE's token window.
+bool put_running_state(const StateBuffers& from, SessionState& ss, const std::vector<int32_t>& ids,
+                       const ModelGeometry& g, const ConversationStateSizes& z, std::string& error,
+                       bool queued = false) {
+    StateLayout layout = describe_running_state(ss, z);
+    StateBuffers source = from, target = get_running_state(ss);
+    const size_t row = ids.size() / strata::kernels::qsa_real_shapes().idx_block;
+    for (size_t j = 0; j < owned_qsa(ss) && !ids.empty(); ++j) {
+        layout.add(RegionKind::fixed, z.dead);
+        source.at.push_back(from.at[2 + 3 * j + 1]);   // layer j's dead row, in describe_running_state's order
+        target.at.push_back((uint8_t*) (owned(ss, j).idx_pooled + row * g.idx_key_dim));
+    }
+    if (!copy_running_state(layout, source, target, error, queued))
+        return false;
+    ss.ple_prev[0] = ids.size() >= 2 ? ids[ids.size() - 2] : -1;
+    ss.ple_prev[1] = ids.empty() ? -1 : ids.back();
+    return true;
+}
 
 bool image_keys(const std::vector<ConversationImageKey>& images, size_t tokens) {
     int64_t previous = -1;
@@ -144,12 +206,11 @@ bool conversation_checkpoint_validate(const ConversationCheckpoint& c, const Ses
                                       const ModelGeometry& g, std::string& error) {
     ConversationStateSizes z;
     if (!checkpoint_targets(ss, g, c.ids.size(), z, error)) return false;
-    const size_t layers = owned_qsa(ss);
-    if (c.gdn.size() != z.gdn || c.ple.size() != (ss.ple_hist ? z.ple : 0) ||
-        c.tails.size() != layers * z.tail || c.dead.size() != layers * z.dead ||
-        c.block_pos.size() != layers * z.block_pos || !image_keys(c.imgs, c.ids.size()))
-        return fail(error, "invalid checkpoint running-state payload");
-    return true;
+    const auto sizes = get_checkpoint_sizes(ss, z);
+    for (size_t i = 0; i < sizes.size(); ++i)
+        if (c.running_state()[i]->size() != sizes[i])
+            return fail(error, "invalid checkpoint running-state payload");
+    return image_keys(c.imgs, c.ids.size()) || fail(error, "invalid checkpoint running-state payload");
 }
 
 #if defined(STRATA_GPU_METAL)
@@ -170,18 +231,11 @@ bool conversation_checkpoint_save(ConversationCheckpoint& c, const SessionState&
 #endif
     ConversationStateSizes z;
     if (!checkpoint_targets(ss, g, c.ids.size(), z, error)) return false;
-    const size_t layers = owned_qsa(ss);
-    c.gdn.resize(z.gdn); c.ple.resize(ss.ple_hist ? z.ple : 0);
-    c.tails.resize(layers * z.tail); c.dead.resize(layers * z.dead); c.block_pos.resize(layers * z.block_pos);
-    if (!copy(c.gdn.data(), ss.gdn_state, c.gdn.size(), error) ||
-        !copy(c.ple.data(), ss.ple_hist, c.ple.size(), error)) return false;
-    for (size_t j = 0; j < layers; ++j) {
-        const auto& st = owned(ss, j);
-        if (!copy(c.tails.data() + j * z.tail, st.idx_tail, z.tail, error) ||
-            !copy(c.dead.data() + j * z.dead, st.idx_dead, z.dead, error) ||
-            !copy(c.block_pos.data() + j * z.block_pos, st.idx_block_pos, z.block_pos, error)) return false;
-    }
-    return true;
+    const auto sizes = get_checkpoint_sizes(ss, z);
+    for (size_t i = 0; i < sizes.size(); ++i)
+        c.running_state()[i]->resize(sizes[i]);
+    return copy_running_state(describe_running_state(ss, z), get_running_state(ss),
+                              get_running_state(c, z, owned_qsa(ss)), error);
 }
 
 bool conversation_checkpoint_restore(const ConversationCheckpoint& c, SessionState& ss,
@@ -197,29 +251,14 @@ bool conversation_checkpoint_restore(const ConversationCheckpoint& c, SessionSta
     ConversationStateSizes z;
     if (!conversation_session_sizes(g, ss, z, error)) return false;
     if (!sync(error)) return false;   // the copies below no longer ride the legacy stream's implicit ordering
-    if (!copy(ss.gdn_state, c.gdn.data(), c.gdn.size(), error) ||
-        !copy(ss.ple_hist, c.ple.data(), c.ple.size(), error)) return false;
-    for (size_t j = 0; j < owned_qsa(ss); ++j) {
-        const auto& st = owned(ss, j);
-        if (!copy(st.idx_tail, c.tails.data() + j * z.tail, z.tail, error) ||
-            !copy(st.idx_dead, c.dead.data() + j * z.dead, z.dead, error) ||
-            !copy(st.idx_block_pos, c.block_pos.data() + j * z.block_pos, z.block_pos, error)) return false;
-        if (!c.ids.empty()) {
-            const size_t row = c.ids.size() / strata::kernels::qsa_real_shapes().idx_block;
-            if (!copy(st.idx_pooled + row * g.idx_key_dim, c.dead.data() + j * z.dead, z.dead, error)) return false;
-        }
-    }
-    const size_t tokens = c.ids.size();
-    ss.ple_prev[0] = tokens >= 2 ? c.ids[tokens - 2] : -1;
-    ss.ple_prev[1] = tokens >= 1 ? c.ids[tokens - 1] : -1;
-    return sync(error);
+    return put_running_state(get_running_state(c, z, owned_qsa(ss)), ss, c.ids, g, z, error) && sync(error);
 }
 
 bool conversation_checkpoint_copy(const SessionState& from, SessionState& to, const std::vector<int32_t>& ids,
                                   const ModelGeometry& g, std::string& error, bool queued) {
     // conversation_checkpoint_save(from) + conversation_checkpoint_restore(to) without the host image, for two
     // sessions carved alike on the same device (a stage's own session and its batch slots): the same bytes into
-    // the same places, through copy() like the restore (the private non-blocking stream, complete on return unless
+    // the same places, through copy_state like the restore (the private non-blocking stream, complete on return unless
     // `queued`: then the caller synchronizes the device).
     ConversationStateSizes zf, zt;
     if (!checkpoint_targets(from, g, ids.size(), zf, error) || !checkpoint_targets(to, g, ids.size(), zt, error))
@@ -227,23 +266,7 @@ bool conversation_checkpoint_copy(const SessionState& from, SessionState& to, co
     if (zf.gdn != zt.gdn || zf.tail != zt.tail || zf.dead != zt.dead || zf.block_pos != zt.block_pos ||
         owned_qsa(from) != owned_qsa(to) || (from.ple_hist != nullptr) != (to.ple_hist != nullptr))
         return fail(error, "direct copy between differently carved sessions");
-    auto acopy = [&](void* dst, const void* src, size_t bytes) { return copy(dst, src, bytes, error, queued); };
-    if (!acopy(to.gdn_state, from.gdn_state, zf.gdn) ||
-        !acopy(to.ple_hist, from.ple_hist, from.ple_hist ? zf.ple : 0)) return false;
-    for (size_t j = 0; j < owned_qsa(from); ++j) {
-        const auto& a = owned(from, j);
-        const auto& b = owned(to, j);
-        if (!acopy(b.idx_tail, a.idx_tail, zf.tail) || !acopy(b.idx_dead, a.idx_dead, zf.dead) ||
-            !acopy(b.idx_block_pos, a.idx_block_pos, zf.block_pos)) return false;
-        if (!ids.empty()) {   // restore writes the saved `dead` row into the pooled row the next token fills
-            const size_t row = ids.size() / strata::kernels::qsa_real_shapes().idx_block;
-            if (!acopy(b.idx_pooled + row * g.idx_key_dim, a.idx_dead, zf.dead)) return false;
-        }
-    }
-    const size_t tokens = ids.size();
-    to.ple_prev[0] = tokens >= 2 ? ids[tokens - 2] : -1;
-    to.ple_prev[1] = tokens >= 1 ? ids[tokens - 1] : -1;
-    return true;
+    return put_running_state(get_running_state(from), to, ids, g, zf, error, queued);
 }
 
 bool conversation_snapshot_bytes(const ConversationView& view, const SessionState& ss,
@@ -252,15 +275,15 @@ bool conversation_snapshot_bytes(const ConversationView& view, const SessionStat
     if (!view_validate(view, ss, g, error)) return false;
     ConversationStateSizes z;
     if (!conversation_session_sizes(g, ss, z, error)) return false;
-    size_t ids = 0, images = 0, checkpoints = 0, layers = 0, tails = 0, dead = 0, positions = 0;
+    size_t ids = 0, images = 0, checkpoints = 0, layers = 0;
     const auto qsa = (uint64_t) owned_qsa(ss);
     if (!product(ids, {view.ids.size(), sizeof(int32_t)}) ||
         !product(images, {view.images.size(), sizeof(ConversationImageKey)}) ||
         !product(checkpoints, {view.checkpoints.size(), sizeof(ConversationCheckpoint)}) ||
-        !product(layers, {qsa + (draft ? 1 : 0), sizeof(ConversationKv)}) ||
-        !product(tails, {qsa, z.tail}) || !product(dead, {qsa, z.dead}) ||
-        !product(positions, {qsa, z.block_pos})) return fail(error, "snapshot metadata byte count overflow");
-    for (size_t n : {ids, images, checkpoints, layers, tails, dead, positions, z.gdn, ss.ple_hist ? z.ple : 0})
+        !product(layers, {qsa + (draft ? 1 : 0), sizeof(ConversationKv)}))
+        return fail(error, "snapshot metadata byte count overflow");
+    // conversation_session_sizes checked the running state's arithmetic for every QSA layer
+    for (size_t n : {ids, images, checkpoints, layers, (size_t) describe_running_state(ss, z).bytes_for(0)})
         if (!add(bytes, n)) return fail(error, "snapshot byte count overflow");
     for (const auto& c : view.checkpoints)
         if (!metadata_bytes(c, bytes)) return fail(error, "checkpoint byte count overflow");
@@ -357,16 +380,13 @@ bool conversation_session_read_limits(SessionReadLimits& limits, const SessionSt
     const uint64_t tokens = std::min<uint64_t>(max_tokens, (uint64_t) ss.max_cells);
     const size_t layers = owned_qsa(ss);
     if ((owned_qsa(ss) && !ss.qsa_states)) return fail(error, "invalid session running-state targets");
-    size_t tails = 0, dead = 0, block_pos = 0;
-    if (!product(tails, {layers, z.tail}) || !product(dead, {layers, z.dead}) ||
-        !product(block_pos, {layers, z.block_pos})) return fail(error, "indexer byte count overflow");
     SessionReadLimits l = limits;   // keeps the caller's admit / progress / max_file_bytes
     l.max_tokens = tokens;
     l.max_checkpoints = max_checkpoints;
     l.max_kv_layers = layers + 1;
     l.geometry = geometry_key(g);
     l.layer_range = std::make_pair(ss.layer_lo, ss.layer_hi);
-    l.max_state_bytes = {z.gdn, ss.ple_hist ? z.ple : 0, tails, dead, block_pos};
+    l.max_state_bytes = get_checkpoint_sizes(ss, z);   // conversation_session_sizes checked their arithmetic
     l.max_kv_bytes.assign(layers + 1, {});
     for (size_t j = 0; j < layers; ++j) {
         const auto& st = owned(ss, j);

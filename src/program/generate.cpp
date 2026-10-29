@@ -9771,11 +9771,8 @@ int main(int argc, char** argv) {
             c.imgs = imgs_below(req_imgs, L);
             if (parts != nullptr) {
                 if (parts->size() != stages.size() + 1) return false;
-                c.gdn = std::move((*parts)[0].gdn);
-                c.ple = std::move((*parts)[0].ple);
-                c.tails = std::move((*parts)[0].tails);
-                c.dead = std::move((*parts)[0].dead);
-                c.block_pos = std::move((*parts)[0].block_pos);
+                for (size_t i = 0; i < c.running_state().size(); ++i)
+                    *c.running_state()[i] = std::move(*(*parts)[0].running_state()[i]);
                 for (size_t i = 1; i < parts->size(); ++i) c.stage_parts.push_back(std::move((*parts)[i]));
             } else if (ckpt_pool.on() || ckpt_threads_env()) {
                 // STRATA_CKPT_POOL / STRATA_CKPT_THREADS: the parts go into the vectors a pooled checkpoint already has
@@ -11390,36 +11387,14 @@ int main(int argc, char** argv) {
             const char* v = std::getenv("STRATA_SLOT_COPY_DIRECT");
             return v != nullptr && v[0] != '\0' && v[0] != '0';
         }();
-        auto direct_slot_copy = [&](bool into_slot, int b, const std::vector<int32_t>& ids, std::string& e) -> bool {
-            const int64_t upto = (int64_t) ids.size();
-            auto sync_all = [&]() {
-                bool ok = true;
-                for (size_t k = 0; k < bslot_ss.size(); ++k) {
-                    const strata::core::OnDevice on_k(k == 0 ? 0 : stages[k - 1]->dev);
-                    ok = cudaDeviceSynchronize() == cudaSuccess && ok;
-                }
-                return ok;
-            };
-            // a copy that fails part-way leaves earlier residency refreshes queued on the legacy stream: drain them
-            // before the caller reuses the sessions (its zeroing runs on non-blocking streams, not ordered against these)
-            auto failed = [&]() { (void) sync_all(); return false; };
-            if (!sync_all()) { e = "batch slot copy: device sync failed"; return false; }
-            // STRATA_SLOT_COPY_BATCHSYNC: every copy is only queued, and the sync_all below is the one wait per device
-            const bool queued = slot_copy_batchsync_env();
+        // synchronizes every device a slot session is on; false when one failed (the others are synchronized still)
+        auto sync_all_slot_devices = [&]() {
+            bool ok = true;
             for (size_t k = 0; k < bslot_ss.size(); ++k) {
-                strata::core::SessionState& main_ss = k == 0 ? ss : stages[k - 1]->ss;
-                strata::core::SessionState& slot_ss = *bslot_ss[k][(size_t) b];
-                strata::core::SessionState& from = into_slot ? main_ss : slot_ss;
-                strata::core::SessionState& to = into_slot ? slot_ss : main_ss;
                 const strata::core::OnDevice on_k(k == 0 ? 0 : stages[k - 1]->dev);
-                if (!strata::core::conversation_checkpoint_copy(from, to, ids, g, e, queued)) return failed();
-                for (int64_t j = 0; j < from.qsa_alloc; ++j)
-                    if (!strata::core::conversation_kv_copy(from.qsa_states[from.qsa_ord0 + j],
-                                                            to.qsa_states[to.qsa_ord0 + j], g, upto, true, e, queued))
-                        return failed();
+                ok = cudaDeviceSynchronize() == cudaSuccess && ok;
             }
-            if (!sync_all()) { e = "batch slot copy: device sync failed"; return false; }
-            return true;
+            return ok;
         };
         // the main sessions -> slot b's (`into_slot`; the session a request just left behind, its prompt `ids`) or
         // slot b's -> the main ones (a request that continues the conversation an idle slot holds reads on from
@@ -11431,15 +11406,32 @@ int main(int argc, char** argv) {
             if (at != nullptr && at->stage_parts.size() != stages.size()) { e = "a checkpoint without its stage parts"; return false; }
             const char* sync_failed = into_slot ? "batch admission: device sync failed"
                                                 : "batch slot restore: device sync failed";
-            if (slot_copy_direct && at == nullptr) {
-                if (!direct_slot_copy(into_slot, b, ids, e)) return false;
-            } else
+            const bool direct = slot_copy_direct && at == nullptr;
+            // STRATA_SLOT_COPY_BATCHSYNC: every direct copy is only queued, and the sync after them is the one wait
+            // per device
+            const bool queued = direct && slot_copy_batchsync_env();
+            if (direct && !sync_all_slot_devices()) { e = "batch slot copy: device sync failed"; return false; }
             for (size_t k = 0; k < bslot_ss.size(); ++k) {
                 strata::core::SessionState& main_ss = k == 0 ? ss : stages[k - 1]->ss;
                 strata::core::SessionState& slot_ss = *bslot_ss[k][(size_t) b];
                 strata::core::SessionState& from = into_slot ? main_ss : slot_ss;
                 strata::core::SessionState& to = into_slot ? slot_ss : main_ss;
                 const strata::core::OnDevice on_k(k == 0 ? 0 : stages[k - 1]->dev);
+                if (direct) {
+                    // a copy that fails part-way leaves earlier residency refreshes queued on the legacy stream:
+                    // drain them before the caller reuses the sessions (its zeroing runs on non-blocking streams,
+                    // not ordered against these)
+                    bool ok = strata::core::conversation_checkpoint_copy(from, to, ids, g, e, queued);
+                    for (int64_t j = 0; ok && j < from.qsa_alloc; ++j)
+                        ok = strata::core::conversation_kv_copy(from.qsa_states[from.qsa_ord0 + j],
+                                                                to.qsa_states[to.qsa_ord0 + j], g, upto, true, e,
+                                                                queued);
+                    if (!ok) {
+                        (void) sync_all_slot_devices();
+                        return false;
+                    }
+                    continue;
+                }
                 if (cudaDeviceSynchronize() != cudaSuccess) { e = sync_failed; return false; }
                 if (at != nullptr) {
                     if (!strata::core::conversation_checkpoint_restore(k == 0 ? *at : at->stage_parts[k - 1], to, g, e))
@@ -11461,6 +11453,7 @@ int main(int argc, char** argv) {
                 }
                 if (cudaDeviceSynchronize() != cudaSuccess) { e = sync_failed; return false; }
             }
+            if (direct && !sync_all_slot_devices()) { e = "batch slot copy: device sync failed"; return false; }
             if (batch_mtp) {
                 // Admission first builds the solo draft KV; copy it into the slot before drafting, and a returning solo
                 // request resumes from its slot's.  Both drafters' K/V are on the drafter's device (the last stage's

@@ -61,13 +61,12 @@ struct StateLayout {
 struct StateBuffers {
     std::vector<uint8_t*> at;
     int64_t cells = 0;
-    bool on_host = false;   ///< host memory (a packed image), else the device's
 };
 
 /// Gets the packed host image of `tokens` tokens at `base`: each region's bytes for them, one after the other
 /// (layout.bytes_for(tokens) in all).  For parking a conversation in RAM or writing it to a file.
 inline StateBuffers get_host_image(const StateLayout& layout, int64_t tokens, uint8_t* base) {
-    StateBuffers image{{}, tokens, true};
+    StateBuffers image{{}, tokens};
     for (const StateRegion& r : layout.regions) {
         image.at.push_back(base);
         base += r.bytes_for(tokens);
@@ -95,7 +94,7 @@ bool for_each_region_copy(const StateLayout& layout, const StateBuffers& from, c
 /// Allocates one zeroed device buffer per region, with room for `cells` tokens.  Returns false, holding nothing,
 /// when the device has not that much.
 inline bool alloc_state(const StateLayout& layout, int64_t cells, StateBuffers& out) {
-    StateBuffers b{{}, cells, false};
+    StateBuffers b{{}, cells};
     for (const StateRegion& r : layout.regions) {
         b.at.push_back((uint8_t*) gpu_alloc_zeroed(r.bytes_for(cells)));
         if (b.at.back() != nullptr)
@@ -112,12 +111,9 @@ inline bool alloc_state(const StateLayout& layout, int64_t cells, StateBuffers& 
 /// device, or a session and a host image.
 inline bool copy_state(const StateLayout& layout, const StateBuffers& from, const StateBuffers& to, int64_t tokens,
                        void* stream) {
-    const GpuCopy kind = from.on_host ? GpuCopy::host_to_device
-                         : to.on_host ? GpuCopy::device_to_host
-                                      : GpuCopy::device_to_device;
     return for_each_region_copy(layout, from, to, tokens, [&](void* d, size_t dp, const void* s, size_t sp, size_t w,
                                                                size_t h) {
-        return gpu_copy_2d_async(d, dp, s, sp, w, h, kind, stream);
+        return gpu_copy_2d_async(d, dp, s, sp, w, h, stream);
     });
 }
 

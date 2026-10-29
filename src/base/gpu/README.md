@@ -14,7 +14,8 @@ hardware traits (`emulate`, `sm75_series`, `sm120_series`, `tc_sm75`, `gfx12_pla
 
 `runtime.hpp` is the runtime interface that shared code calls instead of the CUDA runtime. So far it has what
 `src/common/state` needs: device memory, 2D copies and memsets; **A5** adds the rest (streams, events) as shared code
-needs them.
+needs them. The Metal build compiles `runtime.cu` as C++ over `metal/include/metal_compat`, as it does `device.cu` and
+`pinned.cu`.
 
 See [docs/ARCHITECTURE.md](../../../docs/ARCHITECTURE.md) for the layers and
 [docs/REFACTOR_PLAN.md](../../../docs/REFACTOR_PLAN.md) for the steps.

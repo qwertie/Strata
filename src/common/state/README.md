@@ -37,13 +37,16 @@ A model split across devices describes one layout per device. Device memory and 
   the recurrent state (`fixed`), the MTP block's K and V, the last hidden row. `alloc_session`, `copy_session` (a
   conversation read in one batch session that continues in another), `reset` and the session size it reports are
   the shared calls.
-- **Qwen3.8** (`src/program/generate.cpp`, `src/models/qwen38/`) does not use it yet. Its session (`session_init`)
-  carves the state and the scratch buffers from one allocation, its K/V is paged (int8 with scales under
-  `--kv int8`) and partly streamed from host memory, and its snapshot code (`conversation_state.cpp`,
-  `conversation_snapshot.cpp`) writes the session file format, which must not change. Its running state maps onto
-  `fixed` regions (the GDN rows, the PLE history, and per QSA layer the indexer tail, dead row and block position),
-  its K and V and their scales onto `per_token` regions and its pooled index keys onto `per_block`. It moves when the
-  paged K/V pool comes: a page pool replaces a growing region's rows, and `copy_state` then copies page by page.
+- **Qwen3.8** (`src/program/generate.cpp`, `src/models/qwen38/`) uses it for its running state:
+  `describe_running_state` in `src/models/qwen38/conversation_state.cpp` lists the `fixed` regions a session owns
+  (the GDN rows, the PLE history, and per QSA layer the indexer tail, dead row and block position), and the
+  checkpoint save, restore and slot copy are `copy_state` calls between the session and a checkpoint's vectors or
+  another session. Its K/V is not on it yet: the session (`session_init`) carves the K/V and the scratch buffers
+  from one allocation, the K/V is paged (int8 with scales under `--kv int8`) and partly streamed from host memory
+  (`--kv-resident`), and `conversation_snapshot.cpp` copies its five parts (K, V, their scales and the pooled index
+  keys) through segmented host buffers. Those parts map onto `per_token` regions and the pooled keys onto
+  `per_block` (plus the spare row the next block fills). They move when the paged K/V pool comes: a page pool
+  replaces a growing region's rows, and `copy_state` then copies page by page.
 - **DeepSeek V4.1** (`src/models/deepseekv41/`) does not use it yet (its model cannot be run here to check it). Its
   slot (`slot_bytes`, `slot_save`, `slot_load` in `ds4_model.cu`) maps onto one layout per device: per layer the
   window ring and the compressor's partial group (`c_kv`, `c_score`) as `fixed` regions, per KV source the

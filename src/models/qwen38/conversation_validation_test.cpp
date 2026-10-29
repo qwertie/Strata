@@ -32,6 +32,15 @@ extern "C" cudaError_t __wrap_cudaStreamCreateWithFlags(cudaStream_t* s, unsigne
 extern "C" cudaError_t __wrap_cudaMemcpyAsync(void* dst, const void* src, size_t n, cudaMemcpyKind, cudaStream_t) {
     return __wrap_cudaMemcpy(dst, src, n, cudaMemcpyDefault);
 }
+// the running state goes through copy_state (state_layout.hpp): one row per region
+extern "C" cudaError_t __wrap_cudaMemcpy2DAsync(void* dst, size_t dpitch, const void* src, size_t spitch, size_t width,
+                                                size_t height, cudaMemcpyKind, cudaStream_t) {
+    for (size_t row = 0; row < height; ++row)
+        if (const cudaError_t e = __wrap_cudaMemcpy((uint8_t*) dst + row * dpitch, (const uint8_t*) src + row * spitch,
+                                                    width, cudaMemcpyDefault))
+            return e;
+    return cudaSuccess;
+}
 extern "C" cudaError_t __wrap_cudaStreamSynchronize(cudaStream_t) { return cudaSuccess; }
 extern "C" cudaError_t __wrap_cudaDeviceSynchronize() {
     return ++sync_calls == fail_sync ? cudaErrorUnknown : cudaSuccess;

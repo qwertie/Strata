@@ -4,6 +4,7 @@
 #include "conversation_copy.hpp"
 #include <cuda_runtime.h>
 
+#include <algorithm>
 #include <array>
 #include <cstring>
 #include <limits>
@@ -14,8 +15,13 @@ namespace {
 struct Layout {
     int format;
     int64_t cells, pooled_rows, page_size;
-    size_t data, scales, pooled, value_data, value_scales;
+    std::array<size_t, 5> sizes;   ///< the bytes of K, V, K's scales, V's scales and the pooled index keys
 };
+
+/// Gets an image's parts in Layout::sizes' order.
+template <class Image> auto get_parts(Image& image) {
+    return std::array{&image.k, &image.v, &image.k_scale, &image.v_scale, &image.pooled};
+}
 
 bool valid_extent(const QsaState& st, int64_t upto, std::string& error) {
     const int64_t page = strata::kernels::qsa_real_shapes().page_size;
@@ -50,24 +56,25 @@ bool layout(const QsaState& st, const ModelGeometry& g, int64_t upto, bool index
     // snapshot or prompt checkpoint taken with the rotation never restores into one without it, nor the reverse.
     // (Q4_0 is always rotated: nothing to tell apart; without the rotation the format is the one it always was.)
     const int rotated = st.kv_rot && !st.kv_q4 && !st.kv_hybrid ? 16 : 0;
-    l = {(st.kv_hybrid ? 3 : qsa_kv_format(st)) + rotated, cells, pooled, s.page_size, 0, 0, 0, 0, 0};
+    l = {(st.kv_hybrid ? 3 : qsa_kv_format(st)) + rotated, cells, pooled, s.page_size, {}};
     using conversation_detail::product;
-    if (!product(l.data, {(uint64_t) cells, (uint64_t) g.n_head_kv, per}) ||
-        !product(l.scales, {(uint64_t) cells, (uint64_t) g.n_head_kv,
+    auto& [k, v, k_scale, v_scale, pooled_keys] = l.sizes;
+    if (!product(k, {(uint64_t) cells, (uint64_t) g.n_head_kv, per}) ||
+        !product(k_scale, {(uint64_t) cells, (uint64_t) g.n_head_kv,
                            int8_keys && !st.kv_q4 ? (uint64_t) (g.head_dim / 64) * 2 : 0}) ||
-        !product(l.pooled, {(uint64_t) pooled, (uint64_t) g.idx_key_dim, sizeof(float)})) {
+        !product(pooled_keys, {(uint64_t) pooled, (uint64_t) g.idx_key_dim, sizeof(float)})) {
         error = "conversation snapshot: K/V byte count overflow";
         return false;
     }
-    l.value_data = l.data;
-    l.value_scales = l.scales;
+    v = k;
+    v_scale = k_scale;
     if (st.kv_hybrid) {
-        if (!product(l.value_data, {(uint64_t) cells, (uint64_t) g.n_head_kv,
-                                   (uint64_t) strata::kernels::kv_q4_bytes_per_head((int) g.head_dim)})) {
+        if (!product(v, {(uint64_t) cells, (uint64_t) g.n_head_kv,
+                         (uint64_t) strata::kernels::kv_q4_bytes_per_head((int) g.head_dim)})) {
             error = "conversation snapshot: hybrid V byte count overflow";
             return false;
         }
-        l.value_scales = 0;
+        v_scale = 0;
     }
     return true;
 }
@@ -125,11 +132,10 @@ bool conversation_kv_capture_bytes(const ConversationKv& image, const QsaState& 
                                    int64_t upto, bool index, size_t& bytes, std::string& error) {
     Layout l{};
     if (!layout(st, g, upto, index, l, error) || !valid(st, l, upto, error)) return false;
-    const std::array<size_t,5> sizes = {l.data, l.value_data, l.scales, l.value_scales, l.pooled};
-    const std::array<const ConversationBuffer*,5> buffers = {&image.k, &image.v, &image.k_scale, &image.v_scale, &image.pooled};
+    const auto buffers = get_parts(image);
     bytes = 0;
     for (size_t i = 0; i < buffers.size(); ++i) {
-        const size_t n = buffers[i]->allocation_peak(sizes[i]);
+        const size_t n = buffers[i]->allocation_peak(l.sizes[i]);
         if (n == SIZE_MAX || !conversation_detail::add(bytes, n)) {
             error = "conversation snapshot: segmented K/V allocation overflow";
             return false;
@@ -163,8 +169,8 @@ bool conversation_kv_save(ConversationKv& image, const QsaState& st, const Model
     image.pooled_rows = l.pooled_rows;
     image.idx_dim = g.idx_key_dim;
     const auto src = pools(st);
-    const std::array<size_t,5> sizes = {l.data, l.value_data, l.scales, l.value_scales, l.pooled};
-    const std::array<ConversationBuffer*,5> dst = {&image.k, &image.v, &image.k_scale, &image.v_scale, &image.pooled};
+    const auto& sizes = l.sizes;
+    const auto dst = get_parts(image);
     for (size_t i = 0; i < dst.size(); ++i) {
         // Recopy the partial page and the indexer's moving spare row. Completed
         // pages/rows strictly before the first rewritten token remain identical.
@@ -185,8 +191,7 @@ bool conversation_kv_validate(const ConversationKv& image, const QsaState& st, c
     Layout l{};
     if (!layout(st, g, upto, index, l, error)) return false;
     if (!valid(st, l, upto, error)) return false;
-    const std::array<size_t,5> sizes = {l.data, l.value_data, l.scales, l.value_scales, l.pooled};
-    const std::array<const ConversationBuffer*,5> src = {&image.k, &image.v, &image.k_scale, &image.v_scale, &image.pooled};
+    const auto src = get_parts(image);
     if (image.format != l.format || image.cells != l.cells || image.heads != g.n_head_kv ||
         image.head_dim != g.head_dim || image.page_size != l.page_size || image.pooled_rows != l.pooled_rows ||
         image.idx_dim != g.idx_key_dim) {
@@ -194,10 +199,10 @@ bool conversation_kv_validate(const ConversationKv& image, const QsaState& st, c
         return false;
     }
     for (size_t i = 0; i < src.size(); ++i)
-        if (src[i]->size() != sizes[i]) { error = "conversation snapshot: invalid K/V payload size"; return false; }
+        if (src[i]->size() != l.sizes[i]) { error = "conversation snapshot: invalid K/V payload size"; return false; }
     const auto dst = pools(st);
     for (size_t i = 0; i < src.size(); ++i)
-        if (sizes[i] && !dst[i]) { error = "conversation snapshot: missing target state buffer"; return false; }
+        if (l.sizes[i] && !dst[i]) { error = "conversation snapshot: missing target state buffer"; return false; }
     return true;
 }
 
@@ -226,8 +231,7 @@ bool conversation_kv_copy(const QsaState& from, const QsaState& to, const ModelG
     if (!layout(from, g, upto, index, lf, error) || !valid(from, lf, upto, error) ||
         !layout(to, g, upto, index, lt, error) || !valid(to, lt, upto, error)) return false;
     if (lf.format != lt.format || lf.cells != lt.cells || lf.page_size != lt.page_size ||
-        lf.pooled_rows != lt.pooled_rows || lf.data != lt.data || lf.value_data != lt.value_data ||
-        lf.scales != lt.scales || lf.value_scales != lt.value_scales || lf.pooled != lt.pooled) {
+        lf.pooled_rows != lt.pooled_rows || lf.sizes != lt.sizes) {
         error = "conversation snapshot: direct K/V copy between different layouts";
         return false;
     }
@@ -237,11 +241,10 @@ bool conversation_kv_copy(const QsaState& from, const QsaState& to, const ModelG
     // `queued`: the copies are only queued, and a streamed state's refresh waits for them on the device (an event).
     const auto src = pools(from);
     const auto dst = pools(to);
-    const std::array<size_t,5> sizes = {lf.data, lf.value_data, lf.scales, lf.value_scales, lf.pooled};
-    for (size_t i = 0; i < sizes.size(); ++i) {
-        if (!sizes[i]) continue;
+    for (size_t i = 0; i < lf.sizes.size(); ++i) {
+        if (!lf.sizes[i]) continue;
         if (!src[i] || !dst[i]) { error = "conversation snapshot: missing state buffer"; return false; }
-        const cudaError_t e = conversation_detail::copy_nonblocking(dst[i], src[i], sizes[i], queued);
+        const cudaError_t e = conversation_detail::copy_nonblocking(dst[i], src[i], lf.sizes[i], queued);
         if (e != cudaSuccess) { error = std::string("conversation snapshot direct copy: ") + cudaGetErrorString(e); return false; }
     }
     if (queued && to.kv_mode != 0) {
@@ -254,7 +257,7 @@ bool conversation_kv_copy(const QsaState& from, const QsaState& to, const ModelG
 bool conversation_kv_restore(const ConversationKv& image, const QsaState& st, const ModelGeometry& g,
                              int64_t upto, bool index, std::string& error) {
     if (!conversation_kv_validate(image, st, g, upto, index, error)) return false;
-    const std::array<const ConversationBuffer*,5> src = {&image.k, &image.v, &image.k_scale, &image.v_scale, &image.pooled};
+    const auto src = get_parts(image);
     const auto dst = pools(st);
     for (size_t i = 0; i < src.size(); ++i)
         if (!src[i]->visit(0, src[i]->size(), [&](const uint8_t* p, size_t n, size_t at) {
@@ -272,8 +275,8 @@ bool conversation_kv_restore_prefix(const ConversationKv& image, const QsaState&
     if (!conversation_kv_validate(image, st, g, captured, index, error)) return false;
     Layout l{};   // the prefix's extent; validation above checked the image against the captured one
     if (!layout(st, g, upto, index, l, error) || !valid(st, l, upto, error)) return false;
-    const std::array<size_t,5> sizes = {l.data, l.value_data, l.scales, l.value_scales, l.pooled};
-    const std::array<const ConversationBuffer*,5> src = {&image.k, &image.v, &image.k_scale, &image.v_scale, &image.pooled};
+    const auto& sizes = l.sizes;
+    const auto src = get_parts(image);
     for (size_t i = 0; i < src.size(); ++i)
         if (sizes[i] > src[i]->size()) { error = "conversation snapshot: prefix beyond the K/V payload"; return false; }
     const auto dst = pools(st);
@@ -288,7 +291,7 @@ bool conversation_kv_part_sizes(const QsaState& st, const ModelGeometry& g, int6
                                 std::array<uint64_t, 5>& sizes, std::string& error) {
     Layout l{};
     if (!layout(st, g, upto, index, l, error)) return false;
-    sizes = {l.data, l.value_data, l.scales, l.value_scales, l.pooled};
+    std::copy(l.sizes.begin(), l.sizes.end(), sizes.begin());   // size_t is not uint64_t on every platform
     return true;
 }
 
@@ -299,7 +302,7 @@ bool conversation_kv_source(SessionKvSource& out, const QsaState& st, const Mode
     SessionKvSource s;
     s.format = l.format; s.cells = l.cells; s.heads = g.n_head_kv; s.head_dim = g.head_dim;
     s.page_size = l.page_size; s.pooled_rows = l.pooled_rows; s.idx_dim = g.idx_key_dim;
-    s.sizes = {l.data, l.value_data, l.scales, l.value_scales, l.pooled};
+    s.sizes = l.sizes;
     const auto src = pools(st);
     const auto sizes = s.sizes;
     auto why = std::make_shared<std::string>();
@@ -330,7 +333,7 @@ bool conversation_kv_verify(const ConversationKv& image, const QsaState& st, con
         }
         return true;
     };
-    const std::array<const ConversationBuffer*, 5> saved = {&image.k, &image.v, &image.k_scale, &image.v_scale, &image.pooled};
+    const auto saved = get_parts(image);
     const auto authoritative = pools(st);
     for (size_t i = 0; i < saved.size(); ++i)
         if (!saved[i]->visit(0, saved[i]->size(), [&](const uint8_t* p, size_t n, size_t at) {

@@ -78,11 +78,8 @@ inline ConversationCheckpoint copy_checkpoint_beating(const ConversationCheckpoi
     ConversationCheckpoint o;
     o.ids = copy_beating(c.ids);
     o.imgs = copy_beating(c.imgs);
-    o.gdn = copy_beating(c.gdn);
-    o.ple = copy_beating(c.ple);
-    o.tails = copy_beating(c.tails);
-    o.dead = copy_beating(c.dead);
-    o.block_pos = copy_beating(c.block_pos);
+    for (size_t i = 0; i < o.running_state().size(); ++i)
+        *o.running_state()[i] = copy_beating(*c.running_state()[i]);
     o.used = c.used;
     o.pinned = c.pinned;
     o.stage_parts.reserve(c.stage_parts.size());

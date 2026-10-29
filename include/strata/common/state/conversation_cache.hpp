@@ -43,6 +43,10 @@ struct ConversationCheckpoint {
     // Whole-session parking is currently single-GPU and rejects these parts.
     std::vector<ConversationCheckpoint> stage_parts;
 
+    /// Gets the running state's vectors in the order a session file keeps them.
+    std::array<std::vector<uint8_t>*, 5> running_state() { return {&gdn, &ple, &tails, &dead, &block_pos}; }
+    std::array<const std::vector<uint8_t>*, 5> running_state() const { return {&gdn, &ple, &tails, &dead, &block_pos}; }
+
     size_t bytes() const {
         size_t n = ids.capacity() * sizeof(int32_t) + imgs.capacity() * sizeof(ConversationImageKey) +
                gdn.capacity() + ple.capacity() + tails.capacity() + dead.capacity() + block_pos.capacity() +
