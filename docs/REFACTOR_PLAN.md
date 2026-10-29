@@ -195,3 +195,4 @@ alternating runs of the two builds. Models on this PC: Qwen3.8 IQ3_S (`strata-iq
 | A5 | `dc7d7c9f` | 491,494 | −1,654 | one window planner for both Qwen3.8 decode loops (`src/common/spec`) |
 | A5 | `268c2fd2` | 490,818 | −2,330 | one-GPU expert-store helpers shared (`src/common/experts`), SYCL copies dropped |
 | A5 | `62bb0aac` | 490,952 | −2,196 | DeepSeek on the shared command loop (after the DeepSeek 6-shard support, +146, and two DeepSeek fixes) |
+| A2b | `043ccf2e` | 490,670 | −2,478 | a second Python sweep: shared atomic writers, hashing, GPU probes, test fixtures |
