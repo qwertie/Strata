@@ -770,7 +770,7 @@ does not know is `null` or left out of `uses`. `busy` and `available` mean what 
 
 The engine's command (include/strata/common/serve/memory_report.hpp; the engine's `READY` line says `memory`):
 
-- `MEM` answers `MEMORY <id> [total=<B>] [free=<B>] [unified=1] [<use>=<B> ...] [paused_count=<n>]
+- `GET_MEMORY_USE` answers `MEMORY <id> [total=<B>] [free=<B>] [unified=1] [<use>=<B> ...] [paused_count=<n>]
   [paused_budget=<B>] [name=<device name>]` for each memory, then `SETTINGS [context=<tokens>] [concurrent=<n>]
   [lookahead=<n>]` and `END_MEMORY`. `id` is `gpu<N>`, `ram` or `ssd`; sizes are in bytes. The uses are `weights`,
   `experts`, `conversations` (the sessions of the conversations the engine runs, each allocated for its whole context),

@@ -1,7 +1,8 @@
-// strata/common/serve/memory_report.hpp - --serve's MEM: what the engine holds in each memory (each GPU, the RAM, the
-// SSD), for the server's GET /v1/memory and the web page's Memory panel (docs/MEMORY_MANAGER_PLAN.md, step M0).
+// strata/common/serve/memory_report.hpp - --serve's GET_MEMORY_USE: what the engine holds in each memory (each GPU,
+// the RAM, the SSD), for the server's GET /v1/memory and the web page's Memory panel (docs/MEMORY_MANAGER_PLAN.md,
+// step M0).
 //
-//   MEM
+//   GET_MEMORY_USE
 //     MEMORY <id> [total=<B>] [free=<B>] [unified=1] [<use>=<B> ...] [paused_count=<n>] [paused_budget=<B>]
 //            [name=<text>]                                     one line per memory, then
 //     SETTINGS [context=<tokens>] [concurrent=<n>] [lookahead=<n>]
@@ -67,8 +68,8 @@ struct MemoryReport {
     Memory& gpu(int device) { return at("gpu" + std::to_string(device)); }
 };
 
-/// Writes the answer to MEM: `report` plus the parked conversations of `held` (LIST_CONVERSATIONS' entries; a parked
-/// one in RAM counts on `ram`, one on disk on `ssd`).
+/// Writes the answer to GET_MEMORY_USE: `report` plus the parked conversations of `held` (LIST_CONVERSATIONS' entries;
+/// a parked one in RAM counts on `ram`, one on disk on `ssd`).
 inline std::string format_memory_report(MemoryReport report, const std::vector<core::HeldConversation>& held) {
     for (const core::HeldConversation& c : held) {
         if (std::string(c.state) != "parked") continue;

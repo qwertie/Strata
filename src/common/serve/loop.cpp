@@ -151,7 +151,7 @@ bool Loop::next(std::string& line) {
             core::answer_conversation_command(line, hooks_.list_conversations());
             continue;
         }
-        if (hooks_.describe_memory && line == "MEM") {
+        if (hooks_.describe_memory && line == "GET_MEMORY_USE") {
             const std::string s = format_memory_report(
                 hooks_.describe_memory(),
                 hooks_.list_conversations ? hooks_.list_conversations() : std::vector<core::HeldConversation>{});

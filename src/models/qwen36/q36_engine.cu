@@ -870,7 +870,8 @@ struct Model {
     bool hybrid = false;                       // not every expert fits in VRAM: slots + the CPU pool
     // the packed Q8_0 decode copies (gguf weights, packed copy, bytes): given back when that lets every expert fit
     std::vector<std::tuple<const uint8_t*, uint8_t*, size_t>> packed;
-    size_t dense_bytes = 0;   // the weights `load` put on the GPU but the routed experts and the packed copies (MEM)
+    // the weights `load` put on the GPU but the routed experts and the packed copies (GET_MEMORY_USE)
+    size_t dense_bytes = 0;
     // the GGUF-native MTP block (blk.<n_layers>, loaded with --mtp): eh_proj over [enorm(e) | hnorm(h)], then an
     // attention + MoE layer, shared_head_norm, the main head
     bool has_mtp = false;
@@ -3630,7 +3631,7 @@ struct Serve {
     int run() {
         if (E.n_sess > 1) std::printf("INFO batch_slots=%d slot_cache=1\n", E.n_sess);
         // "stop": STOP ends the request on the control lines; "conversations": LIST_CONVERSATIONS and
-        // GET_CONTEXT_WINDOWS; "memory": MEM
+        // GET_CONTEXT_WINDOWS; "memory": GET_MEMORY_USE
         std::printf("READY %d stop conversations memory\n", E.ctx);
         std::fflush(stdout);
         strata::serve::EngineHooks hooks;
@@ -3652,8 +3653,8 @@ struct Serve {
             }
             return held;
         };
-        // MEM (memory_report.hpp): the weights, the routed experts in VRAM and, in the hybrid mode, in RAM (the MTP
-        // block's as the drafter's), and the sessions
+        // GET_MEMORY_USE (memory_report.hpp): the weights, the routed experts in VRAM and, in the hybrid mode, in RAM
+        // (the MTP block's as the drafter's), and the sessions
         hooks.describe_memory = [this] {
             strata::serve::MemoryReport r;
             int dev = 0;

@@ -11075,7 +11075,7 @@ int main(int argc, char** argv) {
         strata::core::pin_sim_report("at READY");
         strata::core::pin_reserve_release_hard();   // the load is over: nothing else needs the headroom
         // "stop": this engine honours STOP; "conversations": it answers LIST_CONVERSATIONS and GET_CONTEXT_WINDOWS;
-        // "memory": MEM
+        // "memory": GET_MEMORY_USE
         std::printf("READY %lld stop conversations memory\n", (long long) o.max_context);
         std::fflush(stdout);
         std::string line;
@@ -11867,8 +11867,9 @@ int main(int argc, char** argv) {
             });
             return held;
         };
-        // MEM (memory_report.hpp): each card's weights (the primary's pack arena; the native dense projections and
-        // head), expert cache, sessions and drafters; the RAM's expert arena, streamed K/V and conversation-cache budget
+        // GET_MEMORY_USE (memory_report.hpp): each card's weights (the primary's pack arena; the native dense
+        // projections and head), expert cache, sessions and drafters; the RAM's expert arena, streamed K/V and
+        // conversation-cache budget
         hooks.describe_memory = [&] {
             strata::serve::MemoryReport r;
             for (size_t i = 0; i < session_layers.size(); ++i) {   // the primary card, then the stages' cards

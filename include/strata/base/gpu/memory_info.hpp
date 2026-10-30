@@ -1,6 +1,6 @@
 #pragma once
 // A GPU's memory as the runtime reports it now: its name, size and free bytes, and whether it is integrated (its
-// memory is the system RAM, as on Strix Halo).  Used by the engines' answer to MEM
+// memory is the system RAM, as on Strix Halo).  Used by the engines' answer to GET_MEMORY_USE
 // (strata/common/serve/memory_report.hpp).
 
 #include "strata/base/gpu/on_device.hpp"

@@ -6,10 +6,10 @@ The engine side of the line protocol that the Python server speaks (`strata_comm
 - `loop.hpp`: `Input` reads the server's lines on a thread of its own (STOP raises a flag that a running request
   checks; the other lines wait in a queue). `Loop` gives the engine the commands that are its own and meanwhile runs
   the engine's busy work (batch slots decoding) and answers BSTOP, BYIELD, LIST_CONVERSATIONS,
-  GET_CONTEXT_WINDOWS and MEM. An engine says what it does through `EngineHooks`.
-- `memory_report.hpp`: MEM's answer (what the engine holds in each memory, for the server's `GET /v1/memory`): each
-  engine fills a `MemoryReport` (`EngineHooks::describe_memory`), and the loop adds the parked conversations and writes
-  the lines.
+  GET_CONTEXT_WINDOWS and GET_MEMORY_USE. An engine says what it does through `EngineHooks`.
+- `memory_report.hpp`: GET_MEMORY_USE's answer (what the engine holds in each memory, for the server's
+  `GET /v1/memory`): each engine fills a `MemoryReport` (`EngineHooks::describe_memory`), and the loop adds the parked
+  conversations and writes the lines.
 - `request.hpp`: a request line (`GEN`, `GENI`, `BGEN`, `BGENI`) split into its parts, and the sampling keys every
   engine reads.
 

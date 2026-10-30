@@ -58,7 +58,7 @@ struct PagePoolHooks {
     std::function<bool(PageId to, PageId from)> copy = [](PageId, PageId) { return false; };
 };
 
-/// A pool's pages by use, for the MEM command.
+/// A pool's pages by use, for the GET_MEMORY_USE command.
 struct PagePoolReport {
     struct Use {
         uint64_t pages = 0, bytes = 0;

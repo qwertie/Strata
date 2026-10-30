@@ -192,7 +192,7 @@ public:
     /// INFO / VRAM lines for the server's Monitor.
     std::vector<std::string> info_lines() const;
     /// Describes the weights, experts, drafter, caches and scratch on each GPU, the experts in RAM and on the SSD
-    /// and the Engram table for MEM (the parked conversations are added by the caller's loop).
+    /// and the Engram table for GET_MEMORY_USE (the parked conversations are added by the caller's loop).
     strata::serve::MemoryReport describe_memory() const;
 
     struct Impl;

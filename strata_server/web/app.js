@@ -451,9 +451,12 @@ function renderMcp() {
 // ------------------------------------------------------------------ Memory (GET /v1/memory)
 // What the engine holds in each memory (each GPU, the RAM, the SSD) and its settings, read-only
 // (docs/MEMORY_MANAGER_PLAN.md, step M0).  A GPU whose memory is the system RAM gets one bar with RAM's uses in it.
+// A bar is as wide as its memory's share of MEM_FULL_BAR (one of unknown size fills it), so a card is seen beside
+// the RAM without becoming a sliver.
 const MEM_USES = {weights: "Weights", experts: "Experts", conversations: "Conversations",
                   paused: "Paused conversations", drafter: "Drafter", scratch: "Scratch", engram: "Engram",
                   other: "Other", free: "Free"};
+const MEM_FULL_BAR = 32 * 1073741824;   // bytes (32 GiB) at which a memory's bar fills the width
 const MEM_SETTINGS = {context: "Context", concurrent: "Conversations at once", lookahead: "Lookahead"};
 async function loadMemory() {
   let m;
@@ -473,7 +476,9 @@ function renderMemory(m) {
     if (x === unified && ram) parts.push(...Object.entries(ram.uses).map(([use, bytes]) => ({use, bytes, ram: true})));
     if (x.other) parts.push({use: "other", bytes: x.other});
     if (x.free != null) parts.push({use: "free", bytes: x.free});
-    const total = x.total || parts.reduce((a, p) => a + p.bytes, 0);
+    // a memory of unknown size (the SSD) is drawn against what it holds plus the room left in its paused budget
+    const used = parts.reduce((a, p) => a + p.bytes, 0);
+    const total = x.total || Math.max(used, used - (x.uses.paused || 0) + (x.paused_budget || 0));
     const name = x.id === "ram" ? "System RAM" : x.id === "ssd" ? "SSD" : x.name || x.id.toUpperCase();
     const shared = ram && ram.total ? `: ${gb(ram.total)} GiB` : "";
     const label = x === unified ? `${name} (shares the system RAM${shared})` : name;
@@ -485,7 +490,8 @@ function renderMemory(m) {
     const key = (p) => `<span><i class="mem-key" data-use="${esc(p.use)}"${p.ram ? " data-ram" : ""}></i>` +
       `${title(p)} ${gb(p.bytes, 2)} GiB</span>`;
     return `<div class="mem-row"><div class="bar-row"><span>${esc(label)}</span><span class="muted">${esc(facts)}` +
-      `</span></div><div class="mem-bar">${parts.map(seg).join("")}</div>` +
+      `</span></div><div class="mem-bar" style="width:${x.total ? 100 * Math.min(x.total / MEM_FULL_BAR, 1) : 100}%">` +
+      `${parts.map(seg).join("")}</div>` +
       `<div class="mem-legend muted small">${parts.map(key).join("")}</div></div>`;
   });
   $("mem-bars").innerHTML = bars.join("");

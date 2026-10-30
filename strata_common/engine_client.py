@@ -653,7 +653,7 @@ class StrataEngine:
         self.max_context = int(args[args.index("--max-context") + 1]) if "--max-context" in args else 4096
         self.can_stop = False            # the engine honours a STOP line mid-request (READY <ctx> stop)
         self.can_list = False            # it answers LIST_CONVERSATIONS and GET_CONTEXT_WINDOWS (... conversations)
-        self.can_report_memory = False   # it answers MEM (... memory)
+        self.can_report_memory = False   # it answers GET_MEMORY_USE (... memory)
         self.last = {}
         self.info = {}                   # INFO key=value facts (engine 0.1.8+): kv, expert slots, ... (Monitor tab)
         self.terminal_stages: list[dict] = []  # final layer ranges from this engine start's bounded stderr log
@@ -1099,12 +1099,13 @@ class StrataEngine:
         return out
 
     def memory(self) -> dict:
-        """GET /v1/memory: `MEM` (an engine whose READY says "memory"; include/strata/common/serve/memory_report.hpp) -
-        what the engine holds in each memory and its settings: {"memories": [{"id", "name", "total", "free", "unified",
-        "uses": {use: bytes}, "paused_count", "paused_budget"}], "settings": {key: number}}.  A value the engine did not
-        say is None (uses: absent).  The same turn rules as list_conversations."""
+        """GET /v1/memory: `GET_MEMORY_USE` (an engine whose READY says "memory";
+        include/strata/common/serve/memory_report.hpp) - what the engine holds in each memory and its settings:
+        {"memories": [{"id", "name", "total", "free", "unified", "uses": {use: bytes}, "paused_count",
+        "paused_budget"}], "settings": {key: number}}.  A value the engine did not say is None (uses: absent).  The same
+        turn rules as list_conversations."""
         memories, settings = [], {}
-        for f in self._ask("MEM", "MEMORY", end="END_MEMORY", also=("SETTINGS",)):
+        for f in self._ask("GET_MEMORY_USE", "MEMORY", end="END_MEMORY", also=("SETTINGS",)):
             # MEMORY <id> [key=value ...] [name=<text to the end>]  /  SETTINGS [key=value ...]
             at = next((i for i, x in enumerate(f) if x.startswith("name=")), len(f))
             keys = {k: int(v) for k, _, v in (x.partition("=") for x in f[1 if f[0] == "SETTINGS" else 2:at])}

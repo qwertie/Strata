@@ -1,4 +1,4 @@
-// --serve's MEM (memory_report.hpp): the lines strata_common/engine_client.py reads.
+// --serve's GET_MEMORY_USE (memory_report.hpp): the lines strata_common/engine_client.py reads.
 #include "strata/common/serve/memory_report.hpp"
 
 #include <cstdio>

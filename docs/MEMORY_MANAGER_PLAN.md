@@ -168,7 +168,7 @@ parallelism ([MULTI_GPU.md](MULTI_GPU.md)). The new step has one shared way:
 
 ### The panel's bars
 
-A memory smaller than 32 GB is drawn as a bar of its size divided by 32 GB of the full width (a 16 GB card fills half);
+A memory smaller than 32 GiB is drawn as a bar of its size divided by 32 GiB of the full width (a 16 GiB card fills half);
 larger memories fill the width. So RAM is seen to be bigger than a typical card, and cards do not shrink to slivers
 beside a lot of RAM.
 

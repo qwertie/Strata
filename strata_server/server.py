@@ -1188,7 +1188,8 @@ class Service:
         self.api_monitor = False
         self.context_list = None                        # the Context view's last list (context_view)
         self.context_shown = None                       # ... and the context window it read last (context_window)
-        self.memory_last = {"at": None, "memories": [], "settings": {}}   # the engine's last MEM answer (memory_view)
+        # the engine's last GET_MEMORY_USE answer (memory_view)
+        self.memory_last = {"at": None, "memories": [], "settings": {}}
         self.api_requests = collections.deque(maxlen=100)  # bounded I/O in memory; no headers or API keys
         self.request_trace = threading.local()
         self.history = collections.deque(maxlen=500)    # the last finished requests, newest last (GET /metrics)

@@ -360,7 +360,7 @@ class EngineConversations(unittest.TestCase):
                             "NOTE something else", "MEMORY ram paused=300 paused_count=2 paused_budget=800",
                             "MEMORY ssd engram=70", "SETTINGS context=32768 concurrent=1", "END_MEMORY"])
         got = engine.memory()
-        self.assertEqual(engine.proc.stdin.getvalue(), "MEM\n")
+        self.assertEqual(engine.proc.stdin.getvalue(), "GET_MEMORY_USE\n")
         self.assertEqual(got, {"memories": [
             {"id": "gpu0", "name": "Radeon 8060S", "total": 1000, "free": 300, "unified": True, "paused_count": None,
              "paused_budget": None, "uses": {"weights": 100, "experts": 450}},

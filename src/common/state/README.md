@@ -75,7 +75,7 @@ GPU runtime and its test (`page_pool_test.cpp`) runs on host memory.
 - `resize` adds chunks, or gives back the last ones: their experts are evicted and their conversation pages copied
   into the others through the `copy` hook. When those pages have nowhere to go it names the conversations to pause.
   A resize or a limit that the active conversations or the minimum would not fit is refused with the reason.
-- `report` gives the pages and bytes by use for the `MEM` command.
+- `report` gives the pages and bytes by use for the `GET_MEMORY_USE` command.
 
 The pool is not thread-safe: the engine's step loop is its only caller.
 
