@@ -2,7 +2,7 @@
 
 A plan for a new Qwen3.8 engine whose memory and parallelism can be seen and changed while it runs. It is built on the
 shared code of the refactor ([REFACTOR_PLAN.md](REFACTOR_PLAN.md)) and adds to it, so that Qwen3.6 and DeepSeek can
-move onto it later. Status: M1 done (2026-10-30), branch `memory-manager`.
+move onto it later. Status: M0 and M1 done (2026-10-30), branch `memory-manager`.
 
 ## What the user gets
 
@@ -190,13 +190,14 @@ The server forwards both through one endpoint (`GET/POST /v1/memory`); "save as 
 
 | Step | Work | Checked by |
 |---|---|---|
-| M0 | `MEM` in the three existing engines (read-only), `/v1/memory`, the panel without controls | the panel matches the engines' own numbers on Qwen3.8, Qwen3.6, DeepSeek |
+| M0 | `MEM` in the three existing engines (read-only), `/v1/memory`, the panel without controls | the panel matches the engines' own numbers on Qwen3.8, Qwen3.6, DeepSeek. Done: `dffd3a25` |
+| M0b | The desktop app shows the same panel: the panel is one framework-free module that the web page uses directly and the app (`apps/host`, `NativeMonitor`) wraps | the app and the web page draw the same bars from `/v1/memory` |
 | M1 | The page pool and page lists: chunks, growing and shrinking, experts and conversations trading pages, with unit tests (CPU). Done: `src/common/state/page_pool.cpp` | unit tests: allocation, growth, emptying a chunk, a full pool, no thrashing (`page_pool_test`) |
 | M2 | The new Qwen3.8 engine: one conversation in the pool, no drafting, same answers as today's engine | token-identical at temperature 0 against the old engine |
 | M3 | Several conversations, the step with rows per step and conversations at once | answers identical per conversation; speed against `--batch` |
 | M4 | Drafting with the row-sharing rule and the lookahead | identical answers; speed against today's MTP |
 | M5 | Pausing to RAM and SSD, priorities; experts read from the SSD without the file cache | pause and resume give the same answers; files saved before load; with too little memory for the experts, the same answers as with enough, and RAM use stays at the setting |
-| M6 | Live `SET`, the panel's controls, "this session" and "save as default" | resize while decoding; the biggest-conversation limit refuses |
+| M6 | Live `SET`, the panel's controls (web page and app), "this session" and "save as default" through the server; the app's own memory and parallelism settings (`parallel`, `mtp`, `vram_reserve_mib`, ...) give way to these, so the server is the only writer | resize while decoding; the biggest-conversation limit refuses |
 | M7 | Measurements: guesses against other conversations' tokens, by where experts live; defaults chosen from them | numbers in DETAILS.md, measured on the Strix Halo and, if possible, the NVIDIA test PC |
 | M8 | Several GPUs: the shared layer split and planner, experts on any card, measured links, groups | tokens identical to one GPU; speed against today's layer split on the NVIDIA test PC (3060 + 3080, x16 and x4 if possible) |
 | M9 | Moving the layer cut while running | a cut moved during decoding gives the same tokens |
@@ -213,6 +214,10 @@ the new one is at least as fast.
 - More than 8 rows per step (larger verify windows).
 
 ## Open questions
+
+- The desktop app's Windows and Linux installers download the engine from upstream's signed feed. App users get the
+  new engine only if upstream takes it, or if the fork publishes a feed of its own. The Terminal and source installs
+  can use the fork's build.
 
 - Page size: one size for experts and conversation blocks (2 MiB), or two pools per memory?
 - Should a paused conversation's pages on the SSD use the session file format (`conversation_file.hpp`), so
