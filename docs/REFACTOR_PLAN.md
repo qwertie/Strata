@@ -74,11 +74,11 @@ the repo's own: `docker build --pull -t strata-sycl-dev sycl/tools`. Both build 
 written to the checkout. From Git Bash:
 
 ```sh
-# CUDA: every target, both NVIDIA code families (sm_75, sm_120), the DeepSeek engine
+# CUDA: every target, both NVIDIA code families (sm_75, sm_120) and the test machine's sm_86, the DeepSeek engine
 MSYS_NO_PATHCONV=1 docker run --rm -v "C:/AI-models/Strata:/work/Strata" -v strata-cuda-build:/build strata-cuda-dev bash -c '
   cd /work/Strata && ( [ -f /build/build.ninja ] || cmake -G Ninja -S . -B /build -DCMAKE_BUILD_TYPE=Release \
     -DSTRATA_ENABLE_CUDA=ON -DSTRATA_BUILD_DSV41=ON -DSTRATA_NATIVE_EXPERTS=ON -DSTRATA_PORTABLE=ON \
-    -DSTRATA_Q6K_EXPERTS=ON -DSTRATA_MMQ_KQUANTS=ON "-DCMAKE_CUDA_ARCHITECTURES=75-real;120-real;120-virtual" \
+    -DSTRATA_Q6K_EXPERTS=ON -DSTRATA_MMQ_KQUANTS=ON "-DCMAKE_CUDA_ARCHITECTURES=75-real;86-real;120-real;120-virtual" \
     -DSTRATA_GGML_DIR=/work/Strata/third_party/llama.cpp ) && cmake --build /build -j 32 && cmake --build /build --target strata_kq'
 
 # SYCL: the engine, JIT (no Intel card needed to compile)
