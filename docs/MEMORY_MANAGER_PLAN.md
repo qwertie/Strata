@@ -72,8 +72,13 @@ assumption beforehand.
 
 ### One page pool per memory
 
-Each GPU's memory and the RAM the engine uses are each one pool of equal-size pages (about 2 MiB; a Qwen3.8 IQ3_S
-expert is 1.95 MiB). A page holds an expert, or a block of a conversation's tokens, or is free.
+Each GPU's memory and the RAM the engine uses are each one pool of equal-size pages. A page holds an expert, or a
+block of a conversation's tokens, or is free.
+
+- The page size depends on the model and its quantization: an expert is 1.95 MiB in Qwen3.8 IQ3_S but about 8.6 MB in
+  DeepSeek's 2.00 bpw set, which mixes three expert types of 7.7 to 10.2 MB. The engine picks the size when it loads
+  the model. Where expert sizes differ, an expert takes several consecutive pages inside one chunk, rather than every
+  page being as big as the largest expert (which would waste up to a quarter of the memory).
 
 - A pool takes its memory in chunks (about 256 MiB). Pages need not be next to each other, so growing the memory used
   adds chunks; shrinking it first empties chunks (their experts are evicted, conversation pages are copied to other
@@ -127,9 +132,11 @@ and read from the SSD again later.
 
 - While RAM has room, it also keeps copies of experts that are on a GPU; evicting those costs nothing. RAM holds
   only the complement when it runs short.
-- An autodetected setting drops the expert instead when copying it back from the card is slower than reading it from
-  the SSD again. Both speeds are measured at start (a PCIe 3.0 x4 card, about 3.2 GB/s, is close to a fast NVMe drive,
-  so this can go either way). The user may override it.
+- An autodetected setting drops the expert instead unless copying it back from the card is clearly faster (by
+  default at least twice as fast) than reading it from the SSD again: when the two are close, dropping wins, because
+  an evicted expert may not be needed again for a while. Both speeds are measured at start (a PCIe 3.0 x4 card, about
+  3.2 GB/s, is close to a fast NVMe drive, and a Thunderbolt 4 enclosure, about 2.5 GB/s, is slower than one). The
+  user may override it.
 
 ### Several GPUs
 
@@ -159,15 +166,21 @@ parallelism ([MULTI_GPU.md](MULTI_GPU.md)). The new step has one shared way:
   access; DeepSeek keeps its `--tp` until there are cards with a fast link to measure), and one model on cards of two
   makes.
 
+### The panel's bars
+
+A memory smaller than 32 GB is drawn as a bar of its size divided by 32 GB of the full width (a 16 GB card fills half);
+larger memories fill the width. So RAM is seen to be bigger than a typical card, and cards do not shrink to slivers
+beside a lot of RAM.
+
 ## The protocol
 
 New engine commands (between and during requests, like `LIST_CONVERSATIONS`):
 
-- `MEM` reports every pool: per memory, its size and its pages by use (experts, active conversations, paused
+- `GET_MEMORY_USE` reports every pool: per memory, its size and its pages by use (experts, active conversations, paused
   conversations, drafter, free), and the settings above. The old engines answer it too, read-only, from what they know
   (sizes from their startup, `LIST_CONVERSATIONS` bytes), so the panel shows them.
-- `SET <name> <value> [...]` changes settings live: `memory_mib.<memory>`, `tokens_min`, `tokens_max`,
-  `ssd_pause_mib`, `drafter on|off`, `concurrent`, `rows`, `lookahead`. The engine answers with the new `MEM` or `ERR <why>` (for example
+- `CHANGE_SETTINGS <name>=<value> [...]` changes settings live: `memory_mib.<memory>`, `tokens_min`, `tokens_max`,
+  `ssd_pause_mib`, `drafter on|off`, `concurrent`, `rows`, `lookahead`. The engine answers with the new `GET_MEMORY_USE` report or `ERR <why>` (for example
   "the biggest active conversation needs 3.1 GiB").
 
 The server forwards both through one endpoint (`GET/POST /v1/memory`); "save as default" writes the run config
@@ -179,7 +192,7 @@ The server forwards both through one endpoint (`GET/POST /v1/memory`); "save as 
 |---|---|
 | Page pool, page lists, tiers, priorities | `src/common/state/` |
 | Step: picking conversations, sharing rows, accept | `src/common/spec/` and `src/common/serve/` |
-| `MEM`/`SET` parsing and answers | `src/common/serve/` |
+| `GET_MEMORY_USE`/`CHANGE_SETTINGS` parsing and answers | `src/common/serve/` |
 | Expert pages (evict, load, count use) | `src/common/experts/` |
 | Copies between pool, RAM and SSD | `src/base/gpu/` (the runtime interface), `src/base/platform/` (files) |
 | Qwen3.8 rows with parent table, its regions, its drafter | `src/models/qwen38/` |
@@ -190,14 +203,14 @@ The server forwards both through one endpoint (`GET/POST /v1/memory`); "save as 
 
 | Step | Work | Checked by |
 |---|---|---|
-| M0 | `MEM` in the three existing engines (read-only), `/v1/memory`, the panel without controls | the panel matches the engines' own numbers on Qwen3.8, Qwen3.6, DeepSeek. Done: `dffd3a25` |
+| M0 | `GET_MEMORY_USE` in the three existing engines (read-only), `/v1/memory`, the panel without controls | the panel matches the engines' own numbers on Qwen3.8, Qwen3.6, DeepSeek. Done: `dffd3a25` |
 | M0b | The desktop app shows the same panel: the panel is one framework-free module that the web page uses directly and the app (`apps/host`, `NativeMonitor`) wraps | the app and the web page draw the same bars from `/v1/memory` |
 | M1 | The page pool and page lists: chunks, growing and shrinking, experts and conversations trading pages, with unit tests (CPU). Done: `src/common/state/page_pool.cpp` | unit tests: allocation, growth, emptying a chunk, a full pool, no thrashing (`page_pool_test`) |
 | M2 | The new Qwen3.8 engine: one conversation in the pool, no drafting, same answers as today's engine | token-identical at temperature 0 against the old engine |
 | M3 | Several conversations, the step with rows per step and conversations at once | answers identical per conversation; speed against `--batch` |
 | M4 | Drafting with the row-sharing rule and the lookahead | identical answers; speed against today's MTP |
 | M5 | Pausing to RAM and SSD, priorities; experts read from the SSD without the file cache | pause and resume give the same answers; files saved before load; with too little memory for the experts, the same answers as with enough, and RAM use stays at the setting |
-| M6 | Live `SET`, the panel's controls (web page and app), "this session" and "save as default" through the server; the app's own memory and parallelism settings (`parallel`, `mtp`, `vram_reserve_mib`, ...) give way to these, so the server is the only writer | resize while decoding; the biggest-conversation limit refuses |
+| M6 | Live `CHANGE_SETTINGS`, the panel's controls (web page and app), "this session" and "save as default" through the server; the app's own memory and parallelism settings (`parallel`, `mtp`, `vram_reserve_mib`, ...) give way to these, so the server is the only writer | resize while decoding; the biggest-conversation limit refuses |
 | M7 | Measurements: guesses against other conversations' tokens, by where experts live; defaults chosen from them | numbers in DETAILS.md, measured on the Strix Halo and, if possible, the NVIDIA test PC |
 | M8 | Several GPUs: the shared layer split and planner, experts on any card, measured links, groups | tokens identical to one GPU; speed against today's layer split on the NVIDIA test PC (3060 + 3080, x16 and x4 if possible) |
 | M9 | Moving the layer cut while running | a cut moved during decoding gives the same tokens |
@@ -219,7 +232,7 @@ the new one is at least as fast.
   new engine only if upstream takes it, or if the fork publishes a feed of its own. The Terminal and source installs
   can use the fork's build.
 
-- Page size: one size for experts and conversation blocks (2 MiB), or two pools per memory?
+- Page size: experts of different sizes take several consecutive pages; should conversation blocks use the same page size, or a second, smaller size?
 - Should a paused conversation's pages on the SSD use the session file format (`conversation_file.hpp`), so
   "save" and "pause to SSD" are one thing?
 - What the panel shows for an old engine's settings it cannot change live: greyed out, or "applies after a restart"
