@@ -2,6 +2,7 @@
 #include "strata/core/peer_experts.hpp"
 
 #include "strata/base/gpu/device.hpp"   // primary_device() (STRATA_PRIMARY_DEVICE)
+#include "strata/base/gpu/on_device.hpp"
 #include "strata/common/kernels/cpu/expert_layout.hpp"
 #include "strata/common/kernels/cpu/hadamard.hpp"
 #include "strata/common/kernels/elementwise.hpp"
@@ -37,13 +38,6 @@ struct Meta {                           // one block, uploaded with one copy per
     int32_t out_row[CAP];               // multi-GPU: compact row -> entry row in the host `out`
 };
 
-/// Switches the calling thread to `dev` and back.  The engine's own thread lives on device 0.
-struct On {
-    int prev = 0;
-    explicit On(int dev) { cudaGetDevice(&prev); if (prev != dev) cudaSetDevice(dev); }
-    ~On() { int cur = 0; cudaGetDevice(&cur); if (cur != prev) cudaSetDevice(prev); }
-};
-
 /// #2666: `cudaDeviceCanAccessPeer` said yes and `cudaDeviceEnablePeerAccess` succeeded, and on a pair of GPUs behind a host bridge
 /// (2x RTX A4000, "PHB" in nvidia-smi topo) `cudaMemcpyPeerAsync` then returned success having moved nothing: the peer's input rows
 /// were zeros and the rows it sent back never arrived, so the first prompt's MoE output was garbage and the logits NaN.  Without
@@ -57,28 +51,28 @@ bool p2p_copies_data(int device) {
     const int dev[2] = {0, device};
     bool ok = true, tested = true;
     for (int k = 0; k < 2 && tested; ++k) {
-        On on(dev[k]);
+        OnDevice on(dev[k]);
         if (cudaMalloc((void**) &d[k], kN * 4) != cudaSuccess) { cudaGetLastError(); tested = false; }
     }
     for (int dir = 0; dir < 2 && tested && ok; ++dir) {   // 0: device 0 -> peer, 1: peer -> device 0
         const int from = dir == 0 ? 0 : 1, to = 1 - from;
         {
-            On on(dev[from]);
+            OnDevice on(dev[from]);
             if (cudaMemcpy(d[from], h.data(), kN * 4, cudaMemcpyHostToDevice) != cudaSuccess) { tested = false; break; }
         }
         {
-            On on(dev[to]);
+            OnDevice on(dev[to]);
             if (cudaMemset(d[to], 0, kN * 4) != cudaSuccess) { tested = false; break; }
         }
         if (cudaMemcpyPeer(d[to], dev[to], d[from], dev[from], kN * 4) != cudaSuccess) { tested = false; break; }
         {
-            On on(dev[to]);
+            OnDevice on(dev[to]);
             if (cudaMemcpy(back.data(), d[to], kN * 4, cudaMemcpyDeviceToHost) != cudaSuccess) { tested = false; break; }
         }
         ok = std::memcmp(back.data(), h.data(), kN * 4) == 0;
     }
     for (int k = 0; k < 2; ++k)
-        if (d[k] != nullptr) { On on(dev[k]); cudaFree(d[k]); }
+        if (d[k] != nullptr) { OnDevice on(dev[k]); cudaFree(d[k]); }
     if (!tested) { cudaGetLastError(); return true; }
     return ok;
 }
@@ -96,7 +90,7 @@ PeerExperts::~PeerExperts() { close(); }
 void PeerExperts::close() {
     if (device_ < 0) return;
     {
-        On on(device_);
+        OnDevice on(device_);
         if (stream_) cudaStreamSynchronize(stream_);
         if (refill_) cudaStreamSynchronize(refill_);
         cache_.close();
@@ -144,10 +138,10 @@ bool PeerExperts::open(int device, const std::vector<std::pair<int32_t, int32_t>
         if (const char* np = std::getenv("STRATA_PEER_NO_P2P"); np != nullptr && std::atoi(np) != 0) a = 0;   // test knob: pretend the pair has no P2P
         p2p_ = a && b;
         if (p2p_) {
-            On on0(primary_device());
+            OnDevice on0(primary_device());
             cudaError_t e0 = cudaDeviceEnablePeerAccess(device, 0);
             if (e0 == cudaErrorPeerAccessAlreadyEnabled) { cudaGetLastError(); e0 = cudaSuccess; }
-            On on1(device);
+            OnDevice on1(device);
             cudaError_t e1 = cudaDeviceEnablePeerAccess(primary_device(), 0);
             if (e1 == cudaErrorPeerAccessAlreadyEnabled) { cudaGetLastError(); e1 = cudaSuccess; }
             p2p_ = e0 == cudaSuccess && e1 == cudaSuccess;
@@ -156,13 +150,13 @@ bool PeerExperts::open(int device, const std::vector<std::pair<int32_t, int32_t>
                 std::fprintf(stderr, "strata: peer GPU %d: peer access is enabled but a test copy between the two GPUs arrived wrong "
                                      "(a host bridge between them, no real P2P): the prompt path takes the host route instead "
                                      "(STRATA_PEER_NO_P2P=1 does that by hand)\n", device);
-                { On q0(0); cudaDeviceDisablePeerAccess(device); cudaGetLastError(); }
-                { On q1(device); cudaDeviceDisablePeerAccess(0); cudaGetLastError(); }
+                { OnDevice q0(0); cudaDeviceDisablePeerAccess(device); cudaGetLastError(); }
+                { OnDevice q1(device); cudaDeviceDisablePeerAccess(0); cudaGetLastError(); }
                 p2p_ = false;
             }
         }
     }
-    On on(device);
+    OnDevice on(device);
     device_ = device;
     // scratch first, so the slots take what is really left
     int64_t ff = strata::kernels::cpu::FF;
@@ -282,7 +276,7 @@ bool PeerExperts::launch(int64_t layer, const float* x, const int32_t* ids, int6
     launched_rows_ = rows;
     // direct: x is the verifier's pinned (portable) doorbell row block - copied from where it is
     if (!direct) std::memcpy(h_x_, x, (size_t) (n_tok * H) * sizeof(float));
-    On on(device_);
+    OnDevice on(device_);
     const cudaStream_t s = stream_;
     if (!ck(cudaMemcpyAsync(d_x_, direct ? x : h_x_, (size_t) (n_tok * H) * sizeof(float), cudaMemcpyHostToDevice, s), "input", err) ||
         !ck(cudaMemcpyAsync(d_meta_, h_meta_, sizeof(Meta), cudaMemcpyHostToDevice, s), "plan", err))
@@ -317,7 +311,7 @@ bool PeerExperts::finish(float* out, std::string& err) {
     if (launched_rows_ == 0) return true;
     const auto t0 = std::chrono::steady_clock::now();
     {
-        On on(device_);
+        OnDevice on(device_);
         // spin on the stream (a blocking sync would sleep the pool thread and wake it late)
         cudaError_t e;
         while ((e = cudaStreamQuery(stream_)) == cudaErrorNotReady) {
@@ -361,7 +355,7 @@ bool PeerExperts::adapt(const float* usage, const int32_t* res0, int max_swaps, 
     if (swaps.empty()) return true;
     std::sort(swaps.begin(), swaps.end(), [](const Swap& a, const Swap& b) { return a.gain > b.gain; });
     if ((int) swaps.size() > max_swaps) swaps.resize((size_t) max_swaps);
-    On on(device_);
+    OnDevice on(device_);
     for (const Swap& s : swaps) {
         const size_t in = (size_t) (s.layer * n_expert_ + s.in), out = (size_t) (s.layer * n_expert_ + s.out);
         const int32_t slot = res_[out];
@@ -380,7 +374,7 @@ bool PeerExperts::adapt(const float* usage, const int32_t* res0, int max_swaps, 
 void PeerExperts::apply_pending(bool wait) {
     if (pending_.empty()) return;
     {
-        On on(device_);
+        OnDevice on(device_);
         if (wait) cudaEventSynchronize(refill_ev_);
         else if (cudaEventQuery(refill_ev_) != cudaSuccess) return;
     }

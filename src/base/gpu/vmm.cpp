@@ -7,6 +7,22 @@
 #include <mutex>
 
 namespace strata::core {
+
+void* find_driver_entry(const char* name) {
+    cudaDriverEntryPointQueryResult q{};
+    void* p = nullptr;
+#if CUDART_VERSION >= 12050
+    const cudaError_t e = cudaGetDriverEntryPointByVersion(name, &p, 12000, cudaEnableDefault, &q);
+#else   // the versioned query arrived in CUDA 12.5
+    const cudaError_t e = cudaGetDriverEntryPoint(name, &p, cudaEnableDefault, &q);
+#endif
+    if (e != cudaSuccess || q != cudaDriverEntryPointSuccess || p == nullptr) {
+        (void) cudaGetLastError();
+        return nullptr;
+    }
+    return p;
+}
+
 namespace {
 
 struct Api {
@@ -22,22 +38,6 @@ struct Api {
     decltype(&cuMemSetAccess) access = nullptr;
 };
 
-template <class F> bool resolve(const char* name, F& f) {
-    cudaDriverEntryPointQueryResult q{};
-    void* p = nullptr;
-#if CUDART_VERSION >= 12050
-    const cudaError_t e = cudaGetDriverEntryPointByVersion(name, &p, 12000, cudaEnableDefault, &q);
-#else   // the versioned query arrived in CUDA 12.5
-    const cudaError_t e = cudaGetDriverEntryPoint(name, &p, cudaEnableDefault, &q);
-#endif
-    if (e != cudaSuccess || q != cudaDriverEntryPointSuccess || p == nullptr) {
-        (void) cudaGetLastError();
-        return false;
-    }
-    f = (F) p;
-    return true;
-}
-
 // never destroyed: the K/V pools and the cache release their chunks from static destructors at exit
 const Api& api() {
     static Api& a = *new Api;
@@ -46,10 +46,12 @@ const Api& api() {
         decltype(&cuDeviceGetAttribute) attr = nullptr;
         decltype(&cuMemGetAllocationGranularity) granularity = nullptr;
         if (cudaGetDevice(&a.dev) != cudaSuccess) return;
-        if (!resolve("cuDeviceGetAttribute", attr) || !resolve("cuMemGetAllocationGranularity", granularity) ||
-            !resolve("cuMemAddressReserve", a.reserve) || !resolve("cuMemAddressFree", a.free_va) ||
-            !resolve("cuMemCreate", a.create) || !resolve("cuMemRelease", a.release) || !resolve("cuMemMap", a.map) ||
-            !resolve("cuMemUnmap", a.unmap) || !resolve("cuMemSetAccess", a.access))
+        if (!find_driver_entry("cuDeviceGetAttribute", attr) ||
+            !find_driver_entry("cuMemGetAllocationGranularity", granularity) ||
+            !find_driver_entry("cuMemAddressReserve", a.reserve) || !find_driver_entry("cuMemAddressFree", a.free_va) ||
+            !find_driver_entry("cuMemCreate", a.create) || !find_driver_entry("cuMemRelease", a.release) ||
+            !find_driver_entry("cuMemMap", a.map) || !find_driver_entry("cuMemUnmap", a.unmap) ||
+            !find_driver_entry("cuMemSetAccess", a.access))
             return;
         int vmm = 0;
         if (attr(&vmm, CU_DEVICE_ATTRIBUTE_VIRTUAL_MEMORY_MANAGEMENT_SUPPORTED, (CUdevice) a.dev) != CUDA_SUCCESS || !vmm)

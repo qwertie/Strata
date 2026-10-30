@@ -12,6 +12,17 @@ namespace strata::core {
 /// A physical chunk: the driver's allocation handle (CUmemGenericAllocationHandle); 0 = none.
 using VmmChunk = unsigned long long;
 
+/// Looks up the CUDA driver function `name` through the runtime's entry-point query; nullptr when the driver lacks
+/// it.  CUDA builds only.
+void* find_driver_entry(const char* name);
+/// Sets `f` to the driver function `name` (see find_driver_entry); false, `f` unchanged, when there is none.  Used by
+/// vmm.cpp and by ExpertCache's segmented arena.
+template <class F> bool find_driver_entry(const char* name, F& f) {
+    void* p = find_driver_entry(name);
+    if (p != nullptr) f = reinterpret_cast<F>(p);
+    return p != nullptr;
+}
+
 /// The current device supports it and the entry points resolved.
 bool vmm_available();
 /// The chunk size (0 when not available).

@@ -93,30 +93,16 @@ struct Vmm {
     bool ok = false;
 };
 
-template <class F> bool entry(const char* name, F& f) {
-    void* p = nullptr;
-    cudaDriverEntryPointQueryResult q{};
-#if CUDART_VERSION >= 12050
-    const cudaError_t e = cudaGetDriverEntryPointByVersion(name, &p, 12000, cudaEnableDefault, &q);
-#else
-    const cudaError_t e = cudaGetDriverEntryPoint(name, &p, cudaEnableDefault, &q);
-#endif
-    if (e != cudaSuccess || q != cudaDriverEntryPointSuccess || p == nullptr) {
-        (void) cudaGetLastError();
-        return false;
-    }
-    f = reinterpret_cast<F>(p);
-    return true;
-}
-
 const Vmm& vmm() {
     static const Vmm v = [] {
         Vmm x;
-        x.ok = entry("cuDeviceGet", x.device_get) && entry("cuDeviceGetAttribute", x.attribute) &&
-               entry("cuMemGetAllocationGranularity", x.granularity) && entry("cuMemAddressReserve", x.reserve) &&
-               entry("cuMemAddressFree", x.address_free) && entry("cuMemCreate", x.create) &&
-               entry("cuMemRelease", x.release) && entry("cuMemMap", x.map) && entry("cuMemUnmap", x.unmap) &&
-               entry("cuMemSetAccess", x.set_access);
+        x.ok = find_driver_entry("cuDeviceGet", x.device_get) &&
+               find_driver_entry("cuDeviceGetAttribute", x.attribute) &&
+               find_driver_entry("cuMemGetAllocationGranularity", x.granularity) &&
+               find_driver_entry("cuMemAddressReserve", x.reserve) &&
+               find_driver_entry("cuMemAddressFree", x.address_free) && find_driver_entry("cuMemCreate", x.create) &&
+               find_driver_entry("cuMemRelease", x.release) && find_driver_entry("cuMemMap", x.map) &&
+               find_driver_entry("cuMemUnmap", x.unmap) && find_driver_entry("cuMemSetAccess", x.set_access);
         return x;
     }();
     return v;

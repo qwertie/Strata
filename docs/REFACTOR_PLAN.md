@@ -46,7 +46,7 @@ session on an NVIDIA machine. Changes nobody can test come last.
 |---|---|---:|---|
 | B1 | Split `src/kernels/` and `src/prefill/` by what they depend on; remove Qwen's `geometry.hpp` from the 12 shared kernels | small | done: moves only; the 11 GPU kernels that include `geometry.hpp` are Qwen3.8's (or the Qwen families') and moved to `src/models/`, the CPU expert path's check moved to Qwen3.8's session |
 | B2 | DeepSeek's own quant kernels (`ds4_iq`, `ds4_gguf`, `ds4_tq`) and its sampler (`vendor/sampler.cu`) replaced by the shared ones | 3–5K | sampler's plain draw shared; quant kernels kept (open issues); unbuilt CPU rows removed |
-| B3 | The multi-GPU parts of `src/common/experts` (`peer_experts`, `remote_experts`) | ~0.5K | |
+| B3 | The multi-GPU parts of `src/common/experts` (`peer_experts`, `remote_experts`) | ~0.5K | kept in `src/core` (they use Qwen3.8's kernels and the CUDA runtime directly); duplicates merged, the SYCL copy of `peer_experts.hpp` dropped |
 | B✓ | Test session on an RTX 30-series machine with several cards: parity tests on sm_86, sm_75/80 through `STRATA_EMULATE_CC`, multi-GPU, a DeepSeek speed comparison. Ada (sm_89) and Blackwell (sm_120, NVFP4) stay untested unless such a card is found. | | |
 
 ### Phase C: nobody here can test it (optional)
@@ -193,6 +193,41 @@ a standard model; check with `nvidia-smi`), 48 GB of RAM. Both cards are sm_86.
   was measured at about 8-10 tokens/s). About 257 GB on an NVMe drive; the owner's files can be carried over and given
   with `--gguf-dir`.
 
+- **B3, the multi-GPU expert paths and the page-locked RAM copy.** What changed, each meant to make the same CUDA calls
+  with the same arguments in the same order:
+  - `src/core/peer_experts.cpp` (`--peer-device`): its own device switch `On` became the shared `OnDevice`. The
+    `cudaSetDevice` calls are the same; the redundant `cudaGetDevice` queries before each switch back are gone.
+  - `src/program/generate.cpp`: the helper caches' context start-up (`RemoteExperts::preflight`, two loops: with and
+    without `STRATA_EARLY_REMOTE_CONTEXTS=1`), a later stage's `VerifyHits` (two places: the stage's verifier and its
+    `--pipeline-windows` twin) and the `STRATA_SPLIT_OWN_BUFFERS` switch (two places) are each written once.
+  - `src/core/expert_cache.cpp` (`--vram-elastic`, NVIDIA only): the driver functions are looked up through
+    `find_driver_entry` of `src/base/gpu/vmm.cpp` (the same query `--kv-grow` uses). Never run on AMD: HIP builds
+    have no segmented cache.
+  - `src/core/expert_source.cpp` (`pin_cache_complement`): the two ways of page-locking a prefix of the resident RAM
+    copy (the stepped one of `STRATA_PIN_GUARD`, Linux only; `STRATA_PARTIAL_PIN=1` with `--resident-budget-gib`)
+    share `cut_at_blob` and `register_prefix`.
+
+  On the two-card machine (call the RTX 3060 12 GB CUDA0 and the 3080 CUDA1 as `nvidia-smi` numbers them; swap them
+  once for the other order), with the Qwen3.8 IQ3_S pack and its expert profile, through the engine's `--serve` and
+  the same requests for both builds (greedy, a 2,000-token prompt, then a 128-token answer, and a second turn that
+  reuses the prompt). For each run compare the tokens and the startup lines (the split plan, the slot and GiB counts
+  of every card, "keeps its own prompt buffers", "peer GPU ...", "CUDA1 context ready") with the build of `7e3a3248`,
+  and decode tok/s within noise:
+  1. Layer split, `"gpu": [0, 1]`: `--layer-split auto`, then the uneven `--layer-split 12` (the first card 12 of 48
+     layers); each once more with `STRATA_SPLIT_OWN_BUFFERS=0` (every stage borrows), with `--pipeline-windows 1`,
+     and with `--resident-experts` (the stages' lend regions in the RAM copy).
+  2. Peer tier: `--peer-device 1` (no `--layer-split`). GeForce cards on Windows are expected to report no peer
+     access, so the prompt path's host route runs (activations and rows through mapped host memory); check the log for
+     the peer's expert count and that a long prompt works. Then `STRATA_PEER_DIRECT=0` (the result rows copied back
+     instead of written straight into host memory) and `STRATA_PEER_NO_P2P=1` (same route forced; on these cards it
+     should change nothing). The direct path and the test copy of `p2p_copies_data` need P2P and stay untested.
+  3. Helper cache: `--expert-cache-device1 auto`, then with `--remote-expert-opt`, then with
+     `STRATA_EARLY_REMOTE_CONTEXTS=1`, then with `STRATA_PREFILL_HELPER_SOURCE=1`.
+  4. One card, NVIDIA only: `ctest -R "vmm_test|expert_cache_segmented_test"`, and the engine with `--vram-elastic` and
+     with `--kv-grow` (both start; the same tokens as without them).
+  5. The page-locked RAM copy on Windows: `--resident-experts --resident-budget-gib 30` with `STRATA_PARTIAL_PIN=1`;
+     the log's "GiB of it registered for the GPU (the hottest)" must give the same size as the build before. The
+     stepped path (`STRATA_PIN_GUARD=2`) runs only on Linux (WSL2 will do).
 - **B2, DeepSeek's sampler** (`include/strata/models/deepseekv41/sampler.hpp`): the plain draw went from DeepSeek's
   one-block kernel to the shared `sample_tokens`: greedy rows take the cluster argmax on sm_90 and later
   (`sampler_greedy_cluster_kernel`, never run on AMD), sampled rows the split top_k. Run `sampler_parity --selftest`

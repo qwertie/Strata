@@ -3438,6 +3438,35 @@ bool FileExpertSource::pin_cache_complement(
                     const char* v = std::getenv("STRATA_PARTIAL_PIN_GIB");
                     return (uint64_t) ((v != nullptr && std::atof(v) > 0 ? std::atof(v) : 24.0) * 1073741824.0);
                 }();
+                // The start of the blob that runs past `limit`, or `limit`: a blob that started inside a registered
+                // range and ran past it would be taken as page-locked by a cudaMemcpyAsync and refused
+                auto cut_at_blob = [&](uint64_t limit) {
+                    for (size_t i = 0; i < offsets.size(); ++i) {
+                        if (offsets[i] == kNoComplement) continue;
+                        const uint64_t b = layer_blob_bytes_[i / (size_t) n_expert_];
+                        if (offsets[i] < limit && offsets[i] + b > limit) return offsets[i];
+                    }
+                    return limit;
+                };
+                // Page-locks the arena's first `w` bytes and maps them for the GPU (`device`, `partial_pin`).  Returns
+                // 0 when that worked, 1 when the driver page-locked them but gave no device address (unregistered
+                // again), 2 when it refused.
+                auto register_prefix = [&](uint64_t w) {
+                    if (cudaHostRegister(arena, (size_t) w, cudaHostRegisterMapped | cudaHostRegisterPortable) !=
+                        cudaSuccess) {
+                        (void) cudaGetLastError();
+                        return 2;
+                    }
+                    void* alias = nullptr;
+                    if (cudaHostGetDevicePointer(&alias, arena, 0) == cudaSuccess && alias != nullptr) {
+                        device = (const uint8_t*) alias;
+                        partial_pin = w;
+                        return 0;
+                    }
+                    (void) cudaGetLastError();
+                    (void) cudaHostUnregister(arena);
+                    return 1;
+                };
                 if (paced) {
                     // #1250: the pages are taken in 1 GiB steps by ordinary page faults (which reclaim file cache as
                     // they need to), each only while the RAM available (the cgroup's room included) stays above the
@@ -3462,31 +3491,9 @@ bool FileExpertSource::pin_cache_complement(
                             for (uint64_t at = got; at < got + step; at += kPage) ((volatile uint8_t*) arena)[at] = 0;
                         got += step;
                     }
-                    // cut at an expert boundary: a blob that runs past the registered range would be refused by a
-                    // cudaMemcpyAsync as not page-locked
-                    uint64_t w = got;
-                    for (size_t i = 0; i < offsets.size() && w < bytes; ++i) {
-                        if (offsets[i] == kNoComplement) continue;
-                        const uint64_t b = layer_blob_bytes_[i / (size_t) n_expert_];
-                        if (offsets[i] < got && offsets[i] + b > got) { w = offsets[i]; break; }
-                    }
-                    if (w > 0) {
-                        if (cudaHostRegister(arena, (size_t) w, cudaHostRegisterMapped | cudaHostRegisterPortable) ==
-                            cudaSuccess) {
-                            void* alias = nullptr;
-                            if (cudaHostGetDevicePointer(&alias, arena, 0) == cudaSuccess && alias != nullptr) {
-                                device = (const uint8_t*) alias;
-                                partial_pin = w;
-                            } else {
-                                (void) cudaGetLastError();
-                                (void) cudaHostUnregister(arena);
-                                if (stop == nullptr) stop = "no device alias";
-                            }
-                        } else {
-                            (void) cudaGetLastError();
-                            if (stop == nullptr) stop = "the driver refused to page-lock it";
-                        }
-                    }
+                    if (const uint64_t w = cut_at_blob(got); w > 0)
+                        if (const int r = register_prefix(w); r != 0 && stop == nullptr)
+                            stop = r == 1 ? "no device alias" : "the driver refused to page-lock it";
                     lock_off = partial_pin;
                     char msg[240];
                     if (stop != nullptr)
@@ -3505,29 +3512,8 @@ bool FileExpertSource::pin_cache_complement(
                 } else if (budget_bytes > 0 && partial_on) {
                     const uint64_t step = 2ull << 30;
                     for (uint64_t want = std::min(bytes, pin_cap); want >= step; want = want > step ? want - step : 0) {
-                        // cut at an expert boundary: a blob that started inside the registered range and ran past it
-                        // would be taken as page-locked by a cudaMemcpyAsync and refused ("adaptive refill failed")
-                        uint64_t w = want;
-                        for (size_t i = 0; i < offsets.size(); ++i) {
-                            if (offsets[i] == kNoComplement) continue;
-                            const uint64_t b = layer_blob_bytes_[i / (size_t) n_expert_];
-                            if (offsets[i] < want && offsets[i] + b > want) { w = offsets[i]; break; }
-                        }
-                        if (w == 0) break;
-                        if (cudaHostRegister(arena, (size_t) w, cudaHostRegisterMapped | cudaHostRegisterPortable) ==
-                            cudaSuccess) {
-                            void* alias = nullptr;
-                            if (cudaHostGetDevicePointer(&alias, arena, 0) == cudaSuccess && alias != nullptr) {
-                                device = (const uint8_t*) alias;
-                                partial_pin = w;
-                            } else {
-                                (void) cudaGetLastError();
-                                (void) cudaHostUnregister(arena);
-                            }
-                            break;
-                        }
-                        (void) cudaGetLastError();
-                        if (want <= step) break;
+                        const uint64_t w = cut_at_blob(want);
+                        if (w == 0 || register_prefix(w) != 2 || want <= step) break;
                     }
                     char msg[160];
                     std::snprintf(msg, sizeof msg, "%.2f GiB of it registered for the GPU (the hottest)",

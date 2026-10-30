@@ -21,7 +21,9 @@ mapped host memory, the driver's virtual memory functions), which code in `src/c
 own hybrid slots in `src/models/qwen36/q36_engine.cu`, DeepSeek its own store in
 `src/models/deepseekv41/ds4_store.hpp`.
 
-**B3** adds the multi-GPU parts (`peer_experts.cpp`, `remote_experts.cpp`).
+The multi-GPU parts stay in `src/core/` too (B3): the peer tier (`peer_experts`) and the helper caches
+(`remote_experts`, `remote_expert_opt`). Besides calling the CUDA runtime directly, they compute with Qwen3.8's kernels
+(`include/strata/models/qwen38/kernels/`), a layer above this one.
 
 See [docs/ARCHITECTURE.md](../../../docs/ARCHITECTURE.md) for the layers and
 [docs/REFACTOR_PLAN.md](../../../docs/REFACTOR_PLAN.md) for the steps.
