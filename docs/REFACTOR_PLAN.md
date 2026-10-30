@@ -249,3 +249,4 @@ alternating runs of the two builds. Models on this PC: Qwen3.8 IQ3_S (`strata-iq
 | A5 | `62bb0aac` | 490,952 | −2,196 | DeepSeek on the shared command loop (after the DeepSeek 6-shard support, +146, and two DeepSeek fixes) |
 | A2b | `043ccf2e` | 490,670 | −2,478 | a second Python sweep: shared atomic writers, hashing, GPU probes, test fixtures |
 | B2 | `b1002bd0` | 489,879 | −3,269 | DeepSeek's plain draw on the shared sampler; ~710 never-compiled lines removed |
+| B1 | `35311604` | 486,846 | −6,302 | `src/kernels` and `src/prefill` split into the layered folders; 5 never-compiled SYCL copies removed |
