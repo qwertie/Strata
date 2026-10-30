@@ -653,6 +653,7 @@ class StrataEngine:
         self.max_context = int(args[args.index("--max-context") + 1]) if "--max-context" in args else 4096
         self.can_stop = False            # the engine honours a STOP line mid-request (READY <ctx> stop)
         self.can_list = False            # it answers LIST_CONVERSATIONS and GET_CONTEXT_WINDOWS (... conversations)
+        self.can_report_memory = False   # it answers MEM (... memory)
         self.last = {}
         self.info = {}                   # INFO key=value facts (engine 0.1.8+): kv, expert slots, ... (Monitor tab)
         self.terminal_stages: list[dict] = []  # final layer ranges from this engine start's bounded stderr log
@@ -736,6 +737,7 @@ class StrataEngine:
                 self.max_context = int(f[1])
                 self.can_stop = "stop" in f[2:]
                 self.can_list = "conversations" in f[2:]
+                self.can_report_memory = "memory" in f[2:]
                 break
         loading.set()
         if self.max_context <= 0:
@@ -1047,13 +1049,15 @@ class StrataEngine:
             if time.time() > deadline:
                 raise EngineDied("the engine did not answer the VRAM command")
 
-    def _ask(self, command: str, kind: str, timeout: float = 30.0) -> list[list[str]]:
-        """Send `command` and return the fields of each `kind` line of its answer, up to its END_ line (other lines on
-        the way - a NOTE, BSTAT - are passed over).  Raises EngineDied when the engine ended, refused or said nothing."""
+    def _ask(self, command: str, kind: str, timeout: float = 30.0, end: str | None = None,
+             also: tuple[str, ...] = ()) -> list[list[str]]:
+        """Send `command` and return the fields of each `kind` line (and `also` line) of its answer, up to its `end`
+        line (default END_<kind>S; other lines on the way - a NOTE, BSTAT - are passed over).  Raises EngineDied when
+        the engine ended, refused or said nothing."""
         if not self.alive():
             raise EngineDied("the engine is not running")
         self._send(command)
-        name, end, out = command.split()[0], "END_" + kind + "S", []
+        name, end, out = command.split()[0], end or "END_" + kind + "S", []
         deadline = time.time() + timeout
         while True:
             try:
@@ -1067,7 +1071,7 @@ class StrataEngine:
                 return out
             if f[:1] == ["ERR"]:
                 raise EngineDied(f"the engine refused {name}: {line[4:].strip()}")
-            if f[:1] == [kind]:
+            if f and (f[0] == kind or f[0] in also):
                 out.append(f)
 
     def list_conversations(self, marker=(), preview: int = 0) -> list[dict]:
@@ -1093,6 +1097,25 @@ class StrataEngine:
             # CONTEXT_WINDOW <id> <n> [<ids>]  or  CONTEXT_WINDOW <id> gone
             out[f[1]] = None if f[2] == "gone" else array("i", map(int, f[3].split(","))) if len(f) > 3 else array("i")
         return out
+
+    def memory(self) -> dict:
+        """GET /v1/memory: `MEM` (an engine whose READY says "memory"; include/strata/common/serve/memory_report.hpp) -
+        what the engine holds in each memory and its settings: {"memories": [{"id", "name", "total", "free", "unified",
+        "uses": {use: bytes}, "paused_count", "paused_budget"}], "settings": {key: number}}.  A value the engine did not
+        say is None (uses: absent).  The same turn rules as list_conversations."""
+        memories, settings = [], {}
+        for f in self._ask("MEM", "MEMORY", end="END_MEMORY", also=("SETTINGS",)):
+            # MEMORY <id> [key=value ...] [name=<text to the end>]  /  SETTINGS [key=value ...]
+            at = next((i for i, x in enumerate(f) if x.startswith("name=")), len(f))
+            keys = {k: int(v) for k, _, v in (x.partition("=") for x in f[1 if f[0] == "SETTINGS" else 2:at])}
+            if f[0] == "SETTINGS":
+                settings = keys
+                continue
+            memories.append({"id": f[1], "name": " ".join(f[at:])[5:] or None, "total": keys.pop("total", None),
+                             "free": keys.pop("free", None), "unified": bool(keys.pop("unified", 0)),
+                             "paused_count": keys.pop("paused_count", None),
+                             "paused_budget": keys.pop("paused_budget", None), "uses": keys})
+        return {"memories": memories, "settings": settings}
 
     @staticmethod
     def sampling_keys(sampling: dict) -> str:

@@ -1188,6 +1188,7 @@ class Service:
         self.api_monitor = False
         self.context_list = None                        # the Context view's last list (context_view)
         self.context_shown = None                       # ... and the context window it read last (context_window)
+        self.memory_last = {"at": None, "memories": [], "settings": {}}   # the engine's last MEM answer (memory_view)
         self.api_requests = collections.deque(maxlen=100)  # bounded I/O in memory; no headers or API keys
         self.request_trace = threading.local()
         self.history = collections.deque(maxlen=500)    # the last finished requests, newest last (GET /metrics)
@@ -1951,6 +1952,42 @@ class Service:
         got = self.context_list
         return {"available": True, **base, "busy": busy, "error": error, "at": got and got["at"],
                 "entries": got["entries"] if got else []}
+
+    def memory_view(self) -> dict:
+        """GET /v1/memory (the web page's Memory panel): what the engine holds in each memory and its settings
+        (StrataEngine.memory), and the machine's own view - its RAM and what the hardware sampler reads of the GPUs.
+        The engine's `ram` gets the machine's size and free RAM, and each memory with a size gets "other": what is in
+        use there that the engine did not name (other programs, buffers it does not count).  While a request has the
+        engine's turn: the last answer, marked busy."""
+        from strata_base.memory import read_ram
+        eng, ram = self.engine, read_ram()
+        tel = self.telemetry.snapshot() if getattr(self, "telemetry", None) else {"now": {}, "static": {}}
+        now = tel["now"]
+        gpus = now.get("gpus") or ([{"index": int(getattr(self, "gpu_index", 0) or 0),
+                                     "name": tel["static"].get("gpu_name"), "mem_used": now.get("gpu_mem_used"),
+                                     "mem_total": now.get("gpu_mem_total")}] if now.get("gpu_mem_total") else [])
+        base = {"loaded": self.loaded(), "machine": {"ram_total": ram.total, "ram_free": ram.available, "gpus": gpus}}
+        if not self.loaded():
+            return {"available": False, "reason": "unloaded", **base}
+        if not getattr(eng, "can_report_memory", False):
+            return {"available": False, "reason": "engine", **base}
+        busy, error = False, None
+        try:
+            with self._engine_turn() as turn:
+                busy = not turn
+                if turn:
+                    self.memory_last = {"at": time.time(), **eng.memory()}
+        except engine_client.EngineDied as e:
+            error = str(e)
+        memories = []
+        for m in self.memory_last["memories"]:
+            m = dict(m)
+            if m["id"] == "ram" and m["total"] is None:
+                m["total"], m["free"] = ram.total, ram.available
+            if m["total"] is not None and m["free"] is not None:
+                m["other"] = max(0, m["total"] - m["free"] - sum(m["uses"].values()))
+            memories.append(m)
+        return {"available": True, **base, "busy": busy, "error": error, **self.memory_last, "memories": memories}
 
     def _context_entries(self, held: list[dict]) -> list[dict]:
         """The engine's list as the Context view names it.  `main` is the engine's own session: with --batch, where a
@@ -4007,6 +4044,10 @@ def make_handler(svc: Service):
                         self._json(400, {"error": {"message": "invalid conversation id"}})
                     else:
                         self._json(*svc.context_window(cid))
+                return
+            if path == "/v1/memory":                       # the Memory panel (docs/MEMORY_MANAGER_PLAN.md, M0)
+                if self._authorized():
+                    self._json(200, svc.memory_view())
                 return
             if path == "/api/requests" and svc.api_monitor:
                 if self._authorized():

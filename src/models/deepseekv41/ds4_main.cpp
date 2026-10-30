@@ -262,8 +262,8 @@ bool parse_gen(const std::string& line, Req& r) {
 int serve(strata::ds4::Model& m, const std::string& eos_list, bool spec, float conf_min, const std::string& pack) {
     std::vector<int> eos = parse_ids(eos_list);
     for (const std::string& l : m.info_lines()) std::printf("%s\n", l.c_str());
-    // "stop": STOP ends a request; "conversations": LIST_CONVERSATIONS and GET_CONTEXT_WINDOWS
-    std::printf("READY %lld stop conversations\n", (long long) m.max_context());
+    // "stop": STOP ends a request; "conversations": LIST_CONVERSATIONS and GET_CONTEXT_WINDOWS; "memory": MEM
+    std::printf("READY %lld stop conversations memory\n", (long long) m.max_context());
     std::fflush(stdout);
     std::fprintf(stderr, "maya ds4 serve: GEN <max_new> [keys] <ids>; GENI <max_new> [keys] <pictures> <ids>; STOP, QUIT, LIST_CONVERSATIONS, GET_CONTEXT_WINDOWS\n");
     unsigned long long counter = 0;
@@ -605,6 +605,11 @@ int serve(strata::ds4::Model& m, const std::string& eos_list, bool spec, float c
                             slots[i].tokens.data(), slots[i].tokens.size(), slots[i].tokens.size(), slots[i].bytes,
                             slots[i].bytes});
         return held;
+    };
+    hooks.describe_memory = [&] {   // MEM: the model's memories, and the slot folder's cap on the SSD
+        strata::serve::MemoryReport r = m.describe_memory();
+        if (slot_keep) r.at("ssd").paused_budget = slot_budget;
+        return r;
     };
     strata::serve::Loop loop(in, hooks);
     std::string line;

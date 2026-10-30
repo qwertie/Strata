@@ -5,6 +5,7 @@
 #include "strata/base/platform/thread_name.hpp"
 
 #include <condition_variable>
+#include <cstdio>
 #include <cstdlib>
 #include <deque>
 #include <mutex>
@@ -148,6 +149,14 @@ bool Loop::next(std::string& line) {
         }
         if (hooks_.list_conversations && core::is_conversation_command(line)) {
             core::answer_conversation_command(line, hooks_.list_conversations());
+            continue;
+        }
+        if (hooks_.describe_memory && line == "MEM") {
+            const std::string s = format_memory_report(
+                hooks_.describe_memory(),
+                hooks_.list_conversations ? hooks_.list_conversations() : std::vector<core::HeldConversation>{});
+            std::fwrite(s.data(), 1, s.size(), stdout);
+            std::fflush(stdout);
             continue;
         }
         return true;

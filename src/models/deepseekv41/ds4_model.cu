@@ -21,6 +21,7 @@
 #include "ds4_iq.cuh"
 #include "ds4_gguf_cpu.hpp"
 #include "ds4_kernels.cuh"
+#include "strata/base/gpu/memory_info.hpp"
 #include "strata/base/platform/os.hpp"
 #include "ds4_pool.hpp"
 #include "ds4_store.hpp"
@@ -9350,6 +9351,41 @@ struct Model::Impl {
         }
         return v;
     }
+
+    strata::serve::MemoryReport describe_memory() const {
+        strata::serve::MemoryReport r;
+        std::vector<size_t> drafter(devs.size(), 0);   // the DSpark blocks' routed experts per device (in d.experts)
+        size_t lane = 0;                                // the CPU lane's experts
+        for (const Layer& l : L) {
+            lane += (size_t) (l.n_exp - l.n_vram) * l.blob;
+            for (int m = 0; m < l.nm && l.mtp; ++m)
+                drafter[(size_t) member(l, m).dev] += (size_t) l.n_slots * unit(member(l, m));
+        }
+        for (size_t di = 0; di < devs.size(); ++di) {
+            const Dev& d = devs[di];
+            strata::serve::Memory& gpu = r.gpu(d.id);
+            strata::core::read_gpu_memory(d.id, gpu.name, gpu.total, gpu.free, gpu.unified);
+            gpu.add("weights", d.weights);
+            gpu.add("experts", d.experts - drafter[di]);
+            gpu.add("drafter", drafter[di]);
+            gpu.add("conversations", d.caches);
+            gpu.add("scratch", d.scratch);
+        }
+        strata::serve::Memory& ram = r.at("ram");
+        for (const size_t b : ram_chunk_bytes)   // the RAM tier's and the copied CPU-lane experts
+            ram.add("experts", b);
+        if (store) ram.add("experts", store->slots_allocated() * store->slot_bytes());
+        if (!file_experts) ram.add("experts", lane);
+        uint64_t engram = 0;
+        for (const auto& kt : pk.t)
+            if (kt.first.find(".engram.embed.") != std::string::npos) engram += kt.second.bytes;
+        strata::serve::Memory& ssd = r.at("ssd");
+        if (file_experts) ssd.add("experts", lane);
+        ssd.add("engram", engram);
+        r.settings = {{"context", o.max_context}, {"concurrent", 1}};
+        if (g.n_mtp == 0 || max_drafts > 0) r.settings.emplace_back("lookahead", g.n_mtp == 0 ? 0 : max_drafts);
+        return r;
+    }
 };
 
 Model::Model() : p_(new Impl) {}
@@ -9449,5 +9485,6 @@ const Stats& Model::stats() const {
 }
 std::string Model::describe() const { return p_->describe(); }
 std::vector<std::string> Model::info_lines() const { return p_->info_lines(); }
+strata::serve::MemoryReport Model::describe_memory() const { return p_->describe_memory(); }
 
 }  // namespace strata::ds4

@@ -258,6 +258,33 @@ class Monitor(unittest.TestCase):
         self.assertEqual((again[0], again[1]["busy"], again[1]["tokens"]), (200, True, [5, 6]))
         self.assertEqual(other[0], 503)                  # not read before: it waits for the engine's turn
 
+    def test_memory(self):
+        self.assertEqual(self.request("/v1/memory")[1]["reason"], "engine")   # an engine before "memory"
+        self.engine.can_report_memory = True
+        self.engine.memory = lambda: {"memories": [
+            {"id": "gpu0", "name": "GPU", "total": 1000, "free": 100, "unified": False, "paused_count": None,
+             "paused_budget": None, "uses": {"experts": 600, "conversations": 200}},
+            {"id": "ram", "name": None, "total": None, "free": None, "unified": False, "paused_count": 1,
+             "paused_budget": 50, "uses": {"paused": 20}}], "settings": {"context": 4096}}
+        self.enterContext(mock.patch("strata_base.memory.read_ram", return_value=mock.Mock(total=5000, available=3000)))
+        code, body = self.request("/v1/memory")
+        self.assertEqual((code, body["available"], body["busy"], body["settings"]),
+                         (200, True, False, {"context": 4096}))
+        self.assertEqual(body["machine"]["ram_total"], 5000)
+        gpu, ram = body["memories"]
+        self.assertEqual(gpu["other"], 100)              # in use there, not named by the engine
+        self.assertEqual((ram["total"], ram["free"], ram["other"]), (5000, 3000, 1980))   # the machine's RAM
+        self.svc.CONTEXT_WAIT_S = 0.05
+        with self.svc.fifo:                              # a request is running: the last answer, marked busy
+            again = self.request("/v1/memory")[1]
+        self.assertEqual((again["busy"], again["at"], again["memories"]), (True, body["at"], body["memories"]))
+        web = Path(__file__).parent / "web"            # the Memory panel draws it
+        html, js = (web / "index.html").read_text(encoding="utf-8"), (web / "app.js").read_text(encoding="utf-8")
+        for el in ("mem-card", "mem-sum", "mem-bars", "mem-settings"):
+            self.assertIn(f'id="{el}"', html)
+            self.assertIn(f'"{el}"', js)
+        self.assertIn('"v1/memory"', js)
+
     def test_context_needs_the_key(self):
         self.svc.api_key = "k"
         self.assertEqual(self.request("/api/context")[0], 401)
@@ -327,6 +354,21 @@ class EngineConversations(unittest.TestCase):
         self.assertEqual(engine.proc.stdin.getvalue(), "GET_CONTEXT_WINDOWS parked4 slot1 parked3\n")
         self.assertEqual({k: v if v is None else v.tolist() for k, v in got.items()},
                          {"parked4": [1, 2], "slot1": [], "parked3": None})
+
+    def test_memory(self):
+        engine = self.bare(["MEMORY gpu0 total=1000 free=300 unified=1 weights=100 experts=450 name=Radeon  8060S",
+                            "NOTE something else", "MEMORY ram paused=300 paused_count=2 paused_budget=800",
+                            "MEMORY ssd engram=70", "SETTINGS context=32768 concurrent=1", "END_MEMORY"])
+        got = engine.memory()
+        self.assertEqual(engine.proc.stdin.getvalue(), "MEM\n")
+        self.assertEqual(got, {"memories": [
+            {"id": "gpu0", "name": "Radeon 8060S", "total": 1000, "free": 300, "unified": True, "paused_count": None,
+             "paused_budget": None, "uses": {"weights": 100, "experts": 450}},
+            {"id": "ram", "name": None, "total": None, "free": None, "unified": False, "paused_count": 2,
+             "paused_budget": 800, "uses": {"paused": 300}},
+            {"id": "ssd", "name": None, "total": None, "free": None, "unified": False, "paused_count": None,
+             "paused_budget": None, "uses": {"engram": 70}}], "settings": {"context": 32768, "concurrent": 1}})
+        self.assertEqual(self.bare(["SETTINGS", "END_MEMORY"]).memory(), {"memories": [], "settings": {}})
 
     def test_an_engine_that_refuses_or_ends(self):
         from strata_common.engine_client import EngineDied

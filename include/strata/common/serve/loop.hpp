@@ -2,12 +2,14 @@
 //
 // The server writes one command per line: requests (GEN, GENI, BGEN, BGENI: request.hpp), STOP (end the running
 // request), BSTOP <slot> (end a batch slot), BYIELD <slot> (a prompt read gives way to a shorter one),
-// LIST_CONVERSATIONS and GET_CONTEXT_WINDOWS (token_listing.hpp), SAVE / RESTORE, VRAM and QUIT.  `Input` reads them on
-// a thread of its own, so that STOP, BSTOP and BYIELD reach a request that is still running; `Loop` hands an engine the
-// commands that are its own and answers the others itself.  Each engine path (src/program/generate.cpp, src/models/qwen36/q36_engine.cu,
-// src/models/deepseekv41/ds4_main.cpp) says what it does through `EngineHooks`.
+// LIST_CONVERSATIONS and GET_CONTEXT_WINDOWS (token_listing.hpp), MEM (memory_report.hpp), SAVE / RESTORE, VRAM and
+// QUIT.  `Input` reads them on a thread of its own, so that STOP, BSTOP and BYIELD reach a request that is still
+// running; `Loop` hands an engine the commands that are its own and answers the others itself.  Each engine path
+// (src/program/generate.cpp, src/models/qwen36/q36_engine.cu, src/models/deepseekv41/ds4_main.cpp) says what it does
+// through `EngineHooks`.
 #pragma once
 
+#include "strata/common/serve/memory_report.hpp"
 #include "strata/common/state/token_listing.hpp"
 
 #include <atomic>
@@ -69,6 +71,9 @@ struct EngineHooks {
     std::function<void()> on_late_yield;
     /// Describes the conversations the engine holds, for LIST_CONVERSATIONS and GET_CONTEXT_WINDOWS.
     std::function<std::vector<core::HeldConversation>()> list_conversations;
+    /// Describes the engine's memories and settings for MEM (memory_report.hpp); the parked conversations of
+    /// list_conversations are added to it.
+    std::function<MemoryReport()> describe_memory;
 };
 
 /// The engine's command loop: `while (loop.next(line))` gets the commands the engine handles itself (requests,

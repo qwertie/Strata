@@ -40,6 +40,7 @@
 #include "strata/base/gpu/pin_budget.hpp"
 #include "strata/common/experts/uma_cache.hpp"
 #include "strata/core/remote_experts.hpp"
+#include "strata/base/gpu/memory_info.hpp"
 #include "strata/base/gpu/on_device.hpp"
 #include "strata/core/peer_experts.hpp"
 #include "strata/models/qwen38/layer.hpp"
@@ -11073,8 +11074,9 @@ int main(int argc, char** argv) {
         }
         strata::core::pin_sim_report("at READY");
         strata::core::pin_reserve_release_hard();   // the load is over: nothing else needs the headroom
-        // "stop": this engine honours STOP; "conversations": it answers LIST_CONVERSATIONS and GET_CONTEXT_WINDOWS
-        std::printf("READY %lld stop conversations\n", (long long) o.max_context);
+        // "stop": this engine honours STOP; "conversations": it answers LIST_CONVERSATIONS and GET_CONTEXT_WINDOWS;
+        // "memory": MEM
+        std::printf("READY %lld stop conversations memory\n", (long long) o.max_context);
         std::fflush(stdout);
         std::string line;
         int64_t rounds = 0;
@@ -11864,6 +11866,36 @@ int main(int argc, char** argv) {
                                 c.live.ids.size(), c.live.ids.size(), c.bytes(), c.bytes()});
             });
             return held;
+        };
+        // MEM (memory_report.hpp): each card's weights (the primary's pack arena; the native dense projections and
+        // head), expert cache, sessions and drafters; the RAM's expert arena, streamed K/V and conversation-cache budget
+        hooks.describe_memory = [&] {
+            strata::serve::MemoryReport r;
+            for (size_t i = 0; i < session_layers.size(); ++i) {   // the primary card, then the stages' cards
+                const int dev = i == 0 ? primary_device : stages[i - 1]->dev;
+                const auto [lo, hi] = session_layers[i];
+                strata::serve::Memory& m = r.gpu(dev);
+                strata::core::read_gpu_memory(dev, m.name, m.total, m.free, m.unified);
+                if (i == 0)
+                    m.add("weights", pool_bytes + native_dense.allocated_bytes() + native_head.weight_bytes());
+                else
+                    m.add("weights", stages[i - 1]->dense.allocated_bytes() + stages[i - 1]->head.weight_bytes());
+                m.add("experts", (uint64_t) (i == 0 ? xcache.bytes() : stages[i - 1]->cache.bytes()));
+                m.add("conversations", (1 + bs.size()) * strata::core::session_bytes(g, o.max_context, K, lo, hi));
+            }
+            if (!o.mtp.empty()) {
+                r.gpu(mtp.device()).add("drafter", mtp.vram_bytes());
+                for (const auto& d : slot_mtp)
+                    r.gpu(d->device()).add("drafter", d->vram_bytes());
+            }
+            strata::serve::Memory& ram = r.at("ram");
+            ram.add("experts", o.mmap_experts ? src.resident_bytes() : strata::kernels::cpu::expert_layout().total);
+            if (g.n_qsa_layers() > 0 && ss.qsa_states[ss.qsa_primary()].kv_mode == 1)
+                ram.add("conversations", strata::core::qsa_kv_host_bytes());
+            if (conversations.enabled()) ram.paused_budget = (uint64_t) o.conversation_cache_mib << 20;
+            r.settings = {{"context", o.max_context}, {"concurrent", std::max(1, o.batch)},
+                          {"lookahead", o.spec >= 2 ? o.spec - 1 : 0}};
+            return r;
         };
         strata::serve::Loop loop(input, hooks);
         while (loop.next(line)) {

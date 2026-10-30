@@ -415,6 +415,7 @@ The server listens on `http://127.0.0.1:8080` (`--port` in setup, or edit the ru
 | Request totals in llama-server's metric names | `GET /metrics/prometheus` |
 | The MCP servers, their state and tools ([below](#tools-from-mcp-servers)) | `GET /mcp` |
 | API request monitor ([below](#api-request-monitor)) | `GET /api-monitor`, `GET /api/requests`, `GET /api/context` |
+| What the engine holds in each memory ([below](#the-memory-panel)) | `GET /v1/memory` |
 
 ```python
 from openai import OpenAI
@@ -752,6 +753,37 @@ The engine's commands, one line each on its stdin (include/strata/common/state/t
   <id> gone` when the engine no longer holds it, then `END_CONTEXT_WINDOWS`.
 
 Token ids are left out when there are none. Neither command changes anything.
+
+### The memory panel
+
+The Monitor tab's Memory card shows, for each memory (each GPU, the system RAM, the SSD), what the engine holds there:
+weights, experts, conversations, paused conversations, the drafter, and what is free. It reads `GET /v1/memory` every
+3 seconds and changes nothing (the first step, M0, of [MEMORY_MANAGER_PLAN.md](MEMORY_MANAGER_PLAN.md)). On a PC
+whose graphics memory is the system RAM (Strix Halo), the GPU and the RAM are one bar, with the RAM's uses striped.
+
+`GET /v1/memory` returns `{"available", "loaded", "machine": {"ram_total", "ram_free", "gpus"}, "busy", "error", "at",
+"memories": [{"id", "name", "total", "free", "unified", "uses": {<use>: bytes}, "paused_count", "paused_budget",
+"other"}], "settings": {<key>: number}}`. `machine` is the server's own reading of the RAM and of the GPUs (the
+hardware sampler of `GET /metrics`). The engine's `ram` gets the machine's size and free RAM; `other` is what is in use
+in a memory beyond the uses the engine names (other programs, buffers the engine does not count). A value the engine
+does not know is `null` or left out of `uses`. `busy` and `available` mean what they mean for `GET /api/context`.
+
+The engine's command (include/strata/common/serve/memory_report.hpp; the engine's `READY` line says `memory`):
+
+- `MEM` answers `MEMORY <id> [total=<B>] [free=<B>] [unified=1] [<use>=<B> ...] [paused_count=<n>]
+  [paused_budget=<B>] [name=<device name>]` for each memory, then `SETTINGS [context=<tokens>] [concurrent=<n>]
+  [lookahead=<n>]` and `END_MEMORY`. `id` is `gpu<N>`, `ram` or `ssd`; sizes are in bytes. The uses are `weights`,
+  `experts`, `conversations` (the sessions of the conversations the engine runs, each allocated for its whole context),
+  `paused` (parked conversations, from `LIST_CONVERSATIONS`), `drafter`, `scratch` and `engram`.
+
+What each engine says:
+
+| | Qwen3.8 | Qwen3.6 | DeepSeek V4.1 |
+|---|---|---|---|
+| GPU | the weights (the pack's arena on the first card, the native projections and head), the expert cache, the sessions, the MTP drafter | the weights, the routed experts, the MTP block's experts (drafter), the sessions | the weights, the experts, the DSpark blocks' experts (drafter), the caches (conversations), the scratch |
+| RAM | the expert arena, the K/V streamed to RAM, the parked conversations and their budget | the experts of the hybrid mode | the experts copied into RAM and the RAM store; the CPU lane's experts when they are not read from the files; the parked conversations |
+| SSD | (nothing) | (nothing) | the CPU lane's experts read from the model's files, the Engram table, the parked conversations and the slot folder's cap |
+| Settings | context, conversations at once (`--batch`), lookahead (the verify window less one: the `spec` of its `INFO` line - 1) | context, conversations at once, lookahead (`--mtp`) | context, lookahead (`--dspark-block`, or 0 without DSpark) |
 
 ---
 

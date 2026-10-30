@@ -79,7 +79,7 @@ function showTab(name) {
   if (tab === "images") $("img-prompt").focus();
   if (location.hash.slice(1) !== tab) history.replaceState(null, "", tab === "chat" ? location.pathname : `#${tab}`);
   if (tab === "chat") $("input").focus();
-  if (tab === "monitor") loadMcp();
+  if (tab === "monitor") { loadMcp(); loadMemory(); }
   if (tab === "about") loadConfig();
   if (lastMetrics) render(lastMetrics);
 }
@@ -163,7 +163,7 @@ function setMetric(key, value, unit, sub) {
   $(`ms-${key}`).textContent = sub || "";
 }
 
-let lastMetrics = null, metricsFailures = 0, keyWarned = false, mcpTick = 0;
+let lastMetrics = null, metricsFailures = 0, keyWarned = false, monitorTick = 0;
 let reqShowAll = false;   // the Monitor's request table: the last 12, or every one the server keeps (issue #35)
 async function poll() {
   try {
@@ -181,7 +181,8 @@ async function poll() {
   } catch (e) {
     if (++metricsFailures === 3) setPill("error", "Server not reachable");
   }
-  if (tab === "monitor" && ++mcpTick % 10 === 0) loadMcp();       // server states change rarely: every 10 s
+  if (tab === "monitor" && ++monitorTick % 10 === 0) loadMcp();   // server states change rarely: every 10 s
+  if (tab === "monitor" && monitorTick % 3 === 0) loadMemory();
   setTimeout(poll, 1000);
 }
 
@@ -445,6 +446,52 @@ function renderMcp() {
       (s.tools.length ? `<div class="mcp-server__tools">${s.tools.map((t) => `<span class="chip" title="${esc(t.description || "")}">${esc(t.tool)}</span>`).join("")}</div>` : "") +
       `</div>`;
   }).join("");
+}
+
+// ------------------------------------------------------------------ Memory (GET /v1/memory)
+// What the engine holds in each memory (each GPU, the RAM, the SSD) and its settings, read-only
+// (docs/MEMORY_MANAGER_PLAN.md, step M0).  A GPU whose memory is the system RAM gets one bar with RAM's uses in it.
+const MEM_USES = {weights: "Weights", experts: "Experts", conversations: "Conversations",
+                  paused: "Paused conversations", drafter: "Drafter", scratch: "Scratch", engram: "Engram",
+                  other: "Other", free: "Free"};
+const MEM_SETTINGS = {context: "Context", concurrent: "Conversations at once", lookahead: "Lookahead"};
+async function loadMemory() {
+  let m;
+  try {
+    const r = await fetch("v1/memory", {headers: headers()});
+    if (!r.ok) return;
+    m = await r.json();
+  } catch (e) { return; /* an older server: no Memory panel */ }
+  renderMemory(m);
+}
+function renderMemory(m) {
+  $("mem-card").hidden = !m.available;
+  if (!m.available) return;
+  const unified = m.memories.find((x) => x.unified), ram = m.memories.find((x) => x.id === "ram");
+  const bars = m.memories.filter((x) => !(unified && x === ram)).map((x) => {
+    const parts = Object.entries(x.uses).map(([use, bytes]) => ({use, bytes}));
+    if (x === unified && ram) parts.push(...Object.entries(ram.uses).map(([use, bytes]) => ({use, bytes, ram: true})));
+    if (x.other) parts.push({use: "other", bytes: x.other});
+    if (x.free != null) parts.push({use: "free", bytes: x.free});
+    const total = x.total || parts.reduce((a, p) => a + p.bytes, 0);
+    const name = x.id === "ram" ? "System RAM" : x.id === "ssd" ? "SSD" : x.name || x.id.toUpperCase();
+    const shared = ram && ram.total ? `: ${gb(ram.total)} GiB` : "";
+    const label = x === unified ? `${name} (shares the system RAM${shared})` : name;
+    const facts = [x.total ? `${gb(x.total)} GiB` : "", x.paused_count == null ? "" : `${fmt(x.paused_count)} paused` +
+      (x.paused_budget ? ` (budget ${gb(x.paused_budget, 2)} GiB)` : "")].filter(Boolean).join(" · ");
+    const title = (p) => esc(`${MEM_USES[p.use] || p.use}${p.ram ? " (RAM)" : ""}`);
+    const seg = (p) => `<span class="mem-seg" data-use="${esc(p.use)}"${p.ram ? " data-ram" : ""} style="width:` +
+      `${total ? (100 * p.bytes) / total : 0}%" title="${title(p)}: ${gb(p.bytes, 2)} GiB"></span>`;
+    const key = (p) => `<span><i class="mem-key" data-use="${esc(p.use)}"${p.ram ? " data-ram" : ""}></i>` +
+      `${title(p)} ${gb(p.bytes, 2)} GiB</span>`;
+    return `<div class="mem-row"><div class="bar-row"><span>${esc(label)}</span><span class="muted">${esc(facts)}` +
+      `</span></div><div class="mem-bar">${parts.map(seg).join("")}</div>` +
+      `<div class="mem-legend muted small">${parts.map(key).join("")}</div></div>`;
+  });
+  $("mem-bars").innerHTML = bars.join("");
+  $("mem-sum").textContent = m.busy ? "a request has the engine: the last reading" : m.error || "";
+  $("mem-settings").textContent = Object.entries(m.settings).map(([k, v]) =>
+    `${MEM_SETTINGS[k] || k}: ${fmt(v)}${k === "context" ? " tokens" : ""}`).join(" · ");
 }
 
 // ------------------------------------------------------------------ Model settings (GET / POST /config, #564)

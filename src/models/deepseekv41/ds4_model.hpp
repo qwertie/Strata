@@ -13,6 +13,8 @@
 // compressed KV and index keys included, which a checkpoint leaves in place - through a file or a host buffer.
 #pragma once
 
+#include "strata/common/serve/memory_report.hpp"
+
 #include <cstddef>
 #include <cstdint>
 #include <functional>
@@ -189,6 +191,9 @@ public:
     std::string describe() const;
     /// INFO / VRAM lines for the server's Monitor.
     std::vector<std::string> info_lines() const;
+    /// Describes the weights, experts, drafter, caches and scratch on each GPU, the experts in RAM and on the SSD
+    /// and the Engram table for MEM (the parked conversations are added by the caller's loop).
+    strata::serve::MemoryReport describe_memory() const;
 
     struct Impl;
 

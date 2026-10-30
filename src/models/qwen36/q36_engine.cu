@@ -16,6 +16,7 @@
 //
 // Modes: --serve (strata_server/server.py's engine protocol: READY / GEN / T / DONE / STOP / PP), --tokens IDS [--n N]
 // [--force IDS] [--dump-full-logits F] (tools/qwen35/kl.py's reference interface), --bench-pp N / --bench-tg N.
+#include "strata/base/gpu/memory_info.hpp"
 #include "strata/common/artifact/gguf_reader.hpp"
 #include "strata/models/common/family_layout.hpp"
 #include "strata/common/serve/loop.hpp"
@@ -869,6 +870,7 @@ struct Model {
     bool hybrid = false;                       // not every expert fits in VRAM: slots + the CPU pool
     // the packed Q8_0 decode copies (gguf weights, packed copy, bytes): given back when that lets every expert fit
     std::vector<std::tuple<const uint8_t*, uint8_t*, size_t>> packed;
+    size_t dense_bytes = 0;   // the weights `load` put on the GPU but the routed experts and the packed copies (MEM)
     // the GGUF-native MTP block (blk.<n_layers>, loaded with --mtp): eh_proj over [enorm(e) | hnorm(h)], then an
     // attention + MoE layer, shared_head_norm, the main head
     bool has_mtp = false;
@@ -1114,6 +1116,9 @@ bool load(const std::string& path, Model& m, std::string& err, bool want_mtp) {
         m.embd = d;
         bytes += nb;
     }
+    m.dense_bytes = bytes;
+    for (const auto& pk : m.packed)
+        m.dense_bytes -= std::get<2>(pk);
     std::fprintf(stderr, "strata-q36: %s: %zu tensors (layout checked), %.2f GiB on the GPU in %.1f s (the routed "
                  "experts are placed after the engine's buffers)\n", path.c_str(), checked, (double) bytes / (1 << 30),
                  ms_since(t0) / 1000.0);
@@ -3625,8 +3630,8 @@ struct Serve {
     int run() {
         if (E.n_sess > 1) std::printf("INFO batch_slots=%d slot_cache=1\n", E.n_sess);
         // "stop": STOP ends the request on the control lines; "conversations": LIST_CONVERSATIONS and
-        // GET_CONTEXT_WINDOWS
-        std::printf("READY %d stop conversations\n", E.ctx);
+        // GET_CONTEXT_WINDOWS; "memory": MEM
+        std::printf("READY %d stop conversations memory\n", E.ctx);
         std::fflush(stdout);
         strata::serve::EngineHooks hooks;
         hooks.is_busy = [this] { return n_active > 0; };
@@ -3646,6 +3651,29 @@ struct Serve {
                                 E.layout.bytes_for((int64_t) cap), n ? E.layout.bytes_for((int64_t) n) : 0});
             }
             return held;
+        };
+        // MEM (memory_report.hpp): the weights, the routed experts in VRAM and, in the hybrid mode, in RAM (the MTP
+        // block's as the drafter's), and the sessions
+        hooks.describe_memory = [this] {
+            strata::serve::MemoryReport r;
+            int dev = 0;
+            (void) cudaGetDevice(&dev);
+            strata::serve::Memory& gpu = r.gpu(dev);
+            strata::core::read_gpu_memory(dev, gpu.name, gpu.total, gpu.free, gpu.unified);
+            const Model& m = *E.m;
+            gpu.add("weights", m.dense_bytes);
+            for (const auto& pk : m.packed)
+                gpu.add("weights", std::get<2>(pk));
+            const auto add = [&](const Layer& L, const char* use) {
+                if (L.blobs) gpu.add(use, L.stride * (size_t) L.n_slots + kMmqTail);
+                if (L.hblobs) r.at("ram").add(use, L.stride * (size_t) m.g.n_expert + kMmqTail);
+            };
+            for (const Layer& L : m.layers)
+                add(L, "experts");
+            if (m.has_mtp) add(m.mtp, "drafter");
+            gpu.add("conversations", (uint64_t) E.n_sess * E.layout.bytes_for(E.ctx));
+            r.settings = {{"context", E.ctx}, {"concurrent", E.n_sess}, {"lookahead", E.mtp_d}};
+            return r;
         };
         // (QUIT is not a command here: it gets the ERR below, and the engine ends when stdin does)
         strata::serve::Loop loop(in, hooks);
