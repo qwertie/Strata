@@ -119,6 +119,46 @@ each row follows), accept, and update the pages. The model provides only:
 For GDN models the verify kernel keeps one running state per row for rollback, as today; a tree needs each row to
 start from its parent's state instead of the previous row's.
 
+### Experts leaving a memory
+
+RAM normally holds the experts the GPUs do not (the complement), so together they hold more different experts. An
+expert evicted from a GPU is therefore copied back to RAM, in the background between steps, instead of being dropped
+and read from the SSD again later.
+
+- While RAM has room, it also keeps copies of experts that are on a GPU; evicting those costs nothing. RAM holds
+  only the complement when it runs short.
+- An autodetected setting drops the expert instead when copying it back from the card is slower than reading it from
+  the SSD again. Both speeds are measured at start (a PCIe 3.0 x4 card, about 3.2 GB/s, is close to a fast NVMe drive,
+  so this can go either way). The user may override it.
+
+### Several GPUs
+
+Today Qwen3.8 has a layer split, Qwen3.6 runs on one GPU, and DeepSeek has its own split with optional tensor
+parallelism ([MULTI_GPU.md](MULTI_GPU.md)). The new step has one shared way:
+
+- **A layer split for every model.** Each card owns a range of layers; its pool holds their conversation pages and
+  state regions (the descriptor's one layout per device), and their experts by default. The hand-off between cards
+  goes through pinned RAM, so cards without peer-to-peer access (GeForce on Windows) work. The planner that picks the
+  cut (most of the expert profile on the GPUs, the faster card last) moves from `generate.cpp` to shared code; models
+  give per-layer sizes (dense weights, experts, K/V bytes per token).
+- **Experts may live on any card.** A card with free pages may hold another card's experts and compute them there,
+  all of one layer's remote experts in one hop. This replaces today's helper caches and peer tier with one rule.
+- **Links are measured, not assumed.** At start, each card's round-trip latency and its bandwidth each way are
+  measured (the engine already probes each card's PCIe share). Remote experts are used on a card only when one hop
+  costs less than the CPU computing those experts from RAM, and refills onto a slow card are paced by its bandwidth (a
+  2 MB expert takes about 0.6 ms over PCIe 3.0 x4).
+- **Memory per card.** The conversation token limits stay global; each card's share follows from its layers. The
+  biggest active conversation must fit on every card.
+- **Moving the cut while running.** When a card's memory setting changes, the planner may move the cut. The experts of
+  moved layers stay where they are (now remote) until use moves them. A layer's dense weights (about 56 MB on
+  Qwen3.8) and every conversation's pages for it are copied in the background, the tokens added meanwhile copied
+  after, and ownership switches between two steps, one layer at a time.
+- **Keeping cards busy.** With several conversations, the step splits them into groups, so that one card runs group
+  A while the other runs group B (today's `--batch-groups`, chosen automatically). The rows settings apply per group.
+- **Left out:** tensor parallelism (an exchange between cards at every layer, slow over PCIe without peer-to-peer
+  access; DeepSeek keeps its `--tp` until there are cards with a fast link to measure), and one model on cards of two
+  makes.
+
 ## The protocol
 
 New engine commands (between and during requests, like `LIST_CONVERSATIONS`):
@@ -158,6 +198,8 @@ The server forwards both through one endpoint (`GET/POST /v1/memory`); "save as 
 | M5 | Pausing to RAM and SSD, priorities; experts read from the SSD without the file cache | pause and resume give the same answers; files saved before load; with too little memory for the experts, the same answers as with enough, and RAM use stays at the setting |
 | M6 | Live `SET`, the panel's controls, "this session" and "save as default" | resize while decoding; the biggest-conversation limit refuses |
 | M7 | Measurements: guesses against other conversations' tokens, by where experts live; defaults chosen from them | numbers in DETAILS.md, measured on the Strix Halo and, if possible, the NVIDIA test PC |
+| M8 | Several GPUs: the shared layer split and planner, experts on any card, measured links, groups | tokens identical to one GPU; speed against today's layer split on the NVIDIA test PC (3060 + 3080, x16 and x4 if possible) |
+| M9 | Moving the layer cut while running | a cut moved during decoding gives the same tokens |
 
 M0 is useful on its own and touches no engine logic. M2 to M6 are the new engine; the old Qwen3.8 path stays until
 the new one is at least as fast.
