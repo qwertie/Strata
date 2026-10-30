@@ -178,6 +178,21 @@ A memory smaller than 32 GiB is drawn as a bar of its size divided by 32 GiB of 
 larger memories fill the width. So RAM is seen to be bigger than a typical card, and cards do not shrink to slivers
 beside a lot of RAM.
 
+### Changing sizes by dragging
+
+The boundaries between a bar's segments can be dragged (step M6).
+
+- While dragging, the bar shows the new boundary and its numbers, and nothing is sent to the engine. A size the
+  engine would refuse (for example below what the biggest active conversation needs) shows in red with the reason.
+- The change is sent (`CHANGE_SETTINGS`) only when the mouse button is released. Escape cancels; dropping it where it
+  started changes nothing; releasing on a refused size changes nothing.
+- After a change, a small prompt offers "This session" (the default) or "Save as default", and an Undo stays for a
+  few seconds.
+- Easy to find: each draggable boundary has a visible grip and a resize cursor, and a tooltip says what dragging it
+  changes. A one-line hint ("Drag the dividers to change sizes") shows under the panel until the first change.
+- Other ways to do the same: clicking a segment opens its size as a number field; a divider can take keyboard focus
+  and move with the arrow keys (Enter applies); touch works like the mouse.
+
 ## The protocol
 
 New engine commands (between and during requests, like `LIST_CONVERSATIONS`):
