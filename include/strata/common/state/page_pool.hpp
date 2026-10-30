@@ -82,12 +82,14 @@ struct PoolResize {
 };
 
 /// The pages of one memory: each is free, holds an expert, or holds part of one region of a conversation (a fixed
-/// region's bytes, or a block of tokens of a growing region, all rows).  A growing conversation takes free pages,
-/// then the least-used experts' pages; experts take free pages only above the token minimum's reserve and after the
+/// region's bytes, or a block of tokens of a growing region, all rows).  A fixed region is one buffer: it takes
+/// consecutive pages inside one chunk, the place with the fewest experts.  A growing region takes free pages, then
+/// the least-used experts' pages; experts take free pages only above the token minimum's reserve and after the
 /// hysteresis.  Not thread-safe: the engine's step loop is its only caller.
 class PagePool {
 public:
-    /// Throws std::invalid_argument when a chunk holds no page or a page holds no token of a growing region.
+    /// Throws std::invalid_argument when a chunk holds no page, a page holds no token of a growing region, or a fixed
+    /// region is larger than a chunk.
     PagePool(const StateLayout& layout, PagePoolConfig config, PagePoolHooks hooks);
     ~PagePool();
     PagePool(const PagePool&) = delete;
@@ -104,12 +106,16 @@ public:
     /// Gives conversation `id` (added if new) the pages for `tokens` tokens; fewer tokens than it has keep its
     /// pages.  Returns why not (changing nothing) or an empty string.
     std::string grow_conversation(ConversationId id, int64_t tokens);
+    /// Frees the pages of a conversation's growing regions past its first `tokens` tokens (a new prompt that
+    /// shares only that much with it); its fixed regions keep their pages, so their addresses stay the same.
+    void truncate_conversation(ConversationId id, int64_t tokens);
     /// Marks a conversation paused (it may not grow, and a resize or the limits need not fit it) or active again.
     /// Its pages stay until remove_conversation.
     void set_paused(ConversationId id, bool paused);
     /// Frees a conversation's pages; experts may take them after the hysteresis.
     void remove_conversation(ConversationId id);
-    /// Gets the pages of one region of a conversation, in order: a fixed region's bytes, or its blocks of tokens.
+    /// Gets the pages of one region of a conversation, in order: a fixed region's (consecutive) or its blocks of
+    /// tokens.
     const std::vector<PageId>& conversation_pages(ConversationId id, size_t region) const;
 
     /// Gets a page for an expert: the one it has, a free page, or the least-used expert's.  no_page when none.
@@ -142,14 +148,18 @@ private:
         std::vector<std::vector<PageId>> pages;   ///< per region of the layout
     };
 
+    bool is_fixed(size_t region) const { return layout_.regions[region].kind == RegionKind::fixed; }
     PoolResize shrink(size_t chunks);
     std::string check_limits(uint64_t pages, int64_t min, int64_t max) const;
     std::string check_growth(const Conversation& c, int64_t tokens) const;
     uint64_t region_pages(size_t region, int64_t tokens) const;
     uint64_t reserved_pages() const;
+    bool find_runs(const std::vector<uint64_t>& sizes, PageId end, std::vector<PageId>& starts) const;
     PageId find_page(bool for_expert, PageId end);
     PageId evict_least_used(PageId end);
     void evict(PageId page);
+    void give(PageId page, ConversationId id, uint32_t region);
+    bool move_page(PageId from, PageId to);
     void put(PageId page, const Page& content);
     void release(PageId page, uint64_t open_at);
     std::string gib(uint64_t pages) const;

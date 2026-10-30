@@ -190,6 +190,19 @@ bool conversation_state_sizes(const ModelGeometry& g, ConversationStateSizes& z,
     return true;
 }
 
+bool describe_conversation(const ModelGeometry& g, uint64_t kv_cell_bytes, StateLayout& layout, std::string& error) {
+    ConversationStateSizes z;
+    if (!conversation_state_sizes(g, z, error))
+        return false;
+    const uint64_t n_qsa = (uint64_t) g.n_qsa_layers();
+    layout = {};
+    layout.add(RegionKind::fixed, z.ple + n_qsa * (z.tail + z.dead + z.block_pos));
+    layout.add(RegionKind::fixed, z.gdn);
+    for (uint64_t j = 0; j < n_qsa; ++j)
+        layout.add(RegionKind::per_block, (uint64_t) g.idx_block * kv_cell_bytes + z.dead, 1, g.idx_block);
+    return true;
+}
+
 bool conversation_session_sizes(const ModelGeometry& g, const SessionState& ss, ConversationStateSizes& z,
                                 std::string& error) {
     if (!conversation_state_sizes(g, z, error)) return false;

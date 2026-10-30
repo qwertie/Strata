@@ -14,9 +14,11 @@ PagePool::PagePool(const StateLayout& layout, PagePoolConfig config, PagePoolHoo
       pages_per_chunk_(config.chunk_bytes / config.page_bytes) {
     if (pages_per_chunk_ == 0)
         throw std::invalid_argument("a chunk of the page pool holds no page");
-    for (const StateRegion& r : layout_.regions)
-        if (r.kind != RegionKind::fixed && r.tokens_in(config_.page_bytes) == 0)
+    for (size_t r = 0; r < layout_.regions.size(); ++r)
+        if (!is_fixed(r) && layout_.regions[r].tokens_in(config_.page_bytes) == 0)
             throw std::invalid_argument("a page of the page pool holds no token of a growing region");
+        else if (is_fixed(r) && region_pages(r, 0) > pages_per_chunk_)
+            throw std::invalid_argument("a fixed region of a conversation is larger than a chunk of the page pool");
 }
 
 PagePool::~PagePool() {
@@ -52,26 +54,46 @@ std::string PagePool::set_token_limits(int64_t min, int64_t max) {
 std::string PagePool::grow_conversation(ConversationId id, int64_t tokens) {
     auto [it, added] = conversations_.try_emplace(id);
     Conversation& c = it->second;
-    if (added)
+    std::string why;
+    if (added) {
         c.pages.resize(layout_.regions.size());
-    if (std::string why = check_growth(c, tokens); !why.empty()) {
-        if (added)
+        why = check_growth(c, tokens);
+        std::vector<uint32_t> fixed;
+        std::vector<uint64_t> sizes;
+        for (uint32_t r = 0; r < c.pages.size(); ++r)
+            if (is_fixed(r) && region_pages(r, 0) > 0) {
+                fixed.push_back(r);
+                sizes.push_back(region_pages(r, 0));
+            }
+        std::vector<PageId> starts;
+        if (why.empty() && !find_runs(sizes, (PageId) pages_.size(), starts))
+            why = "the pool has no room in one piece for the conversation's fixed state";
+        if (!why.empty()) {
             conversations_.erase(it);
-        return why;
-    }
-    for (uint32_t r = 0; r < c.pages.size(); ++r)
-        for (const uint64_t n = region_pages(r, tokens); c.pages[r].size() < n;) {
-            const PageId page = find_page(false, (PageId) pages_.size());
-            Page content;
-            content.use = PageUse::conversation;
-            content.conversation = id;
-            content.region = r;
-            content.index = (uint32_t) c.pages[r].size();
-            put(page, content);
-            c.pages[r].push_back(page);
+            return why;
         }
+        for (size_t k = 0; k < fixed.size(); ++k)
+            for (uint64_t i = 0; i < sizes[k]; ++i)
+                give(starts[k] + (PageId) i, id, fixed[k]);
+    } else if (why = check_growth(c, tokens); !why.empty())
+        return why;
+    for (uint32_t r = 0; r < c.pages.size(); ++r)
+        for (const uint64_t n = region_pages(r, tokens); c.pages[r].size() < n;)
+            give(find_page(false, (PageId) pages_.size()), id, r);
     c.tokens = std::max(c.tokens, tokens);
     return {};
+}
+
+void PagePool::truncate_conversation(ConversationId id, int64_t tokens) {
+    Conversation& c = conversations_.at(id);
+    const uint64_t open_at = hooks_.now() + config_.hysteresis;
+    for (size_t r = 0; r < c.pages.size(); ++r) {
+        if (is_fixed(r))
+            continue;
+        for (const uint64_t n = region_pages(r, tokens); c.pages[r].size() > n; c.pages[r].pop_back())
+            release(c.pages[r].back(), open_at);
+    }
+    c.tokens = std::min(c.tokens, tokens);
 }
 
 void PagePool::set_paused(ConversationId id, bool paused) {
@@ -161,30 +183,38 @@ PoolResize PagePool::shrink(size_t chunks) {
         return {why, {}};
     uint64_t moving = 0, room = 0;
     std::set<ConversationId> holders;
+    std::vector<const std::vector<PageId>*> runs;   // the fixed regions in the chunks given back
+    std::vector<uint64_t> sizes;
     for (PageId p = 0; p < pages_.size(); ++p) {
-        const bool kept = p < end, conversation = pages_[p].use == PageUse::conversation;
+        const Page& at = pages_[p];
+        const bool kept = p < end, conversation = at.use == PageUse::conversation;
         if (kept && !conversation)
             ++room;
         else if (!kept && conversation) {
             ++moving;
-            holders.insert(pages_[p].conversation);
+            holders.insert(at.conversation);
+            if (is_fixed(at.region) && at.index == 0) {
+                runs.push_back(&conversations_.at(at.conversation).pages[at.region]);
+                sizes.push_back(runs.back()->size());
+            }
         }
     }
     if (moving > room)
         return {"the conversations' pages need " + gib(moving - room) + " more than the smaller pool keeps",
                 {holders.begin(), holders.end()}};
+    std::vector<PageId> starts;
+    if (!find_runs(sizes, end, starts))
+        return {"the conversations' fixed state has no room in one piece in the smaller pool",
+                {holders.begin(), holders.end()}};
+    for (size_t k = 0; k < runs.size(); ++k)
+        for (uint64_t i = 0; i < sizes[k]; ++i)
+            if (!move_page((*runs[k])[i], starts[k] + (PageId) i))
+                return {"a conversation's page could not be copied", {}};
     for (PageId from = end; from < pages_.size(); ++from) {
-        const Page content = pages_[from];
-        if (content.use == PageUse::expert)
+        if (pages_[from].use == PageUse::expert)
             evict(from);
-        if (content.use != PageUse::conversation)
-            continue;
-        const PageId to = find_page(false, end);
-        if (!hooks_.copy(to, from))
+        else if (pages_[from].use == PageUse::conversation && !move_page(from, find_page(false, end)))
             return {"a conversation's page could not be copied", {}};
-        put(to, content);
-        conversations_.at(content.conversation).pages[content.region][content.index] = to;
-        release(from, 0);
     }
     for (size_t c = chunks; c < chunks_.size(); ++c)
         hooks_.free(chunks_[c]);
@@ -234,7 +264,7 @@ std::string PagePool::check_growth(const Conversation& c, int64_t tokens) const 
 uint64_t PagePool::region_pages(size_t region, int64_t tokens) const {
     const StateRegion& r = layout_.regions[region];
     const uint64_t page = config_.page_bytes;
-    if (r.kind == RegionKind::fixed)
+    if (is_fixed(region))
         return (r.bytes_for(0) + page - 1) / page;
     const uint64_t per_page = r.tokens_in(page);
     return ((uint64_t) tokens + per_page - 1) / per_page;
@@ -266,6 +296,41 @@ PageId PagePool::find_page(bool for_expert, PageId end) {
     return evict_least_used(end);
 }
 
+/// Finds where runs of `sizes` pages can go before page `end` (a whole number of chunks): each in one chunk, on pages
+/// that hold no conversation's page nor an earlier run, the place with the fewest experts first, then the lowest.
+/// Returns false when one of them has no room.
+bool PagePool::find_runs(const std::vector<uint64_t>& sizes, PageId end, std::vector<PageId>& starts) const {
+    enum : uint8_t { open, expert, taken };
+    std::vector<uint8_t> at(end);
+    for (PageId p = 0; p < end; ++p)
+        at[p] = pages_[p].use == PageUse::conversation ? taken : pages_[p].use == PageUse::expert ? expert : open;
+    starts.clear();
+    for (const uint64_t n : sizes) {
+        PageId best = no_page;
+        uint64_t best_experts = UINT64_MAX;
+        for (PageId chunk = 0; chunk < end; chunk += (PageId) pages_per_chunk_) {
+            uint64_t experts = 0, blocked = 0;   // in the window of the last n pages up to p
+            for (PageId p = chunk; p < chunk + pages_per_chunk_; ++p) {
+                experts += at[p] == expert;
+                blocked += at[p] == taken;
+                if (p >= chunk + n) {
+                    experts -= at[p - n] == expert;
+                    blocked -= at[p - n] == taken;
+                }
+                if (p + 1 >= chunk + n && blocked == 0 && experts < best_experts) {
+                    best = p + 1 - (PageId) n;
+                    best_experts = experts;
+                }
+            }
+        }
+        if (best == no_page)
+            return false;
+        std::fill(at.begin() + best, at.begin() + best + n, taken);
+        starts.push_back(best);
+    }
+    return true;
+}
+
 /// Evicts the expert before `end` used longest ago (of equals, the one used least often) and gets its page, now
 /// free; no_page when there is none.
 PageId PagePool::evict_least_used(PageId end) {
@@ -289,6 +354,34 @@ void PagePool::evict(PageId page) {
     hooks_.evicted(key, page);
     experts_.erase(key);
     release(page, 0);
+}
+
+/// Gives `page` (free, or an expert's, which is evicted) to region `region` of conversation `id` as its next page.
+void PagePool::give(PageId page, ConversationId id, uint32_t region) {
+    if (pages_[page].use == PageUse::expert)
+        evict(page);
+    std::vector<PageId>& list = conversations_.at(id).pages[region];
+    Page content;
+    content.use = PageUse::conversation;
+    content.conversation = id;
+    content.region = region;
+    content.index = (uint32_t) list.size();
+    put(page, content);
+    list.push_back(page);
+}
+
+/// Copies conversation page `from` to `to` (free, or an expert's, which is evicted) and frees `from`; false when the
+/// copy failed.
+bool PagePool::move_page(PageId from, PageId to) {
+    if (pages_[to].use == PageUse::expert)
+        evict(to);
+    if (!hooks_.copy(to, from))
+        return false;
+    const Page content = pages_[from];
+    put(to, content);
+    conversations_.at(content.conversation).pages[content.region][content.index] = to;
+    release(from, 0);
+    return true;
 }
 
 void PagePool::put(PageId page, const Page& content) {

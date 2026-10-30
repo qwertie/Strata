@@ -59,22 +59,26 @@ A model split across devices describes one layout per device. Device memory and 
 
 ## The page pool (`page_pool.hpp`)
 
-Step M1 of [docs/MEMORY_MANAGER_PLAN.md](../../../docs/MEMORY_MANAGER_PLAN.md); no engine uses it yet. A
+Step M1 of [docs/MEMORY_MANAGER_PLAN.md](../../../docs/MEMORY_MANAGER_PLAN.md); no engine uses it yet. Qwen3.8
+describes its conversation for it with `describe_conversation` (`src/models/qwen38/conversation_state.cpp`). A
 `PagePool` is one memory (a GPU's, or the RAM the engine uses) cut into equal pages (2 MiB by default), taken from an
 allocator in chunks (256 MiB by default). The allocator, the clock and the page copy are hooks, so the pool calls no
 GPU runtime and its test (`page_pool_test.cpp`) runs on host memory.
 
 - A page is free, holds an expert (`ExpertKey`: layer and expert), or holds part of one region of a conversation.
-  A `fixed` region takes whole pages once; a growing region takes one page per block of tokens, all its rows in the
+  A `fixed` region takes whole pages once, consecutive ones inside one chunk, so that it is one buffer to the
+  kernels (Qwen3.8's GDN state is 112 MiB); a growing region takes one page per block of tokens, all its rows in the
   page (`StateRegion::tokens_in` gives the tokens a page holds). A conversation keeps the list of its pages per
-  region (`conversation_pages`).
+  region (`conversation_pages`); `truncate_conversation` gives back its blocks past a number of tokens and keeps its
+  fixed pages, so their addresses (which captured graphs hold) stay the same.
 - A growing conversation takes the lowest free page, then the page of the expert used longest ago, up to the token
-  maximum. Experts take the highest free page, leave the token minimum's pages free, and wait for the hysteresis
-  after a conversation gave a page back. The `evicted` hook tells the expert's owner, which copies it to RAM or drops
-  it.
+  maximum. A fixed region goes where it evicts the fewest experts, the lowest such place first. Experts take the
+  highest free page, leave the token minimum's pages free, and wait for the hysteresis after a conversation gave a
+  page back. The `evicted` hook tells the expert's owner, which copies it to RAM or drops it.
 - `resize` adds chunks, or gives back the last ones: their experts are evicted and their conversation pages copied
-  into the others through the `copy` hook. When those pages have nowhere to go it names the conversations to pause.
-  A resize or a limit that the active conversations or the minimum would not fit is refused with the reason.
+  into the others through the `copy` hook, a fixed region in one piece. When those pages have nowhere to go it names
+  the conversations to pause. A resize or a limit that the active conversations or the minimum would not fit is
+  refused with the reason.
 - `report` gives the pages and bytes by use for the `GET_MEMORY_USE` command.
 
 The pool is not thread-safe: the engine's step loop is its only caller.

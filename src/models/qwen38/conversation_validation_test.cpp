@@ -2,6 +2,7 @@
 // invalid restores must return before the first CUDA call or destination write.
 #include "strata/models/qwen38/conversation_snapshot.hpp"
 #include "strata/models/qwen38/kernels/kv_q4.hpp"
+#include "strata/models/qwen38/kernels/kv_q8.hpp"
 
 #include <cstdint>
 #include <cstdio>
@@ -251,7 +252,24 @@ void fixture(int format, int experts, bool zero_qsa, bool ple) {
 }
 }
 
+/// The real model's conversation in the page pool, with INT8 K/V and 2 MiB pages: 384 KiB of small running state,
+/// 112 MiB of GDN state, and per QSA layer 1,768 tokens a page.
+void describe_conversation_fixture() {
+    const ModelGeometry g;
+    StateLayout layout;
+    std::string error;
+    check(describe_conversation(g, strata::kernels::kv_q8_bytes_per_cell(strata::kernels::qsa_real_shapes()), layout,
+                                error) && layout.regions.size() == 2 + 12, "the real model's layout");
+    check(layout.regions[0].bytes_for(0) == 9 * 10240 * 4 + 12 * (3 * 128 * 4 + 128 * 4 + 4) &&
+              layout.regions[1].bytes_for(0) == 36ull * (128 * 48 * 128 + 10240 * 3) * 4,
+          "the fixed regions: the small running state and the GDN state");
+    check(layout.regions[2].kind == RegionKind::per_block && layout.regions[2].tokens_in(2 << 20) == 1768 &&
+              layout.regions[13].bytes_for(1768) == 442 * (4 * 1056 + 512),
+          "a QSA layer's page holds 1,768 tokens' INT8 K/V and pooled keys");
+}
+
 int main() {
+    describe_conversation_fixture();
     for (int format : {0,1,2}) for (int experts : {256,512})
         for (bool zero_qsa : {false,true}) for (bool ple : {false,true}) fixture(format,experts,zero_qsa,ple);
     std::printf("conversation_validation_test: %d host-only checks passed\n", checks);

@@ -1,5 +1,6 @@
-// The page pool (page_pool.hpp) on host memory with a hand-moved clock: conversations growing across blocks, experts
-// filling and giving back pages, the token limits, the hysteresis, growing and shrinking, and the report.
+// The page pool (page_pool.hpp) on host memory with a hand-moved clock: conversations growing across blocks and
+// truncated, fixed regions in consecutive pages, experts filling and giving back pages, the token limits, the
+// hysteresis, growing and shrinking, and the report.
 #include "strata/common/state/page_pool.hpp"
 
 #include <cstdio>
@@ -8,6 +9,7 @@
 #include <stdexcept>
 
 using namespace strata::core;
+using Pages = std::vector<PageId>;
 
 namespace {
 int checks = 0;
@@ -81,6 +83,14 @@ bool is_key(ExpertKey key, int expert) {
     return key.layer == 0 && key.expert == expert;
 }
 
+/// Gets the experts' numbers in `keys` (all of layer 0).
+std::vector<int> get_experts(const std::vector<ExpertKey>& keys) {
+    std::vector<int> out;
+    for (const ExpertKey& key : keys)
+        out.push_back(key.expert);
+    return out;
+}
+
 void test_allocation() {
     Fixture f;
     check(f.pool.report().total.pages == 12 && f.pool.report().free.pages == 12, "a new pool's pages are free");
@@ -104,6 +114,49 @@ void test_allocation() {
         threw = true;
     }
     check(threw, "a page smaller than one token's K/V is refused");
+}
+
+void test_runs() {
+    Fixture f;
+    check(f.pool.grow_conversation(1, 4).empty(), "conversation 1 on pages 0 to 2");
+    f.add_experts(9);
+    f.pool.remove_expert({0, 3});
+    check(f.pool.grow_conversation(2, 1).empty() && f.pool.conversation_pages(2, 0) == Pages{8, 9} &&
+              get_experts(f.evicted) == std::vector<int>{2, 0} && f.pool.conversation_pages(2, 1) == Pages{11},
+          "a fixed region goes where it evicts the fewest experts, its block to the least-used expert's page");
+
+    Fixture g;   // conversations 1 and 2 grow in turns, so that their blocks alternate from page 6 on
+    for (int64_t tokens = 4; tokens <= 16; tokens += 4)
+        check(g.pool.grow_conversation(1, tokens).empty() && g.pool.grow_conversation(2, tokens).empty(), "growth");
+    check(g.pool.conversation_pages(2, 0) == Pages{4, 5} && g.pool.conversation_pages(1, 1) == Pages{2, 6, 8, 10},
+          "a fixed region skips a chunk that has no room for it in one piece");
+    g.pool.truncate_conversation(1, 4);
+    check(g.pool.conversation_pages(1, 1) == Pages{2} && g.pool.conversation_pages(1, 0) == Pages{0, 1} &&
+              g.pool.report().free.pages == 3 && g.pool.report().tokens == 20,
+          "a truncated conversation gives back its last blocks and keeps its fixed pages");
+    check(g.pool.grow_conversation(3, 4) == "the pool has no room in one piece for the conversation's fixed state" &&
+              g.pool.report().free.pages == 3 && g.pool.report().active_conversations == 2,
+          "three free pages apart do not hold a fixed region of two");
+
+    Fixture h;   // conversation 4's pages are in the last chunk, and the first chunk has one free page left
+    for (ConversationId id = 1; id <= 4; ++id)
+        check(h.pool.grow_conversation(id, 4).empty(), "four conversations fill the pool");
+    check(h.pool.conversation_pages(4, 0) == Pages{9, 10}, "conversation 4's fixed region on pages 9 and 10");
+    std::memset(h.pool.page_address(10), 0x77, page);
+    h.pool.remove_conversation(2);
+    h.pool.remove_conversation(3);
+    check(h.pool.resize(2 * chunk).refusal.empty() && h.pool.conversation_pages(4, 0) == Pages{4, 5} &&
+              h.pool.conversation_pages(4, 1) == Pages{3} && h.pool.page_address(5)[0] == 0x77,
+          "a shrink moves a fixed region in one piece");
+    bool threw = false;
+    try {
+        StateLayout big;
+        big.add(RegionKind::fixed, chunk + 1);
+        PagePool pool(big, get_config(), h.get_hooks());
+    } catch (const std::invalid_argument&) {
+        threw = true;
+    }
+    check(threw, "a fixed region larger than a chunk is refused");
 }
 
 void test_experts_trade_pages() {
@@ -214,6 +267,7 @@ void test_report() {
 
 int main() {
     test_allocation();
+    test_runs();
     test_experts_trade_pages();
     test_minimum();
     test_maximum();

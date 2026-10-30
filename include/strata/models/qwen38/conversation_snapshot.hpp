@@ -2,6 +2,7 @@
 
 #include "strata/common/state/conversation_cache.hpp"
 #include "strata/common/state/conversation_file.hpp"
+#include "strata/common/state/state_layout.hpp"
 #include "strata/models/qwen38/layer.hpp"
 #include "strata/models/qwen38/session.hpp"
 
@@ -66,6 +67,12 @@ bool conversation_state_sizes(const ModelGeometry& g, ConversationStateSizes& si
 /// snapshots and their validation all use this: a session saves and restores only the state it owns.
 bool conversation_session_sizes(const ModelGeometry& g, const SessionState& session, ConversationStateSizes& sizes,
                                 std::string& error);
+/// Describes one conversation's state for the page pool (page_pool.hpp, docs/MEMORY_MANAGER_PLAN.md M2): a fixed
+/// region with the small running state (the PLE history, then per QSA layer the indexer tail, dead row and block
+/// position), a fixed region with every GDN layer's state, and per QSA layer a growing region whose block of
+/// `idx_block` tokens holds their K/V cells (`kv_cell_bytes` each: kv_q8_bytes_per_cell for INT8) and their pooled
+/// index key.  For the new Qwen3.8 engine; false (with `error`) for an invalid geometry.
+bool describe_conversation(const ModelGeometry& g, uint64_t kv_cell_bytes, StateLayout& layout, std::string& error);
 bool conversation_checkpoint_validate(const ConversationCheckpoint& checkpoint, const SessionState& session,
                                       const ModelGeometry& g, std::string& error);
 bool conversation_checkpoint_save(ConversationCheckpoint& checkpoint, const SessionState& session,
