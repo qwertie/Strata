@@ -31,8 +31,12 @@ struct StateRegion {
     uint64_t units_for(int64_t tokens) const {
         if (kind == RegionKind::fixed)
             return 1;
-        return (uint64_t) tokens / (uint64_t) (kind == RegionKind::per_block ? block : 1);
+        return (uint64_t) tokens / unit_tokens();
     }
+    /// Gets the tokens one unit stands for: `block` for a per_block region, else 1.
+    uint64_t unit_tokens() const { return kind == RegionKind::per_block ? (uint64_t) block : 1; }
+    /// Gets how many tokens of every row a growing region can keep in `bytes` (a page of the page pool).
+    int64_t tokens_in(uint64_t bytes) const { return (int64_t) (bytes / (rows * unit_bytes) * unit_tokens()); }
     /// Gets the bytes of one row at `tokens` tokens.
     uint64_t row_bytes(int64_t tokens) const { return units_for(tokens) * unit_bytes; }
     uint64_t bytes_for(int64_t tokens) const { return rows * row_bytes(tokens); }

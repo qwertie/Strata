@@ -57,5 +57,27 @@ A model split across devices describes one layout per device. Device memory and 
   `cudaMemcpy` calls that `copy_state` would make asynchronous. It moves with its conversation slots in RAM and on
   disk (`ds4_main.cpp`), when those become the conversation cache's.
 
+## The page pool (`page_pool.hpp`)
+
+Step M1 of [docs/MEMORY_MANAGER_PLAN.md](../../../docs/MEMORY_MANAGER_PLAN.md); no engine uses it yet. A
+`PagePool` is one memory (a GPU's, or the RAM the engine uses) cut into equal pages (2 MiB by default), taken from an
+allocator in chunks (256 MiB by default). The allocator, the clock and the page copy are hooks, so the pool calls no
+GPU runtime and its test (`page_pool_test.cpp`) runs on host memory.
+
+- A page is free, holds an expert (`ExpertKey`: layer and expert), or holds part of one region of a conversation.
+  A `fixed` region takes whole pages once; a growing region takes one page per block of tokens, all its rows in the
+  page (`StateRegion::tokens_in` gives the tokens a page holds). A conversation keeps the list of its pages per
+  region (`conversation_pages`).
+- A growing conversation takes the lowest free page, then the page of the expert used longest ago, up to the token
+  maximum. Experts take the highest free page, leave the token minimum's pages free, and wait for the hysteresis
+  after a conversation gave a page back. The `evicted` hook tells the expert's owner, which copies it to RAM or drops
+  it.
+- `resize` adds chunks, or gives back the last ones: their experts are evicted and their conversation pages copied
+  into the others through the `copy` hook. When those pages have nowhere to go it names the conversations to pause.
+  A resize or a limit that the active conversations or the minimum would not fit is refused with the reason.
+- `report` gives the pages and bytes by use for the `MEM` command.
+
+The pool is not thread-safe: the engine's step loop is its only caller.
+
 See [docs/ARCHITECTURE.md](../../../docs/ARCHITECTURE.md) for the layers and
 [docs/REFACTOR_PLAN.md](../../../docs/REFACTOR_PLAN.md) for the steps.

@@ -2,7 +2,7 @@
 
 A plan for a new Qwen3.8 engine whose memory and parallelism can be seen and changed while it runs. It is built on the
 shared code of the refactor ([REFACTOR_PLAN.md](REFACTOR_PLAN.md)) and adds to it, so that Qwen3.6 and DeepSeek can
-move onto it later. Status: planning (2026-10-30), branch `memory-manager`.
+move onto it later. Status: M1 done (2026-10-30), branch `memory-manager`.
 
 ## What the user gets
 
@@ -191,7 +191,7 @@ The server forwards both through one endpoint (`GET/POST /v1/memory`); "save as 
 | Step | Work | Checked by |
 |---|---|---|
 | M0 | `MEM` in the three existing engines (read-only), `/v1/memory`, the panel without controls | the panel matches the engines' own numbers on Qwen3.8, Qwen3.6, DeepSeek |
-| M1 | The page pool and page lists: chunks, growing and shrinking, experts and conversations trading pages, with unit tests (CPU) | unit tests: allocation, growth, emptying a chunk, a full pool, no thrashing |
+| M1 | The page pool and page lists: chunks, growing and shrinking, experts and conversations trading pages, with unit tests (CPU). Done: `src/common/state/page_pool.cpp` | unit tests: allocation, growth, emptying a chunk, a full pool, no thrashing (`page_pool_test`) |
 | M2 | The new Qwen3.8 engine: one conversation in the pool, no drafting, same answers as today's engine | token-identical at temperature 0 against the old engine |
 | M3 | Several conversations, the step with rows per step and conversations at once | answers identical per conversation; speed against `--batch` |
 | M4 | Drafting with the row-sharing rule and the lookahead | identical answers; speed against today's MTP |
