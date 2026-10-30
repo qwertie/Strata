@@ -1,5 +1,6 @@
-// metal/src/engine/msl/ple.metal - the PLE block (include/strata/kernels/ple.hpp) after its two projections, for a
-// window of T rows, on the GPU (the CUDA engine's ple.cu math; its block sums are double there, float here):
+// metal/src/engine/msl/ple.metal - the PLE block (include/strata/models/qwen38/kernels/ple.hpp) after its two
+// projections, for a window of T rows, on the GPU (the CUDA engine's ple.cu math; its block sums are double there,
+// float here):
 //
 //   key   = grouped_norm(pkey, norm_key)          per stream c of 4: x * rsqrt(mean(x^2) + eps) * w
 //   query = grouped_norm(R, norm_query)

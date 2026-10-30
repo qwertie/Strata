@@ -3,7 +3,7 @@
 #include <sycl/sycl.hpp>
 #include <dpct/dpct.hpp>
 #include "strata/sycl_queue.hpp"
-#include "strata/kernels/router_top10.hpp"
+#include "strata/common/kernels/router_top10.hpp"
 #include <chrono>
 #include <cmath>
 #include <cstdio>

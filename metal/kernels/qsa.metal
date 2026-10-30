@@ -1,6 +1,6 @@
 // metal/kernels/qsa.metal - QSA (sparse full attention) decode for a window of tokens, between the projections.
-// Contract of include/strata/kernels/qsa.hpp / qsa_select.hpp / qsa_decode_attn.hpp / kv_q8.hpp (the engine's
-// native path), in a Metal layout (no paging: unified memory):
+// Contract of include/strata/models/qwen38/kernels/qsa.hpp / qsa_select.hpp / qsa_decode_attn.hpp / kv_q8.hpp (the
+// engine's native path), in a Metal layout (no paging: unified memory):
 //
 //   qsa_prep    per token t (cell pos0 + t): q heads rms_norm * q_norm, NEOX RoPE on 64 dims -> qcur;
 //               k rms_norm * k_norm, RoPE -> int8 KV append (fp16 scale per 64 = fp16(amax/127), rint, clamp);
@@ -29,7 +29,7 @@
 #define QCH 64
 
 constant int QSA_NTOK [[function_constant(3)]];
-// QSA_MROPE (function constant 24): interleaved M-RoPE (the vision path; strata/kernels/mrope.hpp, ggml IMROPE,
+// QSA_MROPE (function constant 24): interleaved M-RoPE (the vision path; strata/common/kernels/mrope.hpp, ggml IMROPE,
 // sections 11/11/10): buffer 20 of qsa_prep is a table int32 [cells][3] (t, h, w), and rotary pair i (0..31) of the row
 // at (pos_base + cell) rotates by the cos/sin table's row tab[(pos_base + cell) * 3 + i % 3] instead of its own -
 // the pooled indexer keys too (position pos_base + 4 b of a block).  Off: exactly the plain RoPE.

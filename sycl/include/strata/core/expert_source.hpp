@@ -25,7 +25,7 @@
 #include "strata/common/experts/exchange_storage.hpp"
 #include "strata/common/experts/hit_hook.hpp"
 #include "strata/common/experts/ram_tier.hpp"
-#include "strata/kernels/cpu/pool.hpp"
+#include "strata/common/kernels/cpu/pool.hpp"
 
 #include <atomic>
 #include <cstdint>

@@ -17,7 +17,7 @@
 
 #include "strata/core/geometry.hpp"
 #include "strata/core/weights.hpp"
-#include "strata/kernels/qsa.hpp"
+#include "strata/models/qwen38/kernels/qsa.hpp"
 
 #include <cstdint>
 #include <string>

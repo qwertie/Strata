@@ -132,7 +132,7 @@ GP100 (P100, PH402) is the one Pascal chip without `__dp4a`. Its dense projectio
 730, decoding K- and i-quant blocks one int at a time. Two opt-in changes, both measured on a PH402 only:
 
 - **`STRATA_Q8_SM60=1`** packs every Q8_0 dense matrix and the head into the planes of `STRATA_Q8_PACKED` and runs them on
-  `src/kernels/cuda/q8_sm60.cuh`: a warp per row, 16-byte weight loads, activations copied once per workgroup into shared memory,
+  `src/common/kernels/cuda/q8_sm60.cuh`: a warp per row, 16-byte weight loads, activations copied once per workgroup into shared memory,
   the dot on `STRATA_DP4A`, no barrier per row. Shapes it declines keep the usual kernel. It is not bitwise the exact kernels.
   The packed copies cost their size in VRAM (Flash-Next: 2.9 GiB of dense projections over the stages and 0.6 GiB for the head).
 - The GSQ-RCO packs have no Q8_0 dense matrices, so the kernel needs a copy whose dense projections and head are Q8_0:
@@ -203,7 +203,8 @@ existing config; this is not a complete run config:
 
 `STRATA_BF16_TC=1` improved prompt throughput by 20-34% on one Quadro RTX 8000 and changed replies in 3 of 9 paired requests, so
 use it only if different rounding is acceptable. It did not improve decode. Numbers are in the history section. These switches are
-existing code ([gemm.cu](../src/prefill/gemm.cu), [qsa_select.cu](../src/kernels/cuda/qsa_select.cu)), not new kernels.
+existing code ([gemm.cu](../src/common/kernels/prefill/gemm.cu),
+[qsa_select.cu](../src/models/qwen38/kernels/cuda/qsa_select.cu)), not new kernels.
 
 ## AMD: building gfx906 and gfx1012
 

@@ -1,6 +1,6 @@
 """The default count of CPU expert workers on mock CPUs, and what setup writes about thread counts.
 
-The engine's choice is include/strata/kernels/cpu/pool_plan.hpp (tested on its own by the pool_plan_test binary); setup mirrors
+The engine's choice is include/strata/common/kernels/cpu/pool_plan.hpp (tested on its own by the pool_plan_test binary); setup mirrors
 it so it can warn about a configured count.  This test keeps the two in step and checks the mirror on the same mock
 topologies (8c/16t, 16c/32t, 64c/128t, a 2-socket 128c/256t box) plus the reports behind it: a 256-thread machine started
 ~256 workers and slowed down.
@@ -20,7 +20,7 @@ sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "tools"))
 import setup  # noqa: E402
 
-HEADER = ROOT / "include" / "strata" / "kernels" / "cpu" / "pool_plan.hpp"
+HEADER = ROOT / "include" / "strata" / "common" / "kernels" / "cpu" / "pool_plan.hpp"
 
 
 class InStepWithTheEngine(unittest.TestCase):

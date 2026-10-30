@@ -1,6 +1,6 @@
 // Exercise the public opt-in dispatch, including tails, padded rows and a nonzero carried state.  The FP32
 // recurrence is the all-head reference; short cases also use an independent double-precision CPU recurrence.
-#include "strata/prefill/kernels.hpp"
+#include "strata/models/qwen38/prefill/kernels.hpp"
 #include "strata/base/gpu/gfx_arch.hpp"
 #include <cuda_runtime.h>
 #include <cuda_fp16.h>

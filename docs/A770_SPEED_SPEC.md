@@ -142,7 +142,7 @@ a passing or faster result.
 
 Compare the default `bf16_gemv_fp32_mmvf_multi` path with
 `STRATA_MMVF_ROWS=1`. The latter is already implemented in
-`sycl/src/kernels/cuda/native_bf16.dp.cpp`; its selector is cached on first use.
+`sycl/src/common/kernels/cuda/native_bf16.dp.cpp`; its selector is cached on first use.
 Run each mode in a separate process, setting the environment before any launch.
 Do not change `setenv` between measurements in one process and assume the cached
 selector will change.
@@ -307,7 +307,7 @@ VRAM.
 
 ### Aligned/planar IQ kernels (llama.cpp SYCL PR idea): no safe minor win
 
-Inspected the port's IQ decode (`sycl/src/kernels/cuda/iq_kernels.dp.cpp`). The
+Inspected the port's IQ decode (`sycl/src/common/kernels/cuda/iq_kernels.dp.cpp`). The
 `Split<>` loaders for the Coder's formats already read **words**, not bytes:
 
 - `Split<22>` (IQ2_S): `get_int_b2` for `qs` and the sign word, `qh`/`scales` as

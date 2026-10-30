@@ -723,7 +723,7 @@ class TdrPointer(unittest.TestCase):
         self.assertIn("Windows AMD: the driver resets", doc)
         for env in ("STRATA_PF_STEP_SYNC", "STRATA_KV_HOST_DMA"):
             self.assertIn(env, doc)
-            self.assertIn(env, (Path(setup.__file__).resolve().parent / "src/prefill/prefill.cpp").read_text(encoding="utf-8"))
+            self.assertIn(env, (Path(setup.__file__).resolve().parent / "src/models/qwen38/prefill/prefill.cpp").read_text(encoding="utf-8"))
 
 
 if __name__ == "__main__":

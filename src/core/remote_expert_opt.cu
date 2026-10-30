@@ -1,9 +1,9 @@
 #include "strata/core/remote_expert_opt.hpp"
 #include "strata/core/remote_experts.hpp"
 #include "strata/base/gpu/on_device.hpp"
-#include "strata/kernels/cpu/expert_layout.hpp"
-#include "strata/kernels/elementwise.hpp"
-#include "strata/kernels/verify_kernels.hpp"
+#include "strata/common/kernels/cpu/expert_layout.hpp"
+#include "strata/common/kernels/elementwise.hpp"
+#include "strata/models/qwen38/kernels/verify_kernels.hpp"
 
 #include <algorithm>
 #include <cstring>

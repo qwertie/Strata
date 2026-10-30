@@ -90,12 +90,12 @@ range.
 | `w4a4x2` | Blackwell FP4 MMA | NVFP4 | not in this table; first-token KL in [History](#history--older-measurements) |
 | `fp16` | dequantize + cuBLAS FP16 GEMM | FP16 | reference |
 
-`src/prefill/mmq_nvfp4_w4a8.cu` compiles mmq.cuh's int8 NVFP4 path with Blackwell's FP4 MMA hidden from both the device
-code and the host's tile config, so it is the same on every architecture. Decode already multiplies at this precision.
-The FP4 MMA exists only in the arch-specific target, so `src/prefill/mmq_nvfp4_w4a4.cu` (the FP4 x FP4 kernel and its FP4
-activation quantizer) is the one unit CMake builds with `12x` to `12xa` (`strata_mmq_w4a4`). The rest of the engine keeps
-the architectures as given and runs on sm_121 too. A card without that unit's image (another architecture, or sm_121
-against a 120a build) falls back to `w4a8` with a note.
+`src/common/kernels/prefill/mmq_nvfp4_w4a8.cu` compiles mmq.cuh's int8 NVFP4 path with Blackwell's FP4 MMA hidden from
+both the device code and the host's tile config, so it is the same on every architecture. Decode already multiplies at
+this precision. The FP4 MMA exists only in the arch-specific target, so `src/common/kernels/prefill/mmq_nvfp4_w4a4.cu`
+(the FP4 x FP4 kernel and its FP4 activation quantizer) is the one unit CMake builds with `12x` to `12xa`
+(`strata_mmq_w4a4`). The rest of the engine keeps the architectures as given and runs on sm_121 too. A card without that
+unit's image (another architecture, or sm_121 against a 120a build) falls back to `w4a8` with a note.
 
 > **Measured on:** first-token KL divergence against `fp16`, 8 prompts (code and prose, 1K to 8K tokens). Hardware and
 > Strata version not recorded. The noise floor is the same `fp16` path cut into 4096-token chunks instead of 8192.
@@ -124,13 +124,13 @@ NVFP4's 16-value scales are applied in FP32 after every int8 step, which only Bl
 
 ## CPU experts
 
-`src/kernels/cpu/nvfp4_avx512.cpp` computes the CPU pool's NVFP4 rows in 512-bit lanes. Each 64-value block is decoded
-once for every token of a verify window: `vpdpbusd` on |E2M1| codes, with the sign moved onto the activation. The
-arithmetic is ggml-cpu's `ggml_vec_dot_nvfp4_q8_0`, with the float additions ordered differently (worst 4.5e-7 relative,
-`nvfp4_avx512_parity`). `STRATA_NO_NVFP4_512=1` falls back to ggml-cpu.
+`src/common/kernels/cpu/nvfp4_avx512.cpp` computes the CPU pool's NVFP4 rows in 512-bit lanes. Each 64-value block is
+decoded once for every token of a verify window: `vpdpbusd` on |E2M1| codes, with the sign moved onto the activation.
+The arithmetic is ggml-cpu's `ggml_vec_dot_nvfp4_q8_0`, with the float additions ordered differently (worst 4.5e-7
+relative, `nvfp4_avx512_parity`). `STRATA_NO_NVFP4_512=1` falls back to ggml-cpu.
 
 A CPU without AVX-512 (Zen 1 to 3, Intel Core 4th to 10th and 12th to 14th gen, Core Ultra, Xeon E5 v3/v4) runs the same
-rows in 256-bit lanes (`src/kernels/cpu/nvfp4_avx2.cpp`): ggml's AVX2 arithmetic step for step, so every row is bit-equal
+rows in 256-bit lanes (`src/common/kernels/cpu/nvfp4_avx2.cpp`): ggml's AVX2 arithmetic step for step, so every row is bit-equal
 to ggml-cpu's (`nvfp4_cpu_parity`, 0 of 1280x9 and 2560x9 rows differ on a Ryzen 5 5600X, a Ryzen 7 255 and a Core Ultra
 7 265). `STRATA_NO_NVFP4_256=1` falls back to ggml-cpu. An NVFP4 pack is a native pack (its folder holds
 `native_experts.txt`), so the engine starts on such a CPU. The AVX-512 requirement belongs to the canonical Q2_0 pack

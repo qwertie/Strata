@@ -1,11 +1,11 @@
 // metal/src/engine/stubs_gyro.cpp - the Gyro (agentionai trellis experts) entry points the Metal engine does not implement:
-// the GPU Hadamard rotations of src/kernels/cuda/iq_kernels.cu.  native_expert_supported() (iq_host.cpp) does not list the
+// the GPU Hadamard rotations of src/common/kernels/cuda/iq_kernels.cu.  native_expert_supported() (iq_host.cpp) does not list the
 // trellis types, so a Gyro pack stops at load with its reason and these are never reached with a supported file.
 // Each stops the engine with its name, like stubs.cpp.
 
 #include <cstdint>
 
-#include "strata/kernels/iq_kernels.hpp"
+#include "strata/common/kernels/iq_kernels.hpp"
 
 namespace strata::metal_engine {
 void missing(const char* name);

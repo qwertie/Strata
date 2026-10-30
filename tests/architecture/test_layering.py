@@ -17,7 +17,15 @@ ROOT = Path(__file__).resolve().parents[2]
 CPP_SUFFIXES = {".cpp", ".cc", ".c", ".hpp", ".h", ".inc", ".inl", ".cu", ".cuh"}
 CPP_INCLUDE = re.compile(r'^\s*#\s*include\s*"strata/([^"]+)"', re.MULTILINE)
 # Folders under src/ and include/strata/ that the refactor empties and deletes (docs/ARCHITECTURE.md#old-folders)
-OLD_CPP_FOLDERS = {"core", "kernels", "prefill"}
+OLD_CPP_FOLDERS = {"core"}
+# Headers still in an old folder whose new place is decided (docs/UPSTREAM_PORTING.md#path-map): an include of one is
+# checked as an include of its new place
+OLD_CPP_HEADERS_MOVING_TO = {"core/geometry.hpp": "models/common/geometry.hpp"}
+# C++ files (relative to src/ or include/strata/) that still include a higher layer, and why. Remove an entry once its
+# file no longer does.
+KNOWN_UPWARD_INCLUDES = {
+    "common/artifact/gguf_reader.hpp": "reads a model file's shape into core/geometry.hpp's ModelGeometry",
+}
 # The new C++ folders (relative to src/ or include/strata/) by layer. Files in one folder, including its subfolders,
 # may include each other; folders in one layer may not, except as CPP_SAME_LAYER_USES allows. A new model family
 # is added here.
@@ -45,11 +53,14 @@ KNOWN_UPWARD_LOADS = {
 
 
 def test_cpp_includes_follow_layers():
-    problems = [f"{path.relative_to(ROOT).as_posix()}: {problem}"
-                for path, own in find_cpp_files()
-                for target in CPP_INCLUDE.findall(path.read_text(encoding="utf-8", errors="replace"))
-                if (problem := find_cpp_problem(own, target))]
+    problems = [f"{path.relative_to(ROOT).as_posix()}: {problem}" for path, own, problem in find_cpp_problems()
+                if own not in KNOWN_UPWARD_INCLUDES]
     assert not problems, "\n".join(problems)
+
+
+def test_known_upward_includes_are_still_there():
+    upward = {own for path, own, problem in find_cpp_problems()}
+    assert not set(KNOWN_UPWARD_INCLUDES) - upward, "remove these from KNOWN_UPWARD_INCLUDES"
 
 
 def test_python_imports_follow_layers():
@@ -81,6 +92,8 @@ def test_rules_catch_violations():
     assert find_cpp_problem("common/state/pool.cpp", "common/spec/draft.hpp") is None
     assert find_cpp_problem("common/state/pool.cpp", "nonexistent/x.hpp")
     assert find_cpp_problem("models/newfamily/engine.cu", "common/state/pool.hpp")
+    assert find_cpp_problem("models/qwen38/session.cpp", "core/geometry.hpp") is None
+    assert find_cpp_problem("common/kernels/cpu/expert.hpp", "core/geometry.hpp")
     assert find_python_problem("strata_common", "strata_base") is None
     assert find_python_problem("strata_server", "strata_common") is None
     assert find_python_problem("strata_base", "strata_common")
@@ -112,10 +125,20 @@ def find_cpp_files():
                     yield path, path.relative_to(base).as_posix()
 
 
+def find_cpp_problems():
+    """Yields (path, its path relative to src/ or include/strata/, what is wrong) for each include of a C++ file in the
+    new folders that the layers do not allow."""
+    for path, own in find_cpp_files():
+        for target in CPP_INCLUDE.findall(path.read_text(encoding="utf-8", errors="replace")):
+            if problem := find_cpp_problem(own, target):
+                yield path, own, problem
+
+
 def find_cpp_problem(own: str, target: str) -> str | None:
     """Gets what is wrong with file `own` including `target` (both relative to src/ or include/strata/), or
     None if the layers allow it."""
-    own_folder, target_folder = get_cpp_folder(own), get_cpp_folder(target)
+    own_folder = get_cpp_folder(own)
+    target_folder = get_cpp_folder(OLD_CPP_HEADERS_MOVING_TO.get(target, target))
     if own_folder is None:
         return "is in no folder of CPP_LAYERS"
     if target_folder is None:

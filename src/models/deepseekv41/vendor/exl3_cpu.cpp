@@ -11,7 +11,7 @@
 // the split-K pieces, the GEMM's sums and the vectorised transforms alike).
 #include "strata/models/deepseekv41/exl3_cpu.hpp"
 
-#include "strata/kernels/f16_bits.hpp"
+#include "strata/common/kernels/f16_bits.hpp"
 
 #include <algorithm>
 #include <array>

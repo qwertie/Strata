@@ -1,6 +1,6 @@
 // Device parity for the scalar HIP implementation of the optional native QSA scorer.
 #include <hip/hip_runtime.h>
-#include "strata/kernels/native_qsa_score.hpp"
+#include "strata/models/qwen38/kernels/native_qsa_score.hpp"
 
 #include <cmath>
 #include <cstdio>

@@ -4,8 +4,8 @@
 // real activations (STRATA_Q36_VERIFY=1, --no-graph).
 #pragma once
 
-#include "strata/kernels/dp4a.hpp"
-#include "strata/kernels/q8_1_finite.hpp"
+#include "strata/common/kernels/dp4a.hpp"
+#include "strata/common/kernels/q8_1_finite.hpp"
 
 #include <cuda_fp16.h>
 #include <cuda_runtime.h>

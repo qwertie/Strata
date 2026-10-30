@@ -3,7 +3,7 @@
 #include <vector>
 #include <cmath>
 
-#include "strata/kernels/f16_bits.hpp"
+#include "strata/common/kernels/f16_bits.hpp"
 #include "strata/base/platform/memory.hpp"
 
 #include <cinttypes>

@@ -1,7 +1,7 @@
 // Host-only validation fixtures. CUDA is linked but must never be initialized:
 // invalid restores must return before the first CUDA call or destination write.
 #include "strata/models/qwen38/conversation_snapshot.hpp"
-#include "strata/kernels/kv_q4.hpp"
+#include "strata/models/qwen38/kernels/kv_q4.hpp"
 
 #include <cstdint>
 #include <cstdio>

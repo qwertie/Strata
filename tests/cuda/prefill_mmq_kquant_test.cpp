@@ -5,7 +5,7 @@
 // to q8_1 by design, so this is a screen for layout, stride, expert-bound and row-id errors (the bounds of
 // tests/hip/prefill_mmq_parity.cpp), not a bit-exactness test.  Several experts per product, permuted rows, an
 // all-zero row.  The MMQ path covers gate/up Q4_K / Q5_K / Q6_K and down Q5_1 / Q8_0 (UD-Q4_K_XL / UD-Q6_K_XL).
-#include "strata/prefill/moe_mmq.hpp"
+#include "strata/common/kernels/prefill/moe_mmq.hpp"
 
 #include "ggml.h"
 

@@ -15,8 +15,8 @@
 
 #include "strata/core/expert_source.hpp"
 #include "strata/base/gpu/pinned.hpp"
-#include "strata/kernels/cpu/expert_layout.hpp"
-#include "strata/kernels/cpu/native_expert.hpp"
+#include "strata/common/kernels/cpu/expert_layout.hpp"
+#include "strata/common/kernels/cpu/native_expert.hpp"
 
 #include <algorithm>
 #include <chrono>

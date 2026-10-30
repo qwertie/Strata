@@ -2,10 +2,10 @@
 // agentionai llama.cpp fork, ggml types 144-146) and two experimental lower-rate versions (TQK5X, TQK4X, and the table-based TQK5T, TQK4T).
 //
 // Standalone (no ggml, no Strata engine): it only needs third_party/ggml/ggml-common-tq.h (the 2048-point codebook).
-// The decoders it must match are src/kernels/cpu/tq_states.hpp / tq_cpu.cpp (tools/trellis/tqenc_test.cpp checks
+// The decoders it must match are src/common/kernels/cpu/tq_states.hpp / tq_cpu.cpp (tools/trellis/tqenc_test.cpp checks
 // bit for bit against them, and the scalar / AVX2 / AVX-512 kernels against the encoder's own reconstruction).
 //
-// THE FORMAT (see tq_states.hpp, include/strata/kernels/cpu/tq_cpu.hpp, docs/GYRO.md):
+// THE FORMAT (see tq_states.hpp, include/strata/common/kernels/cpu/tq_cpu.hpp, docs/GYRO.md):
 //   block = 128 weights = {fp16 d (little endian); qs[4*K]}, 32 steps t of 4 weights (weights 4t..4t+3).
 //   State of step t: 15 bits.  weights = d * codebook(state); the state's hash x = state * 0x9e3779b1 picks two
 //   points lut[x >> 21] and lut[(x >> 10) & 2047] (fp16 pairs) = four values.  The decoder works on the int16 table
@@ -23,7 +23,8 @@
 //
 // New experimental types (EXPERIMENTAL_VERSION 2; not in any ggml enum or GGUF reader; ids away from the fork's 143-149):
 //   TQK5X (224, 22 bytes / 128 weights, 1.375 bpw) and TQK4X (225, 18 bytes, 1.125 bpw): the TQK rule with K = 5 / 4 and the
-//     COMPUTED codebook (src/kernels/cpu/tq_computed.hpp: two LCG words per state masked into four fp16, no table);
+//     COMPUTED codebook (src/common/kernels/cpu/tq_computed.hpp: two LCG words per state masked into four fp16, no
+//     table);
 //   TQK5T (226) and TQK4T (227): version 1, the same K = 5 / 4 layout with the fork's hashed point table (what the first
 //     pilots used).  Same bit order, circular stream, 15-bit mask and fp16 scale in all of them.
 #pragma once

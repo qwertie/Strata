@@ -3,7 +3,7 @@
 //     dflash2_gemm_bench [iters]
 //
 // Weight sets are cycled through 2 GiB of distinct matrices so the L2 cache cannot hold them (the drafter reads each matrix once per round).
-#include "strata/kernels/dflash2.hpp"
+#include "strata/models/qwen38/kernels/dflash2.hpp"
 
 #include <cuda_runtime.h>
 

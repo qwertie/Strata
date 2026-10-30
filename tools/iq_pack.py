@@ -509,7 +509,8 @@ HADAMARD_ROLE = re.compile(r"^blk\.(\d+)\.ffn_(gate|up|down)_exps\.weight$")
 
 def hadamard_spec(meta: dict, layout, n_embd: int, n_ff: int):
     """prism.hadamard.* (Agention's APR files: routed experts stored in a block-Hadamard-rotated basis; the runtime
-    must rotate their input activations, see include/strata/kernels/cpu/hadamard.hpp) -> the text of hadamard.txt,
+    must rotate their input activations, see include/strata/common/kernels/cpu/hadamard.hpp) -> the text of
+    hadamard.txt,
     None for a model without the metadata, or an error string.  Anything this engine cannot apply is refused: a
     folded weight it would run unrotated computes plausible garbage."""
     if "prism.hadamard.version" not in meta:

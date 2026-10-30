@@ -1,5 +1,5 @@
 // metal/src/engine/stubs_025.cpp - 0.2.5: native_expert.cpp (shared with the PC engine) now asks whether the 512-bit i-quant rows may take a
-// one-token expert and whether their grid lookups are gathers.  Those rows live in src/kernels/cpu/iq_avx512.cpp, an x86 AVX-512 file the
+// one-token expert and whether their grid lookups are gathers.  Those rows live in src/common/kernels/cpu/iq_avx512.cpp, an x86 AVX-512 file the
 // Apple build does not compile.  Here they answer "not available"; native_expert.cpp only calls iq512x_rows behind cpu_avx512_ok() and
 // iq512x_supported(), both false on arm64, so the stopping stub below is never reached.
 

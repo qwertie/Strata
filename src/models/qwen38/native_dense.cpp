@@ -2,9 +2,9 @@
 #include <cstdlib>
 #include "strata/core/weights.hpp"
 #include "strata/common/artifact/gguf_reader.hpp"
-#include "strata/kernels/fused_gr.hpp"
+#include "strata/models/qwen38/kernels/fused_gr.hpp"
 #include "strata/base/gpu/gfx_arch.hpp"
-#include "strata/kernels/native_mmvq.hpp"
+#include "strata/common/kernels/native_mmvq.hpp"
 #include "strata/base/platform/memory.hpp"
 
 #include <cuda_runtime.h>

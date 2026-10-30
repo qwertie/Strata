@@ -10,8 +10,8 @@
 #include <hipblas/hipblas.h>
 #include <hipblaslt/hipblaslt.h>
 
-#include "strata/kernels/bf16_bits.hpp"
-#include "strata/prefill/gemm.hpp"
+#include "strata/common/kernels/bf16_bits.hpp"
+#include "strata/common/kernels/prefill/gemm.hpp"
 #include "hipblaslt_tuning.hpp"
 
 #include <algorithm>

@@ -6,7 +6,7 @@
 //
 // Every row the synthetic table holds encodes its own index, so a wrong offset, a straddle mishandled or a
 // dedup slot mixed up shows as a mismatch rather than as plausible data.
-#include "strata/kernels/ngram.hpp"
+#include "strata/models/qwen38/kernels/ngram.hpp"
 #include "strata/models/qwen38/ngram/ple_reader.hpp"
 #include "strata/base/platform/direct_file.hpp"
 

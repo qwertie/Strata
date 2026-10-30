@@ -3,7 +3,7 @@
 The decode and verify windows run their dense projections (2 to 8 tokens at a time) through `native_mmvq_il`, which reads an
 interleaved copy of the q8_1 activations. Every choice it makes gives the same bits as the plain kernels
 (`STRATA_MMVQ_IL=0` turns the whole path off); only the speed differs. How many matrix rows one warp takes
-(1, 2 or 4, or 0 = use the plain kernel) is a table in `src/kernels/cuda/native_mmvq.cu`, indexed by the
+(1, 2 or 4, or 0 = use the plain kernel) is a table in `src/common/kernels/cuda/native_mmvq.cu`, indexed by the
 quantisation type (IQ4_XS, Q4_K, Q5_K, Q6_K, Q3_K), the token count (2-4) and the matrix's row count (five classes).
 Windows of 5 to 8 tokens have a second table (`kIlRows58_<cc>`, 1 or 2 rows a warp); only sm_120 has one so far (measured on
 the RTX PRO 5000: e.g. the Q5_K head at 5 tokens 899 -> 491 us), every other card keeps the plain kernels there.

@@ -1,7 +1,7 @@
 // src/models/qwen38/dflash2_small_bench.cpp - time of each of the drafter's small kernels, back to back (graph-free), on dummy data.
 //
 //     dflash2_small_bench [iters]
-#include "strata/kernels/dflash2.hpp"
+#include "strata/models/qwen38/kernels/dflash2.hpp"
 
 #include <cuda_runtime.h>
 

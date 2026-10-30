@@ -13,7 +13,7 @@
 #define GGML_COMMON_IMPL_CPP
 #include "ggml-common.h"
 #include "ggml-common-tq.h"                  // the trellis block structs and the codebook tq_lut_f16 (Gyro)
-#include "../../src/kernels/cpu/tq_states.hpp"   // the CPU trellis state extraction (the reference decoder)
+#include "../../src/common/kernels/cpu/tq_states.hpp"   // the CPU trellis state extraction (the reference decoder)
 
 namespace ref {
 
@@ -108,8 +108,8 @@ static void get_scale_min_k4(int j, const uint8_t* q, uint8_t& d, uint8_t& m) {
 }
 
 // The trellis types (ggml 144 TQ2_T, 145 TQK6, 146 TQK7): 128 weights = 32 steps of 4; step t's state comes from
-// the CPU engine's own extraction (src/kernels/cpu/tq_states.hpp), x = state * 0x9e3779b1, the two codebook points
-// lut[x >> 21] and lut[(x >> 10) & 2047] (fp16 pairs) give weights 4t..4t+3, times the fp16 scale.
+// the CPU engine's own extraction (src/common/kernels/cpu/tq_states.hpp), x = state * 0x9e3779b1, the two codebook
+// points lut[x >> 21] and lut[(x >> 10) & 2047] (fp16 pairs) give weights 4t..4t+3, times the fp16 scale.
 static void deq_tq(int kb, const uint8_t* b, float* y) {
     uint32_t st[32];
     if (kb == 8) strata::kernels::cpu::tq_detail::tq_states<8>(b + 2, st);

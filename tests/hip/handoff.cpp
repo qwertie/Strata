@@ -1,6 +1,6 @@
 // Real asynchronous CPU/GPU handoff and graph replay, including changing payloads.
 #include <hip/hip_runtime.h>
-#include "strata/kernels/elementwise.hpp"
+#include "strata/common/kernels/elementwise.hpp"
 #include <atomic>
 #include <chrono>
 #include <cstdio>

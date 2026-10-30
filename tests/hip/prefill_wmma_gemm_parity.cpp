@@ -3,7 +3,7 @@
 #include <hip/hip_bfloat16.h>
 #include <hip/hip_fp16.h>
 
-#include "wmma_gemm.h"
+#include "strata/common/kernels/prefill/wmma_gemm.h"
 #include "strata/base/gpu/gfx_arch.hpp"
 
 #include <algorithm>

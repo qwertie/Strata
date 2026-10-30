@@ -3,7 +3,7 @@
 // It compares GGML's MMQ result (with its intended q8_1 activation rounding) to a CPU FP32 product using
 // GGML's own dequantizer for the exact same weight blocks. The tolerances screen layout/stride/bounds errors;
 // they do not assert bitwise or FP16 parity.
-#include "strata/prefill/moe_mmq.hpp"
+#include "strata/common/kernels/prefill/moe_mmq.hpp"
 #include "ggml.h"
 #include <hip/hip_runtime.h>
 

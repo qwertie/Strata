@@ -681,7 +681,7 @@ def two_socket_note(sockets) -> list[str]:
             "the config's args (START-HERE --calibrate measures it on this PC)"]
 
 
-# The engine's default count of CPU expert workers (include/strata/kernels/cpu/pool_plan.hpp, which tools/test_pool_plan.py
+# The engine's default count of CPU expert workers (include/strata/common/kernels/cpu/pool_plan.hpp, which tools/test_pool_plan.py
 # keeps in step with these numbers).  Setup writes no worker count on an ordinary CPU: the engine picks it, from the
 # physical cores (not the SMT siblings), minus the host thread's core and a reserve on a big CPU, on the host thread's
 # socket, under a cap.  What setup does write (a hybrid CPU's count, the vision encoder's threads) is capped the same way.

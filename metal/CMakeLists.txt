@@ -98,12 +98,13 @@ set(STRATA_METAL_HOST_SOURCES
   ${S}/models/qwen38/layer.cpp ${S}/models/qwen38/session.cpp ${S}/models/qwen38/native_head.cpp
   ${S}/models/qwen38/native_dense.cpp ${S}/models/qwen38/verify.cpp ${S}/models/qwen38/mtp.cpp
   ${S}/models/qwen38/conversation_snapshot.cpp ${S}/models/qwen38/conversation_state.cpp
-  ${S}/kernels/ngram.cpp ${S}/models/qwen38/ngram/ple_reader.cpp ${S}/base/platform/direct_file.cpp
-  ${S}/prefill/prefill.cpp
+  ${S}/models/qwen38/kernels/ngram.cpp ${S}/models/qwen38/ngram/ple_reader.cpp ${S}/base/platform/direct_file.cpp
+  ${S}/models/qwen38/prefill/prefill.cpp
   ${S}/common/spec/suffix_drafter.cpp ${S}/common/spec/controller.cpp ${S}/common/spec/draft_policy.cpp
   ${S}/common/spec/draft_source.cpp ${S}/common/serve/loop.cpp ${S}/common/serve/request.cpp
-  ${S}/kernels/cpu/pool.cpp ${S}/kernels/cpu/expert_layout.cpp ${S}/kernels/cpu/native_expert.cpp
-  ${S}/kernels/cpu/hadamard.cpp ${S}/kernels/cpu/tq_cpu.cpp)   # Gyro: the Hadamard rotation, the scalar trellis rows
+  ${S}/common/kernels/cpu/pool.cpp ${S}/common/kernels/cpu/expert_layout.cpp ${S}/common/kernels/cpu/native_expert.cpp
+  ${S}/common/kernels/cpu/hadamard.cpp   # Gyro: the Hadamard rotation
+  ${S}/common/kernels/cpu/tq_cpu.cpp)    # Gyro: the scalar trellis rows
 set_source_files_properties(${S}/base/gpu/device.cu ${S}/base/gpu/pinned.cu ${S}/base/gpu/runtime.cu
                             PROPERTIES LANGUAGE CXX)
 

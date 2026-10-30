@@ -4,11 +4,11 @@
 #include "strata/models/qwen38/native_head.hpp"
 #include "strata/base/gpu/on_device.hpp"
 #include "strata/core/weights.hpp"
-#include "strata/kernels/dflash2.hpp"
-#include "strata/kernels/elementwise.hpp"
-#include "strata/kernels/native_mmvq.hpp"
-#include "strata/kernels/native_qsa.hpp"
-#include "strata/kernels/verify_kernels.hpp"
+#include "strata/models/qwen38/kernels/dflash2.hpp"
+#include "strata/common/kernels/elementwise.hpp"
+#include "strata/common/kernels/native_mmvq.hpp"
+#include "strata/models/qwen38/kernels/native_qsa.hpp"
+#include "strata/models/qwen38/kernels/verify_kernels.hpp"
 
 #include <algorithm>
 #include <chrono>

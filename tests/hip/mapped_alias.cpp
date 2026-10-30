@@ -17,7 +17,7 @@
 // D2D copy is not attempted (it may fault rather than report); the kernel read is, since that is
 // what the engine relies on.
 
-#include "strata/kernels/elementwise.hpp"
+#include "strata/common/kernels/elementwise.hpp"
 
 #include <hip/hip_runtime.h>
 

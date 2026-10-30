@@ -7,14 +7,14 @@
 #include <cstddef>
 #include <cstdint>
 
-#include "strata/kernels/cpu/nvfp4_avx2.hpp"
-#include "strata/kernels/cpu/nvfp4_avx512.hpp"
-#include "strata/kernels/iq_kernels.hpp"
-#include "strata/kernels/native_qsa_indexer.hpp"
-#include "strata/kernels/qsa_decode_attn.hpp"
-#include "strata/kernels/qsa_select.hpp"
-#include "strata/kernels/verify_kernels.hpp"
-#include "strata/prefill/kernels.hpp"
+#include "strata/common/kernels/cpu/nvfp4_avx2.hpp"
+#include "strata/common/kernels/cpu/nvfp4_avx512.hpp"
+#include "strata/common/kernels/iq_kernels.hpp"
+#include "strata/models/qwen38/kernels/native_qsa_indexer.hpp"
+#include "strata/models/qwen38/kernels/qsa_decode_attn.hpp"
+#include "strata/models/qwen38/kernels/qsa_select.hpp"
+#include "strata/models/qwen38/kernels/verify_kernels.hpp"
+#include "strata/models/qwen38/prefill/kernels.hpp"
 
 namespace strata::metal_engine {
 void missing(const char* name);

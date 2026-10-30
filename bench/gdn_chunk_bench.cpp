@@ -7,7 +7,7 @@
 // relative difference it saw so a silent divergence cannot hide behind a speedup.
 //
 //   usage: gdn_chunk_bench [T ...]        (default 1024 4096 8192)
-#include "strata/prefill/kernels.hpp"
+#include "strata/models/qwen38/prefill/kernels.hpp"
 
 #include <cuda_runtime.h>
 

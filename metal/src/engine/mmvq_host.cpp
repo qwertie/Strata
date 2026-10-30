@@ -1,8 +1,8 @@
-// metal/src/engine/mmvq_host.cpp - the host-side helpers of src/kernels/cuda/native_mmvq.cu the shared host code reads
-// (which GGUF types the dense projections take, their byte sizes).  Copied from native_mmvq.cu; keep in step.  The
-// kernels are not ported: on Metal the decode window runs mac-kern's GEMVs (metal/src/engine/window.cpp).
-#include "strata/kernels/iq_kernels.hpp"
-#include "strata/kernels/native_mmvq.hpp"
+// metal/src/engine/mmvq_host.cpp - the host-side helpers of src/common/kernels/cuda/native_mmvq.cu the shared host code
+// reads (which GGUF types the dense projections take, their byte sizes).  Copied from native_mmvq.cu; keep in step.
+// The kernels are not ported: on Metal the decode window runs mac-kern's GEMVs (metal/src/engine/window.cpp).
+#include "strata/common/kernels/iq_kernels.hpp"
+#include "strata/common/kernels/native_mmvq.hpp"
 
 #include <cstddef>
 #include <cstdlib>

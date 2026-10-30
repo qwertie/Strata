@@ -2,7 +2,7 @@
 // against the column-split kernels + the norm kernel (variant 0, the default before it):
 // y, its FP16 bits and the final state must be BITWISE equal, over chunk lengths around the 8-token staging and a
 // long one, from a nonzero state.  Synthetic inputs in the model's ranges (unit q/k rows, log-decay gates < 0).
-#include "strata/prefill/kernels.hpp"
+#include "strata/models/qwen38/prefill/kernels.hpp"
 
 #include <cuda_runtime.h>
 

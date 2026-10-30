@@ -2,7 +2,7 @@
 // Ported into Strata (third_party/project-maya/NOTICE.md, LICENSE); changes are in the git history of this file.
 // src/models/deepseekv41/vendor/sampler.cu - speculative sampling for the NextN / DSpark drafts: sample_draft and
 // sample_verify (see include/strata/models/deepseekv41/sampler.hpp).  The plain draw is the shared sample_tokens
-// (src/kernels/cuda/sampler.cu); the draft rows go through the same chain, in llama.cpp's order:
+// (src/common/kernels/cuda/sampler.cu); the draft rows go through the same chain, in llama.cpp's order:
 //
 //     top_k -> top_p -> min_p -> temperature -> pick
 //

@@ -72,7 +72,7 @@ for rel in all_sources():
     edit(str(rel), q_of)
 
 # 7b. `__ldg((const float*) p)` lost its cast: dpct rewrote it as `*p`, reading one byte of the scale.
-edit("src/kernels/cuda/s_gemv.dp.cpp", lambda s: s.replace("const float d = *blk;", "const float d = *(const float*) blk;")
+edit("src/common/kernels/cuda/s_gemv.dp.cpp", lambda s: s.replace("const float d = *blk;", "const float d = *(const float*) blk;")
      .replace("Q8K ? *xb", "Q8K ? *(const float*) xb"))
 
 # 7c. the doorbell: `volatile` device loads/stores of host-mapped flags do not bypass the GPU caches on Intel
@@ -101,10 +101,10 @@ def doorbell(s):
                   "    for (uint32_t spin = 0; spin < strata::kSpinMax && strata::sys_load(flag) < value; ++spin) strata_spin_pause();")
     return s
 # 0.1.31: dp4a.hpp's spin pause is __nanosleep, which SYCL lacks: the bounded spin (kSpinMax) is the backoff
-edit("include/strata/kernels/dp4a.hpp", lambda s: s.replace("    __nanosleep(100);\n",
+edit("include/strata/common/kernels/dp4a.hpp", lambda s: s.replace("    __nanosleep(100);\n",
      "    // SYCL port: no __nanosleep; the doorbell waits are bounded by strata::kSpinMax instead\n"))
 # 0.1.31/0.1.32: fused_gr's per-block shared-memory query stays CUDA (dpct leaves the attribute untranslated)
-edit("src/kernels/cuda/fused_gr.dp.cpp", lambda s: s.replace(
+edit("src/models/qwen38/kernels/cuda/fused_gr.dp.cpp", lambda s: s.replace(
     "        cudaDeviceGetAttribute(&per_block, cudaDevAttrMaxSharedMemoryPerBlock, dev);\n",
     "        per_block = (int) dpct::get_device(dev).get_local_mem_size();   // SYCL: the work-group local memory\n"))
 # upstream PR #413 / 0.1.36+: the key-head DeltaNet kernel's cp.async helpers keep CUDA's address conversion in the
@@ -114,13 +114,13 @@ def gdn_plain_copies(s):
                   "#if 1   // SYCL port: plain copies (no cp.async)\n#define STRATA_GDN_CP_ASYNC 0")
     return s.replace("*reinterpret_cast<float4*>(smem) = *reinterpret_cast<const float4*>(gmem);",
                      "*reinterpret_cast<sycl::float4*>(smem) = *reinterpret_cast<const sycl::float4*>(gmem);")
-edit("src/prefill/kernels.dp.cpp", gdn_plain_copies)
+edit("src/models/qwen38/prefill/kernels.dp.cpp", gdn_plain_copies)
 # 0.1.38: upstream's sm_90 thread-block-cluster greedy sampler (cudaLaunchKernelEx with a cluster dimension) has no
 # SYCL counterpart: the HIP branch's "not available" answer, so the caller takes the plain greedy kernel
-edit("src/kernels/cuda/sampler.dp.cpp", lambda s: s.replace(
+edit("src/common/kernels/cuda/sampler.dp.cpp", lambda s: s.replace(
     "                           int *out, void *stream) try {\n#if defined(__HIPCC__)\n",
     "                           int *out, void *stream) try {\n#if 1   // SYCL port: no thread-block clusters (sm_90): the caller takes the plain greedy kernel\n"))
-edit("src/kernels/cuda/qsa_select.dp.cpp", lambda s: s.replace(
+edit("src/models/qwen38/kernels/cuda/qsa_select.dp.cpp", lambda s: s.replace(
     "                            void *stream) try {\n#if defined(__HIPCC__)\n",
     "                            void *stream) try {\n#if 1   // SYCL port: no thread-block clusters (sm_90): the caller takes the plain top-k\n"))
 # 0.1.38: dpct could not deduce fused_gr's templated kernel names (the staged read and the MAX_T down kernels)
@@ -128,7 +128,7 @@ def gr_kernel_names(s):
     pat = re.compile(r",\s*dpct_placeholder /\*Fix the type mannually\*/>>\((.{0,900}?)\b(gr_down_staged_kernel|gr_down_multi_kernel<(\d+)>)\(", re.S)
     return pat.sub(lambda m: (">>(" if m.group(2) == "gr_down_staged_kernel" else f", dpct_kernel_scalar<{m.group(3)}>>>(")
                    + m.group(1) + m.group(2) + "(", s)
-edit("src/kernels/cuda/fused_gr.dp.cpp", gr_kernel_names)
+edit("src/models/qwen38/kernels/cuda/fused_gr.dp.cpp", gr_kernel_names)
 # 7c'. #1397: the bound of those spins is chosen per device at run time (strata::spin_max(queue), sycl_doorbell.hpp), not the
 #      build's constant kSpinMax: each waiting kernel takes it as a `uint32_t spin_max` argument and its launcher passes
 #      strata::spin_max(*strata::q_of(stream)). Idempotent: a file that already has the argument is left alone.
@@ -150,8 +150,8 @@ def spin_bound_at_run_time(s):
                 at += guard.end()
             s = s[:at] + "    const uint32_t spin_max = strata::spin_max(*strata::q_of(stream));\n" + s[at:]
     return s.replace("strata::kSpinMax", "spin_max")
-edit("src/kernels/cuda/elementwise.dp.cpp", lambda s: spin_bound_at_run_time(doorbell(s)))
-edit("src/kernels/cuda/verify_kernels.dp.cpp", lambda s: spin_bound_at_run_time(doorbell(s)))
+edit("src/common/kernels/cuda/elementwise.dp.cpp", lambda s: spin_bound_at_run_time(doorbell(s)))
+edit("src/models/qwen38/kernels/cuda/verify_kernels.dp.cpp", lambda s: spin_bound_at_run_time(doorbell(s)))
 
 # 7d. cudaMemcpy / cudaMemset are synchronous; dpct emitted `get_in_order_queue().memcpy(...)` with no wait where
 #     the source was pageable ("call wait() if needed"). The streaming expert source hands out ring-buffer blobs,
@@ -193,26 +193,26 @@ for rel in all_sources():
 
 # 7f. dpct's static global_memory/constant_memory objects destruct after the default queue at exit and segfault
 #     in queue::get_device(). Heap-allocate them and never delete: the process is exiting anyway.
-edit("src/kernels/cuda/native_mmvq.dp.cpp", lambda s: s.replace(
+edit("src/common/kernels/cuda/native_mmvq.dp.cpp", lambda s: s.replace(
     "inline dpct::global_memory<int8_t, 1>\n    iq4nl_values(sycl::range(16), {",
     "inline dpct::global_memory<int8_t, 1>& iq4nl_values = *new dpct::global_memory<int8_t, 1>(sycl::range(16), {"))
-edit("src/kernels/cuda/s2_gemv_fast.dp.cpp", lambda s: s.replace(
+edit("src/common/kernels/cuda/s2_gemv_fast.dp.cpp", lambda s: s.replace(
     "inline dpct::constant_memory<float, 2> c_codes(256, 4);",
     "inline dpct::constant_memory<float, 2>& c_codes = *new dpct::constant_memory<float, 2>(256, 4);   // never freed: exit-order safe"))
 
 # 8. ggml-common.h has a SYCL declaration mode (sycl::half instead of cuda_fp16.h).
-edit("src/kernels/cuda/iq_kernels.dp.cpp", lambda s: s.replace("#define GGML_COMMON_DECL_CUDA", "#define GGML_COMMON_DECL_SYCL")
+edit("src/common/kernels/cuda/iq_kernels.dp.cpp", lambda s: s.replace("#define GGML_COMMON_DECL_CUDA", "#define GGML_COMMON_DECL_SYCL")
      .replace("#define GGML_COMMON_IMPL_CUDA", "#define GGML_COMMON_IMPL_SYCL"))
 
 # 8b. with the SYCL declaration mode the ggml tables are plain arrays, not dpct::global_memory objects.
-edit("src/kernels/cuda/iq_kernels.dp.cpp", sub(r"\b(\w+)\.get_ptr\(\)", r"\1"))
+edit("src/common/kernels/cuda/iq_kernels.dp.cpp", sub(r"\b(\w+)\.get_ptr\(\)", r"\1"))
 
-edit("src/kernels/cuda/iq_kernels.dp.cpp", sub(r"^\s*\w+\.init\([^;]*\);\n", "", re.M))
+edit("src/common/kernels/cuda/iq_kernels.dp.cpp", sub(r"^\s*\w+\.init\([^;]*\);\n", "", re.M))
 #     ...and the kernels receive them as const pointers (dpct declared the parameters non-const).
 TABLES = r"(iq2xxs_grid|iq2xs_grid|iq2s_grid|iq3xxs_grid|iq3s_grid|iq1s_grid_gpu|kmask_iq2xs|ksigns_iq2xs|ksigns64|kvalues_iq4nl)"
-edit("src/kernels/cuda/iq_kernels.dp.cpp", sub(r"(?<!const )\b(uint64_t|uint32_t|uint8_t|int8_t) \*" + TABLES + r"\b", r"const \1 *\2"))
+edit("src/common/kernels/cuda/iq_kernels.dp.cpp", sub(r"(?<!const )\b(uint64_t|uint32_t|uint8_t|int8_t) \*" + TABLES + r"\b", r"const \1 *\2"))
 # 8c. one nested __fadd_rn the generic rewrite above does not reach
-edit("src/kernels/cuda/native_qsa_score.dp.cpp", lambda s: s.replace(
+edit("src/models/qwen38/kernels/cuda/native_qsa_score.dp.cpp", lambda s: s.replace(
     "float sum=__fadd_rn(((h[0] + h[1]) + h[2]),h[3]);", "float sum=(((h[0] + h[1]) + h[2]) + h[3]);"))
 
 # 8d. dpct threaded every ggml table through kernel parameters, one name per template regardless of which table
@@ -225,9 +225,9 @@ def untangle_tables(s):
     s = re.sub(r",\s*" + TABLES + r"(_ptr_ct\d+)?\b(?![\[\w(])", "", s)
     s = re.sub(r"\(\s*" + TABLES + r"(_ptr_ct\d+)?\s*\)(?![\[\w])", "()", s)
     return s
-edit("src/kernels/cuda/iq_kernels.dp.cpp", untangle_tables)
+edit("src/common/kernels/cuda/iq_kernels.dp.cpp", untangle_tables)
 #     the one helper that took the table under another name keeps its parameter; the callers name the table
-edit("src/kernels/cuda/iq_kernels.dp.cpp", lambda s: s.replace("get_int_from_table_16(aux_q4);", "get_int_from_table_16(aux_q4, kvalues_iq4nl);"))
+edit("src/common/kernels/cuda/iq_kernels.dp.cpp", lambda s: s.replace("get_int_from_table_16(aux_q4);", "get_int_from_table_16(aux_q4, kvalues_iq4nl);"))
 
 # 9. a ternary on the stream argument of cudaMemcpyAsync was migrated around the wrong operand.
 edit("src/program/generate.cpp", lambda s: s.replace(
@@ -235,7 +235,7 @@ edit("src/program/generate.cpp", lambda s: s.replace(
     "(gs ? gs->adapt_stream : adapt_stream)->memcpy("))
 
 # 10. %globaltimer: there is no device-side wall clock in SPIR-V; the verify-window stage profiler reads zeros.
-edit("src/kernels/cuda/verify_kernels.dp.cpp", lambda s: s.replace(
+edit("src/models/qwen38/kernels/cuda/verify_kernels.dp.cpp", lambda s: s.replace(
     'asm volatile("mov.u64 %0, %%globaltimer;" : "=l"(t));',
     "t = 0;   // SYCL: no %globaltimer equivalent; the stage profiler is inert on this backend"))
 
@@ -246,17 +246,18 @@ edit("src/kernels/cuda/verify_kernels.dp.cpp", lambda s: s.replace(
 OFF = "#if 0   // SYCL: inline PTX (mma/ldmatrix/cp.async) - the XMX port is pending; see tools/fixups.py"
 # 0.1.31: a Turing m16n8k8 branch (`#elif !STRATA_PA_SM80`) with its own inline PTX; dpct's DPCT_COMPATIBILITY_TEMP
 # selects it on SYCL. Unreachable there (qsa_prompt_attn_batch refuses the device), so it compiles to nothing.
-edit("src/kernels/cuda/qsa_prompt_attn.dp.cpp", lambda s: s.replace(
+edit("src/models/qwen38/kernels/cuda/qsa_prompt_attn.dp.cpp", lambda s: s.replace(
     '#elif !STRATA_PA_SM80\n    asm volatile("mma.sync.aligned.m16n8k8',
     '#elif 0   // SYCL: Turing\'s m16n8k8 PTX (unreachable: the launcher refuses this device)\n    asm volatile("mma.sync.aligned.m16n8k8'))
 ON = "#if 1   // SYCL: the scalar path (the PTX one above is not ported yet)"
-for rel in ["src/kernels/cuda/qsa_prompt_attn.dp.cpp", "src/kernels/cuda/qsa_select.dp.cpp",
-            "src/kernels/cuda/native_qsa_score.dp.cpp"]:
+for rel in ["src/models/qwen38/kernels/cuda/qsa_prompt_attn.dp.cpp", "src/models/qwen38/kernels/cuda/qsa_select.dp.cpp",
+            "src/models/qwen38/kernels/cuda/native_qsa_score.dp.cpp"]:
     edit(rel, lambda s: s.replace("#if !defined(DPCT_COMPATIBILITY_TEMP) || DPCT_COMPATIBILITY_TEMP >= 800", OFF)
          .replace("#elif !defined(DPCT_COMPATIBILITY_TEMP) || DPCT_COMPATIBILITY_TEMP >= 800", OFF.replace("#if 0", "#elif 0"))   # after upstream's __HIPCC__ guard (0.1.27)
          .replace("#if defined(DPCT_COMPATIBILITY_TEMP) && DPCT_COMPATIBILITY_TEMP < 800", ON)
          .replace("    __trap();", "    /* unreachable on SYCL: the launcher refuses this device */"))
-for rel in ["src/kernels/cuda/qsa_prompt_attn.dp.cpp", "src/kernels/cuda/qsa_select.dp.cpp"]:
+for rel in ["src/models/qwen38/kernels/cuda/qsa_prompt_attn.dp.cpp",
+            "src/models/qwen38/kernels/cuda/qsa_select.dp.cpp"]:
     edit(rel, lambda s: s.replace("        if (cc_major[dev] < 8) return false;",
          "        (void) cc_major[dev];\n        return false;   // SYCL: the tensor-core kernel is not ported yet; the caller takes the older kernel"))
 
@@ -275,10 +276,10 @@ def mmvq(s):
                   "    static W load(const Block* __restrict__ w, int iqs) { return load(w, iqs, const_cast<int8_t*>(kIq4nlTable)); }\n"
                   "    static W load(const Block* __restrict__ w, int iqs, int8_t *iq4nl_values) {", 1)
     return s
-edit("src/kernels/cuda/native_mmvq.dp.cpp", mmvq)
+edit("src/common/kernels/cuda/native_mmvq.dp.cpp", mmvq)
 
 # 13. sycl::free takes void*; the parity harness frees const device pointers.
-edit("src/kernels/qsa_prompt_attn_parity.cpp", sub(r"sycl::free\(([\w.]+),", r"sycl::free((void *)\1,"))
+edit("src/models/qwen38/kernels/qsa_prompt_attn_parity.cpp", sub(r"sycl::free\(([\w.]+),", r"sycl::free((void *)\1,"))
 
 # 14. verify.cpp: graph introspection (kernel names, a debug print) has no SYCL API; the node count stays.
 def verify(s):
@@ -319,7 +320,8 @@ edit("src/models/qwen38/native_head.cpp", lambda s: s.replace("sycl::free(dev_, 
 # tests launch on their own queue (`s`, `cs`) and copy results back on the default one, so a slow kernel's output
 # could be read before it finished (iq_multi_parity's IQ2_XS reference, qsa_parity's sequential side). In the tests,
 # every default-queue copy/fill first drains the device's queues - cudaMemcpy's semantics.
-for p in sorted((root / "src" / "kernels").glob("*_parity.cpp")):
+kernel_dirs = [root / "src" / d / "kernels" for d in ("common", "models/common", "models/qwen38")]
+for p in sorted(q for d in kernel_dirs for q in d.glob("*_parity.cpp")):
     edit(str(p.relative_to(root)), sub(r"(?<!queues_wait_and_throw\(\), )dpct::get_in_order_queue\(\)(\s*)\.(memcpy|memset)\(",
                                        r"(dpct::get_current_device().queues_wait_and_throw(), dpct::get_in_order_queue())\1.\2("))
 
@@ -331,7 +333,7 @@ edit("src/program/generate.cpp", sub(
 
 # A770: only subgroup row zero reaches the native router's synchronization.
 # CUDA's early-exit block pattern must not become a divergent SYCL work-group barrier.
-edit("src/kernels/cuda/native_router.dp.cpp", lambda s: s.replace(
+edit("src/models/common/kernels/cuda/native_router.dp.cpp", lambda s: s.replace(
     "    item_ct1.barrier(sycl::access::fence_space::local_space);",
     "    sycl::group_barrier(item_ct1.get_sub_group());  // only subgroup row zero participates"))
 

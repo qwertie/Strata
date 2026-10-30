@@ -6,7 +6,7 @@
 // rocBLAS's own 237 solutions for the same shape runs at 32 (E270, 2026-10-05).  This tool enumerates the library's
 // solutions for each shape (rocblas_gemm_ex_get_solutions), times them, checks each against the default kernel's
 // output, and writes the rows where a solution beats the default by at least --min-gain (1.05 = 5%) as a table the
-// engine reads through STRATA_ROCBLAS_TUNING (src/prefill/rocblas_tuning.hpp; Gemm::f16_inplace).
+// engine reads through STRATA_ROCBLAS_TUNING (src/common/kernels/prefill/rocblas_tuning.hpp; Gemm::f16_inplace).
 //
 // Solution indices are valid only for one GPU architecture and one rocBLAS build (its version string, tweak hash
 // included), so a table is calibrated on the card with the ROCm the engine runs with:

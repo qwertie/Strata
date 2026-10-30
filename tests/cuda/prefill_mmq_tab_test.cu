@@ -1,6 +1,6 @@
-// prefill_mmq_tab_test - STRATA_MMQ_DIRECT: the pointer-table MMQ (src/prefill/moe_mmq_tab.cuh, Product::tab) bit for
-// bit against the gathered MMQ the prompt path runs today (experts copied `expert_bytes` apart, a zeroed 4096-byte
-// tail after the last one).
+// prefill_mmq_tab_test - STRATA_MMQ_DIRECT: the pointer-table MMQ (src/common/kernels/prefill/moe_mmq_tab.cuh,
+// Product::tab) bit for bit against the gathered MMQ the prompt path runs today (experts copied `expert_bytes` apart, a
+// zeroed 4096-byte tail after the last one).
 //
 // Part 1, per product type (IQ3_S gate/up [1280, 2560], IQ4_NL and Q8_0 down [2560, 640], and every other type with a
 // pointer-table instance, at its pack shape): random valid expert matrices at scattered 256-aligned addresses, each
@@ -21,11 +21,11 @@
 // product row bitwise equal, when mmq::whole_tiles says so for this card (else only reported). Sorting the partial
 // group too (STRATA_MMQ_RESIDENT_SORT_NE) is reported, not required.
 // Exit 77 without a CUDA device of sm_80 or newer or without the pointer-table build.
-#include "strata/prefill/moe_mmq.hpp"
+#include "strata/common/kernels/prefill/moe_mmq.hpp"
 
 #include "ggml.h"
 
-#include "../../src/prefill/mmq_resident_sort.hpp"
+#include "../../src/models/qwen38/prefill/mmq_resident_sort.hpp"
 
 #include <cuda_runtime.h>
 

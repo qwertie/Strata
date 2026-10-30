@@ -15,7 +15,7 @@ import pathlib
 import numpy as np
 
 TQ2_T, TQK6, TQK7, TQK5X, TQK4X, TQK5T, TQK4T = 144, 145, 146, 224, 225, 226, 227
-# TQK5X / TQK4X: experimental version 2, the computed (LUT-free) codebook (src/kernels/cpu/tq_computed.hpp);
+# TQK5X / TQK4X: experimental version 2, the computed (LUT-free) codebook (src/common/kernels/cpu/tq_computed.hpp);
 # TQK5T / TQK4T: version 1, the fork's point table (what the first pilots and the Gyro-S checks used for K5 / K4)
 TYPE_NAMES = {TQ2_T: "TQ2_T", TQK6: "TQK6", TQK7: "TQK7", TQK5X: "TQK5X", TQK4X: "TQK4X", TQK5T: "TQK5T", TQK4T: "TQK4T"}
 TYPE_BY_NAME = {v: k for k, v in TYPE_NAMES.items()}

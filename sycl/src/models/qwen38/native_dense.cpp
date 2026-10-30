@@ -6,7 +6,7 @@
 #include <cstdlib>
 #include "strata/core/weights.hpp"
 #include "strata/common/artifact/gguf_reader.hpp"
-#include "strata/kernels/native_mmvq.hpp"
+#include "strata/common/kernels/native_mmvq.hpp"
 #include "strata/base/platform/memory.hpp"
 
 #include <algorithm>

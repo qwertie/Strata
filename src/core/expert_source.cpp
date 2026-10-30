@@ -5,17 +5,17 @@
 #include "strata/base/platform/aux_cpus.hpp"
 #include "strata/core/remote_experts.hpp"
 #include "strata/core/peer_experts.hpp"
-#include "strata/kernels/cpu/expert_layout.hpp"
+#include "strata/common/kernels/cpu/expert_layout.hpp"
 #include "strata/common/artifact/gguf_reader.hpp"
 
 #include "strata/base/gpu/pinned.hpp"
 #include "strata/base/platform/memory.hpp"
-#include "strata/kernels/elementwise.hpp"
-#include "strata/kernels/quantize_act.hpp"
-#include "strata/kernels/s2_expert_grouped.hpp"
-#include "strata/kernels/cpu/kq_avx1.hpp"
-#include "strata/kernels/cpu/kq_avx2.hpp"
-#include "strata/kernels/cpu/pool.hpp"
+#include "strata/common/kernels/elementwise.hpp"
+#include "strata/common/kernels/quantize_act.hpp"
+#include "strata/models/qwen38/kernels/s2_expert_grouped.hpp"
+#include "strata/common/kernels/cpu/kq_avx1.hpp"
+#include "strata/common/kernels/cpu/kq_avx2.hpp"
+#include "strata/common/kernels/cpu/pool.hpp"
 
 #include <cuda_runtime.h>
 

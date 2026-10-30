@@ -4,8 +4,8 @@
 
 #include "ggml.h"
 #include "strata/common/artifact/gguf_reader.hpp"
-#include "strata/kernels/f16_bits.hpp"
-#include "strata/kernels/native_mmvq.hpp"
+#include "strata/common/kernels/f16_bits.hpp"
+#include "strata/common/kernels/native_mmvq.hpp"
 
 #include <algorithm>
 #include <cmath>

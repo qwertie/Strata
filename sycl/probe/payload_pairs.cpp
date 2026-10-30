@@ -3,7 +3,7 @@
 #include <sycl/sycl.hpp>
 #include <dpct/dpct.hpp>
 #include "strata/sycl_queue.hpp"
-#include "strata/kernels/elementwise.hpp"
+#include "strata/common/kernels/elementwise.hpp"
 #include <cstdio>
 #include <cstring>
 #include <vector>

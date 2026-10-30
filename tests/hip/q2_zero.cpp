@@ -1,6 +1,6 @@
 // Q2_0 dequant must preserve signed zero when a negative scale meets code 1.
 // This caught HIP 5.7/gfx1012 folding the half product to positive zero.
-#include "strata/kernels/iq_kernels.hpp"
+#include "strata/common/kernels/iq_kernels.hpp"
 #include <hip/hip_runtime.h>
 #include <hip/hip_fp16.h>
 #include <cstdint>

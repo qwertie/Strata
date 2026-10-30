@@ -2,7 +2,7 @@
 #include <cstdio>
 #include <string>
 
-#include "strata/prefill/share_rules.hpp"
+#include "strata/models/qwen38/prefill/share_rules.hpp"
 
 using strata::prefill::share_rules::default_share_has_work;
 

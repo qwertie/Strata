@@ -60,8 +60,9 @@ for u in undef:
 
 # ---- declarations from the headers
 hdrs = []
-for d in ["kernels", "kernels/cpu", "prefill", "core", "base/gpu", "base/platform", "common/sample", "common/spec",
-          "common/state", "models/common", "models/qwen38", "models/qwen38/ngram"]:
+for d in ["common/kernels", "common/kernels/cpu", "common/kernels/prefill", "core", "base/gpu", "base/platform",
+          "common/sample", "common/spec", "common/state", "models/common", "models/common/kernels", "models/qwen38",
+          "models/qwen38/kernels", "models/qwen38/prefill", "models/qwen38/ngram"]:
     p = os.path.join(root, "strata", d)
     if os.path.isdir(p):
         hdrs += sorted("strata/%s/%s" % (d, f) for f in os.listdir(p) if f.endswith(".hpp"))

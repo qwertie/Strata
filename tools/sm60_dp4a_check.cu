@@ -1,4 +1,4 @@
-// tools/sm60_dp4a_check.cu - proves the sm_60 STRATA_DP4A fallback in include/strata/kernels/dp4a.hpp is
+// tools/sm60_dp4a_check.cu - proves the sm_60 STRATA_DP4A fallback in include/strata/common/kernels/dp4a.hpp is
 // bit-exact with a plain signed byte-wise dot product, and times it against that byte loop.
 //
 // It includes the committed header, so the check covers the code the kernels compile, not a copy.  On sm_61+
@@ -11,7 +11,7 @@
 #include <cstdio>
 #include <cuda_runtime.h>
 
-#include "strata/kernels/dp4a.hpp"
+#include "strata/common/kernels/dp4a.hpp"
 
 // Reference: the signed-byte semantics __dp4a(int, int, int) has for these operands.
 __device__ __forceinline__ int byte_dp4a(const int a, const int b, const int c) {

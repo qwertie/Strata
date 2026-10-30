@@ -1,6 +1,6 @@
 // src/core/gguf_expert_source.cpp - see the header. Plain C++, no device code.
 #include "strata/core/gguf_expert_source.hpp"
-#include "strata/kernels/cpu/expert_layout.hpp"
+#include "strata/common/kernels/cpu/expert_layout.hpp"
 
 #include <algorithm>
 #include <atomic>

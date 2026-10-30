@@ -1,6 +1,6 @@
 # Fused int8 DPAS expert products on Battlemage (branch f-151-b70)
 
-Behaviour note, written before the kernel (2026-10-18) and kept in step with `sycl/src/prefill/esimd_moe.dp.cpp`. The measured numbers
+Behaviour note, written before the kernel (2026-10-18) and kept in step with `sycl/src/common/kernels/prefill/esimd_moe.dp.cpp`. The measured numbers
 are at the end.
 
 ## What it replaces

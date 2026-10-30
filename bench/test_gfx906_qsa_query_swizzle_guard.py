@@ -14,7 +14,7 @@ import tempfile
 
 
 ROOT = Path(__file__).resolve().parents[1]
-source = (ROOT / "src/kernels/cuda/qsa_decode_attn.cu").read_text()
+source = (ROOT / "src/models/qwen38/kernels/cuda/qsa_decode_attn.cu").read_text()
 start = source.index("bool query_swizzle_gfx906_device() {")
 end = source.index("\n}\n", start) + 3
 guard = source[start:end]

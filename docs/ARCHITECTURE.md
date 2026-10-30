@@ -99,8 +99,8 @@ each file goes is listed in [UPSTREAM_PORTING.md](UPSTREAM_PORTING.md#path-map).
 
 | Old folder | Goes to |
 |---|---|
-| `src/core/` | split. Done (A3): `src/base/gpu/`, `src/common/state/`, `src/common/sample/`, `src/models/common/`, `src/models/qwen38/`, `src/program/`. Done (A5): the expert store's host-only parts, to `src/common/experts/`. Left: the expert store's parts that call the CUDA runtime directly (`expert_cache`, `expert_source`) and its multi-GPU parts, for `src/common/experts/` (A5, B3), and the files that must be split first (A5, B1) |
-| `src/kernels/` | split: `src/common/kernels/`, `src/models/common/`, `src/models/qwen38/` |
-| `src/prefill/` | split: `src/common/kernels/`, `src/models/qwen38/` |
+| `src/core/` | split. Done (A3): `src/base/gpu/`, `src/common/state/`, `src/common/sample/`, `src/models/common/`, `src/models/qwen38/`, `src/program/`. Done (A5): the expert store's host-only parts, to `src/common/experts/`. Left: the expert store's parts that call the CUDA runtime directly (`expert_cache`, `expert_source`) and its multi-GPU parts, for `src/common/experts/` (A5, B3), and the files that must be split first (A5) |
+| `src/kernels/` | split. Done (B1): `src/common/kernels/`, `src/models/common/kernels/`, `src/models/qwen38/kernels/`; the folder is gone |
+| `src/prefill/` | split. Done (B1): `src/common/kernels/prefill/`, `src/models/qwen38/prefill/`; the folder is gone |
 | `serve/` | `strata_server/`; its all-purpose modules to `strata_base/` |
 | parts of `strata_control/`, `setup.py`, `tools/` | `strata_base/`, `strata_common/` |

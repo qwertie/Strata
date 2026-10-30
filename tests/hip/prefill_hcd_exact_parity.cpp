@@ -9,8 +9,8 @@
 // T is taken by the kernel at all.
 #include <cuda_runtime.h>
 
-#include "strata/kernels/bf16_bits.hpp"
-#include "strata/prefill/gemm.hpp"
+#include "strata/common/kernels/bf16_bits.hpp"
+#include "strata/common/kernels/prefill/gemm.hpp"
 
 #include <cstdint>
 #include <cstdio>

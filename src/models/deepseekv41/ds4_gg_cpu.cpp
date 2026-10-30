@@ -12,9 +12,9 @@
 #if defined(STRATA_DSV41_TQ_CPU)
 #include "ggml-cpu.h"
 #include "ggml.h"
-#include "strata/kernels/cpu/expert_layout.hpp"
-#include "strata/kernels/cpu/iq_avx2.hpp"
-#include "strata/kernels/cpu/iq_avx512.hpp"
+#include "strata/common/kernels/cpu/expert_layout.hpp"
+#include "strata/common/kernels/cpu/iq_avx2.hpp"
+#include "strata/common/kernels/cpu/iq_avx512.hpp"
 
 #include <mutex>
 #include <vector>

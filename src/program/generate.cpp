@@ -33,7 +33,7 @@
 #include "strata/common/state/conversation_file.hpp"
 #include "strata/common/state/session_save_reclaim.hpp"
 #include "strata/common/state/conversation_memory.hpp"
-#include "strata/core/coupled_draft.hpp"
+#include "strata/common/kernels/coupled_draft.hpp"
 #include "strata/core/expert_source.hpp"
 #include "strata/core/foresight_swap.hpp"
 #include "strata/base/gpu/pinned.hpp"
@@ -47,27 +47,27 @@
 #include "strata/models/qwen38/session.hpp"
 #include "strata/core/weights.hpp"
 #include "strata/base/gpu/gfx_arch.hpp"
-#include "strata/kernels/cpu/expert.hpp"
-#include "strata/kernels/cpu/pool.hpp"
+#include "strata/common/kernels/cpu/expert.hpp"
+#include "strata/common/kernels/cpu/pool.hpp"
 #include "strata/base/platform/aux_cpus.hpp"
-#include "strata/kernels/cpu/expert_layout.hpp"
-#include "strata/kernels/cpu/hadamard.hpp"
-#include "strata/kernels/ngram.hpp"
-#include "strata/kernels/iq_kernels.hpp"
-#include "strata/kernels/s2_expert_grouped.hpp"
-#include "strata/kernels/sampler.hpp"
-#include "strata/kernels/verify_kernels.hpp"
-#include "strata/kernels/elementwise.hpp"
-#include "strata/kernels/shared_expert.hpp"
-#include "strata/kernels/native_moe.hpp"
-#include "strata/kernels/native_gdn.hpp"
-#include "strata/kernels/native_router.hpp"
-#include "strata/kernels/native_qsa.hpp"
-#include "strata/kernels/native_qsa_indexer.hpp"
-#include "strata/kernels/native_rope.hpp"
-#include "strata/kernels/mrope.hpp"
-#include "strata/kernels/kv_q4.hpp"
-#include "strata/kernels/qsa.hpp"
+#include "strata/common/kernels/cpu/expert_layout.hpp"
+#include "strata/common/kernels/cpu/hadamard.hpp"
+#include "strata/models/qwen38/kernels/ngram.hpp"
+#include "strata/common/kernels/iq_kernels.hpp"
+#include "strata/models/qwen38/kernels/s2_expert_grouped.hpp"
+#include "strata/common/kernels/sampler.hpp"
+#include "strata/models/qwen38/kernels/verify_kernels.hpp"
+#include "strata/common/kernels/elementwise.hpp"
+#include "strata/models/qwen38/kernels/shared_expert.hpp"
+#include "strata/models/common/kernels/native_moe.hpp"
+#include "strata/models/qwen38/kernels/native_gdn.hpp"
+#include "strata/models/common/kernels/native_router.hpp"
+#include "strata/models/qwen38/kernels/native_qsa.hpp"
+#include "strata/models/qwen38/kernels/native_qsa_indexer.hpp"
+#include "strata/models/qwen38/kernels/native_rope.hpp"
+#include "strata/common/kernels/mrope.hpp"
+#include "strata/models/qwen38/kernels/kv_q4.hpp"
+#include "strata/models/qwen38/kernels/qsa.hpp"
 #include "strata/models/qwen38/native_head.hpp"
 #include "strata/models/qwen38/verify.hpp"
 #include "strata/models/qwen38/mtp.hpp"
@@ -75,16 +75,16 @@
 #include "strata/models/qwen38/dflash2.hpp"
 #include "strata/models/qwen38/draft_cap.hpp"
 #endif
-#include "strata/prefill/prefill.hpp"
+#include "strata/models/qwen38/prefill/prefill.hpp"
 #if defined(STRATA_PREFILL_MMQ)
-#include "strata/prefill/moe_mmq.hpp"
+#include "strata/common/kernels/prefill/moe_mmq.hpp"
 #endif
 #include "strata/models/qwen38/native_dense.hpp"
 #include "strata/program/batch_read.hpp"
 #include "strata/program/logits_selection.hpp"
 #include "strata/program/conv_cache.hpp"
 #include "strata/program/split_rules.hpp"
-#include "strata/prefill/share_rules.hpp"
+#include "strata/models/qwen38/prefill/share_rules.hpp"
 #include "strata/base/platform/host_limits.hpp"
 #include "strata/program/split_ring.hpp"
 #include "strata/program/prefill_plan.hpp"
@@ -93,7 +93,7 @@
 #include "strata/common/spec/spec_start.hpp"
 #include "strata/common/spec/window_planner.hpp"
 #include "strata/program/batch_groups.hpp"
-#include "strata/kernels/cvec.hpp"
+#include "strata/models/qwen38/kernels/cvec.hpp"
 #include "strata/common/state/progress.hpp"
 #include "strata/base/gpu/device.hpp"
 #include "strata/base/gpu/emulate.hpp"
@@ -563,8 +563,8 @@ struct Options {
     /// R4: slots of VRAM-resident experts.  **0 = off, and off is the default.**
     /// **THE COMMENT THAT USED TO BE HERE WAS FALSE AND ROUND 328 MEASURED IT.**  It said "the cache has no
     /// consumer yet - `moe_hit_grouped_s2` does not exist - so switching it on costs the fill traffic and
-    /// saves nothing".  The kernel exists (`src/kernels/cuda/s2_expert_grouped.cu`), it is wired at line ~660
-    /// via `expert_hit_run`, and switching the cache on **does** move work off the CPU pool: the drain fell
+    /// saves nothing".  The kernel exists (`src/models/qwen38/kernels/cuda/s2_expert_grouped.cu`), it is wired at line
+    /// ~660 via `expert_hit_run`, and switching the cache on **does** move work off the CPU pool: the drain fell
     /// **19.076 -> 10.312 ms/token** at 4096 per-layer slots, for **-2.7 ms/token** end to end.  What was
     /// true is that the ADMISSION POLICY gave every slot to the first position, which is why the earlier
     /// measurement found nothing - see `expert_cache_per_layer`.
@@ -809,7 +809,7 @@ struct Options {
     std::string draft, draft_model;
     double draft_conf = 0.0;   ///< --draft-conf P: with --draft dflash2 the window ends where the product of the selector's probabilities falls below P (replaces --spec-min-p)
     int draft_cap = 0;   ///< --draft-cap N: the widest verify window with --draft dflash2 (0 = by card class, see where the drafter loads)
-    /// A control vector on the residual stream (strata/kernels/cvec.hpp), with llama.cpp's flags: the
+    /// A control vector on the residual stream (strata/models/qwen38/kernels/cvec.hpp), with llama.cpp's flags: the
     /// `experimental-speed-projection` profile passes `--control-vector-scaled FILE:1.0 --control-vector-layer-range
     /// 4 44 --cvec-mode project --cvec-dir per-layer`.  None by default; --serve switches a loaded one per request.
     std::vector<std::pair<std::string, float>> cvec_files;
@@ -3964,8 +3964,8 @@ int main(int argc, char** argv) {
     strata::kernels::native_qsa_set_enabled(o.native_qsa);
     strata::kernels::native_qsa_indexer_set_enabled(o.native_qsa_indexer);
     strata::kernels::native_rope_set_enabled(o.native_rope);
-    // The vision path: every rope kernel reads a cell's (t, h, w) from this table (strata/kernels/mrope.hpp).  It is
-    // the identity until an image request, and it is set here, before any CUDA graph captures a rope kernel.
+    // The vision path: every rope kernel reads a cell's (t, h, w) from this table (strata/common/kernels/mrope.hpp).
+    // It is the identity until an image request, and it is set here, before any CUDA graph captures a rope kernel.
     int32_t* d_mrope = nullptr;
     std::vector<int32_t> mrope_host;
     if (o.vision) {

@@ -27,7 +27,7 @@
 #include "ds4_vision.cuh"
 #include "strata/models/deepseekv41/exl3_cpu.hpp"
 #include "strata/models/deepseekv41/exl3.hpp"
-#include "strata/kernels/f16_bits.hpp"
+#include "strata/common/kernels/f16_bits.hpp"
 #include "strata/models/deepseekv41/moe_win.hpp"
 #include "strata/models/deepseekv41/sampler.hpp"
 

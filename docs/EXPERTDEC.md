@@ -5,10 +5,10 @@ output is bitwise the default kernels' (see "Bit for bit" below; `expdec_bench` 
 
 ## What it changes
 
-`native_expert_grouped` (`src/kernels/cuda/iq_kernels.cu`) computes a verify window's routed experts that are resident
-in VRAM: group g is one expert's blob, its entries are the window's rows that picked it (1 to T, T = the window's
-tokens). The default gate/up kernel (`native_gu_multi_kernel`) already decodes each weight part once per block and
-applies it to the group's entries (`row_dot_80_sub16<NC>`), but the apply re-reads each entry's q8_1 block from
+`native_expert_grouped` (`src/common/kernels/cuda/iq_kernels.cu`) computes a verify window's routed experts that are
+resident in VRAM: group g is one expert's blob, its entries are the window's rows that picked it (1 to T, T = the
+window's tokens). The default gate/up kernel (`native_gu_multi_kernel`) already decodes each weight part once per block
+and applies it to the group's entries (`row_dot_80_sub16<NC>`), but the apply re-reads each entry's q8_1 block from
 global memory with 9 scattered 4-byte loads (36-byte blocks: a warp's load touches 16-32 sectors). On an RTX 2080 Ti
 at a 131k decode that makes an extra entry cost about 60% of a whole expert (~1.6 us against ~2.6 us per expert and
 layer) although it reads nothing from DRAM.
@@ -37,7 +37,7 @@ The first time `STRATA_EXPDEC=1` meets a (role, format) the engine writes one li
 `strata expdec: CUDA1 gate/up type 21: expdec_gu_kernel R 1 MINB 4, 16 rows per block, grid 80 x 10 (cap 10 groups), captured into a graph`
 (or `... not covered: the default kernel runs`).
 
-API (`include/strata/kernels/iq_kernels.hpp`): `native_expert_set_expdec`, `native_expert_set_expdec_params` /
+API (`include/strata/common/kernels/iq_kernels.hpp`): `native_expert_set_expdec`, `native_expert_set_expdec_params` /
 `native_expert_expdec_params` (`NativeExpertExpdecParams`), `native_expert_expdec_takes`. The knobs are read from the
 environment at startup; captured graphs keep the kernels they captured.
 

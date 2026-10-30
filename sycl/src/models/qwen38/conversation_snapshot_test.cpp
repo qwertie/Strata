@@ -3,7 +3,7 @@
 #include <dpct/dpct.hpp>
 #include "strata/models/qwen38/conversation_snapshot.hpp"
 #include "strata/common/state/conversation_file.hpp"
-#include "strata/kernels/kv_q4.hpp"
+#include "strata/models/qwen38/kernels/kv_q4.hpp"
 
 #include <array>
 #include <chrono>

@@ -22,9 +22,9 @@
 #include "strata/models/qwen38/layer.hpp"
 #include "strata/common/state/conversation_cache.hpp"
 #include "strata/models/qwen38/session.hpp"
-#include "strata/kernels/ngram.hpp"
-#include "strata/kernels/cpu/hadamard.hpp"
-#include "strata/kernels/cpu/expert_layout.hpp"
+#include "strata/models/qwen38/kernels/ngram.hpp"
+#include "strata/common/kernels/cpu/hadamard.hpp"
+#include "strata/common/kernels/cpu/expert_layout.hpp"
 
 #include <algorithm>
 #include <chrono>

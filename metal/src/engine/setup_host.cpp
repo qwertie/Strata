@@ -3,22 +3,22 @@
 // from gr.cu, shared_expert.cu, native_*.cu, ple.cu, qsa_decode_attn.cu, rope.cu, native_rope.cu,
 // s2_expert_grouped.cu; keep in step.  On Metal none of these steers a kernel: the decode window runs mac-kern's
 // chain (metal/src/engine/window.cpp); they keep the host side's allocations and checks as on the PC.
-#include "strata/kernels/gr.hpp"
-#include "strata/kernels/native_gdn.hpp"
-#include "strata/kernels/native_moe.hpp"
-#include "strata/kernels/native_qsa.hpp"
-#include "strata/kernels/native_qsa_indexer.hpp"
-#include "strata/kernels/native_rope.hpp"
-#include "strata/kernels/native_router.hpp"
-#include "strata/kernels/ngram.hpp"
-#include "strata/kernels/ple.hpp"
-#include "strata/kernels/qsa_decode_attn.hpp"
-#include "strata/kernels/rope.hpp"
-#include "strata/kernels/rope_scaling.hpp"
-#include "strata/kernels/s2_expert_grouped.hpp"
-#include "strata/kernels/shared_expert.hpp"
-#include "strata/kernels/fused_gr.hpp"
-#include "strata/prefill/gemm.hpp"
+#include "strata/models/qwen38/kernels/gr.hpp"
+#include "strata/models/qwen38/kernels/native_gdn.hpp"
+#include "strata/models/common/kernels/native_moe.hpp"
+#include "strata/models/qwen38/kernels/native_qsa.hpp"
+#include "strata/models/qwen38/kernels/native_qsa_indexer.hpp"
+#include "strata/models/qwen38/kernels/native_rope.hpp"
+#include "strata/models/common/kernels/native_router.hpp"
+#include "strata/models/qwen38/kernels/ngram.hpp"
+#include "strata/models/qwen38/kernels/ple.hpp"
+#include "strata/models/qwen38/kernels/qsa_decode_attn.hpp"
+#include "strata/common/kernels/rope.hpp"
+#include "strata/common/kernels/rope_scaling.hpp"
+#include "strata/models/qwen38/kernels/s2_expert_grouped.hpp"
+#include "strata/models/qwen38/kernels/shared_expert.hpp"
+#include "strata/models/qwen38/kernels/fused_gr.hpp"
+#include "strata/common/kernels/prefill/gemm.hpp"
 
 #include <atomic>
 #include <cmath>

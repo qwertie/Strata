@@ -2,9 +2,9 @@
 // record of one QSA layer and chunk (int32 {layer, p0, T, cap}, T * cap cells, then T * kStepCount steps, written
 // with STRATA_QSA_DUMP_STEPS=1), random q and int8 K/V (the values do not change the work), one page per 4 cells.
 // usage: pa_bench DUMP [reps]   - prints the median time and a hash of the output (for A/B of kernel variants)
-#include "strata/kernels/qsa.hpp"
-#include "strata/kernels/qsa_decode_attn.hpp"
-#include "strata/kernels/qsa_prompt_attn.hpp"
+#include "strata/models/qwen38/kernels/qsa.hpp"
+#include "strata/models/qwen38/kernels/qsa_decode_attn.hpp"
+#include "strata/models/qwen38/kernels/qsa_prompt_attn.hpp"
 
 #include <cuda_runtime.h>
 

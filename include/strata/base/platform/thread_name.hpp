@@ -3,7 +3,7 @@
 // /proc/<pid>/task/<tid>/comm, Windows GetThreadDescription (Process Explorer, WinDbg, the tools/ probes).
 // A name changes nothing the thread does.
 //
-// Linux and macOS: header-only.  Windows: the function is defined in src/kernels/cpu/pool.cpp, because that file already
+// Linux and macOS: header-only.  Windows: the function is defined in src/common/kernels/cpu/pool.cpp, because that file already
 // includes <windows.h> and this header must not pull it into every file that includes aux_cpus.hpp (its macros, and
 // WIN32_LEAN_AND_MEAN, change what those files see).  The callers on Windows are the ones that link strata_kernels_cpu.
 #pragma once

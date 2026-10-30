@@ -1215,7 +1215,7 @@ Strata itself: [MIT](../LICENSE). The model files are not part of it; their lice
   [ukisai/Swift-1.5-Qwen3.8-Flash-Next-GSQ-RCO-GGUF](https://huggingface.co/ukisai/Swift-1.5-Qwen3.8-Flash-Next-GSQ-RCO-GGUF) by UkisAI.
   Their licenses apply to the weights.
 - [llama.cpp / ggml](https://github.com/ggml-org/llama.cpp) (MIT): the i-quant formats, the GPU dot products and dequantizers
-  transcribed in `src/kernels/cuda/iq_kernels.cu`, the CPU backend linked for the i-quant experts, the `mtmd` library behind the
+  transcribed in `src/common/kernels/cuda/iq_kernels.cu`, the CPU backend linked for the i-quant experts, the `mtmd` library behind the
   image encoder (`tools/vision/`), and `gguf-py` used by the tools. See `third_party/ggml/LICENSE`.
 - Ideas from [Splash](https://github.com/incoai/splash), [ninfer](https://github.com/Neroued/ninfer) and
   [HyperQwen](https://github.com/syv-ai/HyperQwen); references in the paper.

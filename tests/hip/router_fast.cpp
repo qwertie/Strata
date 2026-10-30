@@ -3,7 +3,7 @@
 // a wide spread (tiny probabilities), all-equal rows and rows with a NaN - plus the fast kernel forced onto its
 // serial-sum path, and a 256-expert / k=8 geometry. Then the time per single-token call of each.
 #include <hip/hip_runtime.h>
-#include "strata/kernels/router_top10.hpp"
+#include "strata/common/kernels/router_top10.hpp"
 
 #include <cmath>
 #include <cstdio>

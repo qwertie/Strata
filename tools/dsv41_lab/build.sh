@@ -5,7 +5,7 @@ cd "$(dirname "$0")"
 ARCH=${1:-sm_86}
 NVCC=${NVCC:-/usr/local/cuda-12.9/bin/nvcc}
 mkdir -p out
-CPU=../../src/kernels/cpu
+CPU=../../src/common/kernels/cpu
 INC="-I../../include -I../../third_party/ggml -I$CPU"
 g++ -O2 -std=c++17 $INC -c ../trellis/tqenc.cpp -o out/tqenc.o
 g++ -O2 -std=c++17 $INC -c $CPU/tq_cpu.cpp -o out/tq_cpu.o

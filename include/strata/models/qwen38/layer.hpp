@@ -35,10 +35,10 @@
 #include "strata/core/layout.hpp"
 #include "strata/core/weights.hpp"
 
-#include "strata/kernels/gr.hpp"
-#include "strata/kernels/kv_stream.hpp"
-#include "strata/kernels/ngram.hpp"
-#include "strata/kernels/ple.hpp"
+#include "strata/models/qwen38/kernels/gr.hpp"
+#include "strata/models/qwen38/kernels/kv_stream.hpp"
+#include "strata/models/qwen38/kernels/ngram.hpp"
+#include "strata/models/qwen38/kernels/ple.hpp"
 
 #include <cstdio>
 #include <functional>
@@ -478,8 +478,8 @@ struct BlockBuffers {
 uint64_t block_buffers_bytes(const ModelGeometry& g);
 
 /// Plan v0.3 P3: the hyper-connection read as two fused kernels with the previous half's write folded in
-/// (`strata/kernels/fused_gr.hpp`).  Requires the native MMVF contract (FP32 activations).  The residual `R`
-/// then lags by one pending write between halves; it is materialised before the layer-1 PLE and after the last
+/// (`strata/models/qwen38/kernels/fused_gr.hpp`).  Requires the native MMVF contract (FP32 activations).  The residual
+/// `R` then lags by one pending write between halves; it is materialised before the layer-1 PLE and after the last
 /// layer.  Set before capture; not for the per-stage or dump measurements.
 void layer_set_fused_gr(bool enabled);
 bool layer_fused_gr();

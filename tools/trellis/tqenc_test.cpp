@@ -1,5 +1,5 @@
 // tools/trellis/tqenc_test.cpp - tests of the trellis encoder (tqenc.hpp) against Strata's own CPU decoder
-// (src/kernels/cpu/tq_states.hpp, tq_cpu.cpp: scalar / AVX2 / AVX-512 kernels).  Build and run: tools/trellis/build.sh test.
+// (src/common/kernels/cpu/tq_states.hpp, tq_cpu.cpp: scalar / AVX2 / AVX-512 kernels).  Build and run: tools/trellis/build.sh test.
 //
 //   T1  fp16 conversion (all 65536 halves, random floats vs the hardware where F16C exists)
 //   T2  the encoder's codebook == the decoder's state table (bit for bit, 32768 x 4)
@@ -16,7 +16,7 @@
 //   T9  quality on Gaussian blocks: SQNR against the rate-distortion bound 6.02 * K/4 dB; approximate vs exact search
 #include "tqenc.hpp"
 
-#include "strata/kernels/cpu/tq_cpu.hpp"
+#include "strata/common/kernels/cpu/tq_cpu.hpp"
 #include "tq_states.hpp"
 
 #include <algorithm>

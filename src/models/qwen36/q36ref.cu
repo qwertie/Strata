@@ -31,9 +31,9 @@
 //   logits (f32, [step][vocab]) for the teacher-forced KL check (tools/qwen35/kl.py).
 #include "strata/common/artifact/gguf_reader.hpp"
 #include "strata/models/common/family_layout.hpp"
-#include "strata/kernels/fused_gdn.hpp"
-#include "strata/kernels/native_mmvq.hpp"
-#include "strata/kernels/native_router.hpp"
+#include "strata/models/common/kernels/fused_gdn.hpp"
+#include "strata/common/kernels/native_mmvq.hpp"
+#include "strata/models/common/kernels/native_router.hpp"
 
 #include <cuda_runtime.h>
 

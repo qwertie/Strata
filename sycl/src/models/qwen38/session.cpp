@@ -4,15 +4,15 @@
 #include <dpct/dpct.hpp>
 #include "strata/sycl_queue.hpp"
 #include "strata/models/qwen38/session.hpp"
-#include "strata/kernels/mrope.hpp"
+#include "strata/common/kernels/mrope.hpp"
 #include "strata/common/state/progress.hpp"
 
-#include "strata/kernels/qsa.hpp"
-#include "strata/kernels/elementwise.hpp"
-#include "strata/kernels/quantize_act.hpp"
-#include "strata/kernels/s2_expert_grouped.hpp"
-#include "strata/kernels/cpu/pool.hpp"
-#include "strata/kernels/ngram.hpp"
+#include "strata/models/qwen38/kernels/qsa.hpp"
+#include "strata/common/kernels/elementwise.hpp"
+#include "strata/common/kernels/quantize_act.hpp"
+#include "strata/models/qwen38/kernels/s2_expert_grouped.hpp"
+#include "strata/common/kernels/cpu/pool.hpp"
+#include "strata/models/qwen38/kernels/ngram.hpp"
 
 #include <atomic>
 #include <chrono>

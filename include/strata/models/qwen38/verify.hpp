@@ -26,7 +26,7 @@
 #include "strata/core/expert_source.hpp"
 #include "strata/models/qwen38/layer.hpp"
 #include "strata/models/qwen38/session.hpp"
-#include "strata/kernels/sampler.hpp"
+#include "strata/common/kernels/sampler.hpp"
 
 #include <cuda_runtime.h>
 

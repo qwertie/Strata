@@ -22,7 +22,7 @@
 #include "strata/models/qwen38/layer.hpp"
 #include "strata/base/gpu/pinned_ring.hpp"
 #include "strata/models/qwen38/session.hpp"
-#include "strata/kernels/sampler.hpp"
+#include "strata/common/kernels/sampler.hpp"
 
 #include <cuda_runtime.h>
 

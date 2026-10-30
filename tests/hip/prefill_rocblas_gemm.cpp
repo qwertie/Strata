@@ -9,7 +9,7 @@
 #include <hipblas/hipblas.h>
 #include <rocblas/rocblas.h>
 
-#include "strata/prefill/gemm.hpp"
+#include "strata/common/kernels/prefill/gemm.hpp"
 #include "rocblas_tuning.hpp"
 
 #include <algorithm>

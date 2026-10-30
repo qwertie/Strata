@@ -7,7 +7,7 @@
 #include "tqk_gemv_c.cuh"
 #include "tqk_repack.hpp"
 #include "../trellis/tqenc.hpp"
-#include "strata/kernels/cpu/tq_cpu.hpp"
+#include "strata/common/kernels/cpu/tq_cpu.hpp"
 
 #include <algorithm>
 #include <cmath>

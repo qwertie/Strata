@@ -585,7 +585,7 @@ template <> inline float deq<T_Q5_1>(device const uchar* b, int, thread float* q
 // lane ui = steps 4ui..4ui+3, 16 weights.  Step t's 15-bit state: TQ2_T qs[(t + 31) % 32] << 8 | qs[t]; TQK the 16
 // stream bits from bit (31 - t) * K, circular over 32 K bits.  x = state * 0x9e3779b1 selects two codebook points,
 // lut[x >> 21] and lut[(x >> 10) & 2047] (fp16 pairs); the four weights of the step are those four values times d.
-// Same arithmetic as src/kernels/cuda/iq_kernels.cu (tq_states4 / tq_step) and ref_quant.cpp (deq_tq).
+// Same arithmetic as src/common/kernels/cuda/iq_kernels.cu (tq_states4 / tq_step) and ref_quant.cpp (deq_tq).
 template <int KB>
 static inline float deq_tq(device const uchar* b, int ui, thread float* q, threadgroup const uint* tab) {
     device const ushort* qs16 = (device const ushort*)(b + 2);
@@ -631,11 +631,11 @@ static inline float lane_sum(float v) {
 }
 
 // ---- Gyro: the block Hadamard rotation of the activations ------------------------------------------------------------
-// Hadamard-folded experts (docs/GYRO.md, include/strata/kernels/cpu/hadamard.hpp) take y = H (s * x) per block of 128
-// values (the normalized Sylvester-Walsh-Hadamard matrix, s = a +/-1 sign vector of the width) in place of x: the gate/up
-// input and the down input.  One thread per value, 128 threads a block, grid (width / 128, rows).  The butterflies run in
-// the CPU's order (len = 1, 2, 4, ...; lower element a + c, upper a - c), so the rotated floats are the CPU's and the
-// CUDA kernel's: len 1..16 by SIMD shuffles, 32 and 64 through threadgroup memory.
+// Hadamard-folded experts (docs/GYRO.md, include/strata/common/kernels/cpu/hadamard.hpp) take y = H (s * x) per block
+// of 128 values (the normalized Sylvester-Walsh-Hadamard matrix, s = a +/-1 sign vector of the width) in place of x:
+// the gate/up input and the down input.  One thread per value, 128 threads a block, grid (width / 128, rows).  The
+// butterflies run in the CPU's order (len = 1, 2, 4, ...; lower element a + c, upper a - c), so the rotated floats are
+// the CPU's and the CUDA kernel's: len 1..16 by SIMD shuffles, 32 and 64 through threadgroup memory.
 struct HadArgs {
     uint width;      // values per row (a multiple of 128)
     uint x_stride;   // row strides in elements

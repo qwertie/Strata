@@ -22,18 +22,18 @@
 #include "strata/common/serve/request.hpp"
 #include "strata/common/state/state_layout.hpp"
 #include "strata/common/state/token_listing.hpp"
-#include "strata/kernels/fused_gdn.hpp"
-#include "strata/kernels/iq_kernels.hpp"
-#include "strata/kernels/native_mmvq.hpp"
-#include "strata/kernels/native_moe.hpp"
-#include "strata/kernels/native_router.hpp"
-#include "strata/prefill/gemm.hpp"
-#include "strata/prefill/moe_mmq.hpp"
+#include "strata/models/common/kernels/fused_gdn.hpp"
+#include "strata/common/kernels/iq_kernels.hpp"
+#include "strata/common/kernels/native_mmvq.hpp"
+#include "strata/models/common/kernels/native_moe.hpp"
+#include "strata/models/common/kernels/native_router.hpp"
+#include "strata/common/kernels/prefill/gemm.hpp"
+#include "strata/common/kernels/prefill/moe_mmq.hpp"
 #include "strata/models/qwen36/engine.hpp"
 #include "q36_kernels.cuh"
 #if defined(STRATA_Q36_CPU_POOL)
-#include "strata/kernels/cpu/native_expert.hpp"
-#include "strata/kernels/cpu/pool.hpp"
+#include "strata/common/kernels/cpu/native_expert.hpp"
+#include "strata/common/kernels/cpu/pool.hpp"
 #endif
 
 #include <cublas_v2.h>

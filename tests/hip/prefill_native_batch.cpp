@@ -2,9 +2,9 @@
 // selectively ported from q8atnight/Strata PR #108
 // (acd487233c0bbe2217a6881c5bb43f8a283b0de5).
 #include <cuda_runtime.h>
-#include "strata/kernels/iq_kernels.hpp"
-#include "strata/kernels/native_qsa_indexer.hpp"
-#include "strata/kernels/rope_scaling.hpp"
+#include "strata/common/kernels/iq_kernels.hpp"
+#include "strata/models/qwen38/kernels/native_qsa_indexer.hpp"
+#include "strata/common/kernels/rope_scaling.hpp"
 
 #include <algorithm>
 #include <array>

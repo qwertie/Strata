@@ -14,8 +14,8 @@
 // top 10) on both paths and on MMQ's products alone (no gathers), for the IQ2_XS, IQ3_XXS and IQ3_S packs' most
 // common layers, with the grouping checked and a sample of rows against the reference.  --no-ref, --no-timing,
 // --only=NAME, --chunks=A,B.  Exit 77 without a CUDA device of sm_80 or newer.
-#include "strata/prefill/moe_fused_iq.hpp"
-#include "strata/prefill/moe_mmq.hpp"
+#include "strata/common/kernels/prefill/moe_fused_iq.hpp"
+#include "strata/common/kernels/prefill/moe_mmq.hpp"
 
 #include "ggml.h"
 

@@ -81,8 +81,8 @@ SESSIONS = [
     ("cuda-kernel",
      "The hyper-connection read kernels are latency bound on small batches. Read them, explain where the time goes, "
      "and write a faster variant for 1-4 tokens that keeps the same results bit for bit.",
-     [("read_file", "include/strata/kernels/fused_gr.hpp", "First the kernel interface."),
-      ("read_file", "src/kernels/cuda/fused_gr.cu", "Now the kernels themselves."),
+     [("read_file", "include/strata/models/qwen38/kernels/fused_gr.hpp", "First the kernel interface."),
+      ("read_file", "src/models/qwen38/kernels/cuda/fused_gr.cu", "Now the kernels themselves."),
       ("grep", "fused_gr_read_multi", "Where are they called from?"),
       ("read_file", "src/models/qwen38/verify.cpp", "The verify window calls them; reading it.")]),
     ("tokenizer-fr",

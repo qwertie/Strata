@@ -1,7 +1,7 @@
 // src/models/qwen38/dflash2_attn_bench.cpp - the drafter's attention (kernels/dflash2.hpp df2_attention) on random K/V: time per call and GB/s of K/V read.
 //
 //     dflash2_attn_bench [iters] [context]
-#include "strata/kernels/dflash2.hpp"
+#include "strata/models/qwen38/kernels/dflash2.hpp"
 
 #include <cuda_runtime.h>
 

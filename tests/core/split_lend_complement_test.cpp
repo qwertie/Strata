@@ -4,7 +4,7 @@
 // PC: the device calls are wrapped at the link (`--wrap` in CMakeLists.txt, conversation_transfer_test's
 // pattern), the memory is ordinary memory, and `pin = false` keeps the copy pageable.
 #include "strata/core/expert_source.hpp"
-#include "strata/kernels/cpu/expert_layout.hpp"
+#include "strata/common/kernels/cpu/expert_layout.hpp"
 
 #include <cuda_runtime.h>
 

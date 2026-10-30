@@ -2,7 +2,7 @@
 #include <sycl/sycl.hpp>
 #include <dpct/dpct.hpp>
 #include "strata/models/qwen38/conversation_snapshot.hpp"
-#include "strata/kernels/kv_q4.hpp"
+#include "strata/models/qwen38/kernels/kv_q4.hpp"
 #include "conversation_checked.hpp"
 
 #include <array>

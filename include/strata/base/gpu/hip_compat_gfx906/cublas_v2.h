@@ -1,4 +1,4 @@
-// cublas_v2.h for a STRATA_ENABLE_HIP build: the cuBLAS names src/prefill/gemm.cu uses, on hipBLAS.
+// cublas_v2.h for a STRATA_ENABLE_HIP build: the cuBLAS names src/common/kernels/prefill/gemm.cu uses, on hipBLAS.
 #pragma once
 #include "strata_hip.h"
 #ifndef HIPBLAS_V2

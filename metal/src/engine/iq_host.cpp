@@ -1,7 +1,7 @@
-// metal/src/engine/iq_host.cpp - the host-side helpers of src/kernels/cuda/iq_kernels.cu the shared host code reads
-// (format tables, row sizes, the native expert blob layout).  The kernels themselves are not ported: on Metal the
+// metal/src/engine/iq_host.cpp - the host-side helpers of src/common/kernels/cuda/iq_kernels.cu the shared host code
+// reads (format tables, row sizes, the native expert blob layout).  The kernels themselves are not ported: on Metal the
 // decode window runs mac-kern's chain (metal/src/engine/window.cpp).  Copied from iq_kernels.cu; keep in step.
-#include "strata/kernels/iq_kernels.hpp"
+#include "strata/common/kernels/iq_kernels.hpp"
 
 #define GGML_COMMON_DECL_CPP
 #include "ggml-common.h"

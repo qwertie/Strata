@@ -8,8 +8,8 @@
 #include "ds4_gguf_cpu.hpp"
 
 #include "ggml-cpu.h"
-#include "strata/kernels/cpu/expert_layout.hpp"
-#include "strata/kernels/cpu/iq_avx512.hpp"
+#include "strata/common/kernels/cpu/expert_layout.hpp"
+#include "strata/common/kernels/cpu/iq_avx512.hpp"
 #include "ggml.h"
 
 #include <algorithm>

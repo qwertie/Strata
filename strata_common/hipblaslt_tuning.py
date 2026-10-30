@@ -2,7 +2,7 @@
 
 A table (tools/hip/<arch>-hipblaslt-<version>.txt) lists, per dense GEMM shape of the prompt path, the hipBLASLt solution that was
 fastest on that GPU architecture. Its solution ids are valid for one architecture and one hipBLASLt version only; the engine checks both
-(src/prefill/gemm.cu) and falls back to plain hipBLAS for anything else, so a wrong table can never change a result, it only wastes the
+(src/common/kernels/prefill/gemm.cu) and falls back to plain hipBLAS for anything else, so a wrong table can never change a result, it only wastes the
 speed-up. The table picks a GEMM algorithm: it does not change what the model is asked to compute.
 
 Package side (packaging/stage_tuning.py, tools/hip/package_windows.py): ``tuning/<arch>-hipblaslt-<version>.txt`` inside the engine package,

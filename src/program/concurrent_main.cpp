@@ -14,7 +14,7 @@
 // deliberate: the question is whether the two paths contend for DRAM BANDWIDTH, and a read loop is a pure
 // measurement of that demand, with no compute that could mask it.
 #include "strata/base/gpu/pinned.hpp"
-#include "strata/kernels/s_gemv.hpp"
+#include "strata/common/kernels/s_gemv.hpp"
 
 #include <cuda_runtime.h>
 

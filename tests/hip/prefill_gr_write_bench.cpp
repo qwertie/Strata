@@ -2,7 +2,7 @@
 // half's norm row scale and BF16 image) timed at the prompt path's shapes, with the bytes it moves, and a checksum of its
 // outputs so a variant can be compared bit for bit (run twice with STRATA_GRW_V=0 / 1).
 //   gr_write_bench [T=16384] [reps=20]
-#include "strata/prefill/kernels.hpp"
+#include "strata/models/qwen38/prefill/kernels.hpp"
 
 #include <cuda_runtime.h>
 

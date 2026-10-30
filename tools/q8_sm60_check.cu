@@ -1,4 +1,4 @@
-// tools/q8_sm60_check.cu - parity and speed of the STRATA_Q8_SM60=1 kernel (src/kernels/cuda/q8_sm60.cuh) on the
+// tools/q8_sm60_check.cu - parity and speed of the STRATA_Q8_SM60=1 kernel (src/common/kernels/cuda/q8_sm60.cuh) on the
 // Q8_0 shapes of Qwen3.8-Flash-Next (hidden 2560): the dense projections, the shared expert and the head.
 //
 // It includes the committed header, so the check covers the code the engine compiles, not a copy.  Parity: random
@@ -6,7 +6,7 @@
 // sum over blocks of d_w * d_x * dot_int8, for 1..8 columns (max relative error < 1e-5).  Speed: a 1 GiB rotation so
 // the weights come from DRAM, as in the engine.  No CMake target; build by hand:
 //
-//   nvcc -O3 -arch=sm_60 -std=c++17 -Iinclude -Isrc/kernels/cuda tools/q8_sm60_check.cu -o q8_sm60_check && ./q8_sm60_check
+//   nvcc -O3 -arch=sm_60 -std=c++17 -Iinclude -Isrc/common/kernels/cuda tools/q8_sm60_check.cu -o q8_sm60_check && ./q8_sm60_check
 //
 // Exit status 0 = every case within tolerance and no CUDA error.
 #include <cuda_fp16.h>
@@ -21,7 +21,7 @@
 #define CK(x) do { cudaError_t e_ = (x); if (e_ != cudaSuccess) { printf("CUDA %s at %d\n", cudaGetErrorString(e_), __LINE__); exit(1); } } while (0)
 struct Q81Block { half2 ds; int8_t qs[32]; };
 struct Q80Block { half d; int8_t qs[32]; };
-#include "strata/kernels/dp4a.hpp"
+#include "strata/common/kernels/dp4a.hpp"
 #include "q8_sm60.cuh"
 
 static float h2f(half h) { return __half2float(h); }

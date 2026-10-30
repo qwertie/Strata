@@ -1,11 +1,11 @@
 // Copyright (c) 2026 Peasant Smith and the Project Maya contributors (MIT; https://github.com/mw00/project-maya, v1.1.17).
 // Ported into Strata (third_party/project-maya/NOTICE.md, LICENSE); changes are in the git history of this file.
 // include/strata/models/deepseekv41/sampler.hpp - DeepSeek's sampling: the shared sampler chain
-// (include/strata/kernels/sampler.hpp) plus speculative sampling for the NextN / DSpark drafts
+// (include/strata/common/kernels/sampler.hpp) plus speculative sampling for the NextN / DSpark drafts
 // (src/models/deepseekv41/vendor/sampler.cu).
 #pragma once
 
-#include "strata/kernels/sampler.hpp"
+#include "strata/common/kernels/sampler.hpp"
 
 namespace strata::dsv41k {
 

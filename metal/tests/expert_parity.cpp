@@ -20,7 +20,7 @@
 #include "ref_quant.h"
 #include "gguf_lite.h"
 // Gyro: the engine's CPU Hadamard rotation (the reference of the Metal one) and hadamard.txt's parser
-#include "../../src/kernels/cpu/hadamard.cpp"
+#include "../../src/common/kernels/cpu/hadamard.cpp"
 
 #include <algorithm>
 #include <cmath>

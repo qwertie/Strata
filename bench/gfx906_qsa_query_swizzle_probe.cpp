@@ -5,8 +5,8 @@
 // Output path may instead be supplied by STRATA_QSA_PROBE_OUT. It is required.
 // Run candidate environment settings in SEPARATE processes: the dispatcher caches them.
 // No prompt-attention entry point, architecture skip, model loading, or repository writes.
-#include "strata/kernels/qsa.hpp"
-#include "strata/kernels/qsa_decode_attn.hpp"
+#include "strata/models/qwen38/kernels/qsa.hpp"
+#include "strata/models/qwen38/kernels/qsa_decode_attn.hpp"
 
 #include <hip/hip_runtime.h>
 

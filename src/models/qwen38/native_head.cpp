@@ -1,7 +1,7 @@
 #include "strata/models/qwen38/native_head.hpp"
 #include "strata/common/artifact/gguf_reader.hpp"
-#include "strata/kernels/iq_kernels.hpp"
-#include "strata/kernels/native_mmvq.hpp"
+#include "strata/common/kernels/iq_kernels.hpp"
+#include "strata/common/kernels/native_mmvq.hpp"
 #include "strata/base/platform/memory.hpp"
 
 #include <cuda_runtime.h>

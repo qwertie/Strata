@@ -1,13 +1,13 @@
 // bench/qsa_prompt_attn_sm70_bench.cpp - the Volta (sm_70) prompt attention against the FP32 kernel it replaces.
 //
-// Same synthetic pools and prompt-shaped selections as src/kernels/qsa_prompt_attn_parity.cpp (GPU, no model), but
-// timing is the point: for each KV format (int8, fp16) and a sweep of query counts it times
+// Same synthetic pools and prompt-shaped selections as src/models/qwen38/kernels/qsa_prompt_attn_parity.cpp (GPU, no
+// model), but timing is the point: for each KV format (int8, fp16) and a sweep of query counts it times
 // `qsa_decode_attn_batch` (the FP32 fallback, in batches of 32 as prefill.cpp calls it) against
 // `qsa_prompt_attn_batch` with CUDA events, and reports the output difference.  Run it on one card:
 //   flock /tmp/opencode/gpu.lock -c 'CUDA_VISIBLE_DEVICES=0 ./qsa_prompt_attn_sm70_bench [ctx=32768] [nq=2048] [reps=10]'
-#include "strata/kernels/qsa.hpp"
-#include "strata/kernels/qsa_decode_attn.hpp"
-#include "strata/kernels/qsa_prompt_attn.hpp"
+#include "strata/models/qwen38/kernels/qsa.hpp"
+#include "strata/models/qwen38/kernels/qsa_decode_attn.hpp"
+#include "strata/models/qwen38/kernels/qsa_prompt_attn.hpp"
 
 #include <cuda_fp16.h>
 #include <cuda_runtime.h>

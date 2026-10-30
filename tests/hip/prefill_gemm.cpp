@@ -6,7 +6,7 @@
 #include <hip/hip_runtime.h>
 #include <hip/hip_bfloat16.h>
 #include <hip/hip_fp16.h>
-#include "strata/prefill/gemm.hpp"
+#include "strata/common/kernels/prefill/gemm.hpp"
 #include <algorithm>
 #include <cmath>
 #include <cstdio>

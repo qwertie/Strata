@@ -1,5 +1,5 @@
 // Strata. The trellis routed experts (ds4_iq.cuh's is_tq types) on the CPU lane of the DeepSeek-V4.1 engine path: Strata's
-// own decode-and-dot kernels (include/strata/kernels/cpu/tq_cpu.hpp: AVX-512 / AVX2 / scalar, one result whatever the ISA)
+// own decode-and-dot kernels (include/strata/common/kernels/cpu/tq_cpu.hpp: AVX-512 / AVX2 / scalar, one result whatever the ISA)
 // over the file's rows read in place.  The activations are the device's (ds4_gguf.cu's q8_quant: int8 with an F32 scale a 32
 // values), so an expert gives the same sums on either lane up to the order of the blocks' float sums.
 #include "ds4_gguf_cpu.hpp"
@@ -12,7 +12,7 @@
 #include <vector>
 
 #if defined(STRATA_DSV41_TQ_CPU)
-#include "strata/kernels/cpu/tq_cpu.hpp"
+#include "strata/common/kernels/cpu/tq_cpu.hpp"
 #endif
 
 namespace strata::ds4::gguf {

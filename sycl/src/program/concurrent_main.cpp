@@ -17,7 +17,7 @@
 #include <sycl/sycl.hpp>
 #include <dpct/dpct.hpp>
 #include "strata/base/gpu/pinned.hpp"
-#include "strata/kernels/s_gemv.hpp"
+#include "strata/common/kernels/s_gemv.hpp"
 
 #include <atomic>
 #include <chrono>

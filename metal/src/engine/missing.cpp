@@ -30,7 +30,7 @@ void missing(const char* name) {
 }  // namespace strata::metal_engine
 
 // ---- entry points the shared host loop asks every request, with nothing to do on Metal yet
-#include "strata/kernels/cvec.hpp"
+#include "strata/models/qwen38/kernels/cvec.hpp"
 namespace strata::kernels {
 // no control vector on Metal (--control-vector-scaled is not ported): the empty one, `loaded()` false
 const Cvec& cvec() {

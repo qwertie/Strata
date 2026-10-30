@@ -16,7 +16,7 @@
 
 #include "strata/common/experts/hit_hook.hpp"
 #include "strata/models/qwen38/layer.hpp"
-#include "strata/kernels/cpu/pool.hpp"
+#include "strata/common/kernels/cpu/pool.hpp"
 
 #include <cuda_runtime.h>
 

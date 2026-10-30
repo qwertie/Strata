@@ -44,7 +44,8 @@ __device__ __forceinline__ uint16_t f2h(float f) { return __half_as_ushort(__flo
 // weight index of component j at processing position p (TQK)
 __device__ __forceinline__ int widx_d(int p, int j) { return 4 * (31 - p) + j; }
 
-// the computed codebook of TQK5X / TQK4X (src/kernels/cpu/tq_computed.hpp): four fp16 from two LCG words, no table
+// the computed codebook of TQK5X / TQK4X (src/common/kernels/cpu/tq_computed.hpp): four fp16 from two LCG words, no
+// table
 __device__ __forceinline__ void comp_vals(uint32_t s, float* w) {
     const uint32_t r0 = ((s * 89226354u + 64248484u) & 0x8FFF8FFFu) ^ 0x3B603B60u;
     const uint32_t r1 = ((s * 0x9E3779B1u + 0x7F4A7C15u) & 0x8FFF8FFFu) ^ 0x3B603B60u;

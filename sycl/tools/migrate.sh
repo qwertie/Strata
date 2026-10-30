@@ -25,7 +25,8 @@ if os.environ.get("MIGRATE_ONLY"):            # explicit list: host files that r
 db = []
 # not in this tree: the optional ggml MMQ prefill path needs llama.cpp's ggml-cuda sources, and one parity test needs
 # ggml-cpu.h. Both stay CUDA-only for now.
-skip = {"src/prefill/moe_mmq.cu", "src/prefill/ggml_cuda_host.cu", "src/kernels/native_expert_parity.cpp"}
+skip = {"src/common/kernels/prefill/moe_mmq.cu", "src/common/kernels/prefill/ggml_cuda_host.cu",
+        "src/models/qwen38/kernels/native_expert_parity.cpp"}
 for f in sorted(set(files) - skip):
     tool = "nvcc" if f.endswith(".cu") else "g++"
     cmd = [tool, "-std=c++20", "-Iinclude", "-Ithird_party/ggml", "-I" + hdr, "-DSTRATA_VERSION=\"port\""]

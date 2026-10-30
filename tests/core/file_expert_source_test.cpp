@@ -1,10 +1,10 @@
 #include "strata/core/expert_source.hpp"
 #include "strata/core/foresight_swap.hpp"
-#include "strata/kernels/cpu/expert.hpp"
-#include "strata/kernels/cpu/expert_layout.hpp"
+#include "strata/common/kernels/cpu/expert.hpp"
+#include "strata/common/kernels/cpu/expert_layout.hpp"
 
 #if defined(STRATA_NATIVE_EXPERTS)
-#include "strata/kernels/cpu/native_expert.hpp"
+#include "strata/common/kernels/cpu/native_expert.hpp"
 #include "ggml.h"
 #endif
 

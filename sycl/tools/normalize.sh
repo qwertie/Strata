@@ -22,8 +22,9 @@ while read -r f; do
 done < <(find src include third_party -type f 2>/dev/null)
 # shared: the SYCL build compiles the original; a SYCL-only difference goes in sycl/include/sycl_compat, the SYCL CMake
 # or a SYCL-only file, never in a copy (docs/UPSTREAM_PORTING.md "Special cases")
-shared=(include/strata/base/gpu/graph.hpp include/strata/kernels/bf16_bits.hpp include/strata/kernels/f16_bits.hpp
-        include/strata/kernels/rope.hpp include/strata/kernels/rope_scaling.hpp include/strata/models/qwen38/session.hpp
+shared=(include/strata/base/gpu/graph.hpp include/strata/common/kernels/bf16_bits.hpp
+        include/strata/common/kernels/f16_bits.hpp include/strata/common/kernels/rope.hpp
+        include/strata/common/kernels/rope_scaling.hpp include/strata/models/qwen38/session.hpp
         src/base/platform/direct_file.cpp src/models/qwen38/ngram/ple_reader.cpp
         include/strata/common/experts/exchange_storage.hpp src/common/experts/expert_profile.cpp
         src/common/experts/ram_tier.cpp)

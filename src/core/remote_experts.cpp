@@ -2,11 +2,11 @@
 #include "strata/base/gpu/device.hpp"   // primary_device() (STRATA_PRIMARY_DEVICE)
 #include "strata/core/remote_expert_opt.hpp"
 
-#include "strata/kernels/cpu/expert_layout.hpp"
-#include "strata/kernels/cpu/hadamard.hpp"
-#include "strata/kernels/iq_kernels.hpp"
-#include "strata/kernels/quantize_act.hpp"
-#include "strata/kernels/s2_expert_grouped.hpp"
+#include "strata/common/kernels/cpu/expert_layout.hpp"
+#include "strata/common/kernels/cpu/hadamard.hpp"
+#include "strata/common/kernels/iq_kernels.hpp"
+#include "strata/common/kernels/quantize_act.hpp"
+#include "strata/models/qwen38/kernels/s2_expert_grouped.hpp"
 
 #include <algorithm>
 #include <chrono>

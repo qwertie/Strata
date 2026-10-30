@@ -44,7 +44,7 @@ session on an NVIDIA machine. Changes nobody can test come last.
 
 | Step | Work | Est. | Status |
 |---|---|---:|---|
-| B1 | Split `src/kernels/` and `src/prefill/` by what they depend on; remove Qwen's `geometry.hpp` from the 12 shared kernels | small | |
+| B1 | Split `src/kernels/` and `src/prefill/` by what they depend on; remove Qwen's `geometry.hpp` from the 12 shared kernels | small | done: moves only; the 11 GPU kernels that include `geometry.hpp` are Qwen3.8's (or the Qwen families') and moved to `src/models/`, the CPU expert path's check moved to Qwen3.8's session |
 | B2 | DeepSeek's own quant kernels (`ds4_iq`, `ds4_gguf`, `ds4_tq`) and its sampler (`vendor/sampler.cu`) replaced by the shared ones | 3–5K | sampler's plain draw shared; quant kernels kept (open issues); unbuilt CPU rows removed |
 | B3 | The multi-GPU parts of `src/common/experts` (`peer_experts`, `remote_experts`) | ~0.5K | |
 | B✓ | Test session on an RTX 30-series machine with several cards: parity tests on sm_86, sm_75/80 through `STRATA_EMULATE_CC`, multi-GPU, a DeepSeek speed comparison. Ada (sm_89) and Blackwell (sm_120, NVFP4) stay untested unless such a card is found. | | |
@@ -123,7 +123,7 @@ Found during the work; each needs a decision or a later step.
 - **Two CPU worker pools, not merged.** They share an idea (one 64-bit claim word tagged with the batch, so a
   late worker cannot take a job of the next batch; spin, then sleep), but differ where the speed is decided:
 
-  | | DeepSeek `ds4::Pool` (`ds4_pool.hpp`) | Qwen `ExpertPool` (`src/kernels/cpu/pool.cpp`) |
+  | | DeepSeek `ds4::Pool` (`ds4_pool.hpp`) | Qwen `ExpertPool` (`src/common/kernels/cpu/pool.cpp`) |
   |---|---|---|
   | Jobs | any `fn(i)` through `std::function`; `start`/`help`/`wait` run two pools (two NUMA nodes) at once | expert jobs in 7 modes (whole experts, row parts, native rows), one scratch per worker |
   | Claim | `generation << 32 \| index`, the job count in its own atomic | `epoch \| njobs \| index`; per NUMA slice with `STRATA_NUMA_SPLIT` |
@@ -149,8 +149,8 @@ Found during the work; each needs a decision or a later step.
   DeepSeek onto it would change its sampled tokens and add the ring set-up to the engine. Not done.
 - **DeepSeek's quant kernels are not copies of the shared ones.** `ds4_iq.cu`, `ds4_gguf.cu` and `ds4_tq.cu` round
   the activations to int8 with an F32 scale per 32 values and sum each 32-value block exactly in integers; the
-  shared kernels (`src/kernels/cuda/iq_kernels.cu`, `src/prefill/`) take llama.cpp's `q8_1` activations (an F16
-  scale) and its `vec_dot` arithmetic. Their arguments also differ: DeepSeek's take an expert's gate, up and down in
+  shared kernels (`src/common/kernels/cuda/iq_kernels.cu`, `src/common/kernels/prefill/`) take llama.cpp's `q8_1`
+  activations (an F16 scale) and its `vec_dot` arithmetic. Their arguments also differ: DeepSeek's take an expert's gate, up and down in
   one blob, groups of window entries and its MXFP4, trellis and prompt-set layouts. Using the shared kernels would
   change DeepSeek's numbers, so B2 kept them. The CPU lane already uses the shared CPU kernels (`ds4_gg_cpu.cpp`:
   `iq256x_rows` / `iq512x_rows`; `ds4_tq_cpu.cpp`: the trellis rows of `tq_cpu.hpp`). Left for the owner: the gfx12
@@ -203,6 +203,14 @@ a standard model; check with `nvidia-smi`), 48 GB of RAM. Both cards are sm_86.
   sampled answers did not, see the open issue on DeepSeek). Speed: the decode tok/s of a 128-token greedy answer,
   three runs a build, alternating.
 - **B2, `ds4_iq_cpu.cpp`**: no NVIDIA-only code changed (the removed rows were never compiled).
+- **B1, the split of `src/kernels/` and `src/prefill/`**: files moved, no kernel code changed, so no sm-specific path
+  changed. The one code change is a compile-time check: the CPU expert path's widths are checked against
+  `core/geometry.hpp` in `src/models/qwen38/session.cpp` instead of in `common/kernels/cpu/expert.hpp`. Run the whole
+  `ctest` once to see that every moved test is still built and registered; the moved ones that only a CUDA build has
+  were not run on the AMD PC: `decode_cluster_parity`, `dequant_wide_parity`, `gdn_rec_parity`, `gemm_bf16_parity`,
+  `gr_upmix_parity`, `mmvq_il_parity`, `mmvq_multi_parity`, `pdl_parity`, `pf_wmma_parity`, `verify_parity`, and the
+  QSA tests built with `STRATA_ENABLE_CUDA` (`qsa_prompt_attn_parity`, `qsa_topk_active_parity`, `qsa_slots_parity`,
+  `qsa_merge_daily_parity`, `qsa_scores_parity`, `qsa_select_bench`, `gdn_chunk_parity`).
 
 ## Running engines and GPU tests on this PC
 

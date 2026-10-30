@@ -1,16 +1,17 @@
 // src/models/qwen38/session.cpp - one token through all 48 layers.  See the header for why the graphs are per-layer.
 #include "strata/models/qwen38/session.hpp"
 #include "strata/base/gpu/pin_budget.hpp"
-#include "strata/kernels/mrope.hpp"
+#include "strata/common/kernels/mrope.hpp"
 #include "strata/common/state/progress.hpp"
 
-#include "strata/kernels/qsa.hpp"
-#include "strata/kernels/elementwise.hpp"
-#include "strata/kernels/quantize_act.hpp"
-#include "strata/kernels/s2_expert_grouped.hpp"
-#include "strata/kernels/cpu/pool.hpp"
+#include "strata/models/qwen38/kernels/qsa.hpp"
+#include "strata/common/kernels/elementwise.hpp"
+#include "strata/common/kernels/quantize_act.hpp"
+#include "strata/models/qwen38/kernels/s2_expert_grouped.hpp"
+#include "strata/common/kernels/cpu/pool.hpp"
 #include "strata/base/platform/aux_cpus.hpp"
-#include "strata/kernels/ngram.hpp"
+#include "strata/models/qwen38/kernels/ngram.hpp"
+#include "strata/core/geometry.hpp"
 
 #include <cuda_runtime.h>
 
@@ -31,6 +32,9 @@
 #endif
 
 namespace strata::core {
+static_assert(kernels::cpu::H == kCompiledGeometry.n_embd && kernels::cpu::FF == kCompiledGeometry.n_ff,
+              "the CPU expert path (common/kernels/cpu/expert.hpp) is compiled for core/geometry.hpp");
+
 namespace {
 
 constexpr uint64_t SESSION_STATE_ALIGN = 256;
