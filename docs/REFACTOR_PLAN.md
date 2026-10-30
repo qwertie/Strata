@@ -177,7 +177,8 @@ Found during the work; each needs a decision or a later step.
 
 What the NVIDIA session has to run for the phase B steps done so far. Build as in [the checks](#checks-for-every-step)
 (CUDA, `-DSTRATA_BUILD_DSV41=ON -DSTRATA_NATIVE_EXPERTS=ON`); compare each against the same run of the commit before
-the step.
+the step. [tools/nvidia_session](../tools/nvidia_session/README.md) runs the whole list in one session, against the
+build of `87d20a5c` (before any C++ moved), and names the commits to bisect where they differ.
 
 The machine (a friend's, as told on 2026-10-29): Windows 11, an RTX 3060 12 GB and an RTX 3080 said to have 20 GB (not
 a standard model; check with `nvidia-smi`), 48 GB of RAM. Both cards are sm_86.
