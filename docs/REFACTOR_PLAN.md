@@ -179,6 +179,20 @@ What the NVIDIA session has to run for the phase B steps done so far. Build as i
 (CUDA, `-DSTRATA_BUILD_DSV41=ON -DSTRATA_NATIVE_EXPERTS=ON`); compare each against the same run of the commit before
 the step.
 
+The machine (a friend's, as told on 2026-10-29): Windows 11, an RTX 3060 12 GB and an RTX 3080 said to have 20 GB (not
+a standard model; check with `nvidia-smi`), 48 GB of RAM. Both cards are sm_86.
+
+- Build there natively (the CUDA 13 toolkit and the Visual Studio 2022 Build Tools); WSL2 with the Linux build is the
+  fallback. Add `86-real` to `CMAKE_CUDA_ARCHITECTURES`; the Docker compile check here should include it too.
+- sm_75 and sm_80 through `STRATA_EMULATE_CC`. Paths for sm_90 and later (the cluster argmax of B2, NVFP4 on sm_120)
+  do not run on these cards and stay untested.
+- Two different cards test the layer split and the multi-GPU expert paths (B3) with an uneven split. GeForce cards on
+  Windows usually have no peer-to-peer access, so the peer-expert code runs its fallback path; the direct path needs
+  Linux or workstation cards.
+- DeepSeek: the IST-DAS 2.00 bpw set, the one measured here (setup's guide: 40 GB of RAM; an RTX 3060 with 46 GB of RAM
+  was measured at about 8-10 tokens/s). About 257 GB on an NVMe drive; the owner's files can be carried over and given
+  with `--gguf-dir`.
+
 - **B2, DeepSeek's sampler** (`include/strata/models/deepseekv41/sampler.hpp`): the plain draw went from DeepSeek's
   one-block kernel to the shared `sample_tokens`: greedy rows take the cluster argmax on sm_90 and later
   (`sampler_greedy_cluster_kernel`, never run on AMD), sampled rows the split top_k. Run `sampler_parity --selftest`
@@ -226,3 +240,4 @@ alternating runs of the two builds. Models on this PC: Qwen3.8 IQ3_S (`strata-iq
 | A5 | `268c2fd2` | 490,818 | −2,330 | one-GPU expert-store helpers shared (`src/common/experts`), SYCL copies dropped |
 | A5 | `62bb0aac` | 490,952 | −2,196 | DeepSeek on the shared command loop (after the DeepSeek 6-shard support, +146, and two DeepSeek fixes) |
 | A2b | `043ccf2e` | 490,670 | −2,478 | a second Python sweep: shared atomic writers, hashing, GPU probes, test fixtures |
+| B2 | `b1002bd0` | 489,879 | −3,269 | DeepSeek's plain draw on the shared sampler; ~710 never-compiled lines removed |
