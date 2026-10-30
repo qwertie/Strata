@@ -30,14 +30,22 @@ Conversations at once: 2 of 3 | Rows per step: 8 | Lookahead: 4
 
 | Setting | What it limits | Changes live |
 |---|---|---|
-| Expert cache, per GPU and in RAM | how many experts are kept in each memory | yes |
-| Conversation memory, per GPU, in RAM and on the SSD | pages for conversations: active ones on the GPU, paused ones in RAM or on the SSD | yes |
+| Memory used, per GPU and in RAM | the total the engine takes from each memory; it gives memory back or takes more | yes |
+| Conversation tokens: minimum and maximum | the K/V of all conversations kept in RAM and on the GPUs, in tokens, in any mix (one conversation of 2,000,000 tokens or 8 of 250,000); the minimum is kept free of experts so a new conversation never waits | yes |
+| SSD space for paused conversations | how much of the disk paused conversations may take | yes |
 | Drafter on/off (per GPU) | its weights: about 1 GiB for Qwen3.8 | yes (unloading frees the memory) |
 | Conversations at once | how many conversations decode in the same step | yes |
 | Rows per step | how many tokens one pass through the model computes (at most 8 today) | yes |
 | Lookahead | the most guesses one conversation may add in a step; 0 turns drafting off | yes |
 
 Rows per step must be at least the conversations at once.
+
+There is no expert-cache setting: experts get every page the conversations are not using, the most-used on the GPUs,
+then in RAM, and the rest are read from the SSD as needed. So a small conversation leaves almost all the memory to
+experts, and a large one takes pages from them up to the maximum. There is no separate low-RAM mode either: when the
+memory used is too small for all the experts, some stay on the SSD, read without the operating system's file cache
+(`FILE_FLAG_NO_BUFFERING` on Windows, `O_DIRECT` on Linux), so the cache does not take the RAM back. That replaces
+today's `--resident-budget-gib`, `--mmap-experts` and the file tier's options.
 
 ### How rows are shared (the owner's rule)
 
@@ -64,12 +72,18 @@ assumption beforehand.
 
 ### One page pool per memory
 
-Each GPU's memory and the RAM set aside for the engine are each one pool of equal-size pages (about 2 MiB; a Qwen3.8
-IQ3_S expert is 1.95 MiB). A page holds an expert, or a block of a conversation's tokens, or is free.
+Each GPU's memory and the RAM the engine uses are each one pool of equal-size pages (about 2 MiB; a Qwen3.8 IQ3_S
+expert is 1.95 MiB). A page holds an expert, or a block of a conversation's tokens, or is free.
 
-- Resizing moves pages between uses: shrinking the expert cache evicts the least-used experts; shrinking
-  conversation memory moves paused conversations down a tier. Nothing is reallocated, so it needs no virtual-memory
-  API and works on AMD as well as NVIDIA (today's live resize, the `VRAM` command, is NVIDIA-only).
+- A pool takes its memory in chunks (about 256 MiB). Pages need not be next to each other, so growing the memory used
+  adds chunks; shrinking it first empties chunks (their experts are evicted, conversation pages are copied to other
+  chunks or paused) and then gives them back. No virtual-memory API is needed, so this works on AMD as well as NVIDIA
+  (today's live resize, the `VRAM` command, is NVIDIA-only).
+- Conversations and experts trade pages without a setting: a growing conversation takes the least-used expert's
+  page, up to the conversation maximum. Experts take pages back only after a conversation ends or is paused, and only
+  after a short wait, so that the two do not thrash.
+- On the SSD, an expert is read with its sector-aligned surroundings into a staging buffer, because reads without the
+  file cache must be aligned. DeepSeek's Engram reader (its own threads reading the SSD) is the model for this.
 - A conversation's memory is described with the existing state descriptor
   (`include/strata/common/state/state_layout.hpp`): fixed regions (the GDN state, the drafter's state) take whole
   pages once; per-token regions (K/V) take a page per block of tokens as the conversation grows. The pool holds the
@@ -112,8 +126,8 @@ New engine commands (between and during requests, like `LIST_CONVERSATIONS`):
 - `MEM` reports every pool: per memory, its size and its pages by use (experts, active conversations, paused
   conversations, drafter, free), and the settings above. The old engines answer it too, read-only, from what they know
   (sizes from their startup, `LIST_CONVERSATIONS` bytes), so the panel shows them.
-- `SET <name> <value> [...]` changes settings live: `expert_mib.<memory>`, `conversation_mib.<memory>`, `drafter
-  on|off`, `concurrent`, `rows`, `lookahead`. The engine answers with the new `MEM` or `ERR <why>` (for example
+- `SET <name> <value> [...]` changes settings live: `memory_mib.<memory>`, `tokens_min`, `tokens_max`,
+  `ssd_pause_mib`, `drafter on|off`, `concurrent`, `rows`, `lookahead`. The engine answers with the new `MEM` or `ERR <why>` (for example
   "the biggest active conversation needs 3.1 GiB").
 
 The server forwards both through one endpoint (`GET/POST /v1/memory`); "save as default" writes the run config
@@ -137,11 +151,11 @@ The server forwards both through one endpoint (`GET/POST /v1/memory`); "save as 
 | Step | Work | Checked by |
 |---|---|---|
 | M0 | `MEM` in the three existing engines (read-only), `/v1/memory`, the panel without controls | the panel matches the engines' own numbers on Qwen3.8, Qwen3.6, DeepSeek |
-| M1 | The page pool and page lists, with unit tests (CPU) | unit tests: allocation, growth, freeing, a full pool |
+| M1 | The page pool and page lists: chunks, growing and shrinking, experts and conversations trading pages, with unit tests (CPU) | unit tests: allocation, growth, emptying a chunk, a full pool, no thrashing |
 | M2 | The new Qwen3.8 engine: one conversation in the pool, no drafting, same answers as today's engine | token-identical at temperature 0 against the old engine |
 | M3 | Several conversations, the step with rows per step and conversations at once | answers identical per conversation; speed against `--batch` |
 | M4 | Drafting with the row-sharing rule and the lookahead | identical answers; speed against today's MTP |
-| M5 | Pausing to RAM and SSD, priorities | pause and resume give the same answers; files saved before load |
+| M5 | Pausing to RAM and SSD, priorities; experts read from the SSD without the file cache | pause and resume give the same answers; files saved before load; with too little memory for the experts, the same answers as with enough, and RAM use stays at the setting |
 | M6 | Live `SET`, the panel's controls, "this session" and "save as default" | resize while decoding; the biggest-conversation limit refuses |
 | M7 | Measurements: guesses against other conversations' tokens, by where experts live; defaults chosen from them | numbers in DETAILS.md, measured on the Strix Halo and, if possible, the NVIDIA test PC |
 
