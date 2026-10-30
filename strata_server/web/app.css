@@ -140,7 +140,7 @@ main { flex: 1; min-height: 0; display: flex; }
 .mem-bars [data-use="drafter"] { background-color: var(--st-danger); }
 .mem-bars [data-use="weights"], .mem-bars [data-use="engram"] { background-color: var(--st-ink-soft); }
 .mem-bars [data-use="free"] { background-color: transparent; }
-.mem-bars [data-ram] {   /* a use in RAM, drawn in the GPU's bar when the GPU's memory is the system RAM */
+.mem-bars [data-use="borrowed"] {   /* the RAM a GPU whose memory is system RAM holds beyond its BIOS share */
   background-image: repeating-linear-gradient(135deg, transparent 0 3px, rgba(0, 0, 0, .35) 3px 5px);
 }
 .mcp-card { display: flex; flex-direction: column; gap: var(--st-s-3); }

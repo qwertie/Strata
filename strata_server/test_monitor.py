@@ -285,6 +285,29 @@ class Monitor(unittest.TestCase):
             self.assertIn(f'"{el}"', js)
         self.assertIn('"v1/memory"', js)
 
+    def test_memory_of_a_gpu_whose_memory_is_system_ram(self):
+        """Strix Halo: the GPU's bar is its BIOS share, and what it borrows beyond the share counts against the RAM."""
+        self.engine.can_report_memory = True
+        self.engine.memory = lambda: {"memories": [
+            {"id": "gpu0", "name": "Radeon", "total": 9000, "free": 4000, "unified": True, "paused_count": None,
+             "paused_budget": None, "uses": {"experts": 600, "conversations": 200}},
+            {"id": "ram", "name": None, "total": None, "free": None, "unified": False, "paused_count": None,
+             "paused_budget": None, "uses": {}}], "settings": {}}
+        split = {"share": 1000, "share_used": 900, "in_share": 700, "borrowed": 250, "borrow_limit": 4000,
+                 "borrowed_by": "engine"}
+        self.enterContext(mock.patch("strata_base.memory.read_ram", return_value=mock.Mock(total=5000, available=3000)))
+        with mock.patch("strata_common.telemetry.read_shared_gpu_memory", return_value=split) as read:
+            gpu, ram = self.request("/v1/memory")[1]["memories"]
+        self.assertEqual(read.call_args.args[:2], ("Radeon", 0))
+        self.assertEqual((gpu["total"], gpu["free"], gpu["in_share"], gpu["borrowed"], gpu["other"]),
+                         (1000, 100, 700, 250, 200))            # other: the share's use beyond the engine's 700
+        self.assertEqual((gpu["runtime_total"], gpu["runtime_free"]), (9000, 4000))
+        self.assertEqual((ram["gpu_borrowed"], ram["other"]), (250, 1750))
+        split.update(in_share=None, borrowed_by="device")      # Linux: no per-process split
+        with mock.patch("strata_common.telemetry.read_shared_gpu_memory", return_value=split):
+            gpu = self.request("/v1/memory")[1]["memories"][0]
+        self.assertEqual((gpu["in_share"], gpu["other"]), (800, 100))   # at most what the share holds
+
     def test_context_needs_the_key(self):
         self.svc.api_key = "k"
         self.assertEqual(self.request("/api/context")[0], 401)
@@ -441,6 +464,39 @@ class ConversationCacheCard(unittest.TestCase):
         for el in ("cc-card", "cc-slots-text", "cc-mem-text", "cc-facts", "cc-note"):
             self.assertIn(f'id="{el}"', html)
             self.assertIn(f'"{el}"', js)
+
+
+class SharedGpuMemory(unittest.TestCase):
+    """The readers behind the BIOS division of a GPU whose memory is system RAM (telemetry.read_shared_gpu_memory)."""
+
+    def test_windows_counters_are_summed_for_the_engine_and_the_adapter(self):
+        from strata_common.telemetry import sum_gpu_memory_counters
+        luid = "0x00000000_0x00014277"
+        dedicated = [("pid_42_luid_0x00000000_0x00014277_phys_0", 700), ("pid_42_luid_0x00000000_0x00014277_phys_1", 5),
+                     ("pid_42_luid_0x00000000_0x000166C2_phys_0", 99),      # another adapter
+                     ("pid_420_luid_0x00000000_0x00014277_phys_0", 88)]     # another process whose pid starts alike
+        shared = [("pid_42_luid_0x00000000_0x00014277_phys_0", 250), ("pid_7_luid_0x00000000_0x00014277_phys_0", 3)]
+        adapter = [("luid_0x00000000_0x00014277_phys_0", 900), ("luid_0x00000000_0x000166F4_phys_0", 4)]
+        self.assertEqual(sum_gpu_memory_counters((dedicated, shared, adapter), 42, luid), (705, 250, 900))
+        self.assertEqual(sum_gpu_memory_counters((dedicated, shared, adapter), None, luid), (None, None, 900))
+
+    def test_linux_reads_the_vram_and_gtt_files(self):
+        import tempfile
+        from strata_common import telemetry
+        with tempfile.TemporaryDirectory() as d:
+            node = Path(d) / "class/kfd/kfd/topology/nodes/1"
+            node.mkdir(parents=True)
+            (node / "properties").write_text("simd_count 80\ngfx_target_version 110501\ndrm_render_minor 128\n")
+            dev = Path(d) / "class/drm/renderD128/device"
+            dev.mkdir(parents=True)
+            for k, v in (("vram_total", 512 << 20), ("vram_used", 300 << 20), ("gtt_total", 60 << 30),
+                         ("gtt_used", 40 << 30)):
+                (dev / f"mem_info_{k}").write_text(f"{v}\n")
+            with mock.patch.object(telemetry.os, "name", "posix"):
+                got = telemetry.read_shared_gpu_memory("AMD Radeon", 0, 123, sysfs=d)
+                self.assertIsNone(telemetry.read_shared_gpu_memory("AMD Radeon", 1, 123, sysfs=d))
+        self.assertEqual(got, {"share": 512 << 20, "share_used": 300 << 20, "in_share": None, "borrowed": 40 << 30,
+                               "borrow_limit": 60 << 30, "borrowed_by": "device"})
 
 
 if __name__ == "__main__":

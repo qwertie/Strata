@@ -1958,9 +1958,12 @@ class Service:
         """GET /v1/memory (the web page's Memory panel): what the engine holds in each memory and its settings
         (StrataEngine.memory), and the machine's own view - its RAM and what the hardware sampler reads of the GPUs.
         The engine's `ram` gets the machine's size and free RAM, and each memory with a size gets "other": what is in
-        use there that the engine did not name (other programs, buffers it does not count).  While a request has the
-        engine's turn: the last answer, marked busy."""
+        use there that the engine did not name (other programs, buffers it does not count).  A GPU whose memory is
+        system RAM (`unified`) is shown as the BIOS divides it, where read_shared_gpu_memory can read that: its total
+        and free are the BIOS share's, and what it borrows beyond the share counts against the RAM (the RAM's
+        `gpu_borrowed`).  While a request has the engine's turn: the last answer, marked busy."""
         from strata_base.memory import read_ram
+        from strata_common.telemetry import read_shared_gpu_memory
         eng, ram = self.engine, read_ram()
         tel = self.telemetry.snapshot() if getattr(self, "telemetry", None) else {"now": {}, "static": {}}
         now = tel["now"]
@@ -1980,14 +1983,26 @@ class Service:
                     self.memory_last = {"at": time.time(), **eng.memory()}
         except engine_client.EngineDied as e:
             error = str(e)
-        memories = []
-        for m in self.memory_last["memories"]:
-            m = dict(m)
-            if m["id"] == "ram" and m["total"] is None:
-                m["total"], m["free"] = ram.total, ram.available
+        memories = [dict(m) for m in self.memory_last["memories"]]
+        borrowed = 0                             # what GPUs whose memory is system RAM hold beyond their BIOS share
+        for m in memories:
+            split = m["unified"] and read_shared_gpu_memory(m["name"], int(m["id"][3:]),
+                                                            getattr(getattr(eng, "proc", None), "pid", None))
+            if split:
+                used = sum(m["uses"].values())
+                m.update(runtime_total=m["total"], runtime_free=m["free"], total=split["share"],
+                         free=max(0, split["share"] - split["share_used"]), borrowed=split["borrowed"],
+                         borrow_limit=split["borrow_limit"], borrowed_by=split["borrowed_by"],
+                         in_share=min(used, split["share_used"]) if split["in_share"] is None else split["in_share"])
+                borrowed += split["borrowed"] or 0
+        for m in memories:
+            if m["id"] == "ram":
+                if m["total"] is None:
+                    m["total"], m["free"] = ram.total, ram.available
+                m["gpu_borrowed"] = borrowed
             if m["total"] is not None and m["free"] is not None:
-                m["other"] = max(0, m["total"] - m["free"] - sum(m["uses"].values()))
-            memories.append(m)
+                named = min(sum(m["uses"].values()), m.get("in_share", math.inf)) + m.get("gpu_borrowed", 0)
+                m["other"] = max(0, m["total"] - m["free"] - named)
         return {"available": True, **base, "busy": busy, "error": error, **self.memory_last, "memories": memories}
 
     def _context_entries(self, held: list[dict]) -> list[dict]:

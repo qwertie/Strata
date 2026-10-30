@@ -23,8 +23,8 @@ Conversations at once: 2 of 3 | Rows per step: 8 | Lookahead: 4
 
 - Sizes change with the model running. The one limit: the biggest active conversation must still fit.
 - Each change is either for this session only or saved as the default for the next start.
-- On a PC whose graphics memory is system RAM (Strix Halo), the graphics and RAM bars are one bar with RAM's share
-  marked, because the two are the same memory.
+- On a PC whose graphics memory is system RAM (Strix Halo), the bars follow the BIOS's division: the GPU's bar is the
+  share the BIOS gives the GPU, and what the GPU borrows beyond it is a segment of the RAM's bar.
 
 ## The settings
 
@@ -94,6 +94,12 @@ block of a conversation's tokens, or is free.
   pages once; per-token regions (K/V) take a page per block of tokens as the conversation grows. The pool holds the
   blocks; a conversation keeps a list of its pages.
 - Weights that are always needed (the dense layers, the head) are outside the pools.
+- On a PC whose graphics memory is system RAM (Strix Halo), the GPU's pool is the share the BIOS gives the GPU, not
+  what the runtime reports as the GPU's size. The runtime reports the share plus what the GPU may borrow from the
+  operating system's RAM (on the test PC, 107.6 GiB: a 63.8 GiB share and 47.6 GiB that may be borrowed, while Windows
+  sees 63.6 GiB of RAM). Once the share is full, GPU allocations spill into that RAM, so any spill counts against the
+  RAM pool and its setting. Otherwise the manager would silently take Windows' memory; DeepSeek reaching Windows'
+  commit limit on this PC is likely this.
 
 ### Tiers and pausing
 

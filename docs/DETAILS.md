@@ -758,8 +758,18 @@ Token ids are left out when there are none. Neither command changes anything.
 
 The Monitor tab's Memory card shows, for each memory (each GPU, the system RAM, the SSD), what the engine holds there:
 weights, experts, conversations, paused conversations, the drafter, and what is free. It reads `GET /v1/memory` every
-3 seconds and changes nothing (the first step, M0, of [MEMORY_MANAGER_PLAN.md](MEMORY_MANAGER_PLAN.md)). On a PC
-whose graphics memory is the system RAM (Strix Halo), the GPU and the RAM are one bar, with the RAM's uses striped.
+3 seconds and changes nothing (the first step, M0, of [MEMORY_MANAGER_PLAN.md](MEMORY_MANAGER_PLAN.md)).
+
+On a PC whose graphics memory is the system RAM (Strix Halo), the BIOS divides the memory: a share for the GPU, which
+the operating system does not count as RAM, and the rest. Once the share is full, the GPU borrows the operating
+system's RAM (Windows' "shared GPU memory", Linux's GTT). The panel draws it that way: the GPU's bar is the BIOS share,
+and what the GPU borrows is one striped segment, "GPU (borrowed from RAM)", in the RAM's bar. The engine cannot tell
+which of its allocations landed in the share, so its uses in the GPU's bar are drawn scaled down to what it holds
+there (the legend keeps the engine's own numbers).
+The share and the borrowed part come from DXGI and the `GPU Process Memory` performance counters on Windows (what Task
+Manager shows as dedicated and shared GPU memory, for the engine's process), and from the amdgpu driver's
+`mem_info_vram_*` and `mem_info_gtt_*` files on Linux (the whole device; Linux has no per-process split). Elsewhere
+the GPU keeps the size the runtime reports.
 
 `GET /v1/memory` returns `{"available", "loaded", "machine": {"ram_total", "ram_free", "gpus"}, "busy", "error", "at",
 "memories": [{"id", "name", "total", "free", "unified", "uses": {<use>: bytes}, "paused_count", "paused_budget",
@@ -767,6 +777,11 @@ whose graphics memory is the system RAM (Strix Halo), the GPU and the RAM are on
 hardware sampler of `GET /metrics`). The engine's `ram` gets the machine's size and free RAM; `other` is what is in use
 in a memory beyond the uses the engine names (other programs, buffers the engine does not count). A value the engine
 does not know is `null` or left out of `uses`. `busy` and `available` mean what they mean for `GET /api/context`.
+For a GPU whose memory is the system RAM, where the division can be read: `total` and `free` are the BIOS share's,
+`runtime_total` and `runtime_free` are what the runtime reported, `in_share` is what the engine holds in the share
+(on Linux, estimated as the engine's uses, at most what the share holds), `borrowed` is what is held beyond it in RAM
+and `borrow_limit` the most that may be, `borrowed_by` says whose: `engine` (Windows) or `device` (every program,
+Linux). The RAM's `gpu_borrowed` is the sum of the GPUs' `borrowed`, and its `other` leaves it out.
 
 The engine's command (include/strata/common/serve/memory_report.hpp; the engine's `READY` line says `memory`):
 

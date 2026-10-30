@@ -362,8 +362,9 @@ _DISPLAY_CLASS = r"SYSTEM\CurrentControlSet\Control\Class\{4d36e968-e325-11ce-bf
 
 def windows_display_adapters(vendor=None) -> list:
     """#1587: the display adapters Windows has drivers for, from the registry's display class (no subprocess, no vendor
-    library): [{"name", "provider", "driver", "vram_bytes"}] in the class's order.  `vendor`: "amd", "nvidia" or
-    "intel" keeps that vendor's cards.  [] off Windows or when nothing can be read."""
+    library): [{"name", "provider", "driver", "vram_bytes", "dedicated_bytes", "shared_bytes", "luid"}] in the class's
+    order.  The last three are DXGI's (read_dxgi_adapters; None where DXGI does not list the adapter by that name).
+    `vendor`: "amd", "nvidia" or "intel" keeps that vendor's cards.  [] off Windows or when nothing can be read."""
     if os.name != "nt":
         return []
     try:
@@ -371,7 +372,7 @@ def windows_display_adapters(vendor=None) -> list:
         root = winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, _DISPLAY_CLASS)
     except OSError:
         return []
-    out = []
+    out, dxgi = [], read_dxgi_adapters()
     i = 0
     while True:
         try:
@@ -400,7 +401,8 @@ def windows_display_adapters(vendor=None) -> list:
         if isinstance(mem, (bytes, bytearray)):
             mem = int.from_bytes(bytes(mem[:8]), "little") if mem else None
         out.append({"name": name.strip(), "provider": str(val("ProviderName") or ""), "driver": val("DriverVersion"),
-                    "vram_bytes": mem if isinstance(mem, int) and mem > 0 else None})
+                    "vram_bytes": mem if isinstance(mem, int) and mem > 0 else None,
+                    **dxgi.get(name.strip(), dict.fromkeys(("dedicated_bytes", "shared_bytes", "luid")))})
     if vendor:
         keys = {"amd": ("advanced micro devices", "amd", "radeon"), "nvidia": ("nvidia",), "intel": ("intel",)}[vendor]
         out = [a for a in out if any(s in (a["provider"] + " " + a["name"]).lower() for s in keys)]
@@ -412,6 +414,145 @@ def windows_amd_cards(adapters=None) -> list:
     (512 MiB on a Ryzen 5 7600): beside a card with 2 GiB or more it is left out (an APU alone keeps it)."""
     cards = windows_display_adapters("amd") if adapters is None else adapters
     return [c for c in cards if (c["vram_bytes"] or 0) >= 2 << 30] or cards
+
+
+def read_shared_gpu_memory(name, index, pid=None, sysfs=None):
+    """Reads how a GPU whose memory is system RAM (AMD Strix Halo; the engine says `unified=1`) is divided.  The BIOS
+    gives the GPU a share of its own that the operating system does not count as RAM; once the share is full, GPU
+    allocations spill into the RAM the system uses (Windows' "shared GPU memory", Linux's GTT).  `name`: the GPU's
+    name as the runtime reports it (Windows finds the adapter by it); `index`: its HIP ordinal (Linux finds its sysfs
+    folder by it); `pid`: the engine's process.  Returns {"share": the BIOS share in bytes, "share_used": what all
+    programs use of it, "in_share": what process `pid` uses of it (None on Linux, which has no per-process split),
+    "borrowed": what the GPU holds in RAM, "borrow_limit": the most it may borrow, "borrowed_by": "engine" (process
+    `pid`, Windows) or "device" (every program, Linux)}, or None where it cannot be read (other systems, an adapter
+    not found).  Used by the server's GET /v1/memory."""
+    if os.name == "nt":
+        card = next((a for a in windows_display_adapters() if a["name"] == name and a["dedicated_bytes"]), None)
+        got = _gpu_memory_counters().read() if card else None
+        if not got:
+            return None
+        mine, borrowed, used = sum_gpu_memory_counters(got, pid, card["luid"])
+        return {"share": card["dedicated_bytes"], "share_used": used, "in_share": mine, "borrowed": borrowed,
+                "borrow_limit": card["shared_bytes"], "borrowed_by": "engine"}
+    amd = _Amd(index, sysfs)
+    if not amd.ok():
+        return None
+    total, used, gtt_total, gtt_used = (amd._int(os.path.join(amd.dev, f"mem_info_{k}"))
+                                        for k in ("vram_total", "vram_used", "gtt_total", "gtt_used"))
+    if total is None or used is None:
+        return None
+    return {"share": total, "share_used": used, "in_share": None, "borrowed": gtt_used, "borrow_limit": gtt_total,
+            "borrowed_by": "device"}
+
+
+def sum_gpu_memory_counters(readings, pid, luid):
+    """Sums Windows' GPU memory counters (_GpuMemoryCounters.read) for one adapter.  Returns (process `pid`'s dedicated
+    usage, its shared usage, every process's dedicated usage) in bytes; the process's are None without a pid.  `luid`:
+    the adapter's, "0x<high>_0x<low>" (read_dxgi_adapters).  An instance is named pid_<pid>_luid_<luid>_phys_<n> (a
+    process) or luid_<luid>_phys_<n> (the adapter), one per physical part of a linked adapter."""
+    def total(items, prefix):
+        return sum(v for k, v in items if k.lower().startswith(prefix))
+    dedicated, shared, adapter = readings
+    luid = f"luid_{luid}_".lower()
+    mine = (None, None) if pid is None else (total(dedicated, f"pid_{pid}_{luid}"), total(shared, f"pid_{pid}_{luid}"))
+    return (*mine, total(adapter, luid))
+
+
+class _GpuMemoryCounters:
+    """Windows' GPU memory performance counters (Task Manager's dedicated and shared GPU memory) through PDH, with one
+    query kept open, so that a reading starts no process and takes well under a millisecond."""
+    PATHS = (r"\GPU Process Memory(*)\Dedicated Usage", r"\GPU Process Memory(*)\Shared Usage",
+             r"\GPU Adapter Memory(*)\Dedicated Usage")
+    FMT_LARGE = 0x400   # PDH_FMT_LARGE: the values as 64-bit integers
+
+    class _Item(ctypes.Structure):           # PDH_FMT_COUNTERVALUE_ITEM_W holding a PDH_FMT_LARGE value
+        _fields_ = [("name", ctypes.c_wchar_p), ("status", ctypes.c_ulong), ("value", ctypes.c_longlong)]
+
+    def __init__(self):
+        self.lock, self.counters = threading.Lock(), []
+        try:
+            self.pdh, self.query = ctypes.windll.pdh, ctypes.c_void_p()
+            if self.pdh.PdhOpenQueryW(None, None, ctypes.byref(self.query)) != 0:
+                return
+            for path in self.PATHS:
+                c = ctypes.c_void_p()
+                if self.pdh.PdhAddEnglishCounterW(self.query, path, None, ctypes.byref(c)) != 0:
+                    return
+                self.counters.append(c)
+        except (OSError, AttributeError):
+            self.counters = []
+
+    def read(self):
+        """Gets each counter's [(instance, bytes)], in PATHS' order, or None when PDH does not answer."""
+        if len(self.counters) != len(self.PATHS):
+            return None
+        with self.lock:
+            if self.pdh.PdhCollectQueryData(self.query) != 0:
+                return None
+            return [self._items(c) for c in self.counters]
+
+    def _items(self, counter):
+        size, n = ctypes.c_ulong(0), ctypes.c_ulong(0)
+        self.pdh.PdhGetFormattedCounterArrayW(counter, self.FMT_LARGE, ctypes.byref(size), ctypes.byref(n), None)
+        buf = (ctypes.c_byte * size.value)()
+        if self.pdh.PdhGetFormattedCounterArrayW(counter, self.FMT_LARGE, ctypes.byref(size), ctypes.byref(n), buf):
+            return []
+        items = ctypes.cast(buf, ctypes.POINTER(self._Item))
+        PDH_CSTATUS_OK = (0, 1)   # VALID_DATA, NEW_DATA
+        return [(items[i].name, items[i].value) for i in range(n.value) if items[i].status in PDH_CSTATUS_OK]
+
+
+_gpu_counters = None   # the process's one _GpuMemoryCounters (_gpu_memory_counters)
+
+
+def _gpu_memory_counters():
+    """Gets this process's one _GpuMemoryCounters, opened on first use."""
+    global _gpu_counters
+    if _gpu_counters is None:
+        _gpu_counters = _GpuMemoryCounters()
+    return _gpu_counters
+
+
+def read_dxgi_adapters() -> dict:
+    """Gets each adapter's memory budget from DXGI (IDXGIFactory1::EnumAdapters1 and IDXGIAdapter1::GetDesc1, called
+    through their COM vtables), keyed by its description: {"dedicated_bytes": its own memory (on a shared-memory GPU,
+    the BIOS share; dxdiag's "Dedicated Memory"), "shared_bytes": the system RAM it may also use, "luid":
+    "0x<high>_0x<low>", as the GPU performance counters name the adapter}.  {} off Windows or when DXGI fails."""
+    if os.name != "nt":
+        return {}
+
+    class Desc(ctypes.Structure):            # DXGI_ADAPTER_DESC1
+        _fields_ = [("description", ctypes.c_wchar * 128), ("ids", ctypes.c_uint * 4),
+                    ("dedicated", ctypes.c_size_t), ("dedicated_system", ctypes.c_size_t),
+                    ("shared", ctypes.c_size_t), ("luid_low", ctypes.c_ulong), ("luid_high", ctypes.c_long),
+                    ("flags", ctypes.c_uint)]
+    out = {}
+    try:
+        iid = (ctypes.c_ubyte * 16).from_buffer_copy(bytes.fromhex("78ae0a776ff2ba4da829253c83d1b387"))  # IDXGIFactory1
+        factory = ctypes.c_void_p()
+        if ctypes.windll.dxgi.CreateDXGIFactory1(ctypes.byref(iid), ctypes.byref(factory)) != 0:
+            return {}
+        i = 0
+        while True:
+            adapter, desc = ctypes.c_void_p(), Desc()
+            if _com_call(factory, 12, ctypes.c_uint(i), ctypes.pointer(adapter)) != 0:     # EnumAdapters1
+                break
+            if _com_call(adapter, 10, ctypes.pointer(desc)) == 0:                         # GetDesc1
+                out[desc.description] = {"dedicated_bytes": desc.dedicated or None,
+                                         "shared_bytes": desc.shared or None,
+                                         "luid": f"0x{desc.luid_high & 0xFFFFFFFF:08x}_0x{desc.luid_low:08x}"}
+            _com_call(adapter, 2)                                                           # Release
+            i += 1
+        _com_call(factory, 2)
+    except (OSError, AttributeError):
+        pass
+    return out
+
+
+def _com_call(obj, slot, *args):
+    """Calls method number `slot` of COM object `obj`'s vtable (read_dxgi_adapters); returns its HRESULT."""
+    fn = ctypes.cast(obj, ctypes.POINTER(ctypes.POINTER(ctypes.c_void_p))).contents[slot]
+    return ctypes.WINFUNCTYPE(ctypes.c_long, ctypes.c_void_p, *(type(a) for a in args))(fn)(obj, *args)
 
 
 def free_vram_mib(index=0, amd=False):
