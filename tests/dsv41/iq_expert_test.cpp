@@ -596,7 +596,6 @@ int main(int argc, char** argv) {
                 }
                 report("cpu gate_up vs ref", type, wg, 1e-5);
                 report("cpu down vs ref", type, wd, 1e-5);
-                std::printf("%-7s cpu rows: %s\n", iq::name(type), gg::iq_cpu_own_rows(type) ? "Strata AVX2" : "ggml-cpu");
             }
         }
         CK(hipFree(dblob));

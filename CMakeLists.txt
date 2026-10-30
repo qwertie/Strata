@@ -810,7 +810,8 @@ if(STRATA_ENABLE_CUDA OR STRATA_ENABLE_HIP)
   # DeepSeek-V4.1-Flash: the third engine path (src/models/deepseekv41, from Project Maya's maya-ds4, MIT,
   # third_party/project-maya).
   # Its own executable for now (strata-dsv41); a family switch in `strata` comes after first light.  OFF by default: it
-  # changes no existing target (the vendored kernels live in strata::dsv41k, so no symbol is shared with strata_kernels).
+  # changes no existing target (the vendored kernels live in strata::dsv41k, so no symbol clashes with strata_kernels,
+  # whose sampler they call).
   option(STRATA_BUILD_DSV41 "Build the DeepSeek-V4.1 engine path (strata-dsv41)" OFF)
   if(STRATA_BUILD_DSV41 AND NOT STRATA_HIP_GFX906)
     set(_ds4 src/models/deepseekv41)
@@ -823,7 +824,7 @@ if(STRATA_ENABLE_CUDA OR STRATA_ENABLE_HIP)
       target_sources(strata_dsv41_kernels PRIVATE ${_ds4}/vendor/exl3_legacy.cu)
     endif()
     target_include_directories(strata_dsv41_kernels PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include ${_strata_gpu_include_directories})
-    target_link_libraries(strata_dsv41_kernels PUBLIC ${_strata_gpu_runtime_target})
+    target_link_libraries(strata_dsv41_kernels PUBLIC strata_kernels ${_strata_gpu_runtime_target})
     add_executable(strata-dsv41 ${_ds4}/ds4_main.cpp ${_ds4}/ds4_model.cu ${_ds4}/ds4_kernels.cu ${_ds4}/ds4_vision.cu
                    ${_ds4}/ds4_gguf.cu ${_ds4}/ds4_gguf_cpu.cpp ${_ds4}/ds4_iq.cu ${_ds4}/ds4_iq_cpu.cpp
                    ${_ds4}/ds4_tq.cu ${_ds4}/ds4_tq_cpu.cpp ${_ds4}/ds4_gg_cpu.cpp ${_ds4}/ds4_packinfo.cpp)

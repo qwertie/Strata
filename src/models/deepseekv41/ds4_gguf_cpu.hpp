@@ -17,10 +17,10 @@ constexpr int kMxCpuMaxN = 8;   // activations a call
 /// (k % 32 == 0) as MXFP4 blocks, rb bytes apart.  (F32 activations: the tests' and the benchmark's old path.)
 void mx_cpu_rows(const uint8_t* w, size_t rb, int k, int r0, int r1, const float* const* x, int n, float* const* y);
 
-/// A GGUF's low-bit experts (ds4_iq.cuh's types) on the CPU lane - ggml-cpu's arithmetic through the GLM CPU lane's
-/// native experts (strata::dsv41k::cpu::native_*: its AVX-512 / AVX2 multi-token rows where they are ggml's bit for bit,
-/// ggml's dots otherwise; ds4_iq_cpu.cpp): an activation quantized once to the weight type's vec_dot_type (Q8_K: an F32
-/// scale per 256 values - the device takes one per 32, so the two sides agree to that rounding), each row one dot.
+/// A GGUF's low-bit experts (ds4_iq.cuh's types) on the CPU lane - ggml-cpu's arithmetic (ds4_gg_cpu.cpp) or the
+/// trellis rows (ds4_tq_cpu.cpp), chosen by ds4_iq_cpu.cpp: an activation quantized once to the weight type's
+/// vec_dot_type (Q8_K: an F32 scale per 256 values - the device takes one per 32, so the two sides agree to that
+/// rounding), each row one dot.
 struct IqCpu {
     int tg = 0, td = 0, n_embd = 0, n_ff = 0;
     int gu_act = 0, d_act = 0;                 // the activations' ggml types
@@ -89,9 +89,6 @@ int mx_tier();                   // the tier mx_rows takes (measured on first us
 const char* mx_tier_report();    // the measurement behind it (each candidate's time), or how it was picked
 bool mx_tier_ok(int t);          // this CPU runs tier t
 const char* mx_tier_name(int t);
-/// Whether the rows of `type` are ds4's own here (IQ3_XXS / IQ3_S on AVX2 / AVX-512 VBMI: ggml-cpu's numbers bit for
-/// bit, checked against its dot on first use; DS4_IQ_OWN=0 turns them off) rather than ggml's / the GLM lane's.
-bool iq_cpu_own_rows(int type);
 
 /// x rounded as the device's MXFP4 kernels round their activations (q8_quant: per 32 values sc = max|x| / 127, q =
 /// round-half-even(x / sc), the same F32 operations, so the same q), into out as q sc - an expert gives the same sums
