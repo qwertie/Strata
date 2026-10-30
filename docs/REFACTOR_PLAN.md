@@ -285,3 +285,4 @@ alternating runs of the two builds. Models on this PC: Qwen3.8 IQ3_S (`strata-iq
 | A2b | `043ccf2e` | 490,670 | −2,478 | a second Python sweep: shared atomic writers, hashing, GPU probes, test fixtures |
 | B2 | `b1002bd0` | 489,879 | −3,269 | DeepSeek's plain draw on the shared sampler; ~710 never-compiled lines removed |
 | B1 | `35311604` | 486,846 | −6,302 | `src/kernels` and `src/prefill` split into the layered folders; 5 never-compiled SYCL copies removed |
+| B3 | `46a56add` | 486,724 | −6,424 | multi-GPU expert code's duplicates merged (it stays in `src/core`) |
