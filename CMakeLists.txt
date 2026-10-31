@@ -591,14 +591,15 @@ if(STRATA_ENABLE_CUDA OR STRATA_ENABLE_HIP)
   # about arithmetic, and this one knows the ORDER the arithmetic happens in.
   add_library(strata_engine STATIC src/base/gpu/vmm.cpp
     src/common/state/conversation_memory.cpp src/common/state/conversation_file.cpp
-    src/common/experts/expert_profile.cpp src/common/experts/ram_tier.cpp
+    src/common/experts/expert_profile.cpp src/common/experts/ram_tier.cpp src/common/experts/expert_pages.cpp
     src/core/expert_source.cpp src/core/remote_experts.cpp src/core/remote_expert_opt.cu src/core/expert_cache.cpp
     src/core/peer_experts.cpp src/core/arch_defaults.cpp src/core/nv_defaults.cpp
     src/models/qwen38/layer.cpp src/models/qwen38/session.cpp src/models/qwen38/native_head.cpp
     src/models/qwen38/native_dense.cpp src/models/qwen38/verify.cpp src/models/qwen38/mtp.cpp
     src/models/qwen38/dflash2.cpp src/models/qwen38/conversation_snapshot.cpp src/models/qwen38/conversation_state.cpp)
   target_include_directories(strata_engine PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
-  target_link_libraries(strata_engine PUBLIC strata_core strata_kernels strata_kernels_cpu ${_strata_gpu_runtime_target})
+  target_link_libraries(strata_engine PUBLIC strata_core strata_kernels strata_kernels_cpu strata_state
+                        ${_strata_gpu_runtime_target})
   if(STRATA_BUILD_TESTS AND STRATA_ENABLE_CUDA AND NOT STRATA_HIP_GFX906)
     add_executable(host_graph_launch_test tests/core/host_graph_launch_test.cu)
     target_include_directories(host_graph_launch_test PRIVATE include)

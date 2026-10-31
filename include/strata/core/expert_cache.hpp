@@ -24,6 +24,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <functional>
 #include <memory>
 #include <string>
 #include <vector>
@@ -72,8 +73,8 @@ public:
     int64_t slots() const { return live_slots_; }
     int64_t full_slots() const { return slots_; }
     /// Slots actually claimed.  Not the same as `slots()` - the cache does not evict, so a run that routes
-    /// fewer distinct experts than there are slots leaves the rest empty.
-    int64_t resident() const { return per_layer_ ? admitted_ : next_free_; }
+    /// fewer distinct experts than there are slots leaves the rest empty.  With an admitter: the experts held.
+    int64_t resident() const { return per_layer_ || admitter_ ? admitted_ : next_free_; }
     /// The bytes of `slots()` (all of the arena unless shrunk); `full_bytes()`: of every slot.
     int64_t bytes() const { return slot_end(live_slots_); }
     int64_t full_bytes() const { return slot_end(slots_); }
@@ -95,6 +96,12 @@ public:
     /// The guard the open slots were laid out with: what `open_sized` applied (0 for uniform slots, when closed, and
     /// on SYCL, whose open_sized applies none).
     int64_t slot_guard() const { return guard_; }
+    /// strata-q38: sets the most bytes one expert takes from its slot on, when uniform slots are smaller than the
+    /// largest expert (an admitter's pages, of which an expert takes several).  Call before `open`, like
+    /// `set_slot_guard`; `close` keeps it.  0 (the default): one slot.
+    void set_expert_bytes(int64_t b) { span_req_ = b > 0 ? b : 0; }
+    /// Gets the bytes of one uniform slot (one page with an admitter), or of the largest slot when they are sized.
+    int64_t slot_bytes() const { return blob_; }
     /// A sized slot's arena bytes: the blob plus the guard, 256-byte aligned.
     static int64_t slot_stride(int64_t blob, int64_t guard = 0) { return (blob + guard + 255) / 256 * 256; }
     bool segmented() const { return !segs_.empty(); }
@@ -117,10 +124,23 @@ public:
     /// `(layer, expert)` -> slot index, or `kNotResident`.  Bounds-checked: a bad layer or expert returns
     /// `kNotResident` rather than reading whatever is adjacent in the table.
     int32_t slot_of(int64_t layer, int64_t expert) const;
-    /// Claims the next free slot for `(layer, expert)`.  Returns the slot, or `kNotResident` when the cache is
-    /// full - **it never evicts**, because eviction policy is a measured question (`R4.1`'s LFU-decay vs LRU
-    /// sweep) and a placeholder policy would set the hit rate that everything downstream is then sized against.
+    /// Claims the next free slot for `(layer, expert)` (with an admitter, the slot it gives).  Returns the slot, or
+    /// `kNotResident` when the cache is full - **without an admitter it never evicts**, because eviction policy is a
+    /// measured question (`R4.1`'s LFU-decay vs LRU sweep) and a placeholder policy would set the hit rate that
+    /// everything downstream is then sized against.
     int32_t admit(int64_t layer, int64_t expert);
+    /// strata-q38: makes `admit` ask `admitter` for a new expert's slot (kNotResident: none) instead of taking the
+    /// next free one; the admitter may also `evict` other experts.  ExpertPages hands out page-pool pages this way.
+    void set_admitter(std::function<int32_t(int64_t layer, int64_t expert)> admitter) {
+        admitter_ = std::move(admitter);
+    }
+    /// With an admitter: forgets an expert's slot (its bytes stay until the slot is reused).
+    void evict(int64_t layer, int64_t expert) {
+        if (slot_of(layer, expert) == kNotResident)
+            return;
+        residency_[(size_t) (layer * n_expert_ + expert)] = kNotResident;
+        --admitted_;
+    }
 
     /// Publish a same-layer replacement after its slot copy has completed.
     void replace(int64_t layer, int32_t old_expert, int32_t new_expert) {
@@ -212,6 +232,9 @@ private:
     int64_t seg_req_ = 0;               ///< #533: the segment size asked for (0: one cudaMalloc)
     int64_t guard_req_ = 0;             ///< STRATA_MMQ_DIRECT: bytes kept after each sized slot's blob (set_slot_guard)
     int64_t guard_ = 0;                 ///< ...the guard open_sized applied to the open slots (0: none)
+    int64_t span_req_ = 0;              ///< the bytes an expert may take from its slot on, asked for (set_expert_bytes)
+    int64_t span_ = 0;                  ///< ...in force: span_req_, or the slot (blob_) when that is 0
+    std::function<int32_t(int64_t, int64_t)> admitter_;   ///< set_admitter (empty: admit takes the next free slot)
     int64_t seg_ = 0;                   ///< #533: the segment size used (a multiple of the driver's granularity)
     uint64_t reserved_ = 0;             ///< #533: the reserved address range's size
     std::vector<unsigned long long> segs_;   ///< #533: each segment's physical handle (0: unmapped)

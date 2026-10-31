@@ -18,8 +18,8 @@ ConversationPages::~ConversationPages() {
         cudaFree(t);
 }
 
-bool ConversationPages::init(const strata::core::ModelGeometry& g, strata::core::SessionState& ss, uint64_t pool_bytes,
-                             std::string& err) {
+bool ConversationPages::get_layout(const strata::core::ModelGeometry& g, const strata::core::SessionState& ss,
+                                   strata::core::StateLayout& layout, std::string& err) {
     using namespace strata::core;
     const int64_t n_qsa = g.n_qsa_layers();
     if (n_qsa == 0 || ss.qsa_ord0 != 0 || ss.qsa_alloc != n_qsa || ss.gdn_alloc != g.n_gdn_layers() ||
@@ -29,40 +29,31 @@ bool ConversationPages::init(const strata::core::ModelGeometry& g, strata::core:
     }
     const strata::kernels::QsaShapes s = qsa_shapes(g);
     const auto fmt = (strata::kernels::KvFormat) qsa_kv_format(ss.qsa_states[0]);
-    StateLayout layout;
     try {
-        unit_ = strata::kernels::kv_unit_layout(s, fmt);
+        const strata::kernels::KvUnitLayout unit = strata::kernels::kv_unit_layout(s, fmt);
         const uint64_t key_bytes = (uint64_t) s.idx_dim * sizeof(float);
-        if (!describe_conversation(g, (unit_.bytes - key_bytes) / (uint64_t) s.idx_block, layout, err))
+        if (!describe_conversation(g, (unit.bytes - key_bytes) / (uint64_t) s.idx_block, layout, err))
             return false;
         layout.regions.erase(layout.regions.begin());   // the small running state stays in the session
-        if (layout.regions.size() != (size_t) (1 + n_qsa) || layout.regions[1].unit_bytes != unit_.bytes) {
-            err = "the page pool's layout does not match the K/V's units (" + std::to_string(unit_.bytes) + " B)";
+        if (layout.regions.size() != (size_t) (1 + n_qsa) || layout.regions[1].unit_bytes != unit.bytes) {
+            err = "the page pool's layout does not match the K/V's units (" + std::to_string(unit.bytes) + " B)";
             return false;
         }
-        PagePoolConfig config;
-        PagePoolHooks hooks;
-        hooks.alloc = [](size_t bytes) -> void* {
-            void* p = nullptr;
-            if (cudaMalloc(&p, bytes) == cudaSuccess)
-                return p;
-            (void) cudaGetLastError();
-            return nullptr;
-        };
-        hooks.free = [](void* p) { cudaFree(p); };
-        page_bytes_ = config.page_bytes;
-        pool_ = std::make_unique<PagePool>(layout, config, std::move(hooks));
     } catch (const std::exception& e) {
         err = std::string("the page pool: ") + e.what();
         return false;
     }
-    // no more than the conversation can use at the session's context
-    const uint64_t chunk = PagePoolConfig{}.chunk_bytes;
-    const uint64_t most = (pool_->pages_for(ss.max_cells + 2 * s.idx_block) * page_bytes_ + chunk - 1) / chunk * chunk;
-    if (const PoolResize r = pool_->resize(std::min(pool_bytes, most)); !r.refusal.empty()) {
-        err = "the page pool: " + r.refusal;
-        return false;
-    }
+    return true;
+}
+
+bool ConversationPages::init(const strata::core::ModelGeometry& g, strata::core::SessionState& ss,
+                             strata::core::PagePool& pool, std::string& err) {
+    using namespace strata::core;
+    const strata::kernels::QsaShapes s = qsa_shapes(g);
+    const int64_t n_qsa = g.n_qsa_layers();
+    unit_ = strata::kernels::kv_unit_layout(s, (strata::kernels::KvFormat) qsa_kv_format(ss.qsa_states[0]));
+    pool_ = &pool;
+    page_bytes_ = pool.page_bytes();
     if (const std::string why = pool_->grow_conversation(kId, 0); !why.empty()) {
         err = "the page pool: " + why;
         return false;

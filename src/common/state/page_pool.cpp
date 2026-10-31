@@ -79,7 +79,7 @@ std::string PagePool::grow_conversation(ConversationId id, int64_t tokens) {
         return why;
     for (uint32_t r = 0; r < c.pages.size(); ++r)
         for (const uint64_t n = region_pages(r, tokens); c.pages[r].size() < n;)
-            give(find_page(false, (PageId) pages_.size()), id, r);
+            give(find_page((PageId) pages_.size()), id, r);
     c.tokens = std::max(c.tokens, tokens);
     return {};
 }
@@ -112,38 +112,53 @@ const std::vector<PageId>& PagePool::conversation_pages(ConversationId id, size_
     return conversations_.at(id).pages.at(region);
 }
 
-PageId PagePool::add_expert(ExpertKey key) {
+PageId PagePool::add_expert(ExpertKey key, uint32_t pages, uint64_t used_at) {
     if (const PageId held = use_expert(key); held != no_page)
         return held;
-    const PageId page = find_page(true, (PageId) pages_.size());
-    if (page == no_page)
+    if (used_at == clock_now)
+        used_at = hooks_.now();
+    const PageId first = pages == 0 || pages > pages_per_chunk_ ? no_page : find_expert_run(pages, used_at);
+    if (first == no_page)
         return no_page;
     Page content;
     content.use = PageUse::expert;
     content.expert = key;
-    content.last_use = hooks_.now();
+    content.last_use = used_at;
     content.uses = 1;
-    put(page, content);
-    experts_[key] = page;
-    return page;
+    for (PageId p = first; p < first + pages; ++p) {
+        if (pages_[p].use == PageUse::expert)
+            evict(p, 0);
+        put(p, content);
+    }
+    experts_[key] = first;
+    expert_pages_ += pages;
+    return first;
 }
 
 PageId PagePool::use_expert(ExpertKey key) {
     const auto it = experts_.find(key);
     if (it == experts_.end())
         return no_page;
-    Page& page = pages_[it->second];
-    page.last_use = hooks_.now();
-    ++page.uses;
+    const uint64_t now = hooks_.now();
+    for (PageId p = it->second, end = get_run_end(it->second); p < end; ++p) {
+        pages_[p].last_use = now;
+        ++pages_[p].uses;
+    }
     return it->second;
 }
 
 void PagePool::remove_expert(ExpertKey key) {
-    const auto it = experts_.find(key);
-    if (it == experts_.end())
-        return;
-    release(it->second, 0);
-    experts_.erase(it);
+    if (const auto it = experts_.find(key); it != experts_.end())
+        free_expert(it->second, 0);
+}
+
+uint64_t PagePool::get_next_opening() const {
+    const uint64_t now = hooks_.now();
+    uint64_t next = 0;
+    for (const PageId p : free_)
+        if (pages_[p].open_at > now && (next == 0 || pages_[p].open_at < next))
+            next = pages_[p].open_at;
+    return next;
 }
 
 uint8_t* PagePool::page_address(PageId page) const {
@@ -167,7 +182,7 @@ PagePoolReport PagePool::report() const {
             (c.paused ? paused : layout_.regions[r].kind == RegionKind::fixed ? fixed : active) += c.pages[r].size();
     }
     const auto use = [&](uint64_t pages) { return PagePoolReport::Use{pages, pages * config_.page_bytes}; };
-    out.experts = use(experts_.size());
+    out.experts = use(expert_pages_);
     out.active = use(active);
     out.fixed = use(fixed);
     out.paused = use(paused);
@@ -212,8 +227,8 @@ PoolResize PagePool::shrink(size_t chunks) {
                 return {"a conversation's page could not be copied", {}};
     for (PageId from = end; from < pages_.size(); ++from) {
         if (pages_[from].use == PageUse::expert)
-            evict(from);
-        else if (pages_[from].use == PageUse::conversation && !move_page(from, find_page(false, end)))
+            evict(from, 0);
+        else if (pages_[from].use == PageUse::conversation && !move_page(from, find_page(end)))
             return {"a conversation's page could not be copied", {}};
     }
     for (size_t c = chunks; c < chunks_.size(); ++c)
@@ -255,7 +270,7 @@ std::string PagePool::check_growth(const Conversation& c, int64_t tokens) const 
     uint64_t needed = 0;
     for (size_t r = 0; r < c.pages.size(); ++r)
         needed += std::max(region_pages(r, tokens), (uint64_t) c.pages[r].size()) - c.pages[r].size();
-    const uint64_t room = free_.size() + experts_.size();
+    const uint64_t room = free_.size() + expert_pages_;
     if (needed > room)
         return "the conversation needs " + gib(needed) + " more, the pool can free " + gib(room);
     return {};
@@ -281,19 +296,52 @@ uint64_t PagePool::reserved_pages() const {
     return std::max(pages_for(config_.tokens_min), held) - held;
 }
 
-/// Gets a free page before `end` (evicting the least-used expert if none is free), still marked free; no_page when
-/// there is none.  A conversation takes the lowest free page.  An expert takes the highest open one above the
-/// reserve, so that the last chunks, which a shrink gives back, hold experts rather than conversation pages.
-PageId PagePool::find_page(bool for_expert, PageId end) {
-    if (!for_expert && !free_.empty() && *free_.begin() < end)
+/// Gets a page before `end` for a conversation, still marked free: the lowest free page, else the page of the
+/// expert used longest ago, which is evicted (the rest of its run stays closed to experts for the hysteresis);
+/// no_page when there is none.
+PageId PagePool::find_page(PageId end) {
+    if (!free_.empty() && *free_.begin() < end)
         return *free_.begin();
-    if (for_expert && free_.size() > reserved_pages()) {
-        const uint64_t now = hooks_.now();
-        for (auto it = free_.rbegin(); it != free_.rend(); ++it)
-            if (*it < end && pages_[*it].open_at <= now)
-                return *it;
-    }
     return evict_least_used(end);
+}
+
+/// Finds where an expert of `pages` pages last used at `used_at` can go (see add_expert): the highest run of open free
+/// pages above the reserve, else the run inside one chunk whose evicted experts were used longest ago (of equals, the
+/// one with the fewest of their pages, then the highest).  Experts go high, so that the last chunks, which a shrink
+/// gives back, hold experts rather than conversation pages.  no_page when there is none.
+PageId PagePool::find_expert_run(uint32_t pages, uint64_t used_at) const {
+    const uint64_t now = hooks_.now(), reserve = reserved_pages();
+    const auto is_open = [&](PageId p) { return pages_[p].use == PageUse::free && pages_[p].open_at <= now; };
+    if (free_.size() >= reserve + pages) {   // free pages only: the highest run of them
+        uint32_t run = 0;
+        PageId above = no_page;   // the page `run` counted last
+        for (auto it = free_.rbegin(); it != free_.rend(); above = *it++) {
+            const bool joins = run > 0 && *it + 1 == above && above % pages_per_chunk_ != 0;
+            run = !is_open(*it) ? 0 : joins ? run + 1 : 1;
+            if (run == pages)
+                return *it;
+        }
+    }
+    PageId best = no_page;
+    std::tuple<uint64_t, uint32_t> best_cost{UINT64_MAX, UINT32_MAX};   // the newest last use, the experts' pages
+    for (PageId chunk = 0; chunk < pages_.size(); chunk += (PageId) pages_per_chunk_)
+        for (PageId first = chunk; first + pages <= chunk + pages_per_chunk_; ++first) {
+            uint64_t newest = 0;
+            uint32_t taken = 0, free = 0;
+            bool ok = true;
+            for (PageId p = first; ok && p < first + pages; ++p) {
+                const Page& at = pages_[p];
+                ok = at.use == PageUse::free ? is_open(p) : at.use == PageUse::expert && at.last_use < used_at;
+                free += at.use == PageUse::free;
+                taken += at.use == PageUse::expert;
+                newest = std::max(newest, at.use == PageUse::expert ? at.last_use : 0);
+            }
+            if (ok && free_.size() >= reserve + free && std::make_tuple(newest, taken) <= best_cost) {
+                best = first;
+                best_cost = {newest, taken};
+            }
+        }
+    return best;
 }
 
 /// Finds where runs of `sizes` pages can go before page `end` (a whole number of chunks): each in one chunk, on pages
@@ -344,22 +392,41 @@ PageId PagePool::evict_least_used(PageId end) {
     if (victim == experts_.end())
         return no_page;
     const PageId page = victim->second;
-    evict(page);
+    evict(page, hooks_.now() + config_.hysteresis);
     return page;
 }
 
-/// Tells the owner that the expert on `page` leaves it, and frees the page.
-void PagePool::evict(PageId page) {
-    const ExpertKey key = pages_[page].expert;
-    hooks_.evicted(key, page);
-    experts_.erase(key);
-    release(page, 0);
+/// Tells the owner that the expert holding `page` leaves the pool, and frees its pages; experts may take them from
+/// clock time `open_at`.
+void PagePool::evict(PageId page, uint64_t open_at) {
+    const PageId first = experts_.at(pages_[page].expert);
+    hooks_.evicted(pages_[first].expert, first);
+    free_expert(first, open_at);
+}
+
+/// Frees the pages of the expert whose run starts at `first`; experts may take them from clock time `open_at`.
+void PagePool::free_expert(PageId first, uint64_t open_at) {
+    const PageId end = get_run_end(first);
+    experts_.erase(pages_[first].expert);
+    expert_pages_ -= end - first;
+    for (PageId p = first; p < end; ++p)
+        release(p, open_at);
+}
+
+/// Gets the page after the run of expert pages that starts at `first`.
+PageId PagePool::get_run_end(PageId first) const {
+    const ExpertKey key = pages_[first].expert;
+    PageId end = first + 1;
+    while (end % pages_per_chunk_ != 0 && pages_[end].use == PageUse::expert && pages_[end].expert.layer == key.layer &&
+           pages_[end].expert.expert == key.expert)
+        ++end;
+    return end;
 }
 
 /// Gives `page` (free, or an expert's, which is evicted) to region `region` of conversation `id` as its next page.
 void PagePool::give(PageId page, ConversationId id, uint32_t region) {
     if (pages_[page].use == PageUse::expert)
-        evict(page);
+        evict(page, hooks_.now() + config_.hysteresis);
     std::vector<PageId>& list = conversations_.at(id).pages[region];
     Page content;
     content.use = PageUse::conversation;
@@ -374,7 +441,7 @@ void PagePool::give(PageId page, ConversationId id, uint32_t region) {
 /// copy failed.
 bool PagePool::move_page(PageId from, PageId to) {
     if (pages_[to].use == PageUse::expert)
-        evict(to);
+        evict(to, 0);
     if (!hooks_.copy(to, from))
         return false;
     const Page content = pages_[from];

@@ -11,6 +11,9 @@ What is here so far is the model-neutral host code, which needs no GPU:
 - `exchange_storage.hpp`: the adaptive tier's exchange of experts between the RAM copy and the GPU cache.
 - `hit_hook.hpp`: the seam between Qwen3.8's host loop and the VRAM tier.
 - `uma_cache.hpp`: the GPU cache's size on a GPU that shares the system RAM.
+- `expert_pages`: the GPU cache in the pages of the page pool (`src/common/state/page_pool.cpp`) that the GPU's
+  conversations share; the page size per model, experts leaving for a growing conversation and coming back
+  (strata-q38, docs/MEMORY_MANAGER_PLAN.md step M2e).
 
 The SYCL build uses these files too; it has no copies of them.
 

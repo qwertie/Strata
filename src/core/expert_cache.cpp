@@ -386,8 +386,9 @@ bool ExpertCache::open(int64_t n_slots, int64_t n_layers, int64_t n_expert, int6
     n_layers_ = n_layers;
     n_expert_ = n_expert;
     blob_ = blob_bytes;
+    span_ = span_req_ > 0 ? span_req_ : blob_;
 #if defined(STRATA_USE_HIP)
-    if (!ensure_blocking_staging((std::size_t) blob_, err)) {
+    if (!ensure_blocking_staging((std::size_t) span_, err)) {
         close();
         return false;
     }
@@ -426,6 +427,7 @@ bool ExpertCache::open_sized(const std::vector<int64_t>& slot_bytes, int64_t n_l
     slots_ = (int64_t) slot_bytes.size();
     live_slots_ = slots_;
     blob_ = mx;
+    span_ = mx;
     off_ = std::move(off);
     guard_ = guard_req_;
 #if defined(STRATA_USE_HIP)
@@ -461,6 +463,7 @@ void ExpertCache::close() {
     n_layers_ = 0;
     n_expert_ = 0;
     blob_ = 0;
+    span_ = 0;
     next_free_ = 0;
     fills_ = 0;
     admitted_ = 0;
@@ -487,6 +490,14 @@ int32_t ExpertCache::admit(int64_t layer, int64_t expert) {
     if (layer < 0 || layer >= n_layers_ || expert < 0 || expert >= n_expert_) return kNotResident;
     const size_t at = (size_t) (layer * n_expert_ + expert);
     if (residency_[at] != kNotResident) return residency_[at];
+    if (admitter_) {
+        const int32_t slot = admitter_(layer, expert);
+        if (slot != kNotResident) {
+            residency_[at] = slot;
+            ++admitted_;
+        }
+        return slot;
+    }
     // R4.2g: THE PER-LAYER PATH.  Same "no eviction" rule, but the ceiling is this layer's own range rather
     // than one counter shared by all 48 - which is what confined the measured hit rate to 2.97%.
     if (per_layer_) {
@@ -510,7 +521,7 @@ uint8_t* ExpertCache::device_slot(int32_t slot) const {
 }
 
 bool ExpertCache::fill_slot(int32_t slot, const uint8_t* host_blob, void* stream, std::string& err, int64_t bytes) {
-    const size_t n = (size_t) (bytes > 0 && bytes <= blob_ ? bytes : blob_);
+    const size_t n = (size_t) (bytes > 0 && bytes <= span_ ? bytes : span_);
     uint8_t* dst = device_slot(slot);
     if (dst == nullptr) {
         err = "ExpertCache::fill_slot: slot " + std::to_string(slot) + " is outside 0.." +
@@ -532,7 +543,7 @@ bool ExpertCache::fill_slot(int32_t slot, const uint8_t* host_blob, void* stream
 }
 
 bool ExpertCache::fill_slot_blocking(int32_t slot, const uint8_t* host_blob, std::string& err, int64_t bytes) {
-    const size_t n = (size_t) (bytes > 0 && bytes <= blob_ ? bytes : blob_);
+    const size_t n = (size_t) (bytes > 0 && bytes <= span_ ? bytes : span_);
     uint8_t* dst = device_slot(slot);
     if (dst == nullptr) {
         err = "ExpertCache::fill_slot_blocking: slot outside the arena";
@@ -574,7 +585,7 @@ bool ExpertCache::fill_slot_queued_parts(int32_t slot, const BlobPart* parts, in
     }
     uint64_t total = 0;
     for (int i = 0; i < n; ++i) total += parts[i].n;
-    if (total > (uint64_t) blob_) {
+    if (total > (uint64_t) span_) {
         err = "ExpertCache::fill_slot_queued_parts: the pieces are larger than a slot";
         return false;
     }
@@ -600,7 +611,7 @@ bool ExpertCache::sync_queued(std::string& err) {
 }
 
 bool ExpertCache::verify_slot(int32_t slot, const uint8_t* host_blob, std::string& err, int64_t bytes) {
-    const int64_t nb = bytes > 0 && bytes <= blob_ ? bytes : blob_;
+    const int64_t nb = bytes > 0 && bytes <= span_ ? bytes : span_;
     const uint8_t* src = device_slot(slot);
     if (src == nullptr) {
         err = "ExpertCache::verify_slot: slot outside the arena";

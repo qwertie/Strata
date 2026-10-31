@@ -35,6 +35,7 @@
 #include <array>
 #include <cstdint>
 #include <cstdio>
+#include <functional>
 #include <memory>
 #include <optional>
 #include <string>
@@ -215,6 +216,10 @@ public:
     /// The CPU expert pool. In an optional because it starts its threads when constructed, after the expert source
     std::optional<strata::kernels::cpu::ExpertPool> cpu_pool;
     strata::core::ExpertCache xcache;   ///< CUDA0's expert cache (VRAM slots)
+    /// strata-q38: opens `xcache` in the pages of the GPU's page pool, for at most the given number of experts, in
+    /// place of the cache's own sizing; load() calls it when it would open the cache, before the profile fills it.
+    /// Empty (the `strata` program): the cache's own slots.
+    std::function<bool(int64_t max_experts, std::string& err)> open_expert_pages;
     bool auto_cache = false;            ///< --expert-cache auto: the cache was sized to the free VRAM
     bool reserve_adapted = false;       ///< #496: the auto sizing lowered the reserve so a small card's cache fits
     std::array<strata::core::RemoteExperts, 3> remote_experts;   ///< --expert-cache-remote: the helper GPUs' caches

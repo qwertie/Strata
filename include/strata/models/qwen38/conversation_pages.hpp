@@ -1,6 +1,6 @@
 // include/strata/models/qwen38/conversation_pages.hpp - a Qwen3.8 conversation's state in a GPU page pool: the GDN
 // layers' recurrent state in a fixed region and every QSA layer's K/V and pooled indexer keys in units of the pool's
-// pages, which grow with the conversation (docs/MEMORY_MANAGER_PLAN.md, step M2d).
+// pages, which grow with the conversation (docs/MEMORY_MANAGER_PLAN.md, steps M2d and M2e).
 //
 // The session the pages are for is carved with session_set_pool_state, so it holds neither; `init` points it at the
 // pool's pages.  The small running state (the PLE history and the indexer's tail, dead key and block position, the
@@ -13,13 +13,13 @@
 #include "strata/models/qwen38/session.hpp"
 
 #include <cstdint>
-#include <memory>
 #include <string>
 #include <vector>
 
 namespace strata::qwen38 {
 
-/// One conversation's pages in a pool of the current GPU's memory; strata-q38 holds one conversation at a time.
+/// One conversation's pages in a pool of the current GPU's memory (shared with the experts, ExpertPages);
+/// strata-q38 holds one conversation at a time.
 class ConversationPages {
 public:
     ConversationPages() = default;
@@ -27,10 +27,14 @@ public:
     ConversationPages(const ConversationPages&) = delete;
     ConversationPages& operator=(const ConversationPages&) = delete;
 
-    /// Takes `pool_bytes` of device memory (whole chunks; no more than a conversation at the session's context can
-    /// use) for the pool, gives the conversation its fixed region and points `ss` at it: `ss.gdn_state`, and each
-    /// QSA state's K/V and pooled keys as units (QsaState::units).
-    bool init(const strata::core::ModelGeometry& g, strata::core::SessionState& ss, uint64_t pool_bytes,
+    /// Gets the regions a conversation of session `ss` keeps in a page pool: the GDN state, then each QSA layer's
+    /// units.  False (and `err`) when `ss` is not a whole-model session carved without its state.
+    static bool get_layout(const strata::core::ModelGeometry& g, const strata::core::SessionState& ss,
+                           strata::core::StateLayout& layout, std::string& err);
+    /// Gives the conversation its fixed region in `pool` (made with get_layout's regions; it must outlive this
+    /// object) and points `ss` at it: `ss.gdn_state`, and each QSA state's K/V and pooled keys as units
+    /// (QsaState::units).
+    bool init(const strata::core::ModelGeometry& g, strata::core::SessionState& ss, strata::core::PagePool& pool,
               std::string& err);
     /// Gives the conversation the pages for appending positions below `tokens` (and the spare indexer block after
     /// them), zeroes the new pages and writes their units' addresses into the QSA states' tables.  Call before each
@@ -44,7 +48,7 @@ public:
 private:
     static constexpr strata::core::ConversationId kId = 1;   ///< the one conversation's id in the pool
 
-    std::unique_ptr<strata::core::PagePool> pool_;
+    strata::core::PagePool* pool_ = nullptr;
     strata::kernels::KvUnitLayout unit_;         ///< one indexer block of a QSA layer
     uint64_t page_bytes_ = 0;
     int64_t idx_block_ = 0;

@@ -3489,7 +3489,12 @@ int Model::load() {
             std::fprintf(stderr, "strata generate: uniform expert slots, no guard (STRATA_MMQ_DIRECT): an expert is read "
                                  "in its slot where the slot's slack covers the over-read\n");
     }
-    if (o.expert_cache > 0) {
+    if (o.expert_cache > 0 && open_expert_pages) {
+        if (!open_expert_pages(o.expert_cache, err)) {
+            std::fprintf(stderr, "strata generate: %s\n", err.c_str());
+            return 1;
+        }
+    } else if (o.expert_cache > 0) {
         // keep the first `keep_bytes` of the cache (the profile's hottest experts first); false when nothing is left
         auto shrink_to = [&](int64_t keep_bytes) -> bool {
             if (keep_bytes <= 0) { o.expert_cache = 0; sized_slots.clear(); return false; }
@@ -4015,7 +4020,8 @@ int Model::load() {
         drive.d.cache = &xcache;
         drive.d.cache_stream = main_cs;
         drive.d.cache_base = (const uint8_t*) xcache.device_slot(0);
-        drive.d.cache_blob = (int64_t) strata::kernels::cpu::expert_layout().max_blob;
+        drive.d.cache_blob = open_expert_pages ? xcache.slot_bytes()
+                                               : (int64_t) strata::kernels::cpu::expert_layout().max_blob;
         drive.d.cache_slot_off = xcache.slot_offsets();
         drive.d.hit_scratch = hit_scratch;
         drive.d.parts_out = d_parts;
@@ -4308,7 +4314,7 @@ void Model::arm_prompt_cpu_share() {
     // #1595: not by default when the cache holds every expert (nothing to take)
     strata::prefill::Prefill::arm_cpu_share(!multi_gpu && !o.no_pool,
         !multi_gpu && !o.no_pool && o.batch <= 0 &&
-        strata::prefill::share_rules::default_share_has_work((int64_t) xcache.slots(),
+        strata::prefill::share_rules::default_share_has_work(open_expert_pages ? xcache.resident() : xcache.slots(),
                                                              (int64_t) (g.n_layers * g.n_expert)) &&
         is_cpu_share_default_ok());   // H11
 }

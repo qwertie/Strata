@@ -58,9 +58,10 @@ private:
 /// What an engine tells the shared Loop: the work that goes on between lines, and the answers to the commands the
 /// loop handles itself.  An empty function is a feature the engine does not have.
 struct EngineHooks {
-    /// Tells whether work is running that goes on without a new line (batch slots decoding).  Empty: never.
+    /// Tells whether work is running that goes on without a new line (batch slots decoding, strata-q38's experts
+    /// going back to the GPU).  Empty: never.
     std::function<bool()> is_busy;
-    /// Runs one step of that work (one decode window); false is a failure that ends the engine.
+    /// Runs one step of that work (one decode window, one batch of experts); false is a failure that ends the engine.
     std::function<bool()> step;
     /// Sees every line before the loop looks at it; false is a failure that ends the engine.
     std::function<bool(const std::string& line)> before_line;

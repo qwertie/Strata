@@ -4,6 +4,7 @@
 // (strata/common/serve/memory_report.hpp).
 
 #include "strata/base/gpu/on_device.hpp"
+#include "strata/base/platform/memory.hpp"
 
 #include <cstdint>
 #include <string>
@@ -35,6 +36,25 @@ inline void read_gpu_memory(int device, std::string& name, uint64_t& total, uint
     else
         (void) cudaGetLastError();
 #endif
+}
+
+/// Gets how many bytes of integrated GPU `device`'s dedicated share (the part of the system RAM the BIOS gives it)
+/// this process may still take: the share less what the process holds on the GPU.  Past the share, the GPU's
+/// allocations borrow system RAM.  False for a discrete GPU, and where the share is not known (elsewhere than
+/// Windows).
+inline bool get_share_room(int device, uint64_t& room) {
+    std::string name, why;
+    uint64_t total = 0, free = 0, share = 0, usage = 0;
+    bool integrated = false;
+    read_gpu_memory(device, name, total, free, integrated);
+    cudaDeviceProp p{};
+    if (!integrated || cudaGetDeviceProperties(&p, device) != cudaSuccess ||
+        !platform::gpu_dedicated_memory(p.luid, share, usage, why)) {
+        (void) cudaGetLastError();
+        return false;
+    }
+    room = share > usage ? share - usage : 0;
+    return true;
 }
 
 }  // namespace strata::core

@@ -7,6 +7,7 @@
 #include <windows.h>
 #include <dxgi1_4.h>
 #include <cstring>
+#include <functional>
 #else
 #include <algorithm>
 #include <cstdio>
@@ -109,8 +110,12 @@ void unlock_resident(void* p, uint64_t bytes) {
         VirtualUnlock((uint8_t*) p + off, (SIZE_T) (bytes - off < chunk ? bytes - off : chunk));
 }
 
-bool gpu_shared_memory_budget(const void* luid, uint64_t& budget, uint64_t& usage, std::string& why) {
-    budget = usage = 0;
+namespace {
+/// Queries the DXGI adapter whose LUID is the 8 bytes at `luid`: `query` gets its description and its memory
+/// information for `segment` and returns whether the answer is usable (setting `why` when not).  For
+/// gpu_shared_memory_budget and gpu_dedicated_memory.
+bool query_adapter(const void* luid, DXGI_MEMORY_SEGMENT_GROUP segment, std::string& why,
+                   const std::function<bool(const DXGI_ADAPTER_DESC1&, const DXGI_QUERY_VIDEO_MEMORY_INFO&)>& query) {
     // dxgi.dll is loaded when asked, not linked: a start that never needs this keeps the imports it had
     HMODULE dxgi = LoadLibraryA("dxgi.dll");
     if (dxgi == nullptr) { why = "dxgi.dll not found"; return false; }
@@ -132,11 +137,9 @@ bool gpu_shared_memory_budget(const void* luid, uint64_t& budget, uint64_t& usag
             IDXGIAdapter3* a3 = nullptr;
             DXGI_QUERY_VIDEO_MEMORY_INFO info{};
             if (SUCCEEDED(a->QueryInterface(__uuidof(IDXGIAdapter3), (void**) &a3)) && a3 != nullptr &&
-                SUCCEEDED(a3->QueryVideoMemoryInfo(0, DXGI_MEMORY_SEGMENT_GROUP_NON_LOCAL, &info))) {
-                budget = info.Budget;
-                usage = info.CurrentUsage;
-                ok = budget > 0;
-                why = ok ? "" : "the adapter reports no shared-memory budget";
+                SUCCEEDED(a3->QueryVideoMemoryInfo(0, segment, &info))) {
+                why.clear();
+                ok = query(d, info);
             } else {
                 why = "QueryVideoMemoryInfo failed";
             }
@@ -149,6 +152,29 @@ bool gpu_shared_memory_budget(const void* luid, uint64_t& budget, uint64_t& usag
     factory->Release();
     FreeLibrary(dxgi);
     return ok;
+}
+}  // namespace
+
+bool gpu_shared_memory_budget(const void* luid, uint64_t& budget, uint64_t& usage, std::string& why) {
+    budget = usage = 0;
+    return query_adapter(luid, DXGI_MEMORY_SEGMENT_GROUP_NON_LOCAL, why,
+                         [&](const DXGI_ADAPTER_DESC1&, const DXGI_QUERY_VIDEO_MEMORY_INFO& info) {
+                             budget = info.Budget;
+                             usage = info.CurrentUsage;
+                             if (budget == 0) why = "the adapter reports no shared-memory budget";
+                             return budget > 0;
+                         });
+}
+
+bool gpu_dedicated_memory(const void* luid, uint64_t& dedicated, uint64_t& usage, std::string& why) {
+    dedicated = usage = 0;
+    return query_adapter(luid, DXGI_MEMORY_SEGMENT_GROUP_LOCAL, why,
+                         [&](const DXGI_ADAPTER_DESC1& d, const DXGI_QUERY_VIDEO_MEMORY_INFO& info) {
+                             dedicated = d.DedicatedVideoMemory;
+                             usage = info.CurrentUsage;
+                             if (dedicated == 0) why = "the adapter reports no dedicated memory";
+                             return dedicated > 0;
+                         });
 }
 
 uint64_t total_physical_memory() {
@@ -189,6 +215,12 @@ void unlock_resident(void* p, uint64_t bytes) {
 
 bool gpu_shared_memory_budget(const void*, uint64_t& budget, uint64_t& usage, std::string& why) {
     budget = usage = 0;
+    why = "DXGI is Windows-only";
+    return false;
+}
+
+bool gpu_dedicated_memory(const void*, uint64_t& dedicated, uint64_t& usage, std::string& why) {
+    dedicated = usage = 0;
     why = "DXGI is Windows-only";
     return false;
 }

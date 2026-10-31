@@ -18,6 +18,8 @@ namespace strata::core {
 /// Index of a page in its pool.  It stays valid until a shrink gives back the chunk that holds it.
 using PageId = uint32_t;
 constexpr PageId no_page = UINT32_MAX;
+/// Stands for the pool's clock at the call, as PagePool::add_expert's `used_at`.
+constexpr uint64_t clock_now = UINT64_MAX;
 /// The engine's handle on a conversation.
 using ConversationId = uint64_t;
 
@@ -51,8 +53,8 @@ struct PagePoolHooks {
         return (uint64_t) std::chrono::duration_cast<std::chrono::milliseconds>(
                    std::chrono::steady_clock::now().time_since_epoch()).count();
     };
-    /// Tells the expert's owner that its page goes to another use, before the new user gets it, so that the owner can
-    /// copy the expert to RAM or drop it.
+    /// Tells the expert's owner that its pages (from the given first one) go to another use, before the new user gets
+    /// them, so that the owner can copy the expert to RAM or drop it.
     std::function<void(ExpertKey, PageId)> evicted = [](ExpertKey, PageId) {};
     /// Copies a whole page when a shrink moves a conversation's page out of a chunk; returns false when it cannot.
     std::function<bool(PageId to, PageId from)> copy = [](PageId, PageId) { return false; };
@@ -81,11 +83,11 @@ struct PoolResize {
     std::vector<ConversationId> to_pause;
 };
 
-/// The pages of one memory: each is free, holds an expert, or holds part of one region of a conversation (a fixed
-/// region's bytes, or a block of tokens of a growing region, all rows).  A fixed region is one buffer: it takes
-/// consecutive pages inside one chunk, the place with the fewest experts.  A growing region takes free pages, then
-/// the least-used experts' pages; experts take free pages only above the token minimum's reserve and after the
-/// hysteresis.  Not thread-safe: the engine's step loop is its only caller.
+/// The pages of one memory: each is free, holds part of an expert, or holds part of one region of a conversation (a
+/// fixed region's bytes, or a block of tokens of a growing region, all rows).  An expert and a fixed region are each
+/// one buffer: they take consecutive pages inside one chunk, a fixed region the place with the fewest experts.  A
+/// growing region takes free pages, then the least-used experts' pages; experts take free pages only above the token
+/// minimum's reserve and after the hysteresis.  Not thread-safe: the engine's step loop is its only caller.
 class PagePool {
 public:
     /// Throws std::invalid_argument when a chunk holds no page, a page holds no token of a growing region, or a fixed
@@ -118,15 +120,23 @@ public:
     /// tokens.
     const std::vector<PageId>& conversation_pages(ConversationId id, size_t region) const;
 
-    /// Gets a page for an expert: the one it has, a free page, or the least-used expert's.  no_page when none.
-    PageId add_expert(ExpertKey key);
-    /// Counts a use of an expert for eviction and gets its page; no_page when the pool does not hold it.
+    /// Gets the first of `pages` consecutive pages (in one chunk) for an expert: the ones it has, free pages, or else
+    /// pages of experts last used before `used_at`, the least recently used first.  `used_at` is also the new expert's
+    /// last use, so that experts added from a ranking (hottest first) can be given earlier times for colder ones.
+    /// no_page when there is no room.
+    PageId add_expert(ExpertKey key, uint32_t pages = 1, uint64_t used_at = clock_now);
+    /// Counts a use of an expert for eviction and gets its first page; no_page when the pool does not hold it.
     PageId use_expert(ExpertKey key);
-    /// Frees an expert's page at its owner's request (without calling `evicted`).
+    /// Frees an expert's pages at its owner's request (without calling `evicted`).
     void remove_expert(ExpertKey key);
+    /// Gets the earliest clock time at which a free page that is still closed to experts opens to them; 0 when no
+    /// page is closed.
+    uint64_t get_next_opening() const;
 
     /// Gets where a page starts in the pool's memory (a device address for a GPU's pool).
     uint8_t* page_address(PageId page) const;
+    /// Gets the size of each page.
+    uint64_t page_bytes() const { return config_.page_bytes; }
     /// Gets the pages one conversation of `tokens` tokens takes.
     uint64_t pages_for(int64_t tokens) const;
     PagePoolReport report() const;
@@ -136,8 +146,8 @@ private:
     struct Page {
         PageUse use = PageUse::free;
         uint64_t open_at = 0;     ///< free: when experts may take it
-        uint64_t last_use = 0;    ///< expert
-        uint64_t uses = 0;        ///< expert
+        uint64_t last_use = 0;    ///< expert (every page of its run)
+        uint64_t uses = 0;        ///< expert (every page of its run)
         ExpertKey expert;
         ConversationId conversation = 0;
         uint32_t region = 0, index = 0;   ///< conversation: the page is pages[region][index] of it
@@ -155,9 +165,12 @@ private:
     uint64_t region_pages(size_t region, int64_t tokens) const;
     uint64_t reserved_pages() const;
     bool find_runs(const std::vector<uint64_t>& sizes, PageId end, std::vector<PageId>& starts) const;
-    PageId find_page(bool for_expert, PageId end);
+    PageId find_page(PageId end);
+    PageId find_expert_run(uint32_t pages, uint64_t used_at) const;
     PageId evict_least_used(PageId end);
-    void evict(PageId page);
+    void evict(PageId page, uint64_t open_at);
+    void free_expert(PageId first, uint64_t open_at);
+    PageId get_run_end(PageId first) const;
     void give(PageId page, ConversationId id, uint32_t region);
     bool move_page(PageId from, PageId to);
     void put(PageId page, const Page& content);
@@ -171,7 +184,8 @@ private:
     std::vector<void*> chunks_;
     std::vector<Page> pages_;
     std::set<PageId> free_;
-    std::map<ExpertKey, PageId> experts_;
+    std::map<ExpertKey, PageId> experts_;   ///< each expert's first page
+    uint64_t expert_pages_ = 0;   ///< the pages that experts hold (an expert holds a run of one or more)
     std::map<ConversationId, Conversation> conversations_;
 };
 

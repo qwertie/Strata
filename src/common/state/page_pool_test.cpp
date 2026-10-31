@@ -1,6 +1,6 @@
 // The page pool (page_pool.hpp) on host memory with a hand-moved clock: conversations growing across blocks and
-// truncated, fixed regions in consecutive pages, experts filling and giving back pages, the token limits, the
-// hysteresis, growing and shrinking, and the report.
+// truncated, fixed regions in consecutive pages, experts of one or several pages filling and giving back pages, the
+// token limits, the hysteresis, growing and shrinking, and the report.
 #include "strata/common/state/page_pool.hpp"
 
 #include <cstdio>
@@ -178,6 +178,32 @@ void test_experts_trade_pages() {
           "a removed expert's page is open to experts at once");
 }
 
+void test_expert_runs() {
+    Fixture f;
+    check(f.pool.add_expert({0, 0}, 3) == 9 && f.pool.report().experts.pages == 3,
+          "an expert of 3 pages takes the highest free run");
+    check(f.pool.add_expert({0, 1}, 2) == 6, "a run stays inside one chunk");
+    check(f.pool.add_expert({0, 2}, 5) == no_page, "an expert larger than a chunk has no room");
+    f.clock = 10;
+    check(f.pool.grow_conversation(1, 20).empty() && f.evicted.empty(), "a conversation takes the 7 free pages");
+    check(f.pool.grow_conversation(1, 24).empty() && get_experts(f.evicted) == std::vector<int>{0} &&
+              f.pool.conversation_pages(1, 1).back() == 9 && f.pool.report().free.pages == 2,
+          "its next block evicts a whole expert and takes the run's first page");
+    check(f.pool.get_next_opening() == 110, "the rest of the run waits for the hysteresis");
+    check(f.pool.add_expert({0, 2}, 2) == 6 && get_experts(f.evicted) == std::vector<int>{0, 1},
+          "meanwhile an expert replaces one used before it");
+    check(f.pool.add_expert({0, 3}, 2, 5) == no_page, "but not one used after it");
+    f.clock = 110;
+    check(f.pool.get_next_opening() == 0 && f.pool.add_expert({0, 3}, 2, 5) == 10,
+          "after the hysteresis it takes the open run");
+    check(f.pool.add_expert({0, 4}, 1, 1) == no_page, "a full pool keeps experts used after a new one");
+    check(f.pool.add_expert({0, 4}) == 11 && get_experts(f.evicted) == std::vector<int>{0, 1, 3} &&
+              f.pool.report().free.pages == 1,
+          "an expert of one page evicts the whole run of the expert used longest ago");
+    f.pool.remove_expert({0, 2});
+    check(f.evicted.size() == 3 && f.pool.report().experts.pages == 1, "a removed expert is not reported evicted");
+}
+
 void test_minimum() {
     Fixture f(get_config(8));   // 8 tokens: 4 pages
     f.add_experts(8);
@@ -269,6 +295,7 @@ int main() {
     test_allocation();
     test_runs();
     test_experts_trade_pages();
+    test_expert_runs();
     test_minimum();
     test_maximum();
     test_hysteresis();
