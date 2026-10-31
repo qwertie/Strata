@@ -100,6 +100,10 @@ uint64_t session_bytes(const ModelGeometry& g, int64_t max_cells, int64_t k, int
 /// Carves `base` (DEVICE memory) into `s`.  Returns the bytes used.  Same range convention as `session_bytes`.
 uint64_t session_init(const ModelGeometry& g, int64_t max_cells, int64_t k, void* base, SessionState& s,
                       int64_t layer_lo = 0, int64_t layer_hi = -1);
+/// The page pool holds a conversation's state (strata-q38): sessions are sized and carved without the GDN layers'
+/// recurrent state (`gdn_state` stays null for the pool's owner to set) and without the QSA layers' K/V
+/// (qsa_set_kv_units).  Set before sizing and initializing a session.
+void session_set_pool_state(bool enabled);
 /// Before the memory `session_init` carved is freed: forgets what points into it from outside the session (the
 /// rope kernels' registered angle table, #280), so a later session never rotates by freed memory.
 void session_release(SessionState& s);

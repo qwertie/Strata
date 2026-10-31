@@ -247,6 +247,11 @@ struct QsaState {
     float* idx_dead = nullptr;       ///< (idx_dim,): the spare slot's key, CONSTANT for the sequence
     float* idx_pooled = nullptr;     ///< (max_cells/idx_block + 2, idx_dim)
     int32_t* idx_block_pos = nullptr;
+    /// The K/V and the pooled indexer keys are in page-pool pages (kv_units.hpp; qsa_set_kv_units): per block of
+    /// `idx_block` cells, the device address of its unit (less kKvUnitOrigin), and the K/V pointers above and
+    /// `idx_pooled` are then offsets within a unit (kv_unit_pools, kv_unit_keys).  Null: the packed arrays above.
+    /// Read by the verify windows and the prompt path; the per-token path (canonical packs) does not take it.
+    const int64_t* units = nullptr;
 
     float* cos_tab = nullptr;        ///< (max_cells, n_rot/2), built on the HOST in float64
     bool owns_rope = false;          ///< built the table above (not borrowed with share_rope): it releases it
@@ -325,6 +330,16 @@ inline int qsa_kv_format(const QsaState& st) {
 }
 uint64_t qsa_state_init(const ModelGeometry& g, int64_t max_cells, void* base, QsaState& st,
                         const QsaState* share_rope = nullptr, int64_t ring_cells = 0);
+/// The page pool holds the K/V (QsaState::units): the main layers' states are sized and carved without their K/V and
+/// pooled keys, and zeroing them leaves those to the pool.  For strata-q38; set before sizing and initializing the
+/// session.  Not with KV streaming or the elastic K/V.
+void qsa_set_kv_units(bool enabled);
+bool qsa_kv_units();
+/// Gets the indexer's view of a state's keys (with its units, if any).
+strata::kernels::QsaIndexerBuffers qsa_indexer_buffers(const QsaState& st);
+/// Points a state carved with qsa_set_kv_units at the page pool's units: `units` is the device table of each block's
+/// unit (kv_unit_table), and the K/V and pooled-key pointers become offsets within a unit.  For ConversationPages.
+void qsa_use_units(const ModelGeometry& g, QsaState& st, const int64_t* units);
 /// KV streaming: the pools a reader sees (the VRAM slots) and, when streamed, make the selection's blocks resident.
 strata::kernels::QsaAttnPools qsa_attn_pools(const QsaState& st);
 void qsa_kv_resolve(const QsaState& st, const ModelGeometry& g, const int32_t* ids, const int32_t* steps, int64_t n_q,

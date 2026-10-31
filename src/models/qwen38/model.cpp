@@ -48,6 +48,8 @@
 #include "strata/models/qwen38/draft_cap.hpp"
 #endif
 #include "strata/models/qwen38/prefill/prefill.hpp"
+#include "strata/models/qwen38/prefill/share_rules.hpp"
+#include "strata/common/experts/ram_tier.hpp"
 #if defined(STRATA_PREFILL_MMQ)
 #include "strata/common/kernels/prefill/moe_mmq.hpp"
 #endif
@@ -4157,6 +4159,324 @@ int Model::load() {
     return 0;
 }
 
+int Model::build_hit_tables(bool dumping_layers) {
+    // ---- **THE TOKEN PATH ALLOCATES NOTHING (P2.T10, review finding H3).**
+    //
+    // `session_loop` used to allocate its pinned staging buffer, its probe event and its host pin ON EVERY
+    // TOKEN, and `cudaFreeHost` at the end of each call implicitly synchronises the device - so every token
+    // finished with a device-wide sync nobody asked for.  The scratch is created once here and reused; it also
+    // owns the host pin for the whole session rather than taking and releasing it per token.
+    // Initialised unconditionally, including under --no-pool: the loop validates the scratch it is handed, so
+    // passing a default-constructed one is an error rather than a fallback.  (It was, and the guard caught it -
+    // which is the point of the guard.)  One allocation at setup either way.
+    if (!loop_scratch.init((size_t) K * g.n_embd * 4, err)) {
+        std::fprintf(stderr, "strata generate: %s\n", err.c_str());
+        return 1;
+    }
+    // Plan v0.3 P3: the whole token as ONE graph whenever nothing needs a host step between the ring and post[l]
+    // (the VRAM expert tier and the per-layer dumps do).  `--no-token-graph` keeps two graphs per layer.
+    // Plan v0.3 P4: with a PROFILE-filled cache the residency is static, so the hit decision moves onto the
+    // device and the token graph keeps it.  (A cache filled on demand still needs the per-layer host path.)
+    graph_hits = hit_fn != nullptr && !profile.empty() && !o.no_pool;
+    if (graph_hits && !o.no_capture && !o.no_token_graph && !dumping_layers && half_dump == nullptr) {
+        host_res.assign((size_t) (g.n_layers * g.n_expert), strata::core::kNotResident);
+        int64_t resident = 0;
+        for (int64_t l = 0; l < g.n_layers; ++l)
+            for (int64_t e = 0; e < g.n_expert; ++e) {
+                const int st = multi_gpu ? stage_of(l) : 0;
+                const int32_t slot = st > 0 ? stages[(size_t) st - 1]->cache.slot_of(l, e) : xcache.slot_of(l, e);
+                host_res[(size_t) (l * g.n_expert + e)] = slot;
+                if (slot != strata::core::kNotResident) ++resident;
+            }
+        if (cudaMalloc((void**) &d_res, host_res.size() * sizeof(int32_t)) != cudaSuccess ||
+            cudaMalloc((void**) &d_hit_count, sizeof(int32_t)) != cudaSuccess ||
+            put_residency(d_res) != cudaSuccess) {
+            std::fprintf(stderr, "strata generate: the device residency table could not be staged\n");
+            return 1;
+        }
+        thits.d_res = d_res;
+        thits.n_expert = g.n_expert;
+        // a file-backed arena (STRATA_ARENA_MMAP): the experts no GPU holds are the ones the CPU pool and the
+        // prompt path will read - start reading them now instead of faulting them in 4 KB at a time mid-request
+        // ... and the ones a GPU holds are handed back first (STRATA_ARENA_RELEASE=0 keeps them): the fill read the
+        // whole arena, and left mapped and referenced it crowds every other allocation into swap
+        {
+            static const bool keep = std::getenv("STRATA_ARENA_RELEASE") && std::getenv("STRATA_ARENA_RELEASE")[0] == '0';
+            rss_probe("before the release");
+            uint64_t released = 0;
+            if (!keep)
+                for (size_t i = 0; i < host_res.size(); ++i)
+                    if (host_res[i] != strata::core::kNotResident)
+                        released += srcp->release((int64_t) i / g.n_expert, (int64_t) i % g.n_expert);
+            if (released > 0)
+                std::fprintf(stderr, "strata generate: expert arena: %.2f GiB of VRAM-held experts handed back to the OS\n",
+                             (double) released / (1024.0 * 1024.0 * 1024.0));
+            rss_probe("after the release");
+            int64_t pf = 0;
+            for (size_t i = 0; i < host_res.size(); ++i)
+                if (host_res[i] == strata::core::kNotResident) {
+                    srcp->prefetch((int64_t) i / g.n_expert, (int64_t) i % g.n_expert);
+                    ++pf;
+                }
+            (void) pf;
+            rss_probe("after the prefetch hints");
+        }
+        for (auto& st : stages) {   // layer split across GPUs: the same table on every device
+            const strata::core::OnDevice on(st->dev);
+            if (cudaMalloc((void**) &st->d_res, host_res.size() * sizeof(int32_t)) != cudaSuccess ||
+                put_residency(st->d_res) !=
+                    cudaSuccess) {
+                std::fprintf(stderr, "strata generate: layer split: CUDA%d residency table failed\n", st->dev);
+                return 1;
+            }
+        }
+        thits.cache_base = drive.d.cache_base;
+        thits.blob = drive.d.cache_blob;
+        thits.d_slot = drive.d.d_slot;
+        thits.d_dst = drive.d.d_dst;
+        thits.d_count = d_hit_count;
+        thits.x_q8 = drive.d.x_q8_0_hit;
+        thits.x_scale = drive.d.x_q8_0_hit_scale;
+        thits.scratch = drive.d.hit_scratch;
+        thits.hit_out = drive.d.hit_out;
+        drive.d.host_res = host_res.data();
+        std::fprintf(stderr, "strata generate: token graph hit path: %lld resident experts, decided on the device\n",
+                     (long long) resident);
+    }
+    if (!o.no_capture && !o.no_token_graph && !dumping_layers && half_dump == nullptr &&
+        (hit_fn == nullptr || thits.on()) && !native_pack && !multi_gpu) {   // a split's token graph cannot span stages
+        if (!strata::core::session_capture_token(wt, g, ss, d_parts, loop_scratch.y_miss, loop_scratch.parts_bytes,
+                                                 tgraph, err, thits.on() ? &thits : nullptr)) {
+            std::fprintf(stderr, "strata generate: %s\n", err.c_str());
+            return 1;
+        }
+        std::fprintf(stderr, "strata generate: token graph captured (48 layers, one launch per token)\n");
+    }
+    return 0;
+}
+
+cudaError_t Model::put_residency(int32_t* dst) const {
+    // The residency table is read by kernels on non-blocking streams, which do not wait for the legacy stream a plain
+    // cudaMemcpy runs on, and a pageable copy can return before its DMA has landed: each upload waits for its own copy
+    // (the current device's legacy stream, stream 0 - nothing else; HIP has no cudaStreamLegacy name, #550).
+    const cudaError_t e = cudaMemcpy(dst, host_res.data(), host_res.size() * sizeof(int32_t), cudaMemcpyHostToDevice);
+    return e != cudaSuccess ? e : cudaStreamSynchronize(nullptr);
+}
+
+strata::core::VerifyHits Model::get_verify_hits() const {
+    strata::core::VerifyHits vh;
+    vh.d_res = thits.d_res;
+    vh.h_res = host_res.empty() ? nullptr : host_res.data();
+    vh.cache_base = thits.cache_base;
+    vh.blob = thits.blob;
+    vh.slot_off = xcache.slot_offsets();   // E-6: the device plan's pointers
+    vh.n_slots = xcache.slots();
+    return vh;
+}
+
+Model::~Model() {
+    loop_scratch.free();
+    strata::core::token_graph_free(tgraph);
+}
+
+bool Model::is_cpu_share_default_ok() {
+    // 0.1.42 (H11): the default CPU share is armed only when the host has the memory for it.  One line says why not;
+    // an explicit STRATA_PREFILL_CPU_SHARE (other than 0) is armed anyway, with a warning when memory is short.
+    strata::prefill::share_rules::ShareMemory sm;
+    strata::core::detail::HostMemory hm;
+    if (strata::core::detail::host_available_memory(hm)) {
+        sm.avail_ram = hm.available;
+        sm.avail_commit = hm.commit == ~uint64_t{0} ? strata::prefill::share_rules::kUnknown : hm.commit;
+    }
+    sm.buffer_bytes = (uint64_t) (1024 + 8 * g.n_expert) * (uint64_t) g.n_embd * 4 + (256ull << 20);
+    if (srcp == &src) {
+        const auto& lay = strata::kernels::cpu::expert_layout();
+        for (int64_t l = 0; l < g.n_layers; ++l)
+            for (int64_t e = 0; e < g.n_expert; ++e)
+                if (xcache.slot_of(l, e) < 0 && src.resident_blob(l, e) == nullptr && !src.transient(l, e))
+                    sm.inplace_bytes += (uint64_t) lay.blob_bytes(l);
+    }
+    const auto v = strata::prefill::share_rules::default_share_memory_verdict(sm);
+    if (v.arm) return true;
+    const char* ev = std::getenv("STRATA_PREFILL_CPU_SHARE");
+    if (ev == nullptr)
+        std::fprintf(stderr, "strata: the CPU prefill share is not armed by default: %s. STRATA_PREFILL_CPU_SHARE=auto "
+                             "turns it on anyway\n", v.why.c_str());
+    else if (std::strcmp(ev, "0") != 0)
+        std::fprintf(stderr, "strata: WARNING STRATA_PREFILL_CPU_SHARE=%s is set and kept, but %s: the share can slow "
+                             "prompts or fail on a machine this short of memory (STRATA_PREFILL_CPU_SHARE=0 turns it off)\n",
+                     ev, v.why.c_str());
+    return false;
+}
+
+void Model::arm_prompt_cpu_share() {
+    // #1595: not by default when the cache holds every expert (nothing to take)
+    strata::prefill::Prefill::arm_cpu_share(!multi_gpu && !o.no_pool,
+        !multi_gpu && !o.no_pool && o.batch <= 0 &&
+        strata::prefill::share_rules::default_share_has_work((int64_t) xcache.slots(),
+                                                             (int64_t) (g.n_layers * g.n_expert)) &&
+        is_cpu_share_default_ok());   // H11
+}
+
+int Model::pin_resident_experts(const std::vector<std::pair<int32_t, int32_t>>& stage_pairs, int64_t lend_from) {
+    {   // the pack's and the MTP head's files: read at start, their cache is given back by the complement's drop
+        std::vector<std::string> drop;
+        for (const std::string& d : {o.pack, o.mtp}) {
+            std::error_code ec;
+            if (d.empty()) continue;
+            if (std::filesystem::is_regular_file(d, ec)) { drop.push_back(d); continue; }
+            for (const auto& f : std::filesystem::directory_iterator(d, ec))
+                if (f.is_regular_file(ec)) drop.push_back(f.path().string());
+        }
+        src.set_extra_drop_files(std::move(drop));
+    }
+    const std::vector<std::pair<int32_t, int32_t>>& rank_all = profile_all.empty() ? profile : profile_all;
+    bool resident_ok = src.pin_cache_complement(xcache, err, o.resident_pin, stage_pairs, lend_from,
+                                                o.resident_headroom, o.resident_budget, &rank_all);
+    std::string whole_err;
+    if (!resident_ok && o.resident_soft) {
+        // #467: the whole complement does not fit - keep what does, the hottest by the profile, through the #403
+        // budget path (sized by available memory) instead of none: the misses outside it read the same file bytes
+        // the mmap fallback reads, so the answers are unchanged.  Nothing pinned: the old fallback below.
+        whole_err = err;
+        resident_ok = src.pin_cache_complement(xcache, err, o.resident_pin, stage_pairs, -1, o.resident_headroom,
+                                               strata::core::FileExpertSource::kResidentWhatFits, &rank_all);
+        if (resident_ok)
+            std::fprintf(stderr, "strata generate: WARNING: the whole resident RAM mode does not fit (%s); %.2f "
+                                 "GiB of the experts the GPU does not hold, the hottest by the expert profile, are "
+                                 "kept in RAM and the rest are read from the model folder through the OS file "
+                                 "cache\n",
+                         whole_err.c_str(), (double) src.resident_bytes() / 1073741824.0);
+        else
+            err = whole_err + "; " + err;
+    }
+    // the startup reads are done: the view of experts.bin back, the file tier as chosen above
+    bool startup_kept = false;
+    if (src.startup_unbuffered()) {
+        std::string why;
+        const auto end_t0 = std::chrono::steady_clock::now();
+        startup_kept = !src.end_startup_unbuffered(why);
+        if (startup_kept) std::fprintf(stderr, "strata generate: WARNING: %s\n", why.c_str());
+        else
+            std::fprintf(stderr, "strata generate: the startup reads are done: experts.bin mapped again (%.0f ms)\n",
+                         std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - end_t0).count());
+    }
+    // #669 / #765: a big chunk lends many cache slots to the prompt path, and each lent slot's expert is read back
+    // from the SSD whenever the RAM could not keep its copy (31 GB: auto:32768 read prompts ~3x slower than auto).
+    // Said, never capped: --prefill is the user's, and with the RAM for them it is the faster one (+21-35%).
+    // #1683: with a RAM budget the lend region is kept after the ranked experts, as far as the budget reaches, so
+    // the advice there is a larger budget, not a smaller chunk (the budget used to keep none of it whatever the chunk)
+    if (resident_ok && lend_from >= 0 && (o.prefill_chunk > 8192 || o.resident_budget > 0) && xcache.slots() > lend_from &&
+        src.resident_lent_slots() < xcache.slots() - lend_from)
+        std::fprintf(stderr, "strata generate: WARNING: a prompt chunk of %lld tokens lends %lld cache slots to the "
+                             "prompt path, but only %lld of their experts fit in RAM: the others are read from the "
+                             "SSD on every chunk, and prompts can read ~3x slower than with --prefill auto (#669). "
+                             "%s keeps them all in RAM\n",
+                     (long long) o.prefill_chunk, (long long) (xcache.slots() - lend_from),
+                     (long long) src.resident_lent_slots(),
+                     o.resident_budget > 0 ? "A larger --resident-budget-gib (the lend region comes after the ranked experts), or a smaller --prefill,"
+                                           : "A smaller --prefill, or auto,");
+    if (resident_ok) {
+        // --adapt-async: twice the exchange buffers - the second half bounces the copies in whose source is not
+        // page-locked (an asynchronous copy instead of the driver's staged, synchronous one)
+        if (o.adapt_async && !src.reserve_exchanges(2 * std::min<int64_t>(o.adapt_swaps, 96), err,
+                                                    std::min<int64_t>(o.adapt_swaps, 96)))
+            turn_off_adapt_async(err.c_str());
+        // pageable buffers would make every copy of a round synchronous (the driver stages them): that is the
+        // blocking tier's cost, so the asynchronous tier is not worth running - said, and the blocking tier stays
+        if (o.adapt_async && !src.exchange_pinned())
+            turn_off_adapt_async("the exchange buffers could not be page-locked");
+        if (o.adapt_every > 0 && o.adapt_swaps > 0 &&
+            !src.reserve_exchanges(std::min<int64_t>(o.adapt_swaps, 96), err)) {
+            std::fprintf(stderr, "strata generate: CPU expert residency: %s\n", err.c_str());
+            return 1;
+        }
+        std::fprintf(stderr, "strata generate: resident RAM mode: %.2f GiB of experts in RAM (%s), %lld in the GPU "
+                             "cache; adaptive swaps %s\n",
+                     (double) src.resident_bytes() / 1073741824.0,
+                     src.complement_pinned() ? "page-locked" : src.locked_bytes() > 0 ? "locked" : "pageable",
+                     (long long) xcache.resident(),
+                     o.adapt_every > 0 && o.adapt_swaps > 0 ? "exchange them with the GPU cache (no file reads)"
+                                                            : "off");
+    } else if (o.resident_soft) {
+        std::fprintf(stderr, "strata generate: WARNING: the resident RAM mode does not fit (%s); the experts the "
+                             "GPU does not hold are read from the model folder through the OS file cache "
+                             "(--mmap-experts), which is slower when the RAM cannot keep them\n", err.c_str());
+    } else if (o.resident_budget > 0) {
+        // #403: a RAM budget that cannot be kept is not a reason to stop - the experts it would have held are
+        // read from the files like the ones outside it (pin_cache_complement leaves nothing half-built)
+        std::fprintf(stderr, "strata generate: WARNING: the RAM budget (--resident-budget-gib) cannot be kept (%s); "
+                             "every expert the GPU does not hold is read from the model files %s "
+                             "(--mmap-experts), which is slower\n", err.c_str(),
+                     src.unbuffered() ? "with unbuffered I/O" : "through the OS file cache");
+    } else {
+        std::fprintf(stderr, "strata generate: CPU expert residency: %s\n", err.c_str());
+        return 1;
+    }
+    // #577: the unbuffered choice above was made before the RAM copy existed, from the budget asked for; now the
+    // copy is built, decide again from the RAM it really holds and the expert bytes outside it (on a 96 GB PC
+    // the file cache keeps those, and every refill after a prompt read the drive instead).  Windows and Linux: the
+    // unbuffered reads exist there
+#if defined(_WIN32) || defined(__linux__)
+    if (o.mmap_experts && o.resident_budget > 0 && !startup_kept) {
+        std::string why;
+        const bool was = src.unbuffered();
+        const bool ub = src.recheck_unbuffered(why);
+        std::fprintf(stderr, "strata generate: the file tier reads %s%s (%s)\n",
+                     ub ? "unbuffered" : "through the file cache", ub == was ? "" : " (changed)", why.c_str());
+        // MODEL-UPDATE round 2 (opt-in STRATA_PROMPT_DIRECT=1): the prompt path's batched reads unbuffered while
+        // decode keeps the file cache (z440, UD-Q4_K_XL, 39 GiB budget: all-unbuffered doubled the 6K prompt but
+        // cost decode 9-13%).  The same bytes either way.
+        if (!ub && [] { const char* v = std::getenv("STRATA_PROMPT_DIRECT"); return v != nullptr && v[0] == '1'; }()) {
+            std::string pw;
+            const bool pd = src.open_prompt_direct(pw);
+            std::fprintf(stderr, "strata generate: the prompt path's expert reads %s\n",
+                         pd ? "go unbuffered (STRATA_PROMPT_DIRECT=1)" : ("stay buffered: " + pw).c_str());
+        }
+    }
+#endif
+    return 0;
+}
+
+void Model::finish_expert_tiers() {
+    // (the arena mode has no RAM copy to exchange with: its experts are always in RAM, the tier only copies them in)
+    if (o.adapt_async && !src.complement_ready() && srcp != &arena_src) turn_off_adapt_async("the resident RAM mode is not running");
+    // pp-opt: with the file tier unbuffered, the mapped view of experts.bin is only a fallback from here on - and while
+    // it exists NTFS serves the unbuffered reads one at a time (drop_mapping).  STRATA_KEEP_MAPPING=1 keeps it (A/B).
+    if (srcp == &src && src.unbuffered() && std::getenv("STRATA_KEEP_MAPPING") == nullptr) {
+        std::string why;
+        const bool dropped = src.drop_mapping(why);
+        std::fprintf(stderr, "strata generate: the mapped view of the experts %s (%s)\n",
+                     dropped ? "is closed" : "stays open", why.c_str());
+        // --ple-io mmap / ram maps the PLE shard for the whole run; when that shard also holds experts, NTFS still runs
+        // the unbuffered reads of that one file one at a time (the default --ple-io direct keeps no mapping)
+        if (dropped && src.gguf_mode() && !o.ple_gguf.empty() && o.ple_io != "direct")
+            std::fprintf(stderr, "strata generate: note: --ple-io %s keeps %s mapped; if that shard holds experts, their "
+                                 "reads stay serialized (--ple-io direct, the default, keeps no mapping)\n",
+                         o.ple_io.c_str(), o.ple_gguf.c_str());
+    }
+}
+
+void Model::turn_off_adapt_async(const char* why) {
+    std::fprintf(stderr, "strata generate: --adapt-async 1 is off (%s): the blocking adaptive tier\n", why);
+    o.adapt_async = 0;
+}
+
+void Model::set_prompt_pinned_share() {
+    if (srcp == nullptr || o.prefill_chunk <= 0) return;
+    uint64_t pinned = 0, total = 0;
+    const auto& lay = strata::kernels::cpu::expert_layout();
+    for (int64_t l = 0; l < g.n_layers; ++l)
+        for (int64_t e = 0; e < g.n_expert; ++e) {
+            const uint64_t b = lay.blob_bytes(l);
+            total += b;
+            if (srcp->pinned(l, e)) pinned += b;
+        }
+    double share = total ? (double) pinned / (double) total : 1.0;
+    if (const char* t = std::getenv("STRATA_TEST_PINNED_SHARE")) share = std::atof(t);   // tests: the Windows-like ring rule
+    strata::prefill::Prefill::set_pinned_share(share);
+}
+
 int Model::stage_of(int64_t l) const {
     int st = 0;
     while (st < (int) split_at.size() && l >= split_at[(size_t) st]) ++st;
@@ -4190,6 +4510,20 @@ std::string vram_free_note() {
 int64_t get_auto_lend_pct() {
     const char* v = std::getenv("STRATA_PREFILL_LEND_PCT");
     return v ? (int64_t) std::atoi(v) : (int64_t) (strata::prefill::Prefill::pinned_share() >= 0.9 ? 90 : 85);
+}
+
+void rss_probe(const char* where) {
+    static const bool on = std::getenv("STRATA_RSS_TRACE") != nullptr;
+    if (!on) return;
+    FILE* f = std::fopen("/proc/self/status", "r");
+    if (!f) return;
+    char line[256];
+    long long kb = -1;
+    while (std::fgets(line, sizeof line, f))
+        if (std::strncmp(line, "RssFile:", 8) == 0) { kb = std::atoll(line + 8); break; }
+    std::fclose(f);
+    std::fprintf(stderr, "strata rss: %s: RssFile %.2f GiB\n", where, (double) kb / (1024.0 * 1024.0));
+    std::fflush(stderr);
 }
 
 /// STRATA_TRACE=1: the VRAM left at a step of the startup (finds what fills the card after the cache is sized)

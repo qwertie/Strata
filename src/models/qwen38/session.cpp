@@ -57,6 +57,15 @@ static uint64_t ple_hist_bytes() {
     return (uint64_t) strata::kernels::NG_HIST * strata::kernels::NG_HC_DIM * sizeof(float);
 }
 
+namespace {
+bool g_pool_state = false;   // session_set_pool_state
+}  // namespace
+
+void session_set_pool_state(bool enabled) {
+    g_pool_state = enabled;
+    qsa_set_kv_units(enabled);
+}
+
 uint64_t session_bytes(const ModelGeometry& g, int64_t max_cells, int64_t k, int64_t layer_lo, int64_t layer_hi) {
     if (layer_hi < 0 || layer_hi > g.n_layers) layer_hi = g.n_layers;
     if (layer_lo < 0) layer_lo = 0;
@@ -67,7 +76,7 @@ uint64_t session_bytes(const ModelGeometry& g, int64_t max_cells, int64_t k, int
     const int64_t gdn_n = std::max<int64_t>((layer_hi - layer_lo) - std::max<int64_t>(q_hi - q_lo, 0), 0);
     uint64_t n = 0;
     n += gdn_buffers_bytes(g);
-    n += (uint64_t) gdn_n * gdn_state_floats(g) * 4;
+    if (!g_pool_state) n += (uint64_t) gdn_n * gdn_state_floats(g) * 4;
     // One QSA state carries the RoPE table; the others borrow it (P7: 64 MiB per layer at 262K).
     if (g.n_qsa_layers() > 0)
         n += qsa_state_bytes(g, max_cells, true) + (uint64_t) (q_n - 1) * qsa_state_bytes(g, max_cells, false);
@@ -102,7 +111,7 @@ uint64_t session_init(const ModelGeometry& g, int64_t max_cells, int64_t k, void
     s.gdn_alloc = std::max<int64_t>((layer_hi - layer_lo) - q_n_range, 0);
 
     gdn_buffers_init(g, take(gdn_buffers_bytes(g)), s.gdn);
-    s.gdn_state = (float*) take((uint64_t) s.gdn_alloc * gdn_state_floats(g) * 4);
+    s.gdn_state = g_pool_state ? nullptr : (float*) take((uint64_t) s.gdn_alloc * gdn_state_floats(g) * 4);
 
     // the QSA states are separate allocations carved from one arena, because `QsaState` is a struct of
     // pointers and `qsa_state_init` writes them - a contiguous array would need the arena to be laid out the
@@ -171,7 +180,7 @@ void session_zero(SessionState& s, const ModelGeometry& g, const float* R_init, 
         cudaMemsetAsync(s.block.R, 0, (size_t) g.hc * g.n_embd * 4, cs);
     }
     // every owned GDN layer's recurrence and conv history
-    cudaMemsetAsync(s.gdn_state, 0, (size_t) s.gdn_alloc * gdn_state_floats(g) * 4, cs);
+    if (s.gdn_state != nullptr) cudaMemsetAsync(s.gdn_state, 0, (size_t) s.gdn_alloc * gdn_state_floats(g) * 4, cs);
     // and every owned QSA layer's cache and indexer
     for (int64_t j = 0; j < s.qsa_alloc; ++j) qsa_state_zero(s.qsa_states[s.qsa_ord0 + j], g, stream);
     // **AND THE PLE'S CONV HISTORY AND TOKEN WINDOW.**  A sequence that started with a warm history would

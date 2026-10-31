@@ -128,5 +128,6 @@ target_compile_definitions(strata_metal_kernels PRIVATE
   STRATA_METAL_DATA_DEFAULT="${STRATA_ROOT}/data")
 target_link_libraries(strata_metal_kernels PUBLIC strata_metal_host mtl_rt)
 
-add_executable(strata ${S}/program/generate.cpp ${S}/models/qwen38/model.cpp)   # model.cpp: the loader it calls
+add_executable(strata ${S}/program/generate.cpp ${S}/models/qwen38/model.cpp ${S}/models/qwen38/conversation.cpp
+               ${S}/models/qwen38/options.cpp)   # the loader, the conversation and the options it calls
 target_link_libraries(strata PRIVATE strata_metal_kernels strata_metal_host strata_metal_kernels)

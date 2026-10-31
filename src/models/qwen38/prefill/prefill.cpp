@@ -3337,9 +3337,9 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
                         const bool mirror = st.host.present();
                         kv_append(m.Kc, m.Kc, T, p0, st.page_table, s.page_size, nullptr, nullptr,
                                   st.k_q, st.k_q, st.k_scale, st.k_scale, m.cs, mirror ? &hk : nullptr,
-                                  staged ? &sk : nullptr);
+                                  staged ? &sk : nullptr, st.units);
                         strata::kernels::kv_append_q4(st.v_q4, st.v_q4, st.page_table, p0, T, m.Vc, m.Vc, s, m.cs,
-                                                      mirror ? &hv : nullptr, staged ? &sv : nullptr);
+                                                      mirror ? &hv : nullptr, staged ? &sv : nullptr, st.units);
                     } else {
                         if (st.kv_rot) {   // rotated K and V (kv_q4.hpp), the queries below too, the output back
                             strata::kernels::fwht256_inplace_cuda(m.Kc, T * 2, m.cs);
@@ -3347,11 +3347,11 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
                         }
                         if (st.kv_q4)
                             strata::kernels::kv_append_q4(st.k_q4, st.v_q4, st.page_table, p0, T, m.Kc, m.Vc, s, m.cs,
-                                                          host_w, staged ? &m.stage : nullptr);
+                                                          host_w, staged ? &m.stage : nullptr, st.units);
                         else
                             kv_append(m.Kc, m.Vc, T, p0, st.page_table, s.page_size, st.kv_int8 ? nullptr : st.k_pool,
                                       st.kv_int8 ? nullptr : st.v_pool, st.k_q, st.v_q, st.k_scale, st.v_scale, m.cs,
-                                      host_w, staged ? &m.stage : nullptr);
+                                      host_w, staged ? &m.stage : nullptr, st.units);
                         if (host_by_dma)
                             strata::kernels::kv_unstage_to_host(pools_of(m.stage, m.ident_table), st.host,
                                                                 core::qsa_kv_format(st), p0 / s.page_size,
@@ -3366,7 +3366,7 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
                     rope(m.q_idx, T, 4, 128, 512, p0, strata::kernels::rope_scaling(), m.cs);
                     // the indexer appends, token by token; then scores + selection for many queries at once:
                     // a query reads completed blocks (final once completed) and `dead` for its own tail block
-                    const strata::kernels::QsaIndexerBuffers ib{st.idx_tail, st.idx_dead, st.idx_pooled, st.idx_block_pos};
+                    const strata::kernels::QsaIndexerBuffers ib = core::qsa_indexer_buffers(st);
                     pt.mark(kPfQsaIdx, cs);
                     // C-2: the chunk's appends in three launches instead of one per token (the same end state:
                     // the queries below read it only after the whole chunk is appended). STRATA_INDEXER_PER_TOKEN=1: the old
@@ -3396,9 +3396,9 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
                         static const bool old_sel = std::getenv("STRATA_SELECT_OLD") != nullptr;
                         if (old_sel || !strata::kernels::qsa_block_scores_tc(st.idx_pooled, st.idx_dead, m.q_idx + t0 * 512,
                                                                              steps0, nb, m.max_blocks, s, m.sel_scores,
-                                                                             m.cs, active))
+                                                                             m.cs, active, st.units))
                             strata::kernels::qsa_block_scores(st.idx_pooled, st.idx_dead, m.q_idx + t0 * 512, steps0, nb,
-                                                              m.max_blocks, s, m.sel_scores, m.cs, active);
+                                                              m.max_blocks, s, m.sel_scores, m.cs, active, st.units);
                         strata::kernels::qsa_block_topk(m.sel_scores, steps0, nb, m.max_blocks, m.cap, s,
                                                         m.sel_ids + t0 * m.cap, m.cs, active);
                     }

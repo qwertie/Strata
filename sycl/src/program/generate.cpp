@@ -74,7 +74,7 @@ namespace strata::prefill { void set_nonresident_share(double share); }   // SYC
 #include "strata/models/qwen38/mtp.hpp"
 #include "strata/models/qwen38/prefill/prefill.hpp"
 #include "strata/models/qwen38/native_dense.hpp"
-#include "strata/program/logits_selection.hpp"
+#include "strata/models/qwen38/logits_selection.hpp"
 #include "strata/program/conv_cache.hpp"
 #include "strata/program/message_boundary.hpp"
 #include "strata/common/spec/draft_policy.hpp"
@@ -1802,7 +1802,7 @@ int main(int argc, char **argv) try {
         else if (a == "--dump-logits") o.dump_logits = next("--dump-logits");
         else if (a == "--logits-stride") {
             if (have_logits_stride) { std::fprintf(stderr, "--logits-stride must be supplied only once\n"); return 2; }
-            if (!strata::program::logits_selection::parse_stride(next("--logits-stride"), o.logits_stride)) {
+            if (!strata::qwen38::logits_selection::parse_stride(next("--logits-stride"), o.logits_stride)) {
                 std::fprintf(stderr, "--logits-stride requires a positive decimal int64\n"); return 2;
             }
             have_logits_stride = true;
@@ -5619,7 +5619,7 @@ int main(int argc, char **argv) try {
         // class of defect as a self-check that verifies the wrong invariant: anything reading the count instead
         // of the size gets a wrong answer that looks authoritative.  `tools/logits_identical.py` caught it by
         // parsing the header and refusing the file.
-        const int32_t n_rows = (int32_t) strata::program::logits_selection::row_count(dump_positions, o.logits_stride);
+        const int32_t n_rows = (int32_t) strata::qwen38::logits_selection::row_count(dump_positions, o.logits_stride);
         hdr[0] = n_vocab; hdr[1] = n_rows;
     }
 
@@ -12253,7 +12253,7 @@ int main(int argc, char **argv) try {
             tp = n;
         }
         const bool emit_logits = dump != nullptr &&
-            strata::program::logits_selection::selected(pos, dump_positions, o.logits_stride);
+            strata::qwen38::logits_selection::selected(pos, dump_positions, o.logits_stride);
         const bool read_logits = !o.stream_token || o.check_logits || emit_logits;
         /*
         DPCT1124: cudaMemcpyAsync is migrated to asynchronous memcpy API.

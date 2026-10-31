@@ -86,9 +86,10 @@ These replace practices that the old code has, and that new code must not copy:
   `src/models/qwen38/layer.cpp`). Pass settings in a struct.
 - **One settings reader.** Engines do not each parse their own environment variables.
 - **Model-specific code does not go in a folder called `core` or `common`.**
-- **`main()` parses its arguments and calls a library.** It is not the engine itself (as the 10,400-line
-  `main()` in `src/program/generate.cpp` still is; its model loader is `strata::qwen38::Model`, in
-  `src/models/qwen38/model.cpp`).
+- **`main()` parses its arguments and calls a library.** It is not the engine itself (as the 9,500-line
+  `main()` in `src/program/generate.cpp` still is; its option parser, model loader and one-conversation step are
+  `strata::qwen38::parse_options`, `Model` and `Conversation`, in `src/models/qwen38/`, which `strata-q38`'s
+  `main()` calls too).
 - **No import or include cycles,** and no reaching up a layer, also not at run time (loading `setup.py` or a
   `tools/` script through `importlib` or `sys.path`). `tests/architecture/test_layering.py` checks the new folders;
   its `KNOWN_UPWARD_LOADS` lists the files that still do it.

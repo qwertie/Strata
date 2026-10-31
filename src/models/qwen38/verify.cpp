@@ -1635,14 +1635,14 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
                 };
                 auto idx_append = [&](cudaStream_t ns) {
                     if (dec_batch && !g_no_batch_kv && !batch_rec_) {
-                        const QsaIndexerBuffers ib{st.idx_tail, st.idx_dead, st.idx_pooled, st.idx_block_pos};
+                        const QsaIndexerBuffers ib = qsa_indexer_buffers(st);
                         native_qsa_indexer_append_steps(idx_raw + tb * ID, step_ + tb * kStepCount + kStepPos, kStepCount,
                                                         n, 0, (const float*) wikn->data, EPS, ib, s, st.max_cells,
                                                         rope_scaling(), ns);
                     } else {
                         for (int t = tb; t < te; ++t) {
                             const QsaState& sx = slot_ss(t).qsa_states[qi];
-                            const QsaIndexerBuffers ib{sx.idx_tail, sx.idx_dead, sx.idx_pooled, sx.idx_block_pos};
+                            const QsaIndexerBuffers ib = qsa_indexer_buffers(sx);
                             native_qsa_indexer_append(idx_raw + t * ID, step_ + t * kStepCount + kStepPos, 0,
                                                       (const float*) wikn->data, EPS, ib, s, sx.max_cells,
                                                       rope_scaling(), ns);
@@ -1663,7 +1663,7 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
                 };
                 auto idx_select = [&](cudaStream_t ns) {
                     qsa_block_scores(st.idx_pooled, st.idx_dead, qidx_ + tb * IQ * ID, step_ + tb * kStepCount, n, max_blocks_,
-                                     s, scores_ + (size_t) tb * max_blocks_, ns);
+                                     s, scores_ + (size_t) tb * max_blocks_, ns, -1, st.units);
                     qsa_block_topk(scores_ + (size_t) tb * max_blocks_, step_ + tb * kStepCount, n, max_blocks_, cap_, s,
                                    sel_ + (size_t) tb * cap_, ns);
                 };
@@ -1751,19 +1751,19 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
                         const KvHostPools hk = kv_hybrid_k_half(st.host), hv = kv_hybrid_v_half(st.host);
                         const bool mirror = st.host.present();
                         kv_append_q8_steps(st.k_q, st.k_q, st.k_scale, st.k_scale, st.page_table, step_b, kStepCount,
-                                           kc_b, kc_b, (int) (NKV * HD), n, s, cs, mirror ? &hk : nullptr);
+                                           kc_b, kc_b, (int) (NKV * HD), n, s, cs, mirror ? &hk : nullptr, st.units);
                         kv_append_q4_steps(st.v_q4, st.v_q4, st.page_table, step_b, kStepCount, n, vc_b, vc_b, s, cs,
-                                           mirror ? &hv : nullptr);
+                                           mirror ? &hv : nullptr, st.units);
                     } else if (st.kv_q4)
                         kv_append_q4_steps(st.k_q4, st.v_q4, st.page_table, step_b, kStepCount, n, kc_b, vc_b, s, cs,
-                                           &st.host);
+                                           &st.host, st.units);
                     else if (st.kv_int8)
                         kv_append_q8_steps(st.k_q, st.v_q, st.k_scale, st.v_scale, st.page_table, step_b, kStepCount,
-                                           kc_b, vc_b, (int) (NKV * HD), n, s, cs, &st.host);
+                                           kc_b, vc_b, (int) (NKV * HD), n, s, cs, &st.host, st.units);
                     else
                         for (int t = tb; t < te; ++t)
                             kv_append_step(st.k_pool, st.v_pool, st.page_table, step_ + t * kStepCount,
-                                           kcur_ + t * NKV * HD, vcur_ + t * NKV * HD, s, cs, &st.host);
+                                           kcur_ + t * NKV * HD, vcur_ + t * NKV * HD, s, cs, &st.host, st.units);
                 } else
                 for (int t = tb; t < te; ++t) {
                     const QsaState& st = slot_ss(t).qsa_states[qi];   // the row's own K/V (ss's outside a batch)
@@ -1772,18 +1772,19 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
                         const KvHostPools hk = kv_hybrid_k_half(st.host), hv = kv_hybrid_v_half(st.host);
                         const bool mirror = st.host.present();   // streamed: the host copy too
                         kv_append_q8_step(st.k_q, st.k_q, st.k_scale, st.k_scale, st.page_table, step_t,
-                                          kcur_ + t * NKV * HD, kcur_ + t * NKV * HD, s, cs, mirror ? &hk : nullptr);
+                                          kcur_ + t * NKV * HD, kcur_ + t * NKV * HD, s, cs, mirror ? &hk : nullptr,
+                                          st.units);
                         kv_append_q4_step(st.v_q4, st.v_q4, st.page_table, step_t, vcur_ + t * NKV * HD,
-                                          vcur_ + t * NKV * HD, s, cs, mirror ? &hv : nullptr);
+                                          vcur_ + t * NKV * HD, s, cs, mirror ? &hv : nullptr, st.units);
                     } else if (st.kv_q4)
                         kv_append_q4_step(st.k_q4, st.v_q4, st.page_table, step_t, kcur_ + t * NKV * HD,
-                                          vcur_ + t * NKV * HD, s, cs, &st.host);
+                                          vcur_ + t * NKV * HD, s, cs, &st.host, st.units);
                     else if (st.kv_int8)
                         kv_append_q8_step(st.k_q, st.v_q, st.k_scale, st.v_scale, st.page_table, step_t,
-                                          kcur_ + t * NKV * HD, vcur_ + t * NKV * HD, s, cs, &st.host);
+                                          kcur_ + t * NKV * HD, vcur_ + t * NKV * HD, s, cs, &st.host, st.units);
                     else
                         kv_append_step(st.k_pool, st.v_pool, st.page_table, step_t, kcur_ + t * NKV * HD,
-                                       vcur_ + t * NKV * HD, s, cs, &st.host);
+                                       vcur_ + t * NKV * HD, s, cs, &st.host, st.units);
                 }
                 if (!sidem) idx_append(cs);
                 stamp(l, 9, grp);
@@ -1816,6 +1817,7 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
                         const QsaState& sx = slot_ss(t).qsa_states[qi];
                         sr.pooled[t - tb] = sx.idx_pooled;
                         sr.dead[t - tb] = sx.idx_dead;
+                        sr.units[t - tb] = sx.units;
                         pr.p[t - tb] = qsa_attn_pools(sx);
                     }
                     qsa_block_scores_rows(sr, qidx_ + tb * IQ * ID, step_ + tb * kStepCount, n_rows, max_blocks_, s,
@@ -1834,19 +1836,22 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
                         const int m = std::min(te - t0, kQsaAttnMaxSlots);
                         const float* pooled[kQsaAttnMaxSlots];
                         const float* dead[kQsaAttnMaxSlots];
+                        const int64_t* units[kQsaAttnMaxSlots];
                         QsaAttnSlotPools px;
                         for (int i = 0; i < m; ++i) {
                             const QsaState& sx = slot_ss(t0 + i).qsa_states[qi];
                             pooled[i] = sx.idx_pooled;
                             dead[i] = sx.idx_dead;
+                            units[i] = sx.units;
                             px.p[i] = qsa_attn_pools(sx);
                         }
                         // a launcher that would not run the per-row call's kernel launches nothing: per-row calls
                         if (!qsa_block_scores_slots(pooled, dead, qidx_ + t0 * IQ * ID, step_ + t0 * kStepCount, m,
-                                                    max_blocks_, s, scores_ + (size_t) t0 * max_blocks_, cs))
+                                                    max_blocks_, s, scores_ + (size_t) t0 * max_blocks_, cs, units))
                             for (int t = t0; t < t0 + m; ++t)
                                 qsa_block_scores(pooled[t - t0], dead[t - t0], qidx_ + t * IQ * ID, step_ + t * kStepCount,
-                                                 1, max_blocks_, s, scores_ + (size_t) t * max_blocks_, cs);
+                                                 1, max_blocks_, s, scores_ + (size_t) t * max_blocks_, cs, -1,
+                                                 units[t - t0]);
                         qsa_block_topk(scores_ + (size_t) t0 * max_blocks_, step_ + t0 * kStepCount, m, max_blocks_,
                                        cap_, s, sel_ + (size_t) t0 * cap_, cs);
                         if (!qsa_decode_attn_slots(qcur_ + t0 * NH * HD, px, sel_ + (size_t) t0 * cap_,
@@ -1863,7 +1868,7 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
                     for (int t = tb; t < te; ++t) {
                         const QsaState& sx = slot_ss(t).qsa_states[qi];
                         qsa_block_scores(sx.idx_pooled, sx.idx_dead, qidx_ + t * IQ * ID, step_ + t * kStepCount, 1,
-                                         max_blocks_, s, scores_ + (size_t) t * max_blocks_, cs);
+                                         max_blocks_, s, scores_ + (size_t) t * max_blocks_, cs, -1, sx.units);
                         qsa_block_topk(scores_ + (size_t) t * max_blocks_, step_ + t * kStepCount, 1, max_blocks_, cap_, s,
                                        sel_ + (size_t) t * cap_, cs);
                         qsa_kv_resolve(sx, *g_, sel_ + (size_t) t * cap_, step_ + t * kStepCount, 1, cap_, cs);
@@ -2649,6 +2654,7 @@ bool Verifier::capture_commit(std::string& err) {
                 il.tail_src[nq] = tail_snap_ + (size_t) qi * TS;
                 il.tail[nq] = st.idx_tail; il.dead[nq] = st.idx_dead; il.pooled[nq] = st.idx_pooled;
                 il.block_pos[nq] = st.idx_block_pos;
+                il.units[nq] = st.units;
                 ++nq;
                 ++qi;
             }
@@ -2681,7 +2687,7 @@ bool Verifier::capture_commit(std::string& err) {
                 const WeightRef* wikn = need(v, "indexer.k_norm.weight", err);
                 if (!wikn) { ok = false; break; }
                 copy_from_mapped(st.idx_tail, tail_snap_ + (size_t) qsa_index * TS, TS, cs_);
-                const QsaIndexerBuffers ib{st.idx_tail, st.idx_dead, st.idx_pooled, st.idx_block_pos};
+                const QsaIndexerBuffers ib = qsa_indexer_buffers(st);
                 if (!g_no_batch_kv) {
                     native_qsa_indexer_append_steps(idx_raw_L_ + (size_t) qsa_index * MT * ID, commit_ + 2, 1, (int) MT, 0,
                                                     (const float*) wikn->data, EPS, ib, s, st.max_cells, rope_scaling(), cs_);
@@ -3602,7 +3608,7 @@ bool Verifier::capture_commit_batch(const int* rows, int S, int hbase, std::stri
                     const QsaState& st = slots_[(size_t) rows[first]]->qsa_states[qsa_index];
                     copy_from_mapped(st.idx_tail, tail_snap_b_ + ((size_t) rows[first] * nQ + qsa_index) * TS,
                                      TS, cs_);
-                    const QsaIndexerBuffers ib{st.idx_tail, st.idx_dead, st.idx_pooled, st.idx_block_pos};
+                    const QsaIndexerBuffers ib = qsa_indexer_buffers(st);
                     for (int u = first; u < t; ++u)
                         native_qsa_indexer_append(idx_raw_L_ + (size_t) (qsa_index * MT + u) * ID,
                                                   commitb_ + (size_t) rows[first] * CB + 2 + (u - first),

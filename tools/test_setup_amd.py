@@ -652,7 +652,7 @@ class DeviceAccess(unittest.TestCase):
             self.assertNotIn("/kfd", msg)
 
     def test_engine_names_the_permission_not_another_program(self):
-        src = (Path(setup.__file__).resolve().parent / "src/program/generate.cpp").read_text(encoding="utf-8")
+        src = (Path(setup.__file__).resolve().parent / "src/models/qwen38/model.cpp").read_text(encoding="utf-8")
         i = src.index("cannot open /dev/kfd")
         guard = src[src.rindex("#if", 0, i):i]
         self.assertIn("cudaGetDeviceCount", guard)

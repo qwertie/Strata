@@ -770,9 +770,12 @@ if(STRATA_ENABLE_CUDA OR STRATA_ENABLE_HIP)
   target_link_libraries(dflash2_attn_bench PRIVATE strata_kernels ${_strata_gpu_runtime_target})
 
   # Qwen3.8's model loader (strata::qwen38::Model), which the `strata` program below calls
-  add_library(strata_qwen38 STATIC src/models/qwen38/model.cpp)
+  add_library(strata_qwen38 STATIC src/models/qwen38/model.cpp src/models/qwen38/conversation.cpp
+              src/models/qwen38/options.cpp src/models/qwen38/conversation_pages.cpp
+              src/models/qwen38/paged_engine.cpp)
   target_include_directories(strata_qwen38 PRIVATE ${_strata_gpu_include_directories})
-  target_link_libraries(strata_qwen38 PUBLIC strata_engine strata_prefill ${_strata_gpu_runtime_target})
+  target_link_libraries(strata_qwen38 PUBLIC strata_engine strata_prefill strata_serve strata_state
+                        ${_strata_gpu_runtime_target})
 
   add_executable(strata src/program/generate.cpp)
   strata_utf8_manifest(strata)
@@ -786,6 +789,11 @@ if(STRATA_ENABLE_CUDA OR STRATA_ENABLE_HIP)
     target_link_libraries(strata PRIVATE delayimp)
     target_link_options(strata PRIVATE "LINKER:/DELAYLOAD:hipblas.dll" "LINKER:/DELAYLOAD:libhipblaslt.dll" "LINKER:/DELAYLOAD:rocblas.dll")
   endif()
+
+  # strata-q38 (docs/MEMORY_MANAGER_PLAN.md M2d): the Qwen3.8 engine whose conversation lives in a page pool
+  add_executable(strata-q38 src/program/q38_main.cpp)
+  strata_utf8_manifest(strata-q38)
+  target_link_libraries(strata-q38 PRIVATE strata_qwen38 ${_strata_gpu_runtime_target})
 
   # NEW-MODELS-PLAN.md T1: Qwen3.6-35B-A3B's reference path (one GPU, the model resident, plain kernels), checked
   # against llama.cpp by tools/qwen35/; the engine itself does not run the family yet
@@ -1581,6 +1589,9 @@ target_include_directories(strata_spec PUBLIC include)
 add_library(strata_serve STATIC src/common/serve/loop.cpp src/common/serve/request.cpp)
 target_include_directories(strata_serve PUBLIC include)
 target_link_libraries(strata_serve PUBLIC Threads::Threads)
+# The page pool (src/common/state): no GPU, the caller allocates its chunks.
+add_library(strata_state STATIC src/common/state/page_pool.cpp)
+target_include_directories(strata_state PUBLIC include)
 if(STRATA_BUILD_TESTS)
   add_executable(arch_defaults_test src/core/arch_defaults_test.cpp src/core/arch_defaults.cpp)
   target_include_directories(arch_defaults_test PRIVATE include)
@@ -1600,8 +1611,8 @@ if(STRATA_BUILD_TESTS)
   add_executable(state_layout_test src/common/state/state_layout_test.cpp)
   target_include_directories(state_layout_test PRIVATE include)
   add_test(NAME state_layout_test COMMAND state_layout_test)
-  add_executable(page_pool_test src/common/state/page_pool_test.cpp src/common/state/page_pool.cpp)
-  target_include_directories(page_pool_test PRIVATE include)
+  add_executable(page_pool_test src/common/state/page_pool_test.cpp)
+  target_link_libraries(page_pool_test PRIVATE strata_state)
   add_test(NAME page_pool_test COMMAND page_pool_test)
   add_executable(suffix_drafter_test src/common/spec/suffix_drafter_test.cpp)
   target_link_libraries(suffix_drafter_test PRIVATE strata_spec)

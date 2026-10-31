@@ -106,10 +106,42 @@ class Model {
 public:
     /// Keeps `o`, which load() reads and adjusts (for example the expert cache's size when it is `auto`).
     explicit Model(Options& o) : o(o) {}
+    /// Frees the token path's scratch and its captured graph.
+    ~Model();
 
     /// Applies the process-wide settings in `o`, checks them, and loads everything this class holds. Returns 0 when the
     /// model is up, otherwise the exit status for main() (the reason has been printed).
     int load();
+
+    /// Fills the expert residency table from the loaded caches and uploads it (the hit path the token graph and the
+    /// verify windows decide on the device), sets up the token path's scratch, and captures the one-graph token when
+    /// nothing needs a host step inside it (`dumping_layers`: --dump-layers asks for one per layer).  Call once,
+    /// after load().  Returns 0, otherwise the exit status for main() (the reason has been printed).
+    int build_hit_tables(bool dumping_layers);
+    /// Copies `host_res` to the device table `dst` (CUDA0's or a stage's) and waits for the copy.
+    cudaError_t put_residency(int32_t* dst) const;
+    /// Gets what a verify window on CUDA0 knows of the expert cache: the residency tables and the slots.
+    strata::core::VerifyHits get_verify_hits() const;
+
+    /// Tells whether the host has the memory for the prompt path's default CPU share (and says why not on stderr).
+    bool is_cpu_share_default_ok();
+    /// Arms the prompt path's CPU share as a one-conversation run does: by default when one GPU's cache leaves experts
+    /// for the CPU and the host has the memory for it.
+    void arm_prompt_cpu_share();
+
+    /// Tells the prompt path the share of the expert bytes that are pinned in RAM (it sizes its streamed ring and the
+    /// slots it may borrow by it).
+    void set_prompt_pinned_share();
+    /// --resident-experts: copies the experts no GPU cache holds into RAM (page-locked when it can), except
+    /// `stage_pairs` (the (layer, expert) pairs other GPUs hold); the experts of the slots the prompt path may borrow
+    /// (from slot `lend_from` on; -1: none) it keeps as far as RAM allows.  Returns 0, otherwise the exit status for
+    /// main().
+    int pin_resident_experts(const std::vector<std::pair<int32_t, int32_t>>& stage_pairs, int64_t lend_from);
+    /// Settles the expert tiers once the RAM copy is decided: the asynchronous adaptive tier off without one, and the
+    /// mapped view of the experts closed when they are read unbuffered.
+    void finish_expert_tiers();
+    /// Turns --adapt-async off and says why.
+    void turn_off_adapt_async(const char* why);
 
     /// Gets the stage that runs layer `l` with a layer split (0: CUDA0's).
     int stage_of(int64_t l) const;
@@ -196,6 +228,18 @@ public:
     void* pool_user = nullptr;                ///< `pool_fn`'s argument
     strata::core::SessionGraphs gr;     ///< the captured layer graphs (a canonical pack only)
 
+    // build_hit_tables():
+    strata::core::SessionLoopScratch loop_scratch;   ///< the token path's pinned staging, reused by every token
+    strata::core::TokenGraph tgraph;    ///< the whole token as one graph (not captured: `captured` false)
+    /// Which VRAM slot holds each (layer, expert), `layer * n_expert + expert` (kNotResident: none); empty when the
+    /// hits are decided on the host.  With a layer split a slot of the cache of the stage that owns the layer.
+    std::vector<int32_t> host_res;
+    int32_t* d_res = nullptr;           ///< `host_res` on CUDA0
+    int32_t* d_hit_count = nullptr;     ///< the token graph's count of hits on the device
+    strata::core::TokenHits thits;      ///< the token graph's device hit path (`on()` false: none)
+    /// The experts' hits can be decided on the device: a cache filled from the profile, and the CPU pool on
+    bool graph_hits = false;
+
 private:
     strata::core::NativeEmbed native_embed;   ///< the native pack's embedding table, which set_native_embed points to
     std::vector<float> ple_emb_host;          ///< the per-layer embedding row `ss.ple` stages on the host
@@ -205,6 +249,8 @@ private:
 std::string vram_free_note();
 /// Gets the share (%) of an expert cache's slots the prompt path may borrow with --prefill auto.
 int64_t get_auto_lend_pct();
+/// Prints the process's mapped file pages (the arena) at a step of the startup when STRATA_RSS_TRACE is set (Linux).
+void rss_probe(const char* where);
 /// Prints the VRAM left after a step of the startup when STRATA_TRACE is set (and checks the device with 2).
 void mem_mark(const char* where);
 /// Tells whether PcieAuto also refines a layer split's shares (opt-in, STRATA_PCIE_AUTO_SPLIT=1).

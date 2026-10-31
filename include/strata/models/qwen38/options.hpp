@@ -417,4 +417,24 @@ inline void take_resident_experts(Options& o) {
         o.resident_headroom = (uint64_t) (std::atof(v) * 1073741824.0);
 }
 
+/// Prepares the process before any GPU call: the runtime's switches (eager kernel loading, AMD's pinned copies of a
+/// mapped arena) and the GPUs `--gpu` names.  Warns about CUDA_LAUNCH_BLOCKING.
+void prepare_process(int argc, char** argv);
+/// Tells whether CUDA_LAUNCH_BLOCKING is on (never on HIP), with which no verify window can finish.
+bool is_launch_blocking();
+/// Opens the GPU's hardware queues in a fixed order on RDNA4 (see options.cpp); nothing elsewhere.  Call on the main
+/// thread before any other thread exists.
+void prime_gpu_queues();
+/// Prints the command line's help (every option of `strata` for a Qwen3.8 model) to stderr.
+void print_usage();
+/// Reads comma- or space-separated token ids from `s` into `out`; false (with `err`) for a malformed or empty list.
+bool parse_i64_list(const char* s, std::vector<int64_t>& out, std::string& err);
+/// Reads the command line into `o`; `have_tokens` tells whether it gave the prompt (--tokens, --tokens-file).  Returns
+/// -1 to go on, otherwise the exit status for main() (--help, or a bad option, whose reason has been printed).
+int parse_options(int argc, char** argv, Options& o, bool& have_tokens);
+/// Turns on the switches that are exact and faster on the GPUs found (gfx1151, gfx12, sm_86 ...), keeping the user's
+/// own settings; call after parse_options, before the model loads.  Returns -1 to go on, otherwise the exit status
+/// (a gfx906 build on a card it cannot run).
+int apply_device_defaults(Options& o);
+
 }  // namespace strata::qwen38
