@@ -226,7 +226,8 @@ class Install(unittest.TestCase):
         self.assertIn("n-gram table", out)
 
     def test_no_engine_stops_before_the_download(self):
-        rc, out = self.install(engine=False)
+        with mock.patch.object(setup, "get_dsv41_engine", lambda *a: None):   # the feed has no package for this card
+            rc, out = self.install(engine=False)
         self.assertEqual(rc, 1, out)
         self.assertIn("DeepSeek's engine is not available for this computer yet", out)
         self.assertIn("RTX 30, 40 and 50", out)
