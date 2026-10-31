@@ -5,18 +5,22 @@ refactor and as they are now, runs both the same way, and says where they differ
 .EXAMPLE
 .\run.ps1 -DataDir E:\Strata-data -DeepSeekDir E:\DeepSeek-V4.1-Flash
 .EXAMPLE
+.\run.ps1 -DataDir E:\Strata-data -Followup   # only the checks the first session left open, 4 runs a build
+.EXAMPLE
 .\run.ps1 -DataDir E:\Strata-data -Only multi -Results .\results\20261101-0900   # one phase again, same folder
 #>
 param(
     [string]$DataDir,                # a copy of the owner's Strata-data folder with the files README.md lists
     [string]$DeepSeekDir,            # the folder of the DeepSeek V4.1 GGUF files
-    [ValidateSet('preflight', 'build', 'unit', 'smoke', 'multi', 'deepseek', 'speed', 'emulate')]
+    [ValidateSet('preflight', 'build', 'unit', 'smoke', 'multi', 'deepseek', 'speed', 'emulate', 'followup')]
     [string[]]$Only = @('preflight', 'build', 'unit', 'smoke', 'multi', 'deepseek', 'speed', 'emulate'),
     [string]$Before = '87d20a5c',    # the last commit before any C++ moved
     [string]$Work = "$env:SystemDrive\sn",   # source copies and builds; short, because CUDA builds hit MAX_PATH
     [string]$Results,                # a results folder to continue in (finished runs are kept)
     [int]$Jobs = [Environment]::ProcessorCount,
     [switch]$Quick,                  # fewer runs and fewer variants: about half the time
+    [switch]$Followup,               # only the checks the first session left open (the followup phase)
+    [int]$Runs,                      # runs a build of each check (default: 2, 1 with -Quick, 4 with -Followup)
     [switch]$DryRun                  # print every command, run none
 )
 
@@ -45,17 +49,21 @@ $MultiChecks = @(
 
 function Main {
     $Root = (Resolve-Path "$PSScriptRoot\..\..").Path
+    # a trailing backslash would escape the closing quote of "...\" in the steps' command lines
+    $DataDir, $DeepSeekDir = @($DataDir, $DeepSeekDir) | ForEach-Object { $_ -replace '[\\/]+$', '\.' }
     $Py = "$Root\.venv\Scripts\python.exe"
     $After = (git -C $Root rev-parse --short HEAD)
     if (-not $Results) { $Results = "$PSScriptRoot\results\$(Get-Date -Format yyyyMMdd-HHmm)" }
     $Steps = "$Results\steps"
     New-Item -ItemType Directory -Force $Steps | Out-Null
-    $Runs = if ($Quick) { 1 } else { 2 }
+    if (-not $Runs) { $Runs = if ($Followup) { 4 } elseif ($Quick) { 1 } else { 2 } }
+    if ($Followup -and -not $PSBoundParameters.ContainsKey('Only')) { $Only = 'preflight', 'build', 'unit', 'followup' }
+    $Prepared = @{}                            # the worktrees Initialize-Worktree has seen in this session
     $env:CUDA_DEVICE_ORDER = 'PCI_BUS_ID'      # cards numbered as nvidia-smi numbers them
     $env:CUDA_CACHE_MAXSIZE = '4294967296'     # room for the code the emulated builds compile when they start
     if ($env:CUDA_PATH) { $env:PATH = "$env:CUDA_PATH\bin\x64;$env:CUDA_PATH\bin;$env:PATH" }
     $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
-    $VsDir = if (Test-Path $vswhere) {      # CUDA 13.0 takes Visual Studio 2022 (17.x) only
+    $VsDir = if (Test-Path $vswhere) {      # CUDA 13 takes Visual Studio 2022 (17.x) only
         & $vswhere -latest -products * -version '[17.0,18.0)' -property installationPath `
             -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64
     }
@@ -70,10 +78,19 @@ function Main {
         deepseek  = { Invoke-DeepSeek }
         speed     = {
             if (Test-Need speed-q38-server @("$DataDir\models\IQ3_S")) {
-                Invoke-Pairs speed-q38-server server strata.exe 86 "--cards $Big" ($Runs + 1) '--tolerance' 5
+                Invoke-Pairs speed-q38-server server strata.exe 86 "--cards $Big" ($Runs + 1)
             }
         }
         emulate   = { Invoke-Emulate }
+        # The checks the first session (20261030-1419) left open: answers that changed in one run of the build
+        # after (helper), slower decodes (split-*-res measured once, peer, speed), and a save/restore check whose build
+        # before also varied (q38state on the sm_75 build)
+        followup  = {
+            Invoke-Multi 'helper', 'peer', 'split-auto-res', 'split-12-res'
+            & $phases.speed
+            Invoke-Builds '75-virtual' '75v'
+            Invoke-Smoke '75v' '--env STRATA_EMULATE_CC=75' 'q38state'
+        }
     }
     foreach ($p in $phases.Keys) {
         if ($Only -contains $p) { & $phases[$p] }
@@ -88,10 +105,10 @@ function Main {
     Write-Host "`nSend this file back: $Results.zip"
 }
 
-# Records the PC (cards, driver, tools, RAM, disk) and says what is missing.
+# Records the PC (Windows, cards, driver, PCIe links, tools, RAM, page file, disks) and says what is missing.
 function Test-Preflight {
     $tools = [ordered]@{
-        'nvidia-smi' = 'nvidia-smi'; 'nvcc (CUDA 13.0)' = "$env:CUDA_PATH\bin\nvcc.exe"; git = 'git'
+        'nvidia-smi' = 'nvidia-smi'; 'nvcc (CUDA 13)' = "$env:CUDA_PATH\bin\nvcc.exe"; git = 'git'
         'Python (.venv)' = $Py; cmake = "$Root\.venv\Scripts\cmake.exe"; ninja = "$Root\.venv\Scripts\ninja.exe"
         'Visual Studio 2022 C++' = "$VsDir\VC\Auxiliary\Build\vcvars64.bat"
     }
@@ -99,13 +116,22 @@ function Test-Preflight {
         ForEach-Object { "missing: $_" })
     $null = Invoke-Step preflight @(
         'nvidia-smi --query-gpu=index,name,memory.total,driver_version,pci.bus_id --format=csv',
+        ('nvidia-smi --query-gpu=index,pcie.link.gen.max,pcie.link.gen.current,pcie.link.width.max,' +
+         'pcie.link.width.current --format=csv'),
         'nvidia-smi topo -p2p r',
-        "`"$($tools['nvcc (CUDA 13.0)'])`" --version", 'git --version', "`"$Py`" --version",
+        "`"$($tools['nvcc (CUDA 13)'])`" --version", 'git --version', "`"$Py`" --version",
         "`"$($tools.cmake)`" --version", "echo Visual Studio: $VsDir", "echo Before $Before, after $After")
+    if ($DryRun) { return }
+    $os = Get-CimInstance Win32_OperatingSystem
     $ram = [math]::Round((Get-CimInstance Win32_ComputerSystem).TotalPhysicalMemory / 1GB)
-    $free = [math]::Round((Get-PSDrive $Work.Substring(0, 1)).Free / 1GB)
     $cpu = (Get-CimInstance Win32_Processor | Select-Object -First 1).Name
-    "RAM $ram GB; $cpu; $free GB free for $Work" | Add-Content "$Steps\preflight.log"
+    $pageFiles = @(Get-CimInstance Win32_PageFileUsage | ForEach-Object { "$($_.Name) $($_.AllocatedBaseSize) MB" })
+    $disks = @($Work, $DataDir, $DeepSeekDir | Where-Object { $_ } | ForEach-Object { $_.Substring(0, 1) } |
+        Sort-Object -Unique | ForEach-Object { "$_`: $([math]::Round((Get-PSDrive $_).Free / 1GB)) GB free" })
+    $free = [math]::Round((Get-PSDrive $Work.Substring(0, 1)).Free / 1GB)
+    @("$($os.Caption) $($os.Version); RAM $ram GB; $cpu",
+      "page file: $(if ($pageFiles) { $pageFiles -join ', ' } else { 'none' })", "disks: $($disks -join ', ')") |
+        Add-Content "$Steps\preflight.log"
     if ($free -lt 40) { $notes += "only $free GB free for $Work (six builds need about 20-30)" }
     if ($ram -lt 46) { $notes += "$ram GB of RAM: Qwen3.8 IQ3_S and DeepSeek were planned for 48" }
     if ($Cards.Count -lt 2) { $notes += 'one card: the multi-GPU checks are skipped' }
@@ -114,27 +140,68 @@ function Test-Preflight {
 }
 
 # Builds the engines and tests before and after the refactor for one CUDA architecture list, each from its own git
-# worktree into $Work\<before|after>-<tag>.
+# worktree into $Work\<before|after>-<tag>. A target that fails does not stop the others (ninja -k 0).
 function Invoke-Builds([string]$Arch, [string]$Tag) {
     $cmake = "`"$Root\.venv\Scripts\cmake.exe`""
     foreach ($side in 'before', 'after') {
         $src, $bd = "$Work\$side", "$Work\$side-$Tag"
         $rev = @{ before = $Before; after = $After }[$side]
         $start = Get-Date
-        $rc = Invoke-Step "build-$side-$Tag" @(
-            "if not exist `"$src\.git`" git -C `"$Root`" worktree add --detach `"$src`" $rev || exit /b 1",
+        Initialize-Worktree $side $src $rev
+        $build = "$cmake --build `"$bd`" -j $Jobs -- -k 0"
+        $null = Invoke-Step "build-$side-$Tag" @(
             "call `"$VsDir\VC\Auxiliary\Build\vcvars64.bat`" >nul || exit /b 1",
             ("if not exist `"$bd\CMakeCache.txt`" $cmake -G Ninja -S `"$src`" -B `"$bd`" -DCMAKE_BUILD_TYPE=Release " +
              "`"-DCMAKE_MAKE_PROGRAM=$Root\.venv\Scripts\ninja.exe`" " +
              "`"-DCMAKE_CUDA_COMPILER=$env:CUDA_PATH\bin\nvcc.exe`" " +
              "-DCMAKE_CUDA_ARCHITECTURES=$Arch -DSTRATA_ENABLE_CUDA=ON -DSTRATA_BUILD_DSV41=ON " +
              "-DSTRATA_NATIVE_EXPERTS=ON -DSTRATA_BUILD_TESTS=ON -DSTRATA_PORTABLE=ON || exit /b 1"),
-            # CUDA 13.0's ptxas now and then fails on a file it just wrote; the same command then gets past it
-            "$cmake --build `"$bd`" -j $Jobs || $cmake --build `"$bd`" -j $Jobs")
-        $ok = $rc -eq 0 -and (Test-Path "$bd\strata.exe")
-        Add-Row "build-$side-$Tag" $(if ($ok) { 'PASS' } else { 'FAIL' }) (
+            # CUDA 13.0's ptxas now and then fails on a file it just wrote; the same command then gets past it.
+            # report.py judges the last attempt, after the line echoed here.
+            "$build || (echo retrying the build & $build)")
+        Invoke-Report build $Results "build-$side-$Tag" "$Steps\build-$side-$Tag.log" $bd (
             "$rev, $([int]((Get-Date) - $start).TotalMinutes) min")
     }
+}
+
+# Checks out a build's worktree once a session (at $Rev, dropping the edits of an earlier session), applies each
+# file's section of portability.patch where it applies (the before tree has the files at their old paths), and gives
+# it llama.cpp's gguf-py for the iq_parity fixtures: the main checkout's copy, else setup's download.
+function Initialize-Worktree([string]$Side, [string]$Src, [string]$Rev) {
+    if ($Prepared[$Side]) { return }
+    $Prepared[$Side] = $true
+    $log = "$Steps\worktree-$Side.log"
+    $null = Invoke-Step "worktree-$Side" @(
+        "if not exist `"$Src\.git`" git -C `"$Root`" worktree add --detach `"$Src`" $Rev || exit /b 1",
+        "git -C `"$Src`" checkout --force --detach $Rev || exit /b 1")
+    if ($DryRun) {
+        return Write-Host "    portability.patch and gguf-py into $Src"
+    }
+    $patchText = Get-Content -Raw "$PSScriptRoot\portability.patch"
+    foreach ($section in ($patchText -split '(?m)^(?=diff --git )' | Select-Object -Skip 1)) {
+        $file = [regex]::Match($section, '^diff --git a/(\S+)').Groups[1].Value
+        $patch = New-TemporaryFile
+        [IO.File]::WriteAllText($patch, $section)
+        $result = if (-not (Test-Path "$Src\$file")) { 'not at this path' } else {
+            git -C $Src apply --ignore-whitespace $patch 2>$null
+            if ($LASTEXITCODE -eq 0) { 'patched' } else {
+                git -C $Src apply --reverse --check --ignore-whitespace $patch 2>$null
+                if ($LASTEXITCODE -eq 0) { 'fixed already' } else { 'PATCH FAILED' }
+            }
+        }
+        Remove-Item $patch
+        "portability.patch, $file`: $result" | Add-Content $log
+    }
+    $gguf = "$Src\third_party\llama.cpp\gguf-py"
+    if (Test-Path "$gguf\gguf") { return }
+    if (Test-Path "$Root\third_party\llama.cpp\gguf-py\gguf") {
+        New-Item -ItemType Directory -Force (Split-Path $gguf) | Out-Null
+        Copy-Item -Recurse "$Root\third_party\llama.cpp\gguf-py" $gguf
+    } else {
+        & $Py -c "import sys; sys.path.insert(0, r'$Src'); import setup; setup.get_llama_cpp()" *>> $log
+    }
+    "gguf-py: $(if (Test-Path "$gguf\gguf") { 'in place' } else { 'MISSING (iq_parity will not run)' })" |
+        Add-Content $log
 }
 
 # Runs ctest in both builds of a tag (with STRATA_EMULATE_CC=$Emulate when given) and compares the per-test results.
@@ -147,20 +214,26 @@ function Invoke-Unit([string]$Tag, [string]$Filter = '', [string]$Emulate = '') 
     Invoke-Report ctest $Results "unit-$Tag" "$Steps\unit-before-$Tag.log" "$Steps\unit-after-$Tag.log"
 }
 
-# The protocol checks of Qwen3.8 and Qwen3.6 on the bigger card.
-function Invoke-Smoke([string]$Tag, [string]$Drive = '') {
+# The protocol checks of Qwen3.8 and Qwen3.6 on the bigger card (the $Scenarios of drive.py named).
+function Invoke-Smoke([string]$Tag, [string]$Drive = '', [string[]]$Scenarios = @('q38', 'q38state', 'q36')) {
     $one = "--cards $Big $Drive"
     if (Test-Need "smoke-q38-$Tag" @("$DataDir\models\IQ3_S", "$DataDir\packs\iq3_s")) {
-        Invoke-Pairs "smoke-q38-$Tag" q38 strata.exe $Tag $one
-        Invoke-Pairs "smoke-q38state-$Tag" q38state strata.exe $Tag (
-            "$one --other `"$Results\smoke-q38state-$Tag\before-1.out.ses`"")
+        if ($Scenarios -contains 'q38') {
+            Invoke-Pairs "smoke-q38-$Tag" q38 strata.exe $Tag $one
+        }
+        if ($Scenarios -contains 'q38state') {
+            Invoke-Pairs "smoke-q38state-$Tag" q38state strata.exe $Tag (
+                "$one --other `"$Results\smoke-q38state-$Tag\before-1.out.ses`"")
+        }
     }
-    if (Test-Need "smoke-q36-$Tag" @("$DataDir\models\qwen36-UD-Q4_K_XL")) {
+    if ($Scenarios -contains 'q36' -and (Test-Need "smoke-q36-$Tag" @("$DataDir\models\qwen36-UD-Q4_K_XL"))) {
         Invoke-Pairs "smoke-q36-$Tag" q36 strata-q36.exe $Tag $one
     }
 }
 
-function Invoke-Multi {
+# Runs the rows of $MultiChecks (those named in $Names, else all), each card order of a row: $Runs times a build for
+# the rows marked '*' and in a follow-up session, once for the others.
+function Invoke-Multi([string[]]$Names) {
     if ($null -eq $Small) {
         return Add-Row multi SKIP 'one card'
     }
@@ -168,12 +241,12 @@ function Invoke-Multi {
     foreach ($row in $MultiChecks) {
         $name, $orders, $engineArgs, $settings = $row.TrimStart('*') -split '\|' | ForEach-Object { $_.Trim() }
         $core = $row.StartsWith('*')
-        if ($Quick -and -not $core) { continue }
+        if (($Names -and $Names -notcontains $name) -or ($Quick -and -not $core)) { continue }
         foreach ($order in @(-split $orders)[0..$(if ($Quick) { 0 } else { 9 })]) {
             $cards = ($order.ToCharArray() | ForEach-Object { if ($_ -eq 'B') { $Big } else { $Small } }) -join ','
             $set = if ($settings) { " --env $settings" } else { '' }
-            Invoke-Pairs "multi-$name-$order" multi strata.exe 86 "--cards $cards --args=`"$engineArgs`"$set" (
-                $(if ($core) { $Runs } else { 1 }))
+            Invoke-Pairs "multi-$name-$order" multi strata.exe 86 "--cards $cards `"--args=$engineArgs`"$set" (
+                $(if ($core -or $Followup) { $Runs } else { 1 }))
         }
     }
 }
@@ -185,13 +258,13 @@ function Invoke-DeepSeek {
     if (-not (Test-Need deepseek @($ds, $DeepSeekDir))) { return }
     $base = "--cards $Big --deepseek `"$DeepSeekDir`""
     $plain = '--expert-profile none --no-expert-cache'
-    Invoke-Pairs ds-dspark-auto ds strata-dsv41.exe 86 "$base --args=`"$plain --dspark auto`""
+    Invoke-Pairs ds-dspark-auto ds strata-dsv41.exe 86 "$base `"--args=$plain --dspark auto`""
     if (-not $Quick) {
-        Invoke-Pairs ds-dspark-none ds strata-dsv41.exe 86 "$base --args=`"$plain --dspark none`""
+        Invoke-Pairs ds-dspark-none ds strata-dsv41.exe 86 "$base `"--args=$plain --dspark none`""
         Invoke-Pairs ds-dspark-sample ds strata-dsv41.exe 86 (
-            "$base --args=`"$plain --dspark auto`" --env DS4_DSPARK_SAMPLE=1")
+            "$base `"--args=$plain --dspark auto`" --env DS4_DSPARK_SAMPLE=1")
     }
-    Invoke-Pairs ds-speed ds strata-dsv41.exe 86 "$base --args=`"--dspark auto`"" ($Runs + 1) '--tolerance' 5
+    Invoke-Pairs ds-speed ds strata-dsv41.exe 86 "$base `"--args=--dspark auto`"" ($Runs + 1)
 }
 
 # Older cards' code paths on these cards: builds of PTX for sm_75 and sm_80 (compiled by the driver when they start)
@@ -218,7 +291,7 @@ function Invoke-Pairs([string]$Check, [string]$Scenario, [string]$Exe, [string]$
                 "--exe `"$Work\$side-$Tag\$Exe`" --out `"$out`" --data `"$DataDir`" $Drive")
         }
     }
-    Invoke-Report runs $Results $Check @args
+    Invoke-Report runs $Results $Check
 }
 
 # Says whether a check's files are there; if not, records the check as skipped (-DryRun goes on anyway).
@@ -238,11 +311,11 @@ function Get-Cards {
     return @($rows | Sort-Object { [int]($_ -split ',')[1] } -Descending | ForEach-Object { [int]($_ -split ',')[0] })
 }
 
-# Writes a step's command lines to steps\<name>.cmd and runs them, their output in steps\<name>.log; with -DryRun
-# only prints them. Returns the exit code.
+# Writes a step's command lines to steps\<name>.cmd and runs them, their output in steps\<name>.log (a new one each
+# time); with -DryRun only prints them. Returns the exit code.
 function Invoke-Step([string]$Name, [string[]]$Lines) {
     $file = "$Steps\$Name.cmd"
-    $text = @('@echo off', 'chcp 65001 >nul', "call :main >> `"$Steps\$Name.log`" 2>&1", 'exit /b %errorlevel%',
+    $text = @('@echo off', 'chcp 65001 >nul', "call :main > `"$Steps\$Name.log`" 2>&1", 'exit /b %errorlevel%',
               ':main')
     [IO.File]::WriteAllLines($file, $text + $Lines)   # UTF-8 without the byte order mark cmd would take for a command
     Write-Host "[$(Get-Date -Format HH:mm)] $Name"

@@ -1,4 +1,5 @@
-"""Tests of report.py, the NVIDIA session's judge: masking, request-by-request comparison, ctest logs, the table."""
+"""Tests of report.py, the NVIDIA session's judge: masking, request-by-request verdicts, speeds, builds, ctest logs,
+the samples and the table."""
 import tempfile
 import unittest
 from pathlib import Path
@@ -8,17 +9,32 @@ import report as R
 RUN = """>>> start: --pack x
 INFO vram_free_mib=9000 expert_slots=512
 READY
->>> GEN 24 <40 ids>
+>>> GEN 24 <40 ids 0badf00d>
 PP 40 40 120.5 331.9
 T 11
 T 12
 DONE 2 40 120.5 33.1 length 7 3 0
->>> BGEN 0 12 <41 ids>
+>>> BGEN 0 12 1000,1001
+>>> BGEN 1 12 1000,1002
+BADM 0 1
+BT 0 5
+BT 1 6
+BT 0 7
 BDONE 0 12 length 812.3
+BT 1 8
+BDONE 1 12 length 800.0
+>>> LIST_CONVERSATIONS
+CONVERSATION slot0 vram holding 60 32768 1539309568 65617920
+END_CONVERSATIONS
 >>> SAVE C:/r/before-1.out.ses
 SAVED 300 1 41.0
 exit 0
 """
+
+
+def fast(run: str, ms: float) -> str:
+    """Gets `run` with a 128-token answer decoded in `ms`."""
+    return run.replace("DONE 2 40 120.5 33.1", f"DONE 128 40 120.5 {ms}")
 
 
 class Mask(unittest.TestCase):
@@ -31,69 +47,137 @@ class Mask(unittest.TestCase):
         self.assertIn("DONE 2 40 _ _ length\n", a)
         self.assertIn("T 12\n", a)
 
-    def test_durations_and_rates_are_masked_but_counts_are_not(self):
-        self.assertEqual(R.mask("filled in 3.2 s, 512 slots, 1.5 GB/s, 40 ms"),
-                         "filled in _ s, 512 slots, _ GB/s, _ ms")
+    def test_durations_rates_and_free_memory_are_masked_but_counts_are_not(self):
+        self.assertEqual(R.mask("filled in 3.2 s, 512 slots, 1.5 GB/s, 40 ms, 7.31 GiB free, 408 MiB free"),
+                         "filled in _ s, 512 slots, _ GB/s, _ ms, _ GiB free, _ MiB free")
+
+    def test_the_q36_conversation_sizes_9f3ac8a3_changed_are_masked_for_q36_only(self):
+        grown = RUN.replace("1539309568 65617920", "1542266880 68575232")
+        self.assertEqual(R.compare_runs([RUN, RUN], [grown, grown], "smoke-q36-86")[0], "PASS")
+        self.assertEqual(R.compare_runs([RUN, RUN], [grown, grown], "smoke-q38-86")[0], "DIFF")
 
 
 class CompareRuns(unittest.TestCase):
     def test_same_tokens_pass(self):
         status, note = R.compare_runs([RUN, RUN], [RUN, RUN])
         self.assertEqual(status, "PASS")
-        self.assertIn("4 of 4 parts the same", note)
+        self.assertIn("6 of 6 parts the same", note)
 
-    def test_a_token_that_differs_after_is_a_diff(self):
+    def test_two_slots_lines_are_compared_slot_by_slot(self):
+        other_order = RUN.replace("BT 1 6\nBT 0 7\n", "BT 0 7\nBT 1 6\n")
+        self.assertEqual(R.compare_runs([RUN, RUN], [other_order, other_order])[0], "PASS")
+        swapped = RUN.replace("BT 1 6\n", "BT 1 9\n")
+        self.assertEqual(R.compare_runs([RUN, RUN], [swapped, swapped])[0], "DIFF")
+
+    def test_an_answer_no_run_before_printed_is_a_diff_when_the_build_before_repeats(self):
         status, note = R.compare_runs([RUN, RUN], [RUN, RUN.replace("T 12", "T 13")])
+        self.assertEqual(status, "VARIES")
+        self.assertIn("GEN 24 <40 ids 0badf00d>: varies in the build after: after-2 from token 1 (new)", note)
+        status, note = R.compare_runs([RUN, RUN], [RUN.replace("T 12", "T 13")] * 2)
         self.assertEqual(status, "DIFF")
-        self.assertIn("differ: >>> GEN 24 <40 ids>", note)
+        self.assertIn("differs: after-1 from token 1 (new), after-2 from token 1 (new)", note)
 
-    def test_a_request_the_build_before_does_not_repeat_is_not_compared(self):
-        noisy = RUN.replace("T 12", "T 14")
-        status, note = R.compare_runs([RUN, noisy], [RUN.replace("T 12", "T 15")])
+    def test_an_answer_the_other_build_also_printed_is_chance(self):
+        other = RUN.replace("T 11", "T 14")
+        status, note = R.compare_runs([RUN, other, RUN], [other, RUN, RUN])
+        self.assertEqual(status, "VARIES")
+        self.assertIn("varies in both builds: before-2 from token 0, after-1 from token 0", note)
+        self.assertNotIn("(new)", note)
+
+    def test_both_builds_varying_without_an_answer_in_common_is_not_a_diff(self):
+        a, b, c, d = (RUN.replace("T 12", f"T {t}") for t in (20, 21, 22, 23))
+        status, note = R.compare_runs([a, b], [c, d])
+        self.assertEqual(status, "VARIES")
+        self.assertIn("after-1 from token 1 (new), after-2 from token 1 (new)", note)
+
+    def test_a_continuation_of_another_answer_is_not_compared(self):
+        later = RUN.replace(">>> LIST", ">>> GEN 8 <45 ids 11111111>\nT 1\n>>> LIST")
+        moved = later.replace("11111111>\nT 1", "22222222>\nT 2")
+        status, note = R.compare_runs([later, later], [moved, moved])
         self.assertEqual(status, "PASS")
         self.assertIn("1 not compared", note)
+        self.assertIn("GEN 8 <45 ids 11111111>: no run after sent this prompt; after-1, after-2 not compared", note)
 
-    def test_a_run_that_did_not_finish_fails(self):
+    def test_a_run_that_did_not_finish_or_did_not_run_fails(self):
         status, note = R.compare_runs([RUN], [RUN.replace("exit 0", "STOPPED: the engine ended early\nexit 1")])
         self.assertEqual((status, note), ("FAIL", "did not finish: after-1"))
+        self.assertEqual(R.compare_runs([RUN], [], "multi-x")[0], "FAIL")
 
-    def test_a_slower_decode_beyond_the_tolerance_is_a_diff(self):
-        fast = RUN.replace("DONE 2 40 120.5 33.1", "DONE 128 40 120.5 10000")      # 12.8 tok/s
-        slow = RUN.replace("DONE 2 40 120.5 33.1", "DONE 128 40 120.5 12000")      # 10.7 tok/s
-        self.assertEqual(R.compare_runs([fast], [slow])[0], "PASS")
-        status, note = R.compare_runs([fast], [slow], tolerance=5)
+    def test_a_slower_decode_is_a_diff_only_when_every_run_after_is_slower(self):
+        before = [fast(RUN, 10000), fast(RUN, 10400)]                  # 12.8 and 12.3 tok/s
+        status, note = R.compare_runs(before, [fast(RUN, 12000), fast(RUN, 12500)])
         self.assertEqual(status, "DIFF")
-        self.assertIn("decode 12.8 -> 10.7 tok/s (-16.7%)", note)
+        self.assertIn("decode tok/s 12.6 (12.3-12.8, n=2) -> 10.5 (10.2-10.7, n=2) (-16.7%)", note)
+        self.assertEqual(R.compare_runs(before, [fast(RUN, 12000), fast(RUN, 10100)])[0], "PASS")
+        self.assertEqual(R.compare_runs(before[:1], [fast(RUN, 12000)])[0], "PASS")   # one run: not judged
 
     def test_server_speed_lines(self):
         self.assertEqual(R.speeds("SPEED long decode=20.5 prompt=300.0\n"), {"decode": [20.5], "prompt": [300.0]})
 
 
+class Explain(unittest.TestCase):
+    def test_a_slow_deepseek_check_says_where_the_time_went(self):
+        with tempfile.TemporaryDirectory() as d:
+            out = Path(d) / "after-1.out"
+            out.write_text(">>> GEN 64 <16 ids 00000000>\nSTAT tok_s=2.0 ms_tok=500 vram_hit=0.5 cpu=100.0 ram=0.000"
+                           "\nDONE 64 16 100.0 32000.0 length 0 0\nexit 0\n", encoding="utf-8")
+            (Path(d) / "after-1.out.stderr").write_text(
+                "ds4: 1000 routed experts on the CPU lane (10.0 GB, in place in the model's files), 6 threads\n"
+                "ds4: the page file is small\n", encoding="utf-8")
+            (Path(d) / "after-1.out.sys.csv").write_text(
+                "seconds,cpu_pct,ram_free_gb,pagefile_pct,disk_read_mbs\n1,90,1.5,40,800\n2,80,1.0,50,1000\n",
+                encoding="utf-8")
+            self.assertEqual(R.explain_slow_decode(Path(d)), (
+                "slow decode: 100 experts a token on the CPU lane, ~1.00 GB a token read in place from the model's "
+                "files; VRAM hit rate 0.50, RAM store 0.0 experts a token; ds4: the page file is small; during the "
+                "run: CPU 85%, RAM free 1.0 GB, page file 50%, disk reads 900 MB/s"))
+            out.write_text(out.read_text(encoding="utf-8").replace("32000.0", "3200.0"), encoding="utf-8")
+            self.assertEqual(R.explain_slow_decode(Path(d)), "")
+
+
+class Build(unittest.TestCase):
+    def test_only_the_last_attempts_failures_count_and_only_a_missing_engine_fails(self):
+        log = ("FAILED: [code=2] CMakeFiles/old_test.dir/x.cpp.obj\nninja: build stopped: subcommand failed.\n"
+               f"{R.RETRY_MARK}\nFAILED: [code=2] CMakeFiles/native_hadamard_test.dir/src/a.cpp.obj\n"
+               "FAILED: [code=1] gdn_chunk_bench.exe\nninja: build stopped: subcommand failed.\n")
+        with tempfile.TemporaryDirectory() as d:
+            (Path(d) / "build.log").write_text(log, encoding="utf-8")
+            for e in R.ENGINES[1:]:
+                (Path(d) / e).touch()
+            self.assertEqual(R.judge_build(Path(d) / "build.log", Path(d)), (
+                "FAIL", "engines missing: strata.exe; not built: gdn_chunk_bench, native_hadamard_test"))
+            (Path(d) / "strata.exe").touch()
+            self.assertEqual(R.judge_build(Path(d) / "build.log", Path(d))[0], "PASS")
+
+
 class Ctest(unittest.TestCase):
     LOG = """      Start  1: conversation_cache_test
- 1/5 Test  #1: conversation_cache_test ..........   Passed    0.05 sec
- 2/5 Test  #2: vmm_test .........................***Failed    1.10 sec
- 3/5 Test  #3: expert_cache_segmented_test ......***Skipped   0.02 sec
- 4/5 Test  #4: decode_cluster_parity ............   Passed    0.40 sec
- 5/5 Test  #5: verify_parity ....................***Exception: SegFault  0.12 sec
+ 1/6 Test  #1: conversation_cache_test ..........   Passed    0.05 sec
+ 2/6 Test  #2: vmm_test .........................***Failed    1.10 sec
+ 3/6 Test  #3: expert_cache_segmented_test ......***Skipped   0.02 sec
+ 4/6 Test  #4: decode_cluster_parity ............   Passed    0.40 sec
+ 5/6 Test  #5: verify_parity ....................***Exception: SegFault  0.12 sec
+ 6/6 Test  #6: iq_parity ........................***Not Run   0.00 sec
 """
 
     def test_parse(self):
         self.assertEqual(R.parse_ctest(self.LOG), {
             "conversation_cache_test": "Passed", "vmm_test": "Failed", "expert_cache_segmented_test": "Skipped",
-            "decode_cluster_parity": "Passed", "verify_parity": "Exception: SegFault"})
+            "decode_cluster_parity": "Passed", "verify_parity": "Exception: SegFault", "iq_parity": "Not Run"})
 
     def test_compare(self):
         before = R.parse_ctest(self.LOG)
         status, note = R.compare_ctest(before, before)
         self.assertEqual(status, "FAIL")
-        self.assertIn("fail in both: verify_parity, vmm_test", note)
+        self.assertIn("fail in both: verify_parity, vmm_test; not built before: iq_parity; not built after: "
+                      "iq_parity", note)
         self.assertIn("below sm_90", note)
-        after = dict(before, conversation_cache_test="Failed")
+        after = dict(before, conversation_cache_test="Failed", iq_parity="Passed")
         del after["vmm_test"]
         status, note = R.compare_ctest(before, after)
         self.assertEqual(status, "DIFF")
-        self.assertIn("conversation_cache_test (Passed -> Failed), vmm_test (Failed -> missing)", note)
+        self.assertIn("differ: conversation_cache_test (Passed -> Failed), vmm_test (Failed -> missing);", note)
+        self.assertEqual(R.compare_ctest(before, dict(before, iq_parity="Passed"))[0], "FAIL")   # fail in both
         self.assertEqual(R.compare_ctest(before, {}), ("FAIL", "no test results after the refactor"))
 
 
@@ -105,7 +189,20 @@ class Summary(unittest.TestCase):
             R.add_row(Path(d), "unit-86", "PASS", "204 tests")
             text = R.summary(Path(d))
         self.assertIn("unit-86    PASS    204 tests", text)
-        self.assertIn("totals: 1 PASS, 0 DIFF, 0 FAIL, 1 SKIP", text)
+        self.assertIn("totals: 1 PASS, 0 VARIES, 0 DIFF, 0 FAIL, 1 SKIP", text)
+
+    def test_each_run_gets_a_line_on_its_samples(self):
+        with tempfile.TemporaryDirectory() as d:
+            (Path(d) / "multi-x").mkdir()
+            (Path(d) / "multi-x" / "before-1.out.gpu.csv").write_text(
+                "0, NVIDIA GeForce RTX 3080, 210, 405, 40, 30.1, 0, 900, 1, 16, 0x0000000000000001\n"
+                "0, NVIDIA GeForce RTX 3080, 1900, 9251, 70, 300.5, 98, 19000, 4, 16, 0x0000000000000004\n"
+                "0, NVIDIA GeForce RTX 3080, 1800, 9251, 72, 290.0, 95, 19000, 4, 16, 0x0000000000000000\n"
+                "1, NVIDIA GeForce RTX 3060, 1700, 7500, 60, 150.0, 50, 9000, [N/A], [N/A], [N/A]\n"
+                "1, NVIDIA GeForce RTX 3060, 1777, 7500\n", encoding="utf-8")
+            text = R.summary(Path(d))
+        self.assertIn("multi-x before-1: GPU0 1850 MHz 72 C 96% load gen4 x16 power cap 50%, "
+                      "GPU1 1700 MHz 60 C 50% load\n", text)
 
     def test_startup_lines(self):
         err = ("strata generate: GPU 0: NVIDIA GeForce RTX 3060\n"
