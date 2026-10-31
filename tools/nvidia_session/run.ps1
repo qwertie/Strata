@@ -46,6 +46,10 @@ $MultiChecks = @(
     '*elastic        | B | --vram-elastic |',
     '*kv-grow        | B | --kv-grow |',
     '*pin            | B | --resident-experts --resident-budget-gib 30 | STRATA_PARTIAL_PIN=1')
+#: drive.py's settings that make the engine say where a decode's time went, in a follow-up session's multi-GPU and
+#: speed runs (both builds): free VRAM after each startup step, each stage's host time per window, and each request's
+#: time per window. Each prints a few lines a request, none a token. report.py summarizes them per build.
+$Telemetry = ' --env STRATA_TRACE=1 --env STRATA_SPLIT_TIMING=1 --env STRATA_DECODE_TIMING=1'
 
 function Main {
     $Root = (Resolve-Path "$PSScriptRoot\..\..").Path
@@ -78,7 +82,8 @@ function Main {
         deepseek  = { Invoke-DeepSeek }
         speed     = {
             if (Test-Need speed-q38-server @("$DataDir\models\IQ3_S")) {
-                Invoke-Pairs speed-q38-server server strata.exe 86 "--cards $Big" ($Runs + 1)
+                Invoke-Pairs speed-q38-server server strata.exe 86 "--cards $Big$(if ($Followup) { $Telemetry })" (
+                    $Runs + 1)
             }
         }
         emulate   = { Invoke-Emulate }
@@ -244,7 +249,7 @@ function Invoke-Multi([string[]]$Names) {
         if (($Names -and $Names -notcontains $name) -or ($Quick -and -not $core)) { continue }
         foreach ($order in @(-split $orders)[0..$(if ($Quick) { 0 } else { 9 })]) {
             $cards = ($order.ToCharArray() | ForEach-Object { if ($_ -eq 'B') { $Big } else { $Small } }) -join ','
-            $set = if ($settings) { " --env $settings" } else { '' }
+            $set = $(if ($settings) { " --env $settings" }) + $(if ($Followup) { $Telemetry })
             Invoke-Pairs "multi-$name-$order" multi strata.exe 86 "--cards $cards `"--args=$engineArgs`"$set" (
                 $(if ($core -or $Followup) { $Runs } else { 1 }))
         }

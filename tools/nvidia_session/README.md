@@ -101,6 +101,13 @@ powershell -ExecutionPolicy Bypass -File tools\nvidia_session\run.ps1 -Followup 
 About 6-7 hours in all. The run times are the first session's; the build times are guesses. Send back the zip it
 names at the end.
 
+The follow-up's multi-GPU and speed runs, in both builds, also print where a decode's time went (`STRATA_TRACE=1`,
+`STRATA_SPLIT_TIMING=1`, `STRATA_DECODE_TIMING=1`: a few lines a request, none a token). Under each of those checks'
+row, a line per build gives the medians of its runs: the ms of a decode window and how much of it waited for the
+GPUs, each card's wait for its GPU and its CPU pool time per window, the shares of the routed experts that CUDA0's
+cache, another GPU or PCIe, and the CPU computed, and how many experts each card holds. A slower build then shows
+where it lost the time. The lines stay in the raw logs and are left out of the comparison.
+
 ## What the table says
 
 Each run's output is compared request by request (`report.py`), with times and memory-dependent numbers masked,

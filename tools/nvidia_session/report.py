@@ -29,6 +29,7 @@ MASKS = [(re.compile(p, re.M), r) for p, r in (
     (r"^((?:SAVED|RESTORED) \d+ \d+) [\d.]+$", r"\1 _"),
     (r"^(INFO|STAT|SPEED|SWAIT)\b.*", r"\1 _"),
     (r"^strata serve: decode expert cache hit rate.*\n", ""),
+    (r"^strata (?:trace|decode|pipeline)\b.*\n|^strata serve: stage \d+: .*\n", ""),   # run.ps1's $Telemetry
     (r"\d+ MiB (available|free)", r"_ MiB \1"),
     (r"\b\d+\.\d+ GiB\b", "_ GiB"),
     (r"miss cost x[\d.]+|pcie_frac [\d.]+|best of [\d. ]+", "_"),
@@ -43,6 +44,17 @@ INTENDED = [(re.compile(c), re.compile(p, re.M), r) for c, p, r in (
 #: The lines of one batch slot. They are compared slot by slot, since the order in which two slots' lines interleave
 #: is timing (57a2e1e0 made Qwen3.6 read two queued BGEN lines together, as Qwen3.8 does, which changed it)
 SLOT_LINE = re.compile(r"^(?:BT|BDONE|BADM) (\d+)\b")
+#: The lines describe_telemetry reads from an engine's log: a stage's host time per window since the start
+#: (STRATA_SPLIT_TIMING; stage k runs on CUDAk), a request's time per window (STRATA_DECODE_TIMING), a request's routed
+#: experts, and how many experts each card holds once started
+STAGE_TIMING = re.compile(r"^strata serve: stage (\d+): \d+ windows; per window: wait for the GPU ([\d.]+) ms, "
+                          r"pool \+ plan ([\d.]+) ms", re.M)
+DECODE_TIMING = re.compile(r"^strata decode timing: .*? ([\d.]+) ms/window = verify [\d.]+ \(GPU-reach wait ([\d.]+)",
+                           re.M)
+HIT_RATE = re.compile(r"decode expert cache hit rate: [\d.]+% \((\d+) hits / (\d+) lookups\)(?:; (\d+) more read)?")
+PLACEMENT = re.compile(r"^strata generate: (?:expert cache (\d+) slots, |layer split: CUDA(\d+) runs layers \S+, "
+                       r"expert cache (\d+) slots|peer GPU (\d+): (\d+) experts|CUDA(\d+): (\d+) additional experts)",
+                       re.M)
 #: The engine's startup lines (stderr) that multi-GPU checks compare: the split plan, each card's slots and GiB, the
 #: peer and helper caches, the page-locked part of the RAM copy
 STARTUP = re.compile(r"layer split|peer GPU|context ready|prompt buffers|registered for the GPU|expert cache|helper|"
@@ -78,7 +90,8 @@ def main(argv: list[str]) -> int:
         files = {s: [p.read_text(encoding="utf-8", errors="replace")
                      for p in sorted((results / check).glob(f"{s}-*.out"))] for s in ("before", "after")}
         status, note = compare_runs(files["before"], files["after"], check)
-        note = "; ".join(filter(None, [note, explain_slow_decode(results / check)]))
+        note = "; ".join(filter(None, [note, explain_slow_decode(results / check)])) + describe_telemetry(
+            results / check)
     elif cmd == "build":
         status, note = judge_build(Path(argv[3]), Path(argv[4]))
         note = "; ".join(filter(None, [" ".join(argv[5:]), note]))
@@ -257,6 +270,57 @@ def explain_slow_decode(folder: Path) -> str:
     why += [line.strip() for line in log.splitlines() if re.search(r"page ?file|commit|paging", line, re.I)][:2]
     pc = summarize_pc(out.with_name(out.name + ".sys.csv"))
     return "; ".join(why + ([f"during the run: {pc}"] if pc else []))
+
+
+def describe_telemetry(folder: Path) -> str:
+    """Says per build where a check's decode time went, from the engine logs of its runs (the server's engine log,
+    else the engine's stderr), each number the median of the runs': the ms of a decode window and how much of it
+    waited for the GPUs, each stage's host wait for its GPU and its CPU pool time per window, the shares of the routed
+    experts that CUDA0's cache, another GPU or PCIe, and the CPU computed, and how many experts each card holds. One
+    indented line a build; empty without run.ps1's $Telemetry lines."""
+    lines = []
+    for side in ("before", "after"):
+        runs = [read_telemetry(log.read_text(encoding="utf-8", errors="replace"))
+                for out in sorted(folder.glob(f"{side}-*.out"))
+                if (log := next((x for x in (Path(f"{out}.engine.log"), Path(f"{out}.stderr")) if x.exists()), None))]
+        if runs := [r for r in runs if r]:
+            lines.append(f"\n    {side}: " + "; ".join(summarize_telemetry(runs)))
+    return "".join(lines)
+
+
+def read_telemetry(log: str) -> dict[str, float]:
+    """Gets one run's telemetry (see describe_telemetry) as name -> value; empty without the timing lines."""
+    out: dict[str, float] = {}
+    if windows := DECODE_TIMING.findall(log):
+        out["ms/window"] = statistics.median(float(ms) for ms, _ in windows)
+        out["GPU wait"] = statistics.median(float(wait) for _, wait in windows)
+    for m in STAGE_TIMING.finditer(log):              # cumulative: a stage's last line holds the whole run
+        out[f"CUDA{m[1]} wait"], out[f"CUDA{m[1]} pool"] = float(m[2]), float(m[3])
+    if not out:                                       # the hit rates and startup lines are there without $Telemetry
+        return out
+    hits = [[int(x or 0) for x in m.groups()] for m in HIT_RATE.finditer(log)]
+    if routed := sum(look + off for _, look, off in hits):
+        out["CUDA0 cache"] = 100 * sum(h for h, _, _ in hits) / routed
+        out["other GPU or PCIe"] = 100 * sum(off for _, _, off in hits) / routed
+        out["CPU"] = 100 * sum(look - h for h, look, _ in hits) / routed
+    for m in PLACEMENT.finditer(log):
+        card, n = next((c, n) for c, n in (("0", m[1]), (m[2], m[3]), (m[4], m[5]), (m[6], m[7])) if n)
+        out[f"CUDA{card} holds"] = int(n)
+    return out
+
+
+def summarize_telemetry(runs: list[dict[str, float]]) -> list[str]:
+    """Formats the medians of runs' telemetry (read_telemetry) in describe_telemetry's order."""
+    med = {k: statistics.median(r[k] for r in runs if k in r) for k in dict.fromkeys(k for r in runs for k in r)}
+    parts = [f"{med['ms/window']:.2f} ms/window, {med['GPU wait']:.2f} of it waiting for the GPUs"] if (
+        "ms/window" in med) else []
+    parts += [f"{k[:-5]} waits {v:.2f} ms/window for its GPU, pool {med[k[:-4] + 'pool']:.2f}"
+              for k, v in med.items() if k.endswith(" wait") and k != "GPU wait"]
+    if "CPU" in med:
+        parts.append("routed experts: " + ", ".join(f"{k} {med[k]:.0f}%" for k in ("CUDA0 cache", "other GPU or PCIe",
+                                                                                     "CPU")))
+    held = [f"{k[:-6]} {v:,.0f}" for k, v in med.items() if k.endswith(" holds")]
+    return parts + (["experts held: " + ", ".join(held)] if held else [])
 
 
 def startup_lines(stderr: str) -> str:

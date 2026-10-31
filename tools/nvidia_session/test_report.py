@@ -135,6 +135,66 @@ class Explain(unittest.TestCase):
             self.assertEqual(R.explain_slow_decode(Path(d)), "")
 
 
+class Telemetry(unittest.TestCase):
+    #: A peer run's engine stderr with run.ps1's $Telemetry: the startup and hit rate lines are the first session's
+    #: (multi-peer-BS), the timing lines follow the engine's printf formats
+    LOG = """strata trace: 13310 MiB free after the CUDA context and the weight arena
+strata generate: expert cache 6303 slots, 11.95 GiB of VRAM; policy is
+strata trace: 1205 MiB free after opening the expert cache
+strata generate: peer GPU 1: 5434 experts, 10.34 GiB (filled in 43.9 s); with the primary's 6303 that is 11737 of \
+24576 on the GPUs
+strata trace: read 1966 tokens (batched) in 70012.4 ms
+strata decode timing: 40 windows, avg T 4.00, 3.20 tokens/window, 50.10 ms/window = verify 40.00 (GPU-reach wait 12.50 \
++ per-layer host 20.00 [plan 1.00 actq 2.00 jobs 3.00 CPU 14.00] + stage 7.50) + commit/emit 5.00 + draft 5.10; per \
+layer-window: CPU experts 1.00 (1.50 entries), VRAM hits 6.00, PCIe 2.00; adapt wait 0.00 join 0.00, 0.0 swaps/window
+strata serve: decode expert cache hit rate: 87.5% (44407 hits / 50752 lookups); 28928 more read by the GPU over PCIe \
+or from another GPU (36.3% of all 79680 routed)
+strata serve: stage 0: 80 windows; per window: wait for the GPU 9.000 ms, pool + plan 20.000 ms, host staging \
+1.000 ms, commit 0.500 ms
+strata decode timing: 40 windows, avg T 4.00, 3.10 tokens/window, 52.10 ms/window = verify 41.00 (GPU-reach wait 13.50 \
++ per-layer host 20.00 [plan 1.00 actq 2.00 jobs 3.00 CPU 14.00] + stage 7.50) + commit/emit 5.00 + draft 6.10; per \
+layer-window: CPU experts 1.00 (1.50 entries), VRAM hits 6.00, PCIe 2.00; adapt wait 0.00 join 0.00, 0.0 swaps/window
+strata serve: decode expert cache hit rate: 91.3% (45879 hits / 50264 lookups); 30376 more read by the GPU over PCIe \
+or from another GPU (37.7% of all 80640 routed)
+strata serve: stage 0: 160 windows; per window: wait for the GPU 10.000 ms, pool + plan 21.000 ms, host staging \
+1.000 ms, commit 0.500 ms
+strata serve: stage 1: 160 windows; per window: wait for the GPU 4.100 ms, pool + plan 2.000 ms, host staging \
+1.000 ms, commit 0.500 ms
+"""
+
+    def test_a_run_is_read(self):
+        self.assertEqual(R.read_telemetry(self.LOG), {
+            "ms/window": 51.1, "GPU wait": 13.0, "CUDA0 wait": 10.0, "CUDA0 pool": 21.0, "CUDA1 wait": 4.1,
+            "CUDA1 pool": 2.0, "CUDA0 cache": 100 * 90286 / 160320, "other GPU or PCIe": 100 * 59304 / 160320,
+            "CPU": 100 * 10730 / 160320, "CUDA0 holds": 6303, "CUDA1 holds": 5434})
+        self.assertEqual(R.read_telemetry(self.LOG.replace("strata decode", "x").replace("strata serve: stage", "x")),
+                         {})
+
+    def test_helper_and_split_placements(self):
+        log = ("strata serve: stage 0: 1 windows; per window: wait for the GPU 1.000 ms, pool + plan 1.000 ms\n"
+               "strata generate: CUDA1: 5495 additional experts, 10.43 GiB; results return through pinned host rows\n"
+               "strata generate: layer split: CUDA1 runs layers 36-47, expert cache 2501 slots (5.06 GiB), 2501 of "
+               "its 6144 profiled pairs; slot 0 verified\nstrata generate: layer split: CUDA0 runs layers 0-35\n")
+        self.assertEqual(R.read_telemetry(log)["CUDA1 holds"], 2501)
+        self.assertEqual(R.read_telemetry(log.replace("CUDA1 runs", "CUDA2 runs"))["CUDA1 holds"], 5495)
+
+    def test_each_build_gets_a_line_and_the_lines_are_not_compared(self):
+        with tempfile.TemporaryDirectory() as d:
+            for side, log in (("before", self.LOG), ("after", self.LOG.replace("4.100 ms", "6.100 ms"))):
+                for r in (1, 2):
+                    (Path(d) / f"{side}-{r}.out").write_text(RUN, encoding="utf-8")
+                    (Path(d) / f"{side}-{r}.out.stderr").write_text(log, encoding="utf-8")
+            self.assertEqual(R.describe_telemetry(Path(d)), "".join(
+                f"\n    {side}: 51.10 ms/window, 13.00 of it waiting for the GPUs; CUDA0 waits 10.00 ms/window for its "
+                f"GPU, pool 21.00; CUDA1 waits {wait} ms/window for its GPU, pool 2.00; routed experts: CUDA0 cache "
+                f"56%, other GPU or PCIe 37%, CPU 7%; experts held: CUDA0 6,303, CUDA1 5,434"
+                for side, wait in (("before", "4.10"), ("after", "6.10"))))
+        plain = "".join(x for x in self.LOG.splitlines(keepends=True)
+                        if not x.startswith(("strata trace", "strata decode", "strata serve: stage")))
+        self.assertIn("strata trace", R.startup_lines(self.LOG))      # drive.py copies some into the output
+        self.assertEqual(R.mask(R.startup_lines(self.LOG)), R.mask(R.startup_lines(plain)))
+
+
 class Build(unittest.TestCase):
     def test_only_the_last_attempts_failures_count_and_only_a_missing_engine_fails(self):
         log = ("FAILED: [code=2] CMakeFiles/old_test.dir/x.cpp.obj\nninja: build stopped: subcommand failed.\n"
