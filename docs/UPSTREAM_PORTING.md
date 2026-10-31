@@ -38,7 +38,9 @@ a change over.
 - **A change to code that this fork merged** (for example DeepSeek's own sampler header, replaced by the shared
   one): check whether the change also applies to the shared code; often the shared code already has it.
 - **A change to the 14,800-line `main()` in `src/program/generate.cpp`**: the code has moved into libraries
-  under `src/common/` and `src/models/qwen38/`. Find it by a function or log-message name from the hunk.
+  under `src/common/` and `src/models/qwen38/`. Find it by a function or log-message name from the hunk. The part
+  from `set_coupled_draft` to "session is up" (the model loading) is `Model::load` in `src/models/qwen38/model.cpp`,
+  as it was: its locals that the rest of `main()` uses are `Model`'s members, which `main()` binds to their old names.
 - **Python imports** that changed with a module's move (`from serve import …`, `from strata_control import tls`)
   must be rewritten to the new package.
 
@@ -119,6 +121,8 @@ code updates its rows here. Rows are grouped by step; `{a,b}` lists several file
 | the SYCL copies in `sycl/src/{kernels,prefill}/`, `sycl/include/strata/{kernels,prefill}/` and the SYCL-only files there | the same new place as their original, under `sycl/`; the SYCL-only files by the same rules. Deleted, never built: `sycl/src/prefill/{gemm_bf16_parity,ggml_cuda_host,moe_fused,moe_fused_iq,moe_mmq}.dp.cpp` (the SYCL build compiles `moe_fused_stub.cpp` and no MMQ) | B1 | done |
 | `src/dsv41/{ds4_iq,ds4_gguf,ds4_tq}*` | kept in `src/models/deepseekv41/`: not copies of the shared quant kernels ([open issue](REFACTOR_PLAN.md#open-issues)). `ds4_iq_cpu.cpp` lost its unbuilt ggml-cpu rows (`iq_cpu_own_rows` is gone) and now only chooses between `ds4_tq_cpu.cpp` and `ds4_gg_cpu.cpp` | B2 | kept |
 | `src/core/{peer_experts,remote_experts}.cpp`, `src/core/remote_expert_opt.cu` | kept in `src/core/`: they include Qwen3.8's kernel headers (`s2_expert_grouped.hpp`, `verify_kernels.hpp`), which `src/common/` must not, and call the CUDA runtime directly (peer access, contexts, streams, events, mapped host memory). `PeerExperts` switches devices with `OnDevice` (`include/strata/base/gpu/on_device.hpp`); the SYCL build compiles the shared `peer_experts.hpp` instead of its copy (`sycl/include/strata/core/peer_experts.hpp`). `remote_experts.hpp` keeps its SYCL copy: the SYCL `ExpertSource` lacks the functions `RemotePrefillSource` overrides | B3 | kept |
+| the model loading in `main()` of `src/program/generate.cpp` (from `set_coupled_draft` to "session is up"), its `Options` struct, `take_resident_experts`, and the helpers that only that part used or that it shares with the rest of `main()`: `under_wddm`, `vram_free_note`, `get_auto_lend_pct`, `Drive`, `drive_pool`, `drive_pool_multi`, `SplitDrive`, `drive_pool_split`, `GpuStage`, `on_rotational_disk`, `mem_mark`, `load_control_vectors`, `pcie_auto_split_ok`, `decode_defaults_arch_ok`, `mtp_first_default_on`, `pcie_auto_fork_arch_ok`, `probe_pcie_h2d_gbps`, `pcie_frac_for_gbps`, `measure_pool_affinity`, `g_warm_thr`, `ple_direct_rows_per_s` | `strata::qwen38::Model::load` in `src/models/qwen38/model.cpp`, with the helpers; the locals the rest of `main()` uses are `Model`'s members (`include/strata/models/qwen38/model.hpp`; the CPU pool is `cpu_pool`, an `std::optional`), the lambdas `stage_of` and `gdn_snapshot_bytes` its methods, and `g_last_h2d_gbps` is read through `get_last_h2d_gbps()`. `Options` and `take_resident_experts`: `include/strata/models/qwen38/options.hpp`. The `--tokens` check stayed in `main()` | M2c | done |
+| `include/strata/program/{split_rules,batch_groups}.hpp`, `tests/program/split_rules_test.cpp`, `src/program/batch_groups_test.cpp` | `include/strata/models/qwen38/`, `src/models/qwen38/` (the loader uses them; namespaces unchanged) | M2c | done |
 | the other SYCL copies of `src/` files | the shared `src/` file | C1 | planned |
 
 ## Log

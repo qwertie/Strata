@@ -3,7 +3,7 @@
 #include <cstdlib>
 #include <vector>
 
-#include "strata/program/split_rules.hpp"
+#include "strata/models/qwen38/split_rules.hpp"
 
 using namespace strata::program::split_rules;
 

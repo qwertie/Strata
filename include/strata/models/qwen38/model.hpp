@@ -1,0 +1,221 @@
+// include/strata/models/qwen38/model.hpp - the Qwen3.8 engine's loaded model: the weights, the head, the per-layer
+// embeddings, the session, the drafter, the expert sources and cache, the CPU pool and the layer split's stages.
+//
+// `Model::load` is the loader that used to be inline in `strata`'s main() (src/program/generate.cpp); the old engine
+// constructs a Model, loads it and keeps working on its members under their old names. Its members are the loader's
+// former local variables: what the serve and generate loops use is public, so a second program can be built on the same
+// loader instead of a copy of it (docs/MEMORY_MANAGER_PLAN.md, step M2d).
+#pragma once
+
+#include "strata/models/qwen38/options.hpp"
+#include "strata/common/experts/hit_hook.hpp"
+#include "strata/common/kernels/cpu/pool.hpp"
+#include "strata/common/kernels/rope_scaling.hpp"
+#include "strata/core/expert_cache.hpp"
+#include "strata/core/expert_source.hpp"
+#include "strata/core/geometry.hpp"
+#include "strata/core/peer_experts.hpp"
+#include "strata/core/remote_expert_opt.hpp"
+#include "strata/core/remote_experts.hpp"
+#include "strata/core/weights.hpp"
+#include "strata/models/qwen38/kernels/ngram.hpp"
+#include "strata/models/qwen38/layer.hpp"
+#include "strata/models/qwen38/mtp.hpp"
+#include "strata/models/qwen38/native_dense.hpp"
+#include "strata/models/qwen38/native_head.hpp"
+#include "strata/models/qwen38/prefill/prefill.hpp"
+#include "strata/models/qwen38/session.hpp"
+#include "strata/models/qwen38/verify.hpp"
+#if defined(STRATA_HAVE_DFLASH2)
+#include "strata/models/qwen38/dflash2.hpp"
+#endif
+
+#include <cuda_runtime.h>
+
+#include <array>
+#include <cstdint>
+#include <cstdio>
+#include <memory>
+#include <optional>
+#include <string>
+#include <utility>
+#include <vector>
+
+namespace strata::qwen38 {
+/// The pool's adapter plus the wall-clock it spent, so the report can say how much of the token was the CPU.
+struct Drive {
+    strata::core::ExpertDispatch d;
+    double cpu_ms = 0;
+    int64_t calls = 0;
+    /// THE ROUTING TRACE, which is P0.S8 and a stated prerequisite of Phase 3.  `drive_pool` is called once
+    /// per layer from the main loop - the workers live inside `expert_pool_dispatch` - so a single FILE* here
+    /// needs no locking.  `d.layers` is the CURRENT layer on entry (the adapter increments it as it walks the
+    /// blob), which is why the layer index comes from there rather than from a counter of our own.
+    std::FILE* routing = nullptr;
+};
+
+/// Plan v0.3 P6: the pool for a verify window.
+void drive_pool_multi(void* user, const float* x_f, const int32_t* ids, int64_t n_tok, int64_t k, float* out,
+                      int64_t layer);
+
+/// Layer split: every verify stage shares one Drive (its counters, usage and failure flags); the GPU plan, the expert
+/// cache and the PCIe share the pool uses for a layer are those of the stage that runs it.
+struct SplitDrive {
+    static constexpr int kMax = 8;
+    Drive* base = nullptr;
+    int n = 0;                                    ///< stages
+    int64_t end[kMax] = {};                       ///< stage i runs the layers from end[i - 1] (0) below end[i]
+    strata::core::GpuPlanSink* plan[kMax] = {};
+    const uint8_t* cache_base[kMax] = {};
+    const uint64_t* cache_slot_off[kMax] = {};
+    int pcie_num[kMax] = {};
+};
+/// Layer split: the pool for a verify window, routed to the stage that runs the layer (`user` is a SplitDrive).
+void drive_pool_split(void* user, const float* x_f, const int32_t* ids, int64_t n_tok, int64_t k, float* out,
+                      int64_t layer);
+
+/// Layer split across GPUs: a later stage on its own device, with its own copy of the dense weights, a session, an
+/// expert cache for its layers, a verify window and a prompt path; the last one also holds the head (the drafter
+/// lives on its device too).
+struct GpuStage {
+    int dev = 0;
+    int64_t lb = 0, le = 0;
+    double pcie_frac = 0.0;
+    double link_gbps = 0.0;   ///< this card's probed host->device bandwidth (PcieAuto's per-stage share)
+    strata::core::WeightTable wt;
+    strata::core::NativeDense dense;
+    strata::core::NativeHead head;
+    strata::core::SessionState ss;
+    cudaStream_t stream = nullptr;
+    strata::core::ExpertCache cache;
+    std::vector<std::pair<int32_t, int32_t>> profile;   ///< its layers' share of the profile, hottest first
+    int32_t* d_res = nullptr;                            ///< the residency table on its device
+    strata::core::Verifier ver;
+    strata::core::Verifier ver_b;                        ///< --pipeline-windows: the odd windows' verifier
+    strata::prefill::Prefill sp;
+    cudaStream_t adapt_stream = nullptr;
+    cudaEvent_t adapt_ev = nullptr;
+    bool adapt_live = false;                             ///< swaps of this request are in flight on it
+    int32_t* mrope = nullptr;                            ///< --vision: the image-position table on its device
+};
+
+/// Qwen3.8's model as `strata` loads it from its settings: weights, head, per-layer embeddings, session, drafter,
+/// expert sources, expert cache and CPU pool, and the stages of a layer split. Owns them; the GPU buffers held as raw
+/// pointers (`arena`, `sbuf`, `d_parts`, `d_logits`, ...) are freed by the program that loaded it, at its end.
+class Model {
+public:
+    /// Keeps `o`, which load() reads and adjusts (for example the expert cache's size when it is `auto`).
+    explicit Model(Options& o) : o(o) {}
+
+    /// Applies the process-wide settings in `o`, checks them, and loads everything this class holds. Returns 0 when the
+    /// model is up, otherwise the exit status for main() (the reason has been printed).
+    int load();
+
+    /// Gets the stage that runs layer `l` with a layer split (0: CUDA0's).
+    int stage_of(int64_t l) const;
+    /// Gets the bytes of the GDN state that one snapshot of session `s0` copies.
+    size_t gdn_snapshot_bytes(const strata::core::SessionState& s0) const;
+
+    Options& o;                      ///< the engine's settings, owned by the caller
+    int primary_device = 0;          ///< STRATA_PRIMARY_DEVICE: the visible device the engine's own session runs on
+    bool pcie_given = false;         ///< --pcie-frac was given: every stage takes that share, no probe
+    std::vector<int64_t> split_at;   ///< --layer-split: the first layer of each later stage
+    std::vector<int> split_devs;     ///< the device of each later stage
+    bool split_auto = false;         ///< --layer-split auto: the split points are searched once the weights are in
+    bool split_same = false;         ///< a split on one GPU (--split-device 0)
+    /// A layer split across GPUs; cleared by --split-skip-if-fits before any stage loads
+    bool multi_gpu = false;
+    bool remote_caches = false;      ///< --expert-cache-remote asks for a helper GPU's expert cache
+    strata::kernels::RopeScaling rope_cfg;   ///< the context extension, resolved from the flags and the model file
+    std::string err;                 ///< the last failure's message
+    bool native_pack = false;        ///< the pack holds native (IQ / Q-K) experts, run by verify windows only
+    strata::core::ModelGeometry g;
+    int64_t K = 0;                   ///< experts per token
+    uint64_t pool_bytes = 0;         ///< the size of `arena`
+    void* arena = nullptr;           ///< the device memory the pack's dense weights live in
+    strata::core::WeightTable wt;
+    strata::core::NativeDense native_dense;
+    int32_t* d_mrope = nullptr;       ///< --vision: each cell's (t, h, w) for the rope kernels, on the device
+    std::vector<int32_t> mrope_host;  ///< ... and its host copy
+    std::string cvec_summary = "0";   ///< the loaded control vectors as INFO reports them
+    uint64_t cvec_digest = 0;         ///< identifies the loaded control vectors, for session files (0: none)
+    strata::core::SessionState ss;    ///< the engine's own session
+    void* sbuf = nullptr;             ///< `ss`'s memory, sized to CUDA0's own layer range after the layer-split search
+    cudaStream_t main_stream = nullptr;
+    void* main_cs = nullptr;          ///< `main_stream` as the session functions take it
+    uint64_t half_stride = 0;         ///< --dump-halves: the floats of one layer's record
+    std::FILE* half_dump = nullptr;   ///< --dump-halves: the file
+    float* half_stage = nullptr;      ///< --dump-halves: the pinned staging buffer the graphs copy into
+    strata::core::Doorbell db;        ///< the GPU's hand-off to the CPU expert pool
+    strata::kernels::PleTable ple_table;   ///< the per-layer embedding table (in the model's second GGUF shard)
+    float* d_parts = nullptr;         ///< the CPU pool's expert outputs, K rows, on the device
+    std::vector<std::unique_ptr<GpuStage>> stages;   ///< a layer split's later stages, in layer order
+    GpuStage* last_st = nullptr;      ///< the last of `stages` (it holds the head), or null without a split
+    bool mtp_first = false;           ///< --pipeline-windows: the drafter runs on the first stage's card
+    std::vector<std::pair<int32_t, int32_t>> profile;          ///< CUDA0's (layer, expert) pairs, hottest first
+    std::vector<std::pair<int32_t, int32_t>> profile_loaded;   ///< --expert-profile-save: the whole ranking as loaded
+    bool pf_borrow = false;           ///< the prompt path borrows expert-cache slots instead of owning its buffers
+    std::vector<std::pair<int32_t, int32_t>> profile_all;      ///< a layer split's whole ranking, before stages' shares
+    /// The layer ranges a session is carved in, one per stage (the engine's own session and each batch slot's alike)
+    std::vector<std::pair<int64_t, int64_t>> session_layers;
+    bool batch_mtp = false;           ///< --batch-mtp or STRATA_BATCH_MTP: batch slots draft with the MTP layer
+    /// --batch: each slot's session, one per stage
+    std::vector<std::vector<std::unique_ptr<strata::core::SessionState>>> bslot_ss;
+    strata::core::MtpDrafter mtp;
+#if defined(STRATA_HAVE_DFLASH2)
+    strata::core::Dflash2Drafter df2;   ///< --draft dflash2 (CLI spec loop only)
+    bool use_df2 = false;
+#endif
+    /// The draft layer's geometry (the canonical model's MTP head), `static` because MtpDrafter keeps a reference; the
+    /// batch slots' draft-KV copies use this one too
+    static inline const strata::core::ModelGeometry draft_geometry{};
+    std::vector<std::unique_ptr<strata::core::MtpDrafter>> slot_mtp;   ///< --batch-mtp: each batch slot's drafter
+    const strata::core::WeightRef* wo = nullptr;   ///< the canonical head's weight (output.weight)
+    int64_t n_vocab = 0;
+    strata::core::NativeHead native_head;
+    std::vector<float> logits;          ///< one row of logits on the host
+    float* d_logits = nullptr;          ///< one row of logits on the device
+    bool prefill_head_alias_bound = false;          ///< --prefill-head-alias: the prompt path's head is the decode's
+    const void* prefill_head_alias_at = nullptr;    ///< where the head came back the first time
+    strata::core::FileExpertSource src;   ///< the experts read from the files in place
+    strata::core::ArenaExpertSource arena_src;   ///< the experts in a RAM arena
+    strata::core::ExpertSource* srcp = nullptr;   ///< the one of the two the engine reads experts from (null: none)
+    /// The CPU expert pool. In an optional because it starts its threads when constructed, after the expert source
+    std::optional<strata::kernels::cpu::ExpertPool> cpu_pool;
+    strata::core::ExpertCache xcache;   ///< CUDA0's expert cache (VRAM slots)
+    bool auto_cache = false;            ///< --expert-cache auto: the cache was sized to the free VRAM
+    bool reserve_adapted = false;       ///< #496: the auto sizing lowered the reserve so a small card's cache fits
+    std::array<strata::core::RemoteExperts, 3> remote_experts;   ///< --expert-cache-remote: the helper GPUs' caches
+    std::unique_ptr<strata::core::RemoteExpertOpt> remote_opt;   ///< --remote-expert-opt
+    strata::core::PeerExperts peer;     ///< --peer-device: the second GPU's expert tier
+    Drive drive;                        ///< the CPU pool's adapter, which the layers call with their missed experts
+    strata::core::RouterLookahead lookahead;   ///< routing-aware prefetch of the file tier
+    std::FILE* routing = nullptr;       ///< --dump-routing: the file
+    strata::core::PoolFn pool_fn = nullptr;   ///< what a layer calls for its missed experts (null: --no-pool)
+    strata::core::HitFn hit_fn = nullptr;     ///< what a layer calls for its cached experts (null: no cache)
+    void* pool_user = nullptr;                ///< `pool_fn`'s argument
+    strata::core::SessionGraphs gr;     ///< the captured layer graphs (a canonical pack only)
+
+private:
+    strata::core::NativeEmbed native_embed;   ///< the native pack's embedding table, which set_native_embed points to
+    std::vector<float> ple_emb_host;          ///< the per-layer embedding row `ss.ple` stages on the host
+};
+
+/// Gets " (N MiB of M MiB VRAM free on this GPU)" for an allocation's failure message (clears the CUDA error first).
+std::string vram_free_note();
+/// Gets the share (%) of an expert cache's slots the prompt path may borrow with --prefill auto.
+int64_t get_auto_lend_pct();
+/// Prints the VRAM left after a step of the startup when STRATA_TRACE is set (and checks the device with 2).
+void mem_mark(const char* where);
+/// Tells whether PcieAuto also refines a layer split's shares (opt-in, STRATA_PCIE_AUTO_SPLIT=1).
+bool pcie_auto_split_ok();
+/// Tells whether the HIP defaults of the decode speed push apply to the current card (gfx12; always on CUDA).
+bool decode_defaults_arch_ok();
+/// Gets the host-to-device bandwidth the last PCIe probe measured, GB/s (<= 0: none ran).
+double get_last_h2d_gbps();
+#if !defined(_WIN32)
+/// Tells whether `path` is on a rotational disk (1), not (0) or unknown (-1), from sysfs; `dev` gets the disk's name.
+int on_rotational_disk(const std::string& path, std::string& dev);
+#endif
+
+}  // namespace strata::qwen38

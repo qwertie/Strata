@@ -1,4 +1,4 @@
-// include/strata/program/batch_groups.hpp - how many pipelined slot groups `--batch` runs with.
+// include/strata/models/qwen38/batch_groups.hpp - how many pipelined slot groups `--batch` runs with.
 //
 // `--batch-groups N` pipelines N groups of slots through the stages of a layer split; `--batch-groups auto` picks the
 // most groups (at most one per stage) that divide the slots.  Since 0.1.41 a layer split with `--batch` >= 2 and no

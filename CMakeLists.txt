@@ -308,7 +308,7 @@ if(STRATA_BUILD_TESTS)
   add_test(NAME tuning_header_arch_family_test COMMAND tuning_header_arch_family_test)
 
   # the auto layer split's minimum stage size (#1616): header-only rule, no GPU
-  add_executable(split_rules_test tests/program/split_rules_test.cpp)
+  add_executable(split_rules_test src/models/qwen38/split_rules_test.cpp)
   target_include_directories(split_rules_test PRIVATE include)
   add_test(NAME split_rules_test COMMAND split_rules_test)
 
@@ -769,10 +769,15 @@ if(STRATA_ENABLE_CUDA OR STRATA_ENABLE_HIP)
   target_include_directories(dflash2_attn_bench PRIVATE ${_strata_gpu_include_directories})
   target_link_libraries(dflash2_attn_bench PRIVATE strata_kernels ${_strata_gpu_runtime_target})
 
+  # Qwen3.8's model loader (strata::qwen38::Model), which the `strata` program below calls
+  add_library(strata_qwen38 STATIC src/models/qwen38/model.cpp)
+  target_include_directories(strata_qwen38 PRIVATE ${_strata_gpu_include_directories})
+  target_link_libraries(strata_qwen38 PUBLIC strata_engine strata_prefill ${_strata_gpu_runtime_target})
+
   add_executable(strata src/program/generate.cpp)
   strata_utf8_manifest(strata)
   target_include_directories(strata PRIVATE ${_strata_gpu_include_directories})
-  target_link_libraries(strata PRIVATE strata_engine strata_prefill strata_spec strata_serve
+  target_link_libraries(strata PRIVATE strata_qwen38 strata_engine strata_prefill strata_spec strata_serve
                         ${_strata_gpu_runtime_target})
   if(WIN32 AND STRATA_ENABLE_HIP)
     # 0.2.1.2: the ROCm math libraries live in <package>\rocm\bin, which is on PATH only when the launcher starts the engine; load them on first
@@ -1648,7 +1653,7 @@ if(STRATA_BUILD_TESTS OR STRATA_BUILD_CONVERSATION_TESTS)
   target_include_directories(batch_rows_test PRIVATE include)
   add_test(NAME batch_rows_test COMMAND batch_rows_test)
   # how many pipelined slot groups --batch runs with: the 0.1.41 default, and --batch-mtp keeping it serial (header-only, CPU)
-  add_executable(batch_groups_test src/program/batch_groups_test.cpp)
+  add_executable(batch_groups_test src/models/qwen38/batch_groups_test.cpp)
   target_include_directories(batch_groups_test PRIVATE include)
   add_test(NAME batch_groups_test COMMAND batch_groups_test)
 endif()

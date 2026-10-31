@@ -1,11 +1,11 @@
-// src/program/batch_groups_test.cpp - how many pipelined slot groups --batch runs with (header-only, CPU).
+// src/models/qwen38/batch_groups_test.cpp - how many pipelined slot groups --batch runs with (header-only, CPU).
 //
 //   1. `auto` picks the most groups, at most one per stage, that divide the slots;
 //   2. a layer split with --batch >= 2 and no --batch-groups means `auto` (0.1.41);
 //   3. --batch-mtp (or --adapt-async 1) turns that default into one group, and says which feature did it;
 //   4. a number or `auto` given explicitly is honoured, with or without those features;
 //   5. no layer split: the number given (1) stays.
-#include "strata/program/batch_groups.hpp"
+#include "strata/models/qwen38/batch_groups.hpp"
 
 #include <cstdio>
 
