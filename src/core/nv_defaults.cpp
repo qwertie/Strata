@@ -1,4 +1,5 @@
 // src/core/nv_defaults.cpp - see include/strata/core/nv_defaults.hpp.
+#include "strata/base/platform/env.hpp"
 #include "strata/core/nv_defaults.hpp"
 
 #include "strata/base/gpu/emulate.hpp"
@@ -53,11 +54,7 @@ std::vector<std::string> apply_nv_defaults(int major, int minor) {
     std::vector<std::string> set;
     for (const auto& kv : nv_default_env(major, minor)) {
         if (std::getenv(kv.first.c_str()) != nullptr) continue;   // the user's setting wins, whatever it is
-#if defined(_WIN32)
-        _putenv_s(kv.first.c_str(), kv.second.c_str());
-#else
-        setenv(kv.first.c_str(), kv.second.c_str(), 0);
-#endif
+        strata::platform::set_env(kv.first.c_str(), kv.second.c_str());
         set.push_back(kv.first);
     }
     if (!set.empty()) {
@@ -81,14 +78,8 @@ void apply_spec_adapt_default(int major, int minor) {
     if (const char* v = std::getenv("STRATA_SPEC_ADAPT_SM86"); v == nullptr || v[0] != '1') return;
     if (off("STRATA_SM86_PERF")) return;
     const std::pair<const char*, const char*> kv[2] = {{"STRATA_SPEC_ADAPT_EVERY", "2"}, {"STRATA_SPEC_ADAPT_WARM", "200"}};
-    for (const auto& p : kv) {
-        if (std::getenv(p.first) != nullptr) continue;
-#if defined(_WIN32)
-        _putenv_s(p.first, p.second);
-#else
-        setenv(p.first, p.second, 0);
-#endif
-    }
+    for (const auto& p : kv)
+        strata::platform::set_env(p.first, p.second, false);
 }
 
 }  // namespace strata::core

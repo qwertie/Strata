@@ -1,3 +1,4 @@
+#include "strata/base/platform/env.hpp"
 #include "strata/core/expert_source.hpp"
 #include "strata/core/foresight_swap.hpp"
 #include "strata/common/kernels/cpu/expert.hpp"
@@ -532,12 +533,10 @@ void test_cgroup_memory_budget() {
 }
 
 void set_env(const char* name, const char* value) {
-#if defined(_WIN32)
-    _putenv_s(name, value != nullptr ? value : "");
-#else
-    if (value != nullptr) setenv(name, value, 1);
-    else unsetenv(name);
-#endif
+    if (value != nullptr)
+        strata::platform::set_env(name, value);
+    else
+        strata::platform::unset_env(name);
 }
 
 // #286: the unbuffered file tier (Windows: FILE_FLAG_NO_BUFFERING; Linux: O_DIRECT + io_submit) hands out the same
@@ -729,11 +728,7 @@ void test_io_prefetch() {
 void test_rotating_source(bool rotate, bool pin) {
     using namespace strata::core;
     using namespace strata::kernels::cpu;
-#if defined(_WIN32)
-    _putenv_s("STRATA_EXCHANGE_ROTATE", rotate ? "1" : "0");
-#else
-    setenv("STRATA_EXCHANGE_ROTATE", rotate ? "1" : "0", 1);
-#endif
+    strata::platform::set_env("STRATA_EXCHANGE_ROTATE", rotate ? "1" : "0");
     TempDirectory dir;
     std::string err;
     require(expert_layout_load(dir.path.string(), 1, 5, err), err);
@@ -819,11 +814,7 @@ void test_rotating_source(bool rotate, bool pin) {
 void test_foresight_exchange(bool two_phase) {
     using namespace strata::core;
     using namespace strata::kernels::cpu;
-#if defined(_WIN32)
-    _putenv_s("STRATA_EXCHANGE_ROTATE", "0");
-#else
-    setenv("STRATA_EXCHANGE_ROTATE", "0", 1);
-#endif
+    strata::platform::set_env("STRATA_EXCHANGE_ROTATE", "0");
     TempDirectory dir;
     std::string err;
     require(expert_layout_load(dir.path.string(), 1, 5, err), err);
@@ -908,11 +899,7 @@ void test_foresight_exchange(bool two_phase) {
 void test_replace_resident(bool pin) {
     using namespace strata::core;
     using namespace strata::kernels::cpu;
-#if defined(_WIN32)
-    _putenv_s("STRATA_EXCHANGE_ROTATE", "0");
-#else
-    setenv("STRATA_EXCHANGE_ROTATE", "0", 1);
-#endif
+    strata::platform::set_env("STRATA_EXCHANGE_ROTATE", "0");
     TempDirectory dir;
     std::string err;
     require(expert_layout_load(dir.path.string(), 1, 5, err), err);

@@ -8,6 +8,7 @@
 // once (or on CUDA, where the read is not built) the read reports that it did not run and the test passes as a skip.
 // `--off`: with STRATA_HC_PERSIST unset the persistent read must never run (the default path is untouched).
 // GPU, synthetic, no model.
+#include "strata/base/platform/env.hpp"
 #include "strata/models/qwen38/kernels/fused_gr.hpp"
 
 #include <cuda_runtime.h>
@@ -52,8 +53,8 @@ T* dev(size_t n) {
 
 int main(int argc, char** argv) {
     const bool off = argc > 1 && std::strcmp(argv[1], "--off") == 0;
-    if (off) unsetenv("STRATA_HC_PERSIST");
-    else setenv("STRATA_HC_PERSIST", "1", 1);
+    if (off) strata::platform::unset_env("STRATA_HC_PERSIST");
+    else strata::platform::set_env("STRATA_HC_PERSIST", "1");
     k::fused_gr_check();
     k::fused_gr_persist_init();
 

@@ -1,5 +1,6 @@
 // src/models/qwen38/options.cpp - the Qwen3.8 engines' command line: the help text, the option parser and the
 // per-device defaults applied before any engine code reads its switches (options.hpp).
+#include "strata/base/platform/env.hpp"
 #include "strata/models/qwen38/options.hpp"
 
 #include "strata/base/gpu/gfx_arch.hpp"
@@ -820,18 +821,12 @@ void prepare_process(int argc, char** argv) {
     // 32 GB PC ran with ~0.3 GB free: the kernel swapped, and a turn's checkpoint took 25-80 s.  Above this size
     // ROCclr stages through its own pinned buffers instead; decode is unchanged (49.06 vs 49.16 ms/window).
     if (std::getenv("STRATA_ARENA_MMAP") && std::getenv("STRATA_ARENA_MMAP")[0] == '1')
-        setenv("GPU_PINNED_MIN_XFER_SIZE", "1000000", 0);   // MiB; an explicit setting wins
+        strata::platform::set_env("GPU_PINNED_MIN_XFER_SIZE", "1000000", false);   // MiB; an explicit setting wins
 #endif
     // Load every CUDA kernel when the context is created, before the expert cache takes the free VRAM.  With the
     // default lazy loading, a kernel first used mid-prompt (MMQ for IQ3_XXS at 64K+ on a 12 GB card) found no VRAM
     // left for its code and the engine ended ("out of memory: cudaFuncSetAttribute").  Costs ~30 MB of VRAM.
-    if (std::getenv("CUDA_MODULE_LOADING") == nullptr) {
-#if defined(_WIN32)
-        _putenv_s("CUDA_MODULE_LOADING", "EAGER");
-#else
-        setenv("CUDA_MODULE_LOADING", "EAGER", 0);
-#endif
-    }
+    strata::platform::set_env("CUDA_MODULE_LOADING", "EAGER", false);
     if (is_launch_blocking())
         std::fprintf(stderr, "warning: CUDA_LAUNCH_BLOCKING=1: the verify windows cannot run with blocking launches, so "
                              "the first one after a prompt hangs until the watchdog ends the engine (#1341). Unset it; "
@@ -850,13 +845,8 @@ void prepare_process(int argc, char** argv) {
         const char* prev = std::getenv(envname);
         if (prev && prev[0] && std::string(prev) != argv[i + 1])
             std::fprintf(stderr, "warning: --gpu %s overrides %s=%s from the environment\n", argv[i + 1], envname, prev);
-#if defined(_WIN32)
-        _putenv_s("CUDA_DEVICE_ORDER", "PCI_BUS_ID");
-        _putenv_s(envname, argv[i + 1]);
-#else
-        setenv("CUDA_DEVICE_ORDER", "PCI_BUS_ID", 1);
-        setenv(envname, argv[i + 1], 1);
-#endif
+        strata::platform::set_env("CUDA_DEVICE_ORDER", "PCI_BUS_ID");
+        strata::platform::set_env(envname, argv[i + 1]);
         break;
     }
 }

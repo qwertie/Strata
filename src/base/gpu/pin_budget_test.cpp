@@ -1,5 +1,6 @@
 // pin_budget_test: the pinned-memory headroom (include/strata/base/gpu/pin_budget.hpp) with the simulated ceiling.
 // Needs a GPU for the pinned calls; without one it prints SKIP and passes.
+#include "strata/base/platform/env.hpp"
 #include "strata/base/gpu/pin_budget.hpp"
 
 #include <cstdio>
@@ -12,16 +13,10 @@ static int g_fail = 0;
         if (!(c)) { std::fprintf(stderr, "FAIL %s:%d  %s\n", __FILE__, __LINE__, #c); ++g_fail; } \
     } while (0)
 
-#ifdef _WIN32
-#define SETENV(k, v) _putenv_s(k, v)
-#else
-#define SETENV(k, v) setenv(k, v, 1)
-#endif
-
 int main() {
     // the singleton reads its environment on first use: set everything first
-    SETENV("STRATA_TEST_PIN_BUDGET_MIB", "100");
-    SETENV("STRATA_PIN_RESERVE_MIB", "32");   // soft 32 MiB, hard 64 MiB (a quarter of 32 is below the 64 MiB floor)
+    strata::platform::set_env("STRATA_TEST_PIN_BUDGET_MIB", "100");
+    strata::platform::set_env("STRATA_PIN_RESERVE_MIB", "32");   // soft 32 MiB, hard 64 MiB (a quarter of 32 is below the 64 MiB floor)
     using namespace strata::core;
     if (cudaFree(0) != cudaSuccess) {
         std::printf("pin_budget_test: SKIP (no GPU)\n");

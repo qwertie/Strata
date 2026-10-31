@@ -1,5 +1,6 @@
 // Capacity 262144, live prefill up to the register boundary, and the legacy fallbacks.
 // Compare selected IDs only: unused output padding is not part of the API contract.
+#include "strata/base/platform/env.hpp"
 #include "strata/models/qwen38/kernels/qsa.hpp"
 #include "strata/models/qwen38/kernels/qsa_select.hpp"
 #include <cuda_runtime.h>
@@ -78,11 +79,7 @@ int main() {
         return 77;
     }
     // the active-bound dispatch is Turing's in the engine; forced here so every CUDA card checks it
-#if defined(_WIN32)
-    _putenv_s("STRATA_TOPK_ACTIVE_ANY", "1");
-#else
-    setenv("STRATA_TOPK_ACTIVE_ANY", "1", 1);
-#endif
+    strata::platform::set_env("STRATA_TOPK_ACTIVE_ANY", "1");
     const Case cases[] = {
         {1111, 256, 0}, {8192, 256, 0}, {32768, 256, 0}, {131072, 256, 0},
         {131075, 255, 0}, {135164, 256, 0}, {135168, 256, 0}, {250022, 256, 0},

@@ -1,4 +1,5 @@
 // src/core/arch_defaults.cpp - see include/strata/core/arch_defaults.hpp.
+#include "strata/base/platform/env.hpp"
 #include "strata/core/arch_defaults.hpp"
 
 #include "strata/base/gpu/gfx_arch.hpp"
@@ -106,19 +107,11 @@ std::vector<std::pair<std::string, std::string>> igpu_default_env(const char* gc
     return t;
 }
 
-static void set_default(const std::pair<std::string, std::string>& kv) {
-#if defined(_WIN32)
-    _putenv_s(kv.first.c_str(), kv.second.c_str());
-#else
-    setenv(kv.first.c_str(), kv.second.c_str(), 0);
-#endif
-}
-
 std::vector<std::string> apply_arch_defaults(const char* gcn_arch, bool integrated) {
     std::vector<std::string> set;
     for (const auto& kv : arch_default_env(gcn_arch)) {
         if (std::getenv(kv.first.c_str()) != nullptr) continue;   // the user's setting wins, whatever it is
-        set_default(kv);
+        strata::platform::set_env(kv.first.c_str(), kv.second.c_str());
         set.push_back(kv.first);
     }
     if (!set.empty()) {
@@ -133,7 +126,7 @@ std::vector<std::string> apply_arch_defaults(const char* gcn_arch, bool integrat
     std::vector<std::string> igpu;
     for (const auto& kv : igpu_default_env(gcn_arch, integrated)) {
         if (std::getenv(kv.first.c_str()) != nullptr) continue;
-        set_default(kv);
+        strata::platform::set_env(kv.first.c_str(), kv.second.c_str());
         igpu.push_back(kv.first);
     }
     if (!igpu.empty()) {

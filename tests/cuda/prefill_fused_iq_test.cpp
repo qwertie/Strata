@@ -14,6 +14,7 @@
 // top 10) on both paths and on MMQ's products alone (no gathers), for the IQ2_XS, IQ3_XXS and IQ3_S packs' most
 // common layers, with the grouping checked and a sample of rows against the reference.  --no-ref, --no-timing,
 // --only=NAME, --chunks=A,B.  Exit 77 without a CUDA device of sm_80 or newer.
+#include "strata/base/platform/env.hpp"
 #include "strata/common/kernels/prefill/moe_fused_iq.hpp"
 #include "strata/common/kernels/prefill/moe_mmq.hpp"
 
@@ -643,12 +644,8 @@ void timing_part(const Pair& p, int T, cudaStream_t s) {
 
 int main(int argc, char** argv) {
     try {
-#ifdef _WIN32
-        _putenv_s("STRATA_PF_FUSED", "1");
-#else
-        setenv("STRATA_PF_FUSED", "1", 1);
-        setenv("STRATA_PF_FUSED_KQ", "1", 1);   // (the HIP build's Q4_K / Q5_K / Q5_1 / Q8_0 pairs)
-#endif
+        strata::platform::set_env("STRATA_PF_FUSED", "1");
+        strata::platform::set_env("STRATA_PF_FUSED_KQ", "1");   // (the HIP build's Q4_K / Q5_K / Q5_1 / Q8_0 pairs)
         int n = 0;
         if (cudaGetDeviceCount(&n) != cudaSuccess || n == 0) { std::printf("no CUDA device: skipped\n"); return 77; }
         // gfx12: only the native kernels exist (fused::available() is the Q2_0 pack's), so they decide there

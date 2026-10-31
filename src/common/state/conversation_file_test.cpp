@@ -1,5 +1,6 @@
 // CPU-only tests for the on-disk session format (include/strata/common/state/conversation_file.hpp).
 // Built with -DSTRATA_BUILD_CONVERSATION_TESTS=ON; no CUDA, no model.
+#include "strata/base/platform/env.hpp"
 #include "strata/common/state/conversation_file.hpp"
 #include "strata/common/state/session_save_reclaim.hpp"
 
@@ -29,11 +30,10 @@ namespace fs = std::filesystem;
 
 namespace {
 void set_env(const char* name, const char* value) {
-#ifdef _WIN32
-    _putenv_s(name, value ? value : "");
-#else
-    if (value) setenv(name, value, 1); else unsetenv(name);
-#endif
+    if (value)
+        strata::platform::set_env(name, value);
+    else
+        strata::platform::unset_env(name);
 }
 int checks = 0;
 void check(bool ok, const char* label) {

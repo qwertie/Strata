@@ -16,6 +16,7 @@
 //
 // The old paths are reached through the public dispatchers with STRATA_QSA_CLUSTER=0 / STRATA_ARGMAX_MULTI=0, set
 // here before their first call (they read the variables once).
+#include "strata/base/platform/env.hpp"
 #include "strata/models/qwen38/kernels/qsa.hpp"
 #include "strata/models/qwen38/kernels/qsa_select.hpp"
 #include "strata/common/kernels/sampler.hpp"
@@ -43,13 +44,7 @@ void ck(cudaError_t e, const char* what) {
     }
 }
 
-void set_env(const char* name, const char* value) {
-#if defined(_WIN32)
-    _putenv_s(name, value);
-#else
-    setenv(name, value, 1);
-#endif
-}
+using strata::platform::set_env;
 
 template <typename T> struct Dev {
     T* p = nullptr;

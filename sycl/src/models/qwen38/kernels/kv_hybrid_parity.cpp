@@ -9,6 +9,7 @@
 //   4. qsa_decode_attn<3> + output fwht vs a host attention over the SAME dequantized K/V (fp32 math), and
 //      bounded against the fp32-true attention from the unquantized K/V.
 #define DPCT_PROFILING_ENABLED
+#include "strata/base/platform/env.hpp"
 #include <sycl/sycl.hpp>
 #include <dpct/dpct.hpp>
 #include "strata/common/kernels/f16_bits.hpp"
@@ -87,7 +88,7 @@ int main() {
     // SYCL port: qsa_prompt_attn's tensor-core (mma.sync PTX) kernel is not ported; on SYCL the prompt attention this
     // test's last step checks exists as the XMX kernel (opt-in in the engine, where the FP32 fallback is faster).
     // Test the kernel the port has, unless the caller chose (STRATA_PROMPT_ATTN_XMX=0 shows the refusal).
-    setenv("STRATA_PROMPT_ATTN_XMX", "1", 0);
+    strata::platform::set_env("STRATA_PROMPT_ATTN_XMX", "1", false);
     std::printf("=== Running kv_hybrid_parity test ===\n");
     k::QsaShapes s = k::qsa_real_shapes();
     s.page_size = 64;

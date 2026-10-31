@@ -15,6 +15,7 @@
 // (< 64 tokens) and the output norm are part of what is compared - the recurrence kernels' raw FP32 output for
 // the kernel comparisons (0.1.38's gdn_out_norm_kernel leaves it in place and writes only the FP16 copy), and
 // the norm's FP16 output once against the host reference's normalized values.
+#include "strata/base/platform/env.hpp"
 #include "strata/models/qwen38/prefill/gdn_chunk.hpp"
 #include "strata/models/qwen38/prefill/kernels.hpp"
 
@@ -183,8 +184,8 @@ void run_case(int64_t T, uint64_t seed) {
         y_fast(y_ref.size()), st_fast(st0.size()), y_fma(y_ref.size()), st_fma(st0.size());
     auto run = [&](const char* chunk, const char* warp, std::vector<float>& y, std::vector<float>& st,
                    std::vector<float>* y16f = nullptr) {
-        setenv("STRATA_GDN_CHUNK", chunk, 1);
-        setenv("STRATA_GDN_REC_WARP", warp, 1);
+        strata::platform::set_env("STRATA_GDN_CHUNK", chunk);
+        strata::platform::set_env("STRATA_GDN_REC_WARP", warp);
         check(cudaMemcpy(d_st, d_st0, st0.size() * 4, cudaMemcpyDeviceToDevice), "D2D");
         strata::prefill::gdn_recurrence(d_st, d_h, d_g, d_b, d_z, d_ga, eps, d_y, d_y16, T, nullptr);
         check(cudaDeviceSynchronize(), "sync");

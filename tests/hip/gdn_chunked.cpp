@@ -1,5 +1,6 @@
 // Exercise the public opt-in dispatch, including tails, padded rows and a nonzero carried state.  The FP32
 // recurrence is the all-head reference; short cases also use an independent double-precision CPU recurrence.
+#include "strata/base/platform/env.hpp"
 #include "strata/models/qwen38/prefill/kernels.hpp"
 #include "strata/base/gpu/gfx_arch.hpp"
 #include <cuda_runtime.h>
@@ -18,13 +19,6 @@ constexpr int S = 128, HK = 16, HV = 48, C = 10240, ROW = HV * S;
 constexpr uint16_t SENTINEL = 0x7bff;
 void ck(cudaError_t e, const char* where) {
     if (e != cudaSuccess) { std::fprintf(stderr, "%s: %s\n", where, cudaGetErrorString(e)); std::exit(2); }
-}
-void setting(const char* key, const char* value) {
-#ifdef _WIN32
-    if (_putenv_s(key, value)) std::exit(2);
-#else
-    if (setenv(key, value, 1)) std::exit(2);
-#endif
 }
 template<class X> X* upload(const std::vector<X>& v) {
     X* p = nullptr;
@@ -189,16 +183,11 @@ void bench(const char* path) {
 int main(int argc, char** argv) {
     const bool bench_default = argc > 1 && std::strcmp(argv[1], "--bench-default") == 0;
     const bool off = argc > 1 && (std::strcmp(argv[1], "--off") == 0 || std::strcmp(argv[1], "--default") == 0 || bench_default);
-    setting("STRATA_GDN_CHUNKED", off ? "0" : "1");
-    setting("STRATA_GDN_HEAD", "1"); setting("STRATA_GDN_PP", "2");
-    if (argc > 1 && std::strncmp(argv[1], "--bench", 7) == 0) setting("STRATA_GDN_NOY", "1");   // gfx1151's default
-#ifdef _WIN32
-    _putenv_s("STRATA_GDN_REC_HEADS", "");
-    if (argc > 1 && std::strcmp(argv[1], "--default") == 0) _putenv_s("STRATA_GDN_CHUNKED", "");
-#else
-    unsetenv("STRATA_GDN_REC_HEADS");
-    if (argc > 1 && std::strcmp(argv[1], "--default") == 0) unsetenv("STRATA_GDN_CHUNKED");
-#endif
+    strata::platform::set_env("STRATA_GDN_CHUNKED", off ? "0" : "1");
+    strata::platform::set_env("STRATA_GDN_HEAD", "1"); strata::platform::set_env("STRATA_GDN_PP", "2");
+    if (argc > 1 && std::strncmp(argv[1], "--bench", 7) == 0) strata::platform::set_env("STRATA_GDN_NOY", "1");   // gfx1151's default
+    strata::platform::unset_env("STRATA_GDN_REC_HEADS");
+    if (argc > 1 && std::strcmp(argv[1], "--default") == 0) strata::platform::unset_env("STRATA_GDN_CHUNKED");
     int device = 0;
     cudaDeviceProp props{};
     ck(cudaGetDevice(&device), "device"); ck(cudaGetDeviceProperties(&props, device), "properties");

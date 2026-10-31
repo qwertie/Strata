@@ -10,6 +10,7 @@
 // then times both over a prompt chunk (the old one in batches of 32, as prefill.cpp calls it).
 // HIP builds (S6): the same checks for the RDNA4 matrix-core kernel (STRATA_HIP_WMMA), skipped (77) off gfx12.
 // Usage: qsa_prompt_attn_parity [context=32768] [queries=2048] [reps=5]
+#include "strata/base/platform/env.hpp"
 #include "strata/models/qwen38/kernels/qsa.hpp"
 #include "strata/models/qwen38/kernels/qsa_decode_attn.hpp"
 #include "strata/models/qwen38/kernels/qsa_prompt_attn.hpp"
@@ -355,11 +356,7 @@ int main(int argc, char** argv) {
             std::printf("SKIP: %s is not gfx11 / gfx12 (the matrix-core prompt attention)\n", prop.gcnArchName);
             return 77;
         }
-#if defined(_WIN32)
-        _putenv_s("STRATA_HIP_WMMA", "1");
-#else
-        setenv("STRATA_HIP_WMMA", "1", 1);
-#endif
+        strata::platform::set_env("STRATA_HIP_WMMA", "1");
     }
 #endif
     const int64_t ctx = argc > 1 ? std::atoll(argv[1]) : 32768;

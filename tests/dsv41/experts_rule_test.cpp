@@ -1,5 +1,6 @@
 // Strata. The experts-per-word rule of the DeepSeek V4.1 engine (src/models/deepseekv41/ds4_experts_rule.hpp): 5 on a card with 16 GiB or less, 6
 // elsewhere, --experts overrides, DS4_TOPK over both.  No GPU needed.
+#include "strata/base/platform/env.hpp"
 #include "ds4_experts_rule.hpp"
 
 #include <cstdio>
@@ -51,24 +52,12 @@ int main() {
     // a model that routes to fewer than 5: the rule never raises it
     CHECK_EQ(experts_per_word(-1, 12 * GiB, 4), 4);
     // the test override wins over the rule and the flag
-#if defined(_WIN32)
-    _putenv("DS4_TOPK=4");
-#else
-    setenv("DS4_TOPK", "4", 1);
-#endif
+    strata::platform::set_env("DS4_TOPK", "4");
     CHECK_EQ(experts_test_override(experts_per_word(-1, 96 * GiB, 6), 6), 4);
     CHECK_EQ(experts_test_override(experts_per_word(6, 12 * GiB, 6), 6), 4);
-#if defined(_WIN32)
-    _putenv("DS4_TOPK=9");
-#else
-    setenv("DS4_TOPK", "9", 1);
-#endif
+    strata::platform::set_env("DS4_TOPK", "9");
     CHECK_EQ(experts_test_override(5, 6), 5);   // out of range: ignored
-#if defined(_WIN32)
-    _putenv("DS4_TOPK=");
-#else
-    unsetenv("DS4_TOPK");
-#endif
+    strata::platform::unset_env("DS4_TOPK");
     CHECK_EQ(experts_test_override(5, 6), 5);
     // prompt chunk: prefill_chunk_default(own_default, gpu_share, gguf_copy, file_experts, hip, min_vram, big=8192).  What `strata launch` runs on one card
     // passes neither --tp nor --threads, but the engine's default tp is 2, so own_default is false there; a launch with several cards passes --tp 1.
