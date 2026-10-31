@@ -4212,20 +4212,15 @@ int Model::build_hit_tables(bool dumping_layers) {
                 std::fprintf(stderr, "strata generate: expert arena: %.2f GiB of VRAM-held experts handed back to the OS\n",
                              (double) released / (1024.0 * 1024.0 * 1024.0));
             rss_probe("after the release");
-            int64_t pf = 0;
             for (size_t i = 0; i < host_res.size(); ++i)
-                if (host_res[i] == strata::core::kNotResident) {
+                if (host_res[i] == strata::core::kNotResident)
                     srcp->prefetch((int64_t) i / g.n_expert, (int64_t) i % g.n_expert);
-                    ++pf;
-                }
-            (void) pf;
             rss_probe("after the prefetch hints");
         }
         for (auto& st : stages) {   // layer split across GPUs: the same table on every device
             const strata::core::OnDevice on(st->dev);
             if (cudaMalloc((void**) &st->d_res, host_res.size() * sizeof(int32_t)) != cudaSuccess ||
-                put_residency(st->d_res) !=
-                    cudaSuccess) {
+                put_residency(st->d_res) != cudaSuccess) {
                 std::fprintf(stderr, "strata generate: layer split: CUDA%d residency table failed\n", st->dev);
                 return 1;
             }

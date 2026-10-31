@@ -766,11 +766,12 @@ uint64_t kv_pool_bytes(const QsaShapes& s, int64_t pages, bool hybrid, bool int8
     return int8 ? (uint64_t) pages * s.page_size * strata::kernels::kv_q8_bytes_per_cell(s) + 64
                 : (uint64_t) pages * s.n_head_kv * s.page_size * s.head_dim * 2 * 2;
 }
+/// Tells whether a state of `ring_cells` (a main layer's: 0) keeps its K/V and pooled keys in the page pool's units.
+bool is_kv_in_units(int64_t ring_cells) { return g_kv_units && ring_cells <= 0; }
 }  // namespace
 
 void qsa_set_kv_resident(int64_t cells) { g_kv_resident = cells > 0 ? cells : 0; }
 void qsa_set_kv_units(bool enabled) { g_kv_units = enabled; }
-bool qsa_kv_units() { return g_kv_units; }
 int64_t qsa_kv_resident() { return g_kv_resident; }
 int64_t qsa_kv_resident_min() { return 20480; }
 uint64_t qsa_kv_host_bytes() { return g_kv_host_bytes; }
@@ -778,7 +779,7 @@ uint64_t qsa_kv_host_bytes() { return g_kv_host_bytes; }
 uint64_t qsa_state_bytes(const ModelGeometry& g, int64_t max_cells, bool with_rope, int64_t ring_cells) {
     const QsaShapes s = qsa_shapes(g);
     const KvPlan p = kv_plan(s, max_cells, ring_cells);
-    const bool units = g_kv_units && ring_cells <= 0;
+    const bool units = is_kv_in_units(ring_cells);
     uint64_t n = 0;
     if (!(g_kv_elastic && p.mode == 0) && !units)   // the elastic K/V's pools are in their own VMM range
         n += kv_pool_bytes(s, p.slots, g_kv_hybrid && ring_cells <= 0,
@@ -851,7 +852,7 @@ uint64_t qsa_state_init(const ModelGeometry& g, int64_t max_cells, void* base, Q
         } else { st.k_pool = (uint16_t*) (b + o[0]); st.v_pool = (uint16_t*) (b + o[1]); }
         st.kv_elastic = (int32_t) g_pools.size();
         g_pools.push_back(std::move(pool));
-    } else if (g_kv_units && ring_cells <= 0) {
+    } else if (is_kv_in_units(ring_cells)) {
         // the K/V and the pooled keys: in the page pool's units, set by the pool's owner
     } else if (st.kv_hybrid) {
         st.k_q = c.take<int8_t>(rows * s.head_dim);
@@ -886,7 +887,7 @@ uint64_t qsa_state_init(const ModelGeometry& g, int64_t max_cells, void* base, Q
     }
     st.idx_tail = c.take<float>((uint64_t) (s.idx_block - 1) * s.idx_dim);
     st.idx_dead = c.take<float>((uint64_t) s.idx_dim);
-    if (!(g_kv_units && ring_cells <= 0)) {
+    if (!is_kv_in_units(ring_cells)) {
         st.idx_pooled_rows = p.pooled_rows;
         st.idx_pooled = c.take<float>((uint64_t) p.pooled_rows * s.idx_dim);
     }

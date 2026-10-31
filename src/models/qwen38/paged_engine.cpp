@@ -76,7 +76,7 @@ int take_own_options(int& argc, char** argv, int64_t& conversation_mib) {
 }
 
 /// Gets why strata-q38 cannot run the loaded model `m` (empty: it can).
-std::string get_unsupported(const Model& m) {
+std::string get_unsupported_reason(const Model& m) {
     if (!m.native_pack) return "it needs a native pack (--native), which decodes through verify windows";
     if (m.multi_gpu || !m.stages.empty()) return "it runs on one GPU (no layer split)";
     if (m.thits.d_res == nullptr)
@@ -87,7 +87,7 @@ std::string get_unsupported(const Model& m) {
 }  // namespace
 
 int run_paged_engine(int argc, char** argv) {
-    std::setvbuf(stdout, nullptr, _IONBF, 0);
+    std::setvbuf(stdout, nullptr, _IONBF, 0);   // each protocol line reaches the server as it is printed
     int64_t conversation_mib = 0;
     if (const int status = take_own_options(argc, argv, conversation_mib); status >= 0) return status;
     prepare_process(argc, argv);
@@ -113,7 +113,7 @@ int run_paged_engine(int argc, char** argv) {
     Model m(o);
     if (const int status = m.load(); status != 0) return status;
     if (const int status = m.build_hit_tables(false); status != 0) return status;
-    if (const std::string why = get_unsupported(m); !why.empty()) {
+    if (const std::string why = get_unsupported_reason(m); !why.empty()) {
         std::fprintf(stderr, "strata-q38: %s\n", why.c_str());
         return 2;
     }
@@ -159,7 +159,6 @@ int PagedEngine::serve() {
                 (long long) o.max_context, o.kv.c_str(), (long long) m_.xcache.slots(),
                 (long long) (m_.xcache.bytes() >> 20), (long long) o.prefill_chunk);
     std::printf("READY %lld stop conversations memory\n", (long long) o.max_context);
-    std::fflush(stdout);
     strata::serve::EngineHooks hooks;
     hooks.list_conversations = [this] { return list_conversations(); };
     hooks.describe_memory = [this] { return describe_memory(); };
@@ -173,7 +172,6 @@ int PagedEngine::serve() {
         }
         std::printf("ERR strata-q38 does not take %s (one conversation, no batch slots, no session files)\n",
                     line.substr(0, line.find(' ')).c_str());
-        std::fflush(stdout);
     }
     return loop.is_failed() ? 1 : 0;
 }
@@ -184,9 +182,9 @@ bool PagedEngine::generate(const std::string& line) {
     strata::serve::Sampling smp;
     std::vector<int64_t> ids;
     std::string err;
-    if (!strata::serve::parse_request_line(line, req) || !parse_i64_list(req.ids.c_str(), ids, err)) {
-        std::printf("ERR %s\n", err.empty() ? "malformed request" : err.c_str());
-        std::fflush(stdout);
+    if (!strata::serve::parse_request_line(line, req) || req.max_new < 1 ||
+        !parse_i64_list(req.ids.c_str(), ids, err)) {
+        std::printf("ERR %s\n", err.empty() ? "malformed request (or max_new < 1)" : err.c_str());
         return true;
     }
     for (const auto& [key, value] : req.keys)
@@ -195,7 +193,6 @@ bool PagedEngine::generate(const std::string& line) {
     if (n >= o.max_context) {
         std::printf("ERR the prompt (%lld tokens) does not fit the context (%lld)\n", (long long) n,
                     (long long) o.max_context);
-        std::fflush(stdout);
         return true;
     }
     input_.clear_stop();   // a STOP between requests is stale
@@ -210,7 +207,6 @@ bool PagedEngine::generate(const std::string& line) {
         cudaStreamSynchronize(m_.main_stream);
     }
     std::printf("RESUME %lld\n", (long long) resume);
-    std::fflush(stdout);
     strata::kernels::SamplerParams sp = get_sampler_params(smp);
     sp.penalty_last_n = 0;   // the penalties need a history per window (the old engine's set_history): not here
     conv_.ver.set_sampling(sp);
@@ -218,7 +214,6 @@ bool PagedEngine::generate(const std::string& line) {
     int64_t read_to = resume;   // the prompt tokens the session holds
     if (!pages_.reserve(n - 1, err)) {   // refused: the engine stays up
         std::printf("ERR %s\n", err.c_str());
-        std::fflush(stdout);
         return true;
     }
     if (n - 1 > resume) {
@@ -227,7 +222,6 @@ bool PagedEngine::generate(const std::string& line) {
             const double ms = get_ms_since(t0);
             std::printf("PP %lld %lld %.0f %.1f\n", (long long) read_to, (long long) n, ms,
                         ms > 0 ? 1000.0 * (double) (read_to - resume) / ms : 0.0);
-            std::fflush(stdout);
             strata::core::progress_beat();
             if (!input_.is_stop_requested()) return true;
             e = "cancelled";
@@ -237,7 +231,6 @@ bool PagedEngine::generate(const std::string& line) {
         conv_.sp.on_chunk = nullptr;
         if (!ok && err != "cancelled") {
             std::printf("ERR %s\n", err.c_str());
-            std::fflush(stdout);
             return false;
         }
         if (!ok) finish = "cancel";
@@ -245,7 +238,6 @@ bool PagedEngine::generate(const std::string& line) {
     live_.assign(ids.begin(), ids.begin() + read_to);
     const double prompt_ms = get_ms_since(t0);
     std::printf("REUSED %lld\n", (long long) resume);
-    std::fflush(stdout);
     const Clock::time_point d0 = Clock::now();
     const int64_t max_new = std::min<int64_t>(req.max_new, o.max_context - n);
     int64_t produced = 0;
@@ -259,7 +251,6 @@ bool PagedEngine::generate(const std::string& line) {
             }
             if (!conv_.decode(x, p, next, err)) {
                 std::printf("ERR %s\n", err.c_str());
-                std::fflush(stdout);
                 return false;
             }
             live_.push_back(x);
@@ -269,7 +260,6 @@ bool PagedEngine::generate(const std::string& line) {
                 break;
             }
             std::printf("T %d\n", (int) next);
-            std::fflush(stdout);
             strata::core::progress_beat();
             ++produced;
             if (std::find(o.eos_ids.begin(), o.eos_ids.end(), (int64_t) next) != o.eos_ids.end()) {
@@ -287,7 +277,6 @@ bool PagedEngine::generate(const std::string& line) {
     std::printf("DONE %lld %lld %.1f %.1f %s 0 0 %lld 0 0 0 0 0.0 %lld 0 chunk=%lld experts_streamed=0\n",
                 (long long) produced, (long long) n, prompt_ms, get_ms_since(d0), finish, (long long) resume,
                 (long long) (read_to - resume), (long long) o.prefill_chunk);
-    std::fflush(stdout);
     return true;
 }
 

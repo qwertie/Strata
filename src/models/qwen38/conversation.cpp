@@ -19,13 +19,9 @@ bool Conversation::init_decode(Model& m, strata::core::SessionState& ss, int max
     if (!ver.init(m.wt, m.g, ss, m.get_verify_hits(), m.native_head.loaded() ? &m.native_head : nullptr, max_rows, err))
         return false;
     ver.set_split(m.o.spec_split);
-    // auto: the copy kernel for every pack.  DMA (the native packs' default until 0.1.13) has the host call
-    // cudaMemcpyAsync + cudaLaunchHostFunc inside a verify window while the GPU spins on the flag they raise;
-    // issue #31's thread dumps show the host stuck in that cudaMemcpyAsync on a driver lock for good.  The copy
-    // kernel needs no host CUDA call there, and costs ~1-3% decode on IQ3_S (45.3 -> 44.8 tok/s, 8 requests).
-    ver.set_pcie_mode(m.o.pcie_mode == "dma" ? 0 : m.o.pcie_mode == "direct" ? 1 : 2);
+    ver.set_pcie_mode(get_pcie_mode_code(m.o));
     m.drive.d.plan = ver.plan_sink();
-    m.drive.d.pcie_num = std::clamp((int) (m.o.pcie_frac * 256.0 + 0.5), 0, 256);
+    m.drive.d.pcie_num = get_pcie_num(m.o.pcie_frac);
     return true;
 }
 

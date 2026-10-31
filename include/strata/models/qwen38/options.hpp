@@ -1,10 +1,11 @@
-// include/strata/models/qwen38/options.hpp - the settings of the Qwen3.8 engine: src/program/generate.cpp fills them
-// from its command line, and the model loader (model.hpp) and that program's serve loop read them.
+// include/strata/models/qwen38/options.hpp - the settings of the Qwen3.8 engines: parse_options (options.cpp) fills
+// them from the command line, and the model loader (model.hpp) and the engines' serve loops read them.
 #pragma once
 
 #include "strata/common/kernels/coupled_draft.hpp"
 #include "strata/common/kernels/cpu/pool.hpp"
 
+#include <algorithm>
 #include <array>
 #include <cstdint>
 #include <cstdlib>
@@ -14,7 +15,7 @@
 
 namespace strata::qwen38 {
 
-/// The engine's settings, filled from its command line (usage() in src/program/generate.cpp lists the flags).
+/// The engine's settings, filled from its command line (print_usage() lists the flags).
 struct Options {
     std::string pack = "pack/full";
     std::vector<int64_t> tokens;      // the prompt, PRE-TOKENIZED
@@ -416,6 +417,16 @@ inline void take_resident_experts(Options& o) {
     if (const char* v = std::getenv("STRATA_RESIDENT_HEADROOM_GIB"); v != nullptr && std::atof(v) >= 0.0)
         o.resident_headroom = (uint64_t) (std::atof(v) * 1073741824.0);
 }
+
+/// Gets Verifier::set_pcie_mode's code for `--pcie-mode`: 0 DMA, 1 direct, 2 the copy kernel (auto, kernel).  Auto is
+/// the copy kernel for every pack: DMA (the native packs' default until 0.1.13) has the host call cudaMemcpyAsync +
+/// cudaLaunchHostFunc inside a verify window while the GPU spins on the flag they raise, and issue #31's thread dumps
+/// show the host stuck in that cudaMemcpyAsync on a driver lock for good.  The copy kernel needs no host CUDA call
+/// there, and costs ~1-3% decode on IQ3_S (45.3 -> 44.8 tok/s, 8 requests).
+inline int get_pcie_mode_code(const Options& o) { return o.pcie_mode == "dma" ? 0 : o.pcie_mode == "direct" ? 1 : 2; }
+/// Gets ExpertDispatch::pcie_num, the 256ths of a window's expert misses that the GPU reads over PCIe, for a share
+/// `frac` (clamped to 0..1).
+inline int get_pcie_num(double frac) { return std::clamp((int) (frac * 256.0 + 0.5), 0, 256); }
 
 /// Prepares the process before any GPU call: the runtime's switches (eager kernel loading, AMD's pinned copies of a
 /// mapped arena) and the GPUs `--gpu` names.  Warns about CUDA_LAUNCH_BLOCKING.

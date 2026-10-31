@@ -334,7 +334,6 @@ uint64_t qsa_state_init(const ModelGeometry& g, int64_t max_cells, void* base, Q
 /// pooled keys, and zeroing them leaves those to the pool.  For strata-q38; set before sizing and initializing the
 /// session.  Not with KV streaming or the elastic K/V.
 void qsa_set_kv_units(bool enabled);
-bool qsa_kv_units();
 /// Gets the indexer's view of a state's keys (with its units, if any).
 strata::kernels::QsaIndexerBuffers qsa_indexer_buffers(const QsaState& st);
 /// Points a state carved with qsa_set_kv_units at the page pool's units: `units` is the device table of each block's

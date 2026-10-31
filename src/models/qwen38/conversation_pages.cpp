@@ -101,6 +101,7 @@ bool ConversationPages::reserve(int64_t tokens, std::string& err) {
     }
     reserved_ = need;
     const uint64_t per_page = page_bytes_ / unit_.bytes;
+    bool added = false;
     for (size_t j = 0; j < tables_.size(); ++j) {
         const std::vector<strata::core::PageId>& pages = pool_->conversation_pages(kId, 1 + j);
         if (pages.size() == pages_in_table_[j])
@@ -116,9 +117,10 @@ bool ConversationPages::reserve(int64_t tokens, std::string& err) {
         cudaMemcpy(tables_[j] + first, table.data() + first, (size_t) (blocks - first) * sizeof(int64_t),
                    cudaMemcpyHostToDevice);
         pages_in_table_[j] = pages.size();
+        added = true;
     }
     // the kernels that read the tables and pages run on non-blocking streams, which do not wait for these copies
-    if (cudaDeviceSynchronize() != cudaSuccess) {
+    if (added && cudaDeviceSynchronize() != cudaSuccess) {
         err = std::string("the conversation's pages: ") + cudaGetErrorString(cudaGetLastError());
         return false;
     }

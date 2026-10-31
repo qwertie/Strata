@@ -2850,7 +2850,6 @@ int main(int argc, char** argv) {
         auto stage_ver = [&](int st) -> strata::core::Verifier& {
             return st == 0 ? ver : split_same ? ver_same : stages[(size_t) st - 1]->ver;
         };
-        auto pcie_num_of = [](double f) { return std::max(0, std::min(256, (int) (f * 256.0 + 0.5))); };
         // Gets what a later stage's verifiers know of its own expert cache
         auto stage_hits = [&](const GpuStage& gs) {
             strata::core::VerifyHits vs;
@@ -2942,7 +2941,7 @@ int main(int argc, char** argv) {
                 split_drive.end[st] = st + 1 < n_stages ? split_at[(size_t) st] : g.n_layers;
                 split_drive.cache_base[st] = drive.d.cache_base;
                 split_drive.cache_slot_off[st] = drive.d.cache_slot_off;
-                split_drive.pcie_num[st] = pcie_num_of(o.pcie_frac);
+                split_drive.pcie_num[st] = get_pcie_num(o.pcie_frac);
             }
             for (int st = 1; st < n_stages; ++st) {
                 bool ok_s = false;
@@ -2960,7 +2959,7 @@ int main(int argc, char** argv) {
                                                  : std::max(o.spec, std::min(o.batch, (int) strata::kernels::kVerifyMaxT)), err);
                     split_drive.cache_base[st] = gs.cache.device_slot(0);
                     split_drive.cache_slot_off[st] = gs.cache.slot_offsets();
-                    split_drive.pcie_num[st] = pcie_num_of(gs.pcie_frac);
+                    split_drive.pcie_num[st] = get_pcie_num(gs.pcie_frac);
                 }
                 if (!ok_s) {
                     std::fprintf(stderr, "strata serve: layer split, stage %d: %s\n", st + 1, err.c_str());
@@ -3079,7 +3078,7 @@ int main(int argc, char** argv) {
             split_drive.plan[st] = stage_ver(st).plan_sink();
             if (st > 0) {
                 stage_ver(st).set_split(o.spec_split);
-                stage_ver(st).set_pcie_mode(o.pcie_mode == "dma" ? 0 : o.pcie_mode == "direct" ? 1 : 2);
+                stage_ver(st).set_pcie_mode(get_pcie_mode_code(o));
             }
         }
         if (pipe) {   // the odd windows' pool routing: the same as the even ones', with their plans
@@ -3087,7 +3086,7 @@ int main(int argc, char** argv) {
             for (int st = 0; st < n_stages; ++st) {
                 split_drive_b.plan[st] = stage_ver_p(st, 1).plan_sink();
                 stage_ver_p(st, 1).set_split(o.spec_split);
-                stage_ver_p(st, 1).set_pcie_mode(o.pcie_mode == "dma" ? 0 : o.pcie_mode == "direct" ? 1 : 2);
+                stage_ver_p(st, 1).set_pcie_mode(get_pcie_mode_code(o));
             }
         }
         // the pool the verify windows call: with a layer split, the wrapper that routes each layer to its stage
@@ -3095,11 +3094,7 @@ int main(int argc, char** argv) {
         void* const win_pool_user = n_stages > 1 ? (void*) &split_drive : (void*) &drive;
         mem_mark("the verifier and the drafter's binding");
         ver.set_split(o.spec_split);
-        // auto: the copy kernel for every pack.  DMA (the native packs' default until 0.1.13) has the host call
-        // cudaMemcpyAsync + cudaLaunchHostFunc inside a verify window while the GPU spins on the flag they raise;
-        // issue #31's thread dumps show the host stuck in that cudaMemcpyAsync on a driver lock for good.  The copy
-        // kernel needs no host CUDA call there, and costs ~1-3% decode on IQ3_S (45.3 -> 44.8 tok/s, 8 requests).
-        ver.set_pcie_mode(o.pcie_mode == "dma" ? 0 : o.pcie_mode == "direct" ? 1 : 2);
+        ver.set_pcie_mode(get_pcie_mode_code(o));
         // --pipeline-windows 2: stage 0's GDN state before a speculative commit, restored when the guess was wrong.
         // Window W reads the state its snapshot must hold and no window writes it (only commits do), so it is copied
         // on a side stream while W runs, into the buffer of W's parity, and only W's speculative commit waits for it
@@ -3837,7 +3832,7 @@ int main(int argc, char** argv) {
             strata::core::FileExpertSource* src;
             ~FsDetach() { la->set_foresight(nullptr); src->set_foresight_swap(nullptr); }
         } fs_detach{&lookahead, &src};
-        drive.d.pcie_num = std::max(0, std::min(256, (int) (o.pcie_frac * 256.0 + 0.5)));
+        drive.d.pcie_num = get_pcie_num(o.pcie_frac);
         const bool all_experts_resident = !host_res.empty() &&
             std::all_of(host_res.begin(), host_res.end(), [](int32_t r) { return r >= 0; });
         // STRATA_ROUTE_TAIL_SKIP: ON BY DEFAULT on CUDA builds (owner decision, 0.1.42) and on HIP gfx1200/gfx1201 (0.1.43): a missed expert that every token of
@@ -3915,8 +3910,7 @@ int main(int argc, char** argv) {
                          tc_us, rate, pcie_auto.link_gbps, nf, o.pcie_frac);
             o.pcie_frac = nf;
             req_pcie_frac = nf;
-            const auto num_of = [](double f) { return std::max(0, std::min(256, (int) (f * 256.0 + 0.5))); };
-            drive.d.pcie_num = num_of(nf);
+            drive.d.pcie_num = get_pcie_num(nf);
             split_drive.pcie_num[0] = drive.d.pcie_num;
             split_drive_b.pcie_num[0] = drive.d.pcie_num;
             for (int st = 1; st < n_stages; ++st) {
@@ -3924,7 +3918,7 @@ int main(int argc, char** argv) {
                 if (!(gs.link_gbps > 0.0)) continue;
                 gs.pcie_frac = std::min(0.60, std::max(0.10, std::round(gs.link_gbps / (gs.link_gbps +
                                    PcieAuto::kPoolFactor * rate) * 20.0) / 20.0));
-                split_drive.pcie_num[st] = num_of(gs.pcie_frac);
+                split_drive.pcie_num[st] = get_pcie_num(gs.pcie_frac);
                 split_drive_b.pcie_num[st] = split_drive.pcie_num[st];
                 std::fprintf(stderr, "strata serve: PCIe share: stage %d (link %.1f GB/s) -> pcie_frac %.2f\n", st + 1,
                              gs.link_gbps, gs.pcie_frac);
@@ -7628,11 +7622,11 @@ int main(int argc, char** argv) {
                                  want && !strata::aux_cpus::enabled() ? " (asked for, but no CPU is spare: see the start-up line)" : "");
             }
             ver.pause_pcie_balance(req_pcie_set);   // the measured costs keep across requests
-            drive.d.pcie_num = std::max(0, std::min(256, (int) (req_pcie_frac * 256.0 + 0.5)));
+            drive.d.pcie_num = get_pcie_num(req_pcie_frac);
             // a layer split: CUDA0's share as asked; a later GPU keeps its own (its link) unless the request sets one
             for (int st = 0; st < split_drive.n; ++st)
                 split_drive.pcie_num[st] = (st == 0 || split_same || req_pcie_frac != o.pcie_frac)
-                                               ? drive.d.pcie_num : pcie_num_of(stages[(size_t) st - 1]->pcie_frac);
+                                               ? drive.d.pcie_num : get_pcie_num(stages[(size_t) st - 1]->pcie_frac);
             if (pipe) for (int st = 0; st < split_drive.n; ++st) split_drive_b.pcie_num[st] = split_drive.pcie_num[st];
             const int hist_n = std::min(req_sp.penalty_last_n, kPenaltyWindowCap);
             ver.set_history(hist_n > 0 ? d_hist : nullptr, hist_n);
