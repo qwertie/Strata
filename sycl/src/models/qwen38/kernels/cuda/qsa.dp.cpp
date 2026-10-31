@@ -864,7 +864,12 @@ const int32_t* step_upload_width(int64_t width, const QsaShapes& s) {
 // buffer and forward this token's counts as the capacities.
 
 void kv_append_step(uint16_t* k_pool, uint16_t* v_pool, const int32_t* page_table, const int32_t* step,
-                    const float* kcur, const float* vcur, const QsaShapes& s, void* stream, const KvHostPools* host) {
+                    const float* kcur, const float* vcur, const QsaShapes& s, void* stream, const KvHostPools* host,
+        const int64_t* units) {
+    if (units) {
+        std::fprintf(stderr, "kv_append_step: the page-pool layout (units) is CUDA/HIP only\n");
+        std::exit(1);
+    }
     validate(s, "kv_append");
     if (step == nullptr) fail("kv_append: step is null");
     // The grid is the head x dim count, which is a CONSTANT - `kv_append` writes one cell.
@@ -896,7 +901,12 @@ void kv_append_step(uint16_t* k_pool, uint16_t* v_pool, const int32_t* page_tabl
 }
 
 void qsa_index_step(const float* pooled, const float* q_idx, const float* bias, const QsaShapes& s,
-                    const int32_t* step, int64_t max_blocks, float* cell_scores, void* stream) {
+                    const int32_t* step, int64_t max_blocks, float* cell_scores, void* stream,
+                    const int64_t* units) {
+    if (units != nullptr) {
+        std::fprintf(stderr, "qsa_index_step: the page-pool layout (units) is CUDA/HIP only\n");
+        std::exit(1);
+    }
     validate(s, "qsa_index");
     if (step == nullptr) fail("qsa_index: step is null");
     if (max_blocks <= 0) fail("qsa_index: max_blocks must be positive");
@@ -964,7 +974,12 @@ void topk_512_step(const float* cell_scores, const QsaShapes& s, int64_t cap, co
 
 void kv_gather_step(const uint16_t* k_pool, const uint16_t* v_pool, const int32_t* page_table,
                     const int32_t* ids, const int32_t* step, int64_t max_ids, const QsaShapes& s,
-                    uint16_t* k_scratch, uint16_t* v_scratch, void* stream) {
+                    uint16_t* k_scratch, uint16_t* v_scratch, void* stream,
+        const int64_t* units) {
+    if (units) {
+        std::fprintf(stderr, "kv_gather_step: the page-pool layout (units) is CUDA/HIP only\n");
+        std::exit(1);
+    }
     validate(s, "kv_gather");
     if (step == nullptr) fail("kv_gather: step is null");
     if (max_ids <= 0) return;
@@ -1105,6 +1120,10 @@ void kv_append(uint16_t* k_pool, uint16_t* v_pool, const int32_t* page_table, in
 void indexer_key_append(const float* raw, const int32_t* pos_dev, int32_t pos_base, const float* w_k_norm,
                         float eps, const QsaIndexerBuffers& b, const QsaShapes& s, const float* cos_tab,
                         const float* sin_tab, void* stream) {
+    if (b.units != nullptr) {
+        std::fprintf(stderr, "indexer_key_append: the page-pool layout (units) is CUDA/HIP only\n");
+        std::exit(1);
+    }
     validate(s, "indexer_key_append");
     if (pos_dev == nullptr) fail("indexer_key_append: pos_dev is null");
     if (b.tail == nullptr || b.dead == nullptr || b.pooled == nullptr || b.block_pos == nullptr)

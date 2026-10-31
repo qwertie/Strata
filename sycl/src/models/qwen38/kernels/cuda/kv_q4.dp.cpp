@@ -272,7 +272,12 @@ void fwht256_cuda(const float* src, float* dst, int64_t n_rows, void* stream) {
 
 void kv_append_q4_steps(uint8_t* k_q4, uint8_t* v_q4, const int32_t* page_table, const int32_t* step,
                         int step_stride, int n_steps, const float* kcur, const float* vcur, const QsaShapes& s,
-                        void* stream, const KvHostPools* host) {
+                        void* stream, const KvHostPools* host,
+        const int64_t* units) {
+    if (units) {
+        std::fprintf(stderr, "kv_append_q4_steps: the page-pool layout (units) is CUDA/HIP only\n");
+        std::exit(1);
+    }
     if (n_steps <= 0) return;
     need_256(s, "kv_append_q4");
     const int planes = (v_q4 == nullptr || (v_q4 == k_q4 && vcur == kcur)) ? 1 : 2;
@@ -307,12 +312,22 @@ void kv_append_q4_steps(uint8_t* k_q4, uint8_t* v_q4, const int32_t* page_table,
 
 void kv_append_q4_step(uint8_t* k_q4, uint8_t* v_q4, const int32_t* page_table, const int32_t* step,
                        const float* kcur, const float* vcur, const QsaShapes& s, void* stream,
-                       const KvHostPools* host) {
+                       const KvHostPools* host,
+        const int64_t* units) {
+    if (units) {
+        std::fprintf(stderr, "kv_append_q4_step: the page-pool layout (units) is CUDA/HIP only\n");
+        std::exit(1);
+    }
     kv_append_q4_steps(k_q4, v_q4, page_table, step, 0, 1, kcur, vcur, s, stream, host);
 }
 
 void kv_append_q4(uint8_t* k_q4, uint8_t* v_q4, const int32_t* page_table, int64_t pos0, int64_t T, const float* K,
-                  const float* V, const QsaShapes& s, void* stream, const KvHostPools* host, const KvHostPools* stage) {
+                  const float* V, const QsaShapes& s, void* stream, const KvHostPools* host, const KvHostPools* stage,
+        const int64_t* units) {
+    if (units) {
+        std::fprintf(stderr, "kv_append_q4: the page-pool layout (units) is CUDA/HIP only\n");
+        std::exit(1);
+    }
     if (T <= 0) return;
     need_256(s, "kv_append_q4");
     const dpct::dim3 grid((unsigned)T, (unsigned)s.n_head_kv,
@@ -340,7 +355,12 @@ void kv_append_q4(uint8_t* k_q4, uint8_t* v_q4, const int32_t* page_table, int64
 
 void kv_gather_q4_step(const uint8_t* k_q4, const uint8_t* v_q4, const int32_t* page_table, const int32_t* ids,
                        const int32_t* step, int64_t max_ids, const QsaShapes& s, uint16_t* k_scratch,
-                       uint16_t* v_scratch, void* stream) {
+                       uint16_t* v_scratch, void* stream,
+        const int64_t* units) {
+    if (units) {
+        std::fprintf(stderr, "kv_gather_q4_step: the page-pool layout (units) is CUDA/HIP only\n");
+        std::exit(1);
+    }
     if (max_ids <= 0) return;
     const int blocks_per_head = (int) (s.head_dim / QK4_0);
     const int64_t total_blocks = max_ids * s.n_head_kv * blocks_per_head;

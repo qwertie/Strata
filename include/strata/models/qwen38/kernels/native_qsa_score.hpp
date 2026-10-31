@@ -23,9 +23,10 @@ bool native_qsa_score_enabled();
 // All spans are aligned, disjoint, persistent through replay; inputs finite.
 // Explicit nonnull stream. No allocation, host count reads, or synchronization.
 // Invalid device counts suppress writes defensively; callers own count validity.
+// `units`: as in QsaIndexerBuffers (the page pool's layout; `pooled` is then an offset, not a span).
 void native_qsa_score(const float* pooled, const float* query, const float* block_bias,
                       const QsaShapes& shapes, const int32_t* step,
                       int64_t max_blocks, int64_t max_cells,
-                      float* cell_scores, void* stream);
+                      float* cell_scores, void* stream, const int64_t* units = nullptr);
 
 } // namespace strata::kernels

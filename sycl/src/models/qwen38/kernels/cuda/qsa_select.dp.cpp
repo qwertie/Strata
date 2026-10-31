@@ -1567,7 +1567,12 @@ void block_topk_cluster_kernel(const float *__restrict__ scores,
 }  // namespace
 
 void qsa_block_scores(const float* pooled, const float* dead, const float* q_idx, const int32_t* steps, int64_t nq,
-                      int64_t max_blocks, const QsaShapes& s, float* scores, void* stream, int64_t active_blocks) {
+                      int64_t max_blocks, const QsaShapes& s, float* scores, void* stream, int64_t active_blocks,
+                      const int64_t* units) {
+    if (units != nullptr) {
+        std::fprintf(stderr, "qsa_block_scores: the page-pool layout (units) is CUDA/HIP only\n");
+        std::exit(1);
+    }
     if (nq <= 0) return;
     if (s.idx_dim != IDX_DIM || s.idx_n_head != IDX_HEADS || s.idx_block != R || nq > 65535) {
         std::fprintf(stderr, "qsa_block_scores: unsupported indexer geometry\n");
@@ -1649,7 +1654,11 @@ void qsa_block_scores(const float* pooled, const float* dead, const float* q_idx
 bool qsa_block_scores_tc(const float *pooled, const float *dead,
                          const float *q_idx, const int32_t *steps, int64_t nq,
                          int64_t max_blocks, const QsaShapes &s, float *scores,
-                         void *stream, int64_t active_blocks) try {
+                         void *stream, int64_t active_blocks, const int64_t *units) try {
+    if (units != nullptr) {
+        std::fprintf(stderr, "qsa_block_scores_tc: the page-pool layout (units) is CUDA/HIP only\n");
+        std::exit(1);
+    }
     if (nq <= 0) return true;
     if (s.idx_dim != IDX_DIM || s.idx_n_head != IDX_HEADS || s.idx_block != R || nq > 65535 * TC_QT) return false;
 #if defined(__HIPCC__)

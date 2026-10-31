@@ -60,6 +60,7 @@ struct QsaIndexerLayers {
     float* dead[kMax] = {};
     float* pooled[kMax] = {};
     int32_t* block_pos[kMax] = {};
+    const int64_t* units[kMax] = {};   ///< per layer, as QsaIndexerBuffers::units
 };
 void native_qsa_indexer_append_steps_layers(const float* raw0, int64_t raw_stride, const int32_t* relative_pos_device,
                                             int pos_stride, int n_steps, int32_t pos_base, float epsilon,

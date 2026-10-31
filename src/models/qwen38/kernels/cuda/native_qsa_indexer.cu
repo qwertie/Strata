@@ -19,6 +19,7 @@
 // SOFTWARE.
 
 #include "strata/models/qwen38/kernels/native_qsa_indexer.hpp"
+#include "strata/models/qwen38/kernels/kv_units.hpp"
 #include "strata/core/geometry.hpp"
 #include "strata/common/kernels/mrope.hpp"
 #include <cuda_runtime.h>
@@ -50,7 +51,8 @@ __device__ __forceinline__ void append_body(const float* __restrict__ raw, const
                         int pos_stride, int n_steps,
                         int pos_base, const float* __restrict__ gamma, float epsilon,
                         float* __restrict__ tail, float* __restrict__ dead,
-                        float* __restrict__ pooled, int32_t* __restrict__ block_pos,
+                        float* __restrict__ pooled, const int64_t* __restrict__ units,
+                        int32_t* __restrict__ block_pos,
                         int max_cells, float theta_scale, float freq_scale, float corr_low,
                         float corr_high, float ext_factor, float mscale,
                         const int32_t* __restrict__ mtab, const RopeTab& rt) {
@@ -106,9 +108,9 @@ __device__ __forceinline__ void append_body(const float* __restrict__ raw, const
                         const float a = values[pair], z = values[pair + ROT / 2];
                         y = d < ROT / 2 ? a * c - z * s : a * s + z * c;
                     }
-                    pooled[std::size_t(b) * D + d] = y;
+                    kv_key(pooled, units, b, D)[d] = y;
                     if (pos == 0) dead[d] = y;
-                    else pooled[std::size_t(b + 1) * D + d] = dead[d];
+                    else kv_key(pooled, units, b + 1, D)[d] = dead[d];
                     if (d == 0 && pos != 0) *block_pos = rope_pos;
                 }
             }
@@ -121,12 +123,13 @@ __global__ void append(const float* __restrict__ raw, const int32_t* __restrict_
                         int pos_stride, int n_steps,
                         int pos_base, const float* __restrict__ gamma, float epsilon,
                         float* __restrict__ tail, float* __restrict__ dead,
-                        float* __restrict__ pooled, int32_t* __restrict__ block_pos,
+                        float* __restrict__ pooled, const int64_t* __restrict__ units,
+                        int32_t* __restrict__ block_pos,
                         int max_cells, float theta_scale, float freq_scale, float corr_low,
                         float corr_high, float ext_factor, float mscale,
                         const int32_t* __restrict__ mtab, RopeTab rt) {
-    append_body<TAB>(raw, pos_dev, pos_stride, n_steps, pos_base, gamma, epsilon, tail, dead, pooled, block_pos, max_cells,
-                     theta_scale, freq_scale, corr_low, corr_high, ext_factor, mscale, mtab, rt);
+    append_body<TAB>(raw, pos_dev, pos_stride, n_steps, pos_base, gamma, epsilon, tail, dead, pooled, units, block_pos,
+                     max_cells, theta_scale, freq_scale, corr_low, corr_high, ext_factor, mscale, mtab, rt);
 }
 // engine-latency: the commit's appends of several QSA layers in one launch, one block per layer (blockIdx.x); each block
 // first restores its layer's tail from the window's snapshot (the commit's copy_from_mapped), then runs append's body
@@ -142,8 +145,8 @@ __global__ void append_layers(const float* __restrict__ raw0, long long raw_stri
         __syncthreads();
     }
     append_body<TAB>(raw0 + (long long) i * raw_stride, pos_dev, pos_stride, n_steps, pos_base, L.gamma[i], epsilon, tail,
-                     L.dead[i], L.pooled[i], L.block_pos[i], max_cells, theta_scale, freq_scale, corr_low, corr_high,
-                     ext_factor, mscale, mtab, rt);
+                     L.dead[i], L.pooled[i], L.units[i], L.block_pos[i], max_cells, theta_scale, freq_scale, corr_low,
+                     corr_high, ext_factor, mscale, mtab, rt);
 }
 // ---- C-2: the batched append.  The pooled key of a completed block b (its last cell pos = 4b+3), computed with
 // the single append's arithmetic: keys rounded through F16, summed tail[0]+tail[1]+tail[2]+incoming in that order,
@@ -184,7 +187,8 @@ __device__ __forceinline__ float norm_scale(float mean, float* partials, int d) 
 // cell 0 of a sequence: the spare (every gather index names cell 0), written to pooled[0] and dead
 template <bool TAB>
 __global__ void append_first(const float* __restrict__ raw, const float* __restrict__ gamma, float epsilon,
-                             float* __restrict__ dead, float* __restrict__ pooled, float theta_scale,
+                             float* __restrict__ dead, float* __restrict__ pooled,
+                             const int64_t* __restrict__ units, float theta_scale,
                              float freq_scale, float corr_low, float corr_high, float ext_factor, float mscale,
                              const int32_t* __restrict__ mtab, RopeTab rt) {
     const int d = threadIdx.x;
@@ -205,13 +209,14 @@ __global__ void append_first(const float* __restrict__ raw, const float* __restr
     if (d >= D) return;
     const float y = pooled_value<TAB>(values, d, 0, theta_scale, freq_scale, corr_low, corr_high, ext_factor, mscale,
                                  mtab, true, rt);
-    pooled[d] = y;
+    kv_key(pooled, units, 0, D)[d] = y;
     dead[d] = y;
 }
 template <bool TAB>
 __global__ void append_blocks(const float* __restrict__ raw, int64_t n, int64_t p0, int pos_base,
                               const float* __restrict__ gamma, float epsilon, const float* __restrict__ tail,
-                              const float* __restrict__ dead, float* __restrict__ pooled, int32_t* __restrict__ block_pos,
+                              const float* __restrict__ dead, float* __restrict__ pooled,
+                              const int64_t* __restrict__ units, int32_t* __restrict__ block_pos,
                               int64_t first_block, int64_t last_block, float theta_scale, float freq_scale,
                               float corr_low, float corr_high, float ext_factor, float mscale,
                               const int32_t* __restrict__ mtab, RopeTab rt) {
@@ -236,10 +241,10 @@ __global__ void append_blocks(const float* __restrict__ raw, int64_t n, int64_t 
     __syncthreads();
     if (d >= D) return;
     const int rope_pos = pos_base + R * (int) b;
-    pooled[std::size_t(b) * D + d] = pooled_value<TAB>(values, d, rope_pos, theta_scale, freq_scale, corr_low, corr_high,
-                                                  ext_factor, mscale, mtab, false, rt);
+    kv_key(pooled, units, b, D)[d] = pooled_value<TAB>(values, d, rope_pos, theta_scale, freq_scale, corr_low,
+                                                       corr_high, ext_factor, mscale, mtab, false, rt);
     if (b == last_block) {
-        pooled[std::size_t(b + 1) * D + d] = dead[d];
+        kv_key(pooled, units, b + 1, D)[d] = dead[d];
         if (d == 0) *block_pos = rope_pos;
     }
 }
@@ -277,8 +282,9 @@ void native_qsa_indexer_append_steps(const float* raw, const int32_t* relative_p
         rope_scaling_invalid(scaling) != nullptr)
         throw std::invalid_argument("native QSA indexer requires fixed geometry, aligned position base, positive capacity/epsilon, valid frequency/scaling and explicit stream");
     const std::size_t pos_span = (n_steps == 1 || pos_stride <= 0) ? 4 : (std::size_t(n_steps - 1) * pos_stride + 1) * 4;
+    // in units, pooled is an offset (kv_units.hpp), not a buffer: its span is empty
     const Span spans[] = {{raw,std::size_t(n_steps)*D*4},{relative_pos_device,pos_span},{gamma,D*4},{b.tail,(R-1)*D*4},
-        {b.dead,D*4},{b.pooled,std::size_t(max_cells/R+1)*D*4},{b.block_pos,4}};
+        {b.dead,D*4},{b.pooled,b.units ? 0 : std::size_t(max_cells/R+1)*D*4},{b.block_pos,4}};
     for (const auto& span : spans) validate(span);
     for (int i = 0; i < 7; ++i) for (int j = i + 1; j < 7; ++j)
         if (overlaps(spans[i], spans[j])) throw std::invalid_argument("native QSA indexer buffers overlap");
@@ -287,11 +293,11 @@ void native_qsa_indexer_append_steps(const float* raw, const int32_t* relative_p
     const RopeTab rt = rope_table_for(scaling);
     if (rt.cos != nullptr)
         append<true><<<1,THREADS,0,static_cast<cudaStream_t>(stream)>>>(raw,relative_pos_device,pos_stride,n_steps,pos_base,gamma,epsilon,
-            b.tail,b.dead,b.pooled,b.block_pos,int(max_cells),theta_scale,k.freq_scale,
+            b.tail,b.dead,b.pooled,b.units,b.block_pos,int(max_cells),theta_scale,k.freq_scale,
             k.corr_low,k.corr_high,k.ext_factor,k.attn_factor,mrope_table(),rt);
     else
         append<false><<<1,THREADS,0,static_cast<cudaStream_t>(stream)>>>(raw,relative_pos_device,pos_stride,n_steps,pos_base,gamma,epsilon,
-            b.tail,b.dead,b.pooled,b.block_pos,int(max_cells),theta_scale,k.freq_scale,
+            b.tail,b.dead,b.pooled,b.units,b.block_pos,int(max_cells),theta_scale,k.freq_scale,
             k.corr_low,k.corr_high,k.ext_factor,k.attn_factor,mrope_table(),rt);
     const auto error = cudaGetLastError();
     if (error != cudaSuccess) throw std::runtime_error(cudaGetErrorString(error));
@@ -311,7 +317,7 @@ void native_qsa_indexer_append_steps_layers(const float* raw0, int64_t raw_strid
         const std::size_t pos_span = (n_steps == 1 || pos_stride <= 0) ? 4 : (std::size_t(n_steps - 1) * pos_stride + 1) * 4;
         const Span spans[] = {{raw0 + (std::size_t) i * (std::size_t) raw_stride, std::size_t(n_steps)*D*4},
             {relative_pos_device,pos_span},{layers.gamma[i],D*4},{layers.tail[i],(R-1)*D*4},{layers.dead[i],D*4},
-            {layers.pooled[i],std::size_t(max_cells/R+1)*D*4},{layers.block_pos[i],4}};
+            {layers.pooled[i],layers.units[i] ? 0 : std::size_t(max_cells/R+1)*D*4},{layers.block_pos[i],4}};
         for (const auto& span : spans) validate(span);
         for (int a = 0; a < 7; ++a) for (int b = a + 1; b < 7; ++b)
             if (overlaps(spans[a], spans[b])) throw std::invalid_argument("native QSA indexer buffers overlap");
@@ -353,10 +359,10 @@ void native_qsa_indexer_append_batch(const float* raw, int64_t n, int64_t p0, in
     const RopeTab rt = rope_table_for(scaling);
     if (p0 == 0) {
         if (rt.cos != nullptr)
-            append_first<true><<<1, THREADS, 0, st>>>(raw, gamma, epsilon, b.dead, b.pooled, theta_scale,
+            append_first<true><<<1, THREADS, 0, st>>>(raw, gamma, epsilon, b.dead, b.pooled, b.units, theta_scale,
                                                       fsf, cl, ch, ef, ms, mtab, rt);
         else
-            append_first<false><<<1, THREADS, 0, st>>>(raw, gamma, epsilon, b.dead, b.pooled, theta_scale,
+            append_first<false><<<1, THREADS, 0, st>>>(raw, gamma, epsilon, b.dead, b.pooled, b.units, theta_scale,
                                                        fsf, cl, ch, ef, ms, mtab, rt);
     }
     // completed blocks: those whose last cell (4b+3) lies in [p0, p0 + n)
@@ -364,10 +370,10 @@ void native_qsa_indexer_append_batch(const float* raw, int64_t n, int64_t p0, in
     const int64_t hi = p0 + n - 1 >= R - 1 ? (p0 + n - 1 - (R - 1)) / R : -1;   // the largest b with 4b+3 <= p0+n-1
     if (hi >= first && rt.cos != nullptr)
         append_blocks<true><<<(unsigned) (hi - first + 1), THREADS, 0, st>>>(raw, n, p0, pos_base, gamma, epsilon,
-            b.tail, b.dead, b.pooled, b.block_pos, first, hi, theta_scale, fsf, cl, ch, ef, ms, mtab, rt);
+            b.tail, b.dead, b.pooled, b.units, b.block_pos, first, hi, theta_scale, fsf, cl, ch, ef, ms, mtab, rt);
     else if (hi >= first)
         append_blocks<false><<<(unsigned) (hi - first + 1), THREADS, 0, st>>>(raw, n, p0, pos_base, gamma, epsilon,
-            b.tail, b.dead, b.pooled, b.block_pos, first, hi, theta_scale, fsf, cl, ch, ef, ms, mtab, rt);
+            b.tail, b.dead, b.pooled, b.units, b.block_pos, first, hi, theta_scale, fsf, cl, ch, ef, ms, mtab, rt);
     append_tail<<<R - 1, D, 0, st>>>(raw, n, p0, b.tail);
     const auto error = cudaGetLastError();
     if (error != cudaSuccess) throw std::runtime_error(cudaGetErrorString(error));

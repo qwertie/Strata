@@ -1,6 +1,7 @@
 // src/models/qwen38/kernels/cuda/kv_q8.cu - see include/strata/models/qwen38/kernels/kv_q8.hpp.
 #include "strata/models/qwen38/kernels/kv_q8.hpp"
 #include "strata/common/kernels/f16_bits.hpp"
+#include "strata/models/qwen38/kernels/kv_units.hpp"
 
 #include <cuda_runtime.h>
 
@@ -34,8 +35,8 @@ __global__ void kv_append_q8_kernel(int8_t* __restrict__ k_q, int8_t* __restrict
                                     uint16_t* __restrict__ k_scale, uint16_t* __restrict__ v_scale,
                                     const int32_t* __restrict__ table, const int32_t* __restrict__ step,
                                     const float* __restrict__ kcur, const float* __restrict__ vcur, int kv_heads,
-                                    int head_dim, int page_size, KvHostPools host, int step_stride = 0,
-                                    int cur_stride = 0) {
+                                    int head_dim, int page_size, KvHostPools host, const int64_t* units,
+                                    int step_stride = 0, int cur_stride = 0) {
     if constexpr (MULTI) {
         const int j = blockIdx.z >> 1;
         step += (size_t) j * step_stride; kcur += (size_t) j * cur_stride; vcur += (size_t) j * cur_stride;
@@ -60,11 +61,10 @@ __global__ void kv_append_q8_kernel(int8_t* __restrict__ k_q, int8_t* __restrict
         q = q < -127 ? -127 : (q > 127 ? 127 : q);
     }
     // KV streaming: the host copy (identity layout) always, the VRAM page only if the block is resident
-    const long long page = (long long) table[pos / page_size];
-    if (page >= 0) {
-        const long long row = (page * kv_heads + h) * page_size + (pos % page_size);
-        (is_v ? v_q : k_q)[row * head_dim + g * KV_Q8_GROUP + t] = (int8_t) q;
-        if (t == 0) (is_v ? v_scale : k_scale)[row * groups + g] = sbits;
+    const long long at = kv_place(table, units, (int) pos, h, kv_heads, page_size);
+    if (at >= 0) {
+        kv_row(units, is_v ? v_q : k_q, at, head_dim)[g * KV_Q8_GROUP + t] = (int8_t) q;
+        if (t == 0) kv_row(units, is_v ? v_scale : k_scale, at, groups)[g] = sbits;
     }
     if (host.k_q != nullptr) {
         const long long row = ((pos / page_size) * kv_heads + h) * page_size + (pos % page_size);
@@ -79,7 +79,8 @@ __global__ void kv_gather_q8_kernel(const int8_t* __restrict__ k_q, const int8_t
                                     const uint16_t* __restrict__ k_scale, const uint16_t* __restrict__ v_scale,
                                     const int32_t* __restrict__ table, const int32_t* __restrict__ ids,
                                     const int32_t* __restrict__ step, int kv_heads, int head_dim, int page_size,
-                                    uint16_t* __restrict__ k_scratch, uint16_t* __restrict__ v_scratch) {
+                                    uint16_t* __restrict__ k_scratch, uint16_t* __restrict__ v_scratch,
+                                    const int64_t* __restrict__ units) {
     const long long n_ids = (long long) __ldg(step + kStepWidth);
     const int per = head_dim / 4;
     const long long total = n_ids * kv_heads * per;
@@ -88,15 +89,13 @@ __global__ void kv_gather_q8_kernel(const int8_t* __restrict__ k_q, const int8_t
     const long long id = i / (kv_heads * (long long) per);
     const int rem = (int) (i % (kv_heads * (long long) per));
     const int h = rem / per, q4 = rem - h * per;
-    const int cell = ids[id];
-    const long long page = (long long) table[cell / page_size];
-    const long long row = (page * kv_heads + h) * page_size + (cell % page_size);
+    const long long at = kv_place(table, units, ids[id], h, kv_heads, page_size);
     const int d = q4 * 4;
     const int groups = head_dim / KV_Q8_GROUP;
-    const float ks = f32_from_f16(k_scale[row * groups + d / KV_Q8_GROUP]);
-    const float vs = f32_from_f16(v_scale[row * groups + d / KV_Q8_GROUP]);
-    const char4 kc = reinterpret_cast<const char4*>(k_q + row * head_dim)[q4];
-    const char4 vc = reinterpret_cast<const char4*>(v_q + row * head_dim)[q4];
+    const float ks = f32_from_f16(kv_row(units, k_scale, at, groups)[d / KV_Q8_GROUP]);
+    const float vs = f32_from_f16(kv_row(units, v_scale, at, groups)[d / KV_Q8_GROUP]);
+    const char4 kc = reinterpret_cast<const char4*>(kv_row(units, k_q, at, head_dim))[q4];
+    const char4 vc = reinterpret_cast<const char4*>(kv_row(units, v_q, at, head_dim))[q4];
     ushort4 ko, vo;
     ko.x = f16_from_f32((float) kc.x * ks); ko.y = f16_from_f32((float) kc.y * ks);
     ko.z = f16_from_f32((float) kc.z * ks); ko.w = f16_from_f32((float) kc.w * ks);
@@ -122,7 +121,8 @@ __global__ void kv_gather_q8_wide_kernel(const int8_t* __restrict__ k_q, const i
                                          const uint16_t* __restrict__ k_scale, const uint16_t* __restrict__ v_scale,
                                          const int32_t* __restrict__ table, const int32_t* __restrict__ ids,
                                          const int32_t* __restrict__ step, int kv_heads, int head_dim, int page_size,
-                                         uint16_t* __restrict__ k_scratch, uint16_t* __restrict__ v_scratch) {
+                                         uint16_t* __restrict__ k_scratch, uint16_t* __restrict__ v_scratch,
+                                         const int64_t* __restrict__ units) {
     const long long n_ids = (long long) __ldg(step + kStepWidth);
     const int per = head_dim / 8;
     const long long total = n_ids * kv_heads * per;
@@ -131,15 +131,13 @@ __global__ void kv_gather_q8_wide_kernel(const int8_t* __restrict__ k_q, const i
     const long long id = i / (kv_heads * (long long) per);
     const int rem = (int) (i % (kv_heads * (long long) per));
     const int h = rem / per, q8 = rem - h * per;
-    const int cell = ids[id];
-    const long long page = (long long) table[cell / page_size];
-    const long long row = (page * kv_heads + h) * page_size + (cell % page_size);
+    const long long at = kv_place(table, units, ids[id], h, kv_heads, page_size);
     const int d = q8 * 8;                    // 8 divides KV_Q8_GROUP, so all 8 values share the group's scale
     const int groups = head_dim / KV_Q8_GROUP;
-    const float ks = f32_from_f16(k_scale[row * groups + d / KV_Q8_GROUP]);
-    const float vs = f32_from_f16(v_scale[row * groups + d / KV_Q8_GROUP]);
-    const uint2 kraw = *reinterpret_cast<const uint2*>(k_q + row * head_dim + d);   // one 8-byte load
-    const uint2 vraw = *reinterpret_cast<const uint2*>(v_q + row * head_dim + d);
+    const float ks = f32_from_f16(kv_row(units, k_scale, at, groups)[d / KV_Q8_GROUP]);
+    const float vs = f32_from_f16(kv_row(units, v_scale, at, groups)[d / KV_Q8_GROUP]);
+    const uint2 kraw = *reinterpret_cast<const uint2*>(kv_row(units, k_q, at, head_dim) + d);   // one 8-byte load
+    const uint2 vraw = *reinterpret_cast<const uint2*>(kv_row(units, v_q, at, head_dim) + d);
     const int8_t* kc = reinterpret_cast<const int8_t*>(&kraw);
     const int8_t* vc = reinterpret_cast<const int8_t*>(&vraw);
     uint4 ko, vo;
@@ -181,30 +179,32 @@ bool pre75_q8_gather() {
 
 void kv_append_q8_step(int8_t* k_q, int8_t* v_q, uint16_t* k_scale, uint16_t* v_scale, const int32_t* page_table,
                        const int32_t* step, const float* kcur, const float* vcur, const QsaShapes& s, void* stream,
-                       const KvHostPools* host) {
+                       const KvHostPools* host, const int64_t* units) {
     validate(s, "kv_append_q8");
     const dim3 grid((unsigned) s.n_head_kv, (unsigned) (s.head_dim / KV_Q8_GROUP), 2);
     kv_append_q8_kernel<<<grid, KV_Q8_GROUP, 0, (cudaStream_t) stream>>>(
         k_q, v_q, k_scale, v_scale, page_table, step, kcur, vcur, (int) s.n_head_kv, (int) s.head_dim,
-        (int) s.page_size, host ? *host : KvHostPools{});
+        (int) s.page_size, host ? *host : KvHostPools{}, units);
     check("kv_append_q8 launch");
 }
 
 void kv_append_q8_steps(int8_t* k_q, int8_t* v_q, uint16_t* k_scale, uint16_t* v_scale, const int32_t* page_table,
                         const int32_t* step, int step_stride, const float* kcur, const float* vcur, int cur_stride,
-                        int n_tok, const QsaShapes& s, void* stream, const KvHostPools* host) {
+                        int n_tok, const QsaShapes& s, void* stream, const KvHostPools* host,
+                        const int64_t* units) {
     validate(s, "kv_append_q8 (steps)");
     if (n_tok < 1) return;
     const dim3 grid((unsigned) s.n_head_kv, (unsigned) (s.head_dim / KV_Q8_GROUP), (unsigned) (2 * n_tok));
     kv_append_q8_kernel<true><<<grid, KV_Q8_GROUP, 0, (cudaStream_t) stream>>>(
         k_q, v_q, k_scale, v_scale, page_table, step, kcur, vcur, (int) s.n_head_kv, (int) s.head_dim,
-        (int) s.page_size, host ? *host : KvHostPools{}, step_stride, cur_stride);
+        (int) s.page_size, host ? *host : KvHostPools{}, units, step_stride, cur_stride);
     check("kv_append_q8 (steps) launch");
 }
 
 void kv_gather_q8_step(const int8_t* k_q, const int8_t* v_q, const uint16_t* k_scale, const uint16_t* v_scale,
                        const int32_t* page_table, const int32_t* ids, const int32_t* step, int64_t max_ids,
-                       const QsaShapes& s, uint16_t* k_scratch, uint16_t* v_scratch, void* stream) {
+                       const QsaShapes& s, uint16_t* k_scratch, uint16_t* v_scratch, void* stream,
+                       const int64_t* units) {
     validate(s, "kv_gather_q8");
     if (max_ids <= 0) return;
 #if defined(STRATA_EXPERIMENTAL_SM60)
@@ -213,7 +213,7 @@ void kv_gather_q8_step(const int8_t* k_q, const int8_t* v_q, const uint16_t* k_s
         const unsigned blocks = (unsigned) ((total + 255) / 256);
         kv_gather_q8_wide_kernel<<<blocks, 256, 0, (cudaStream_t) stream>>>(
             k_q, v_q, k_scale, v_scale, page_table, ids, step, (int) s.n_head_kv, (int) s.head_dim,
-            (int) s.page_size, k_scratch, v_scratch);
+            (int) s.page_size, k_scratch, v_scratch, units);
         check("kv_gather_q8 wide launch");
         return;
     }
@@ -222,7 +222,7 @@ void kv_gather_q8_step(const int8_t* k_q, const int8_t* v_q, const uint16_t* k_s
     const unsigned blocks = (unsigned) ((total + 255) / 256);
     kv_gather_q8_kernel<<<blocks, 256, 0, (cudaStream_t) stream>>>(
         k_q, v_q, k_scale, v_scale, page_table, ids, step, (int) s.n_head_kv, (int) s.head_dim, (int) s.page_size,
-        k_scratch, v_scratch);
+        k_scratch, v_scratch, units);
     check("kv_gather_q8 launch");
 }
 

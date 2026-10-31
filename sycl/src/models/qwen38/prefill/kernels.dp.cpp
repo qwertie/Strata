@@ -2170,7 +2170,12 @@ __global__ void __launch_bounds__(256) gr_upmix_kernel(const uint16_t* __restric
 
 void kv_append(const float* K, const float* V, int64_t T, int64_t pos0, const int32_t* page_table, int64_t page_size,
                uint16_t* k_pool, uint16_t* v_pool, int8_t* k_q, int8_t* v_q, uint16_t* k_scale, uint16_t* v_scale,
-               void* stream, const strata::kernels::KvHostPools* host, const strata::kernels::KvHostPools* stage) {
+               void* stream, const strata::kernels::KvHostPools* host, const strata::kernels::KvHostPools* stage,
+        const int64_t* units) {
+    if (units) {
+        std::fprintf(stderr, "kv_append: the page-pool layout (units) is CUDA/HIP only\n");
+        std::exit(1);
+    }
     if (T <= 0) return;
     static const bool wide_env = [] { const char* v = std::getenv("STRATA_KV_WIDE_HOST"); return !(v && v[0] == '0'); }();
     const bool wide = wide_env;

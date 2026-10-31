@@ -5,6 +5,7 @@
 #include "strata/base/gpu/gfx_arch.hpp"
 #include "strata/common/kernels/router_top10.hpp"
 #include "strata/base/gpu/emulate.hpp"
+#include "strata/models/qwen38/kernels/kv_units.hpp"
 
 #include <cuda_fp16.h>
 #include <cuda_runtime.h>
@@ -2174,19 +2175,20 @@ __global__ void gate_attn_kernel(const float* __restrict__ a, const float* __res
 __global__ void kv_append_kernel(const float* __restrict__ K, const float* __restrict__ V, int64_t pos0,
                                  const int32_t* __restrict__ table, int64_t page_size, uint16_t* k_pool,
                                  uint16_t* v_pool, int8_t* k_q, int8_t* v_q, uint16_t* k_scale, uint16_t* v_scale,
-                                 strata::kernels::KvHostPools host, strata::kernels::KvHostPools stage) {
+                                 strata::kernels::KvHostPools host, strata::kernels::KvHostPools stage,
+                                 const int64_t* __restrict__ units) {
+    using strata::kernels::kv_row;
     const int64_t t = blockIdx.x;
     const int kvh = blockIdx.y, g = blockIdx.z >> 1;
     const bool is_v = (blockIdx.z & 1) != 0;
     const int d = g * 64 + threadIdx.x;
     const float x = (is_v ? V : K)[t * 512 + kvh * 256 + d];
     const int64_t pos = pos0 + t;
-    const int64_t page = table[pos / page_size];
-    const int64_t row = (page * 2 + kvh) * page_size + pos % page_size;
+    const int64_t at = strata::kernels::kv_place(table, units, (int) pos, kvh, 2, (int) page_size);
     const int64_t row_id = ((pos / page_size) * 2 + kvh) * page_size + pos % page_size;
     if (k_pool != nullptr) {
         const uint16_t h = hf(x);
-        if (page >= 0) (is_v ? v_pool : k_pool)[row * 256 + d] = h;
+        if (at >= 0) kv_row(units, is_v ? v_pool : k_pool, at, 256)[d] = h;
         if (host.k_pool != nullptr) (is_v ? host.v_pool : host.k_pool)[row_id * 256 + d] = h;
         if (stage.k_pool != nullptr) (is_v ? stage.v_pool : stage.k_pool)[row_id * 256 + d] = h;
         return;
@@ -2201,9 +2203,9 @@ __global__ void kv_append_kernel(const float* __restrict__ K, const float* __res
     const float sf = __half2float(__ushort_as_half(sb));
     int q = 0;
     if (sf > 0.0f) { q = __float2int_rn(x / sf); q = q < -127 ? -127 : (q > 127 ? 127 : q); }
-    if (page >= 0) {
-        (is_v ? v_q : k_q)[row * 256 + d] = (int8_t) q;
-        if (threadIdx.x == 0) (is_v ? v_scale : k_scale)[row * 4 + g] = sb;
+    if (at >= 0) {
+        kv_row(units, is_v ? v_q : k_q, at, 256)[d] = (int8_t) q;
+        if (threadIdx.x == 0) kv_row(units, is_v ? v_scale : k_scale, at, 4)[g] = sb;
     }
     if (host.k_q != nullptr) {
         (is_v ? host.v_q : host.k_q)[row_id * 256 + d] = (int8_t) q;
@@ -2442,11 +2444,12 @@ __global__ void __launch_bounds__(256, 2) gr_upmix_cuda_kernel(const uint16_t* _
 
 void kv_append(const float* K, const float* V, int64_t T, int64_t pos0, const int32_t* page_table, int64_t page_size,
                uint16_t* k_pool, uint16_t* v_pool, int8_t* k_q, int8_t* v_q, uint16_t* k_scale, uint16_t* v_scale,
-               void* stream, const strata::kernels::KvHostPools* host, const strata::kernels::KvHostPools* stage) {
+               void* stream, const strata::kernels::KvHostPools* host, const strata::kernels::KvHostPools* stage,
+               const int64_t* units) {
     if (T <= 0) return;
     kv_append_kernel<<<dim3((unsigned) T, 2, 8), 64, 0, (cudaStream_t) stream>>>(
         K, V, pos0, page_table, page_size, k_pool, v_pool, k_q, v_q, k_scale, v_scale,
-        host ? *host : strata::kernels::KvHostPools{}, stage ? *stage : strata::kernels::KvHostPools{});
+        host ? *host : strata::kernels::KvHostPools{}, stage ? *stage : strata::kernels::KvHostPools{}, units);
     check("kv_append");
 }
 void set_act_f16(bool on) {

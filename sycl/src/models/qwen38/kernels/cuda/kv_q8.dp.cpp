@@ -154,7 +154,12 @@ __dpct_inline__ void kv_gather_q8_kernel(
 
 void kv_append_q8_step(int8_t* k_q, int8_t* v_q, uint16_t* k_scale, uint16_t* v_scale, const int32_t* page_table,
                        const int32_t* step, const float* kcur, const float* vcur, const QsaShapes& s, void* stream,
-                       const KvHostPools* host) {
+                       const KvHostPools* host,
+        const int64_t* units) {
+    if (units) {
+        std::fprintf(stderr, "kv_append_q8_step: the page-pool layout (units) is CUDA/HIP only\n");
+        std::exit(1);
+    }
     validate(s, "kv_append_q8");
     const dpct::dim3 grid((unsigned)s.n_head_kv,
                           (unsigned)(s.head_dim / KV_Q8_GROUP), 2);
@@ -192,7 +197,12 @@ void kv_append_q8_step(int8_t* k_q, int8_t* v_q, uint16_t* k_scale, uint16_t* v_
 
 void kv_append_q8_steps(int8_t* k_q, int8_t* v_q, uint16_t* k_scale, uint16_t* v_scale, const int32_t* page_table,
                         const int32_t* step, int step_stride, const float* kcur, const float* vcur, int cur_stride,
-                        int n_tok, const QsaShapes& s, void* stream, const KvHostPools* host) {
+                        int n_tok, const QsaShapes& s, void* stream, const KvHostPools* host,
+        const int64_t* units) {
+    if (units) {
+        std::fprintf(stderr, "kv_append_q8_steps: the page-pool layout (units) is CUDA/HIP only\n");
+        std::exit(1);
+    }
     validate(s, "kv_append_q8 (steps)");
     if (n_tok < 1) return;
     const dpct::dim3 grid((unsigned)s.n_head_kv,
@@ -228,7 +238,12 @@ void kv_append_q8_steps(int8_t* k_q, int8_t* v_q, uint16_t* k_scale, uint16_t* v
 
 void kv_gather_q8_step(const int8_t* k_q, const int8_t* v_q, const uint16_t* k_scale, const uint16_t* v_scale,
                        const int32_t* page_table, const int32_t* ids, const int32_t* step, int64_t max_ids,
-                       const QsaShapes& s, uint16_t* k_scratch, uint16_t* v_scratch, void* stream) {
+                       const QsaShapes& s, uint16_t* k_scratch, uint16_t* v_scratch, void* stream,
+        const int64_t* units) {
+    if (units) {
+        std::fprintf(stderr, "kv_gather_q8_step: the page-pool layout (units) is CUDA/HIP only\n");
+        std::exit(1);
+    }
     validate(s, "kv_gather_q8");
     if (max_ids <= 0) return;
     const long long total = max_ids * s.n_head_kv * (s.head_dim / 4);

@@ -46,6 +46,7 @@
 
 #include "strata/common/kernels/f16_bits.hpp"
 #include "strata/models/qwen38/kernels/kv_stream.hpp"
+#include "strata/models/qwen38/kernels/kv_units.hpp"
 #include "strata/common/kernels/rope.hpp"
 #include "strata/common/kernels/mrope.hpp"
 
@@ -123,18 +124,17 @@ __device__ __forceinline__ float h2f(uint16_t bits) { return f32_from_f16(bits);
 __global__ void kv_append_kernel(uint16_t* __restrict__ k_pool, uint16_t* __restrict__ v_pool,
                                  const int32_t* __restrict__ table, const int32_t* __restrict__ step,
                                  const float* __restrict__ kcur, const float* __restrict__ vcur, int kv_heads,
-                                 int head_dim, int page_size, KvHostPools host) {
+                                 int head_dim, int page_size, KvHostPools host, const int64_t* __restrict__ units) {
     const long long pos = (long long) __ldg(step + kStepPos);
     const int i = blockIdx.x * blockDim.x + threadIdx.x;
     if (i >= kv_heads * head_dim) return;
     const int h = i / head_dim, d = i - h * head_dim;
     // `[page][kv_head][page_size][head_dim]`: one head's consecutive cells are contiguous inside a page.
     // KV streaming: the host copy (identity layout) always, the VRAM page only if the block is resident.
-    const long long page = (long long) table[pos / page_size];
-    if (page >= 0) {
-        const long long row = (page * kv_heads + h) * page_size + (pos % page_size);
-        k_pool[row * head_dim + d] = f16_from_f32(kcur[i]);
-        v_pool[row * head_dim + d] = f16_from_f32(vcur[i]);
+    const long long at = kv_place(table, units, (int) pos, h, kv_heads, page_size);
+    if (at >= 0) {
+        kv_row(units, k_pool, at, head_dim)[d] = f16_from_f32(kcur[i]);
+        kv_row(units, v_pool, at, head_dim)[d] = f16_from_f32(vcur[i]);
     }
     if (host.k_pool != nullptr) {
         const long long row = ((pos / page_size) * kv_heads + h) * page_size + (pos % page_size);
@@ -158,7 +158,8 @@ __global__ void indexer_key_append_kernel(const float* __restrict__ raw, const i
                                           float* __restrict__ tail, float* __restrict__ dead,
                                           float* __restrict__ pooled, int32_t* __restrict__ block_pos,
                                           int idx_dim, int r, int n_rot, const float* __restrict__ cos_tab,
-                                          const float* __restrict__ sin_tab, const int32_t* __restrict__ mtab) {
+                                          const float* __restrict__ sin_tab, const int32_t* __restrict__ mtab,
+                                          const int64_t* __restrict__ units) {
     extern __shared__ double s_mean[];   // idx_dim doubles
     const int d = threadIdx.x;
     const int pos = (int) __ldg(pos_dev);
@@ -197,7 +198,7 @@ __global__ void indexer_key_append_kernel(const float* __restrict__ raw, const i
         // as this kernel once did, left `dead` and `pooled[0]` the only unscaled keys of a scaled cache.
         if (d < n_rot) y *= cos_tab[d % (n_rot / 2)];
         dead[d] = y;
-        pooled[d] = y;
+        kv_key(pooled, units, 0, idx_dim)[d] = y;
     }
 
     if (slot != r - 1) return;
@@ -218,9 +219,9 @@ __global__ void indexer_key_append_kernel(const float* __restrict__ raw, const i
     const double inv = __ddiv_rn(1.0, __dsqrt_rn(ss / (double) idx_dim + (double) eps));
 
     const int b = pos / r;
-    pooled[(size_t) b * idx_dim + d] = (float) (m * inv * (double) w_k_norm[d]);
+    kv_key(pooled, units, b, idx_dim)[d] = (float) (m * inv * (double) w_k_norm[d]);
     // The spare slot MOVES to b+1 and is rewritten with the same constant value.
-    pooled[(size_t) (b + 1) * idx_dim + d] = dead[d];
+    kv_key(pooled, units, b + 1, idx_dim)[d] = dead[d];
     // The rotation position for this row, kept because a capture reader and the debug dumps want it.  It is the
     // block's first cell's POSITION, `pos_base + b*r`, and NOT the cell index `b*r`.
     if (d == 0) *block_pos = (int32_t) (pos_base + b * r);
@@ -235,7 +236,7 @@ __global__ void indexer_key_append_kernel(const float* __restrict__ raw, const i
     // every shape and every magnitude), and it comes from `pos_base`, which is constant for a sequence.
     const int half = n_rot / 2;
     if (d < half) {
-        float* row = pooled + (size_t) b * idx_dim;
+        float* row = kv_key(pooled, units, b, idx_dim);
         const size_t toff = (size_t) mrope_pos(mtab, pos_base + b * r, d) * half;
         // THE SAME `rope_neox_pair` THE STANDALONE ROPE KERNEL USES.  A second transcription of the pairing is
         // what this project keeps finding written down wrong.
@@ -250,7 +251,8 @@ __global__ void indexer_key_append_kernel(const float* __restrict__ raw, const i
 __global__ void qsa_index_kernel(const float* __restrict__ pooled,
                                  const float* __restrict__ q_idx, const float* __restrict__ bias,
                                  int idx_n_head, int idx_dim, long long r,
-                                 const int32_t* __restrict__ step, float* __restrict__ cell_scores) {
+                                 const int32_t* __restrict__ step, float* __restrict__ cell_scores,
+                                 const int64_t* __restrict__ units) {
     const long long n_bid = (long long) __ldg(step + kStepNBid);
     const long long n_kv = (long long) __ldg(step + kStepNKv);
     __shared__ double s_dot[32];
@@ -265,9 +267,10 @@ __global__ void qsa_index_kernel(const float* __restrict__ pooled,
     if (wid == 0) s_dot[lane] = 0.0;     // thread 0 reads all idx_n_head entries; zero the unused ones
     __syncthreads();
 
+    const float* key = kv_key(pooled, units, b, idx_dim);
     double acc = 0.0;
     for (int d = lane; d < idx_dim; d += 32)
-        acc = __dadd_rn(acc, __dmul_rn((double) pooled[(size_t) b * idx_dim + d],
+        acc = __dadd_rn(acc, __dmul_rn((double) key[d],
                                        (double) q_idx[(size_t) wid * idx_dim + d]));
     for (int o = 16; o > 0; o >>= 1) acc = __dadd_rn(acc, __shfl_xor_sync(0xffffffffu, acc, o));
     if (lane == 0) s_dot[wid] = acc;
@@ -407,7 +410,8 @@ __global__ void topk_kernel(const float* __restrict__ scores, const int32_t* __r
 __global__ void kv_gather_kernel(const uint16_t* __restrict__ k_pool, const uint16_t* __restrict__ v_pool,
                                  const int32_t* __restrict__ table, const int32_t* __restrict__ ids,
                                 const int32_t* __restrict__ step, int kv_heads, int head_dim, int page_size,
-                                uint16_t* __restrict__ k_scratch, uint16_t* __restrict__ v_scratch) {
+                                uint16_t* __restrict__ k_scratch, uint16_t* __restrict__ v_scratch,
+                                const int64_t* __restrict__ units) {
     const long long n_ids = (long long) __ldg(step + kStepWidth);
     const int per = head_dim / 4;                       // 4 halfs per uint2
     const long long total = n_ids * kv_heads * per;
@@ -416,12 +420,10 @@ __global__ void kv_gather_kernel(const uint16_t* __restrict__ k_pool, const uint
     const long long id = i / (kv_heads * (long long) per);
     const int rem = (int) (i % (kv_heads * (long long) per));
     const int h = rem / per, q = rem - h * per;
-    const int cell = ids[id];
-    const long long page = (long long) table[cell / page_size];
-    const long long src = ((page * kv_heads + h) * page_size + (cell % page_size)) * (long long) per + q;
+    const long long at = kv_place(table, units, ids[id], h, kv_heads, page_size);
     const long long dst = (id * kv_heads + h) * (long long) per + q;
-    reinterpret_cast<uint2*>(k_scratch)[dst] = reinterpret_cast<const uint2*>(k_pool)[src];
-    reinterpret_cast<uint2*>(v_scratch)[dst] = reinterpret_cast<const uint2*>(v_pool)[src];
+    reinterpret_cast<uint2*>(k_scratch)[dst] = kv_row(units, reinterpret_cast<const uint2*>(k_pool), at, per)[q];
+    reinterpret_cast<uint2*>(v_scratch)[dst] = kv_row(units, reinterpret_cast<const uint2*>(v_pool), at, per)[q];
 }
 
 // ================= 6. qsa_attend =================
@@ -594,20 +596,22 @@ const int32_t* step_upload_width(int64_t width, const QsaShapes& s) {
 // buffer and forward this token's counts as the capacities.
 
 void kv_append_step(uint16_t* k_pool, uint16_t* v_pool, const int32_t* page_table, const int32_t* step,
-                    const float* kcur, const float* vcur, const QsaShapes& s, void* stream, const KvHostPools* host) {
+                    const float* kcur, const float* vcur, const QsaShapes& s, void* stream, const KvHostPools* host,
+                    const int64_t* units) {
     validate(s, "kv_append");
     if (step == nullptr) fail("kv_append: step is null");
     // The grid is the head x dim count, which is a CONSTANT - `kv_append` writes one cell.
     const long long n = s.n_head_kv * s.head_dim;
     kv_append_kernel<<<grid_for(n, THREADS), THREADS, 0, (cudaStream_t) stream>>>(
         k_pool, v_pool, page_table, step, kcur, vcur, (int) s.n_head_kv, (int) s.head_dim, (int) s.page_size,
-        host ? *host : KvHostPools{});
+        host ? *host : KvHostPools{}, units);
     check_launch("kv_append");
     if (stream == nullptr) check_sync("kv_append");
 }
 
 void qsa_index_step(const float* pooled, const float* q_idx, const float* bias, const QsaShapes& s,
-                    const int32_t* step, int64_t max_blocks, float* cell_scores, void* stream) {
+                    const int32_t* step, int64_t max_blocks, float* cell_scores, void* stream,
+                    const int64_t* units) {
     validate(s, "qsa_index");
     if (step == nullptr) fail("qsa_index: step is null");
     if (max_blocks <= 0) fail("qsa_index: max_blocks must be positive");
@@ -615,7 +619,7 @@ void qsa_index_step(const float* pooled, const float* q_idx, const float* bias, 
     // `b > n_bid`, so the surplus blocks cost a launch and nothing else.
     const int threads = 32 * (int) s.idx_n_head;
     qsa_index_kernel<<<(unsigned) max_blocks, threads, 0, (cudaStream_t) stream>>>(
-        pooled, q_idx, bias, (int) s.idx_n_head, (int) s.idx_dim, s.idx_block, step, cell_scores);
+        pooled, q_idx, bias, (int) s.idx_n_head, (int) s.idx_dim, s.idx_block, step, cell_scores, units);
     check_launch("qsa_index");
     if (stream == nullptr) check_sync("qsa_index");
 }
@@ -641,7 +645,7 @@ void topk_512_step(const float* cell_scores, const QsaShapes& s, int64_t cap, co
 
 void kv_gather_step(const uint16_t* k_pool, const uint16_t* v_pool, const int32_t* page_table,
                     const int32_t* ids, const int32_t* step, int64_t max_ids, const QsaShapes& s,
-                    uint16_t* k_scratch, uint16_t* v_scratch, void* stream) {
+                    uint16_t* k_scratch, uint16_t* v_scratch, void* stream, const int64_t* units) {
     validate(s, "kv_gather");
     if (step == nullptr) fail("kv_gather: step is null");
     if (max_ids <= 0) return;
@@ -650,7 +654,7 @@ void kv_gather_step(const uint16_t* k_pool, const uint16_t* v_pool, const int32_
     const long long total = max_ids * s.n_head_kv * (s.head_dim / 4);
     kv_gather_kernel<<<grid_for(total, 256), 256, 0, (cudaStream_t) stream>>>(
         k_pool, v_pool, page_table, ids, step, (int) s.n_head_kv, (int) s.head_dim, (int) s.page_size,
-        k_scratch, v_scratch);
+        k_scratch, v_scratch, units);
     check_launch("kv_gather");
     if (stream == nullptr) check_sync("kv_gather");
 }
@@ -734,7 +738,7 @@ void indexer_key_append(const float* raw, const int32_t* pos_dev, int32_t pos_ba
     // be captured and replayed, and the position arrives through `pos_dev` like every other kernel's data.
     indexer_key_append_kernel<<<1, threads, smem, (cudaStream_t) stream>>>(
         raw, pos_dev, (int) pos_base, w_k_norm, eps, b.tail, b.dead, b.pooled, b.block_pos, (int) s.idx_dim,
-        (int) s.idx_block, (int) s.n_rot, cos_tab, sin_tab, mrope_table());
+        (int) s.idx_block, (int) s.n_rot, cos_tab, sin_tab, mrope_table(), b.units);
     check_launch("indexer_key_append");
     if (stream == nullptr) check_sync("indexer_key_append");
 }

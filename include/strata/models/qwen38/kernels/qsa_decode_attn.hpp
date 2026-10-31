@@ -31,6 +31,9 @@ struct QsaAttnPools {
     const uint8_t* k_q4 = nullptr;      ///< q4_0 block_q4_0 [page][kv_head][page_size][head_dim / 32 * 18]
     const uint8_t* v_q4 = nullptr;
     const int32_t* page_table = nullptr;
+    /// The page pool's layout (kv_units.hpp): per logical page, the place of its unit; null for the packed layout.
+    /// With it the array pointers above are offsets within a unit and `page_table` is not read.
+    const int64_t* units = nullptr;
 };
 
 /// Batch windows: every query's own K/V pools - query z reads p[z] (z < n).  n = 0: the call's one `pools`.

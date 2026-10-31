@@ -58,7 +58,7 @@ void nvfp4_512_rows(const uint8_t*, size_t, int, const void* const*, int, float*
 // which is what Verifier::record_window does on a decline.
 namespace strata::kernels {
 bool qsa_block_scores_slots(const float* const*, const float* const*, const float*, const int32_t*, int64_t, int64_t,
-                            const QsaShapes&, float*, void*) { return false; }
+                            const QsaShapes&, float*, void*, const int64_t* const*) { return false; }
 bool qsa_decode_attn_slots(const float*, const QsaAttnSlotPools&, const int32_t*, const int32_t*, int64_t, const QsaShapes&,
                            float*, float*, int64_t, void*) { return false; }
 }  // namespace strata::kernels

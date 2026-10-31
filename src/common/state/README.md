@@ -80,6 +80,9 @@ GPU runtime and its test (`page_pool_test.cpp`) runs on host memory.
   the conversations to pause. A resize or a limit that the active conversations or the minimum would not fit is
   refused with the reason.
 - `report` gives the pages and bytes by use for the `GET_MEMORY_USE` command.
+- Qwen3.8's QSA kernels read and write a layer's growing region where the pool put it: each block of 4 tokens is one
+  unit (its K, V, scales and indexer key), found through a table of unit addresses
+  (`include/strata/models/qwen38/kernels/kv_units.hpp`). Without the table they use today's separate buffers.
 
 The pool is not thread-safe: the engine's step loop is its only caller.
 

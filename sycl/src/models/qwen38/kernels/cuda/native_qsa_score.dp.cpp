@@ -27,6 +27,8 @@
 #include <atomic>
 #include <cstddef>
 #include <cstdint>
+#include <cstdio>
+#include <cstdlib>
 #include <stdexcept>
 
 namespace strata::kernels {
@@ -275,7 +277,11 @@ void native_qsa_score_set_enabled(bool value){enabled.store(value,std::memory_or
 bool native_qsa_score_enabled(){return enabled.load(std::memory_order_relaxed);}
 void native_qsa_score(const float* pooled,const float* query,const float* bias,
                       const QsaShapes& s,const int32_t* step,int64_t max_blocks,int64_t max_cells,
-                      float* cells,void* stream){
+                      float* cells,void* stream,const int64_t* units){
+    if (units != nullptr) {
+        std::fprintf(stderr, "native_qsa_score: the page-pool layout (units) is CUDA/HIP only\n");
+        std::exit(1);
+    }
     if(!stream||s.idx_dim!=D||s.idx_n_head!=HEADS||s.idx_block!=R||s.idx_top_k!=2048||
        max_cells<1||max_cells>INT32_MAX-3||max_blocks!=max_cells/R+1)
         throw std::invalid_argument("native QSA score requires128dim/4heads/4cells/2048budget, exact capacities and explicit stream");

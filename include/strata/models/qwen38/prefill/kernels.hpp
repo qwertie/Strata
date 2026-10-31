@@ -135,11 +135,11 @@ void gate_attn(const float* attn, const float* q_full, uint16_t* out16, int64_t 
 
 /// K and V of T consecutive cells (positions pos0..pos0+T-1; K normed and rotated) into the paged pools: FP16
 /// (`k_pool`/`v_pool`) or INT8 codes + FP16 scale per 64 (`k_q`...), the decode append's arithmetic.
-/// K, V: [T, 2, 256].
+/// K, V: [T, 2, 256].  `units`: the page pool's layout (kv_units.hpp), the pools then being offsets within a unit.
 void kv_append(const float* K, const float* V, int64_t T, int64_t pos0, const int32_t* page_table, int64_t page_size,
                uint16_t* k_pool, uint16_t* v_pool, int8_t* k_q, int8_t* v_q, uint16_t* k_scale, uint16_t* v_scale,
                void* stream, const strata::kernels::KvHostPools* host = nullptr,
-               const strata::kernels::KvHostPools* stage = nullptr);
+               const strata::kernels::KvHostPools* stage = nullptr, const int64_t* units = nullptr);
 
 /// fp32 -> fp16 bits and fp32 -> bf16, n elements (the two activation images of the prompt GEMMs).
 void to_f16(const float* x, uint16_t* y, int64_t n, void* stream);

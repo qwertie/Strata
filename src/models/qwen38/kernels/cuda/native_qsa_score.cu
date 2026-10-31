@@ -19,6 +19,7 @@
 // SOFTWARE.
 
 #include "strata/models/qwen38/kernels/native_qsa_score.hpp"
+#include "strata/models/qwen38/kernels/kv_units.hpp"
 #include "strata/core/geometry.hpp"
 #include <cuda_runtime.h>
 #include <atomic>
@@ -57,7 +58,7 @@ __device__ __forceinline__ void mma(TileC& c,const TileA& a,const TileB& b) {
 __global__ __launch_bounds__(64,1) void score_kernel(
         const float* __restrict__ pooled,const float* __restrict__ query,
         const float* __restrict__ bias,const int32_t* __restrict__ step,
-        int max_cells,float* __restrict__ cells) {
+        int max_cells,float* __restrict__ cells,const int64_t* __restrict__ units) {
     const int n=step[kStepNKv],full=step[kStepNBid];
     if(n<1||n>max_cells||step[kStepPos]!=n-1||full!=n/R||
        step[kStepWidth]!=(n<2051?n:2051))return;
@@ -70,10 +71,11 @@ __global__ __launch_bounds__(64,1) void score_kernel(
     if(warp!=0)return;
     const int row=row0+lane;
     if(row>full)return;
+    const float* key=kv_key(pooled,units,row,D);
     float h[HEADS];
     for(int j=0;j<HEADS;++j){
         float acc=0.0f;
-        for(int d=0;d<D;++d)acc=fmaf(pooled[size_t(row)*D+d],query[j*D+d],acc);
+        for(int d=0;d<D;++d)acc=fmaf(key[d],query[j*D+d],acc);
         h[j]=fmaxf(acc,0.0f);
     }
     float sum=__fadd_rn(__fadd_rn(__fadd_rn(h[0],h[1]),h[2]),h[3]);
@@ -94,7 +96,7 @@ __global__ __launch_bounds__(64,1) void score_kernel(
 #pragma unroll
             for(int i=0;i<16;++i){
                 const int row=row0+ia*16+i;
-                tile[i*STRIDE+lane]=row<=full?pooled[size_t(row)*D+col]:0.0f;
+                tile[i*STRIDE+lane]=row<=full?kv_key(pooled,units,row,D)[col]:0.0f;
             }
             __syncwarp();
 #pragma unroll
@@ -151,7 +153,7 @@ __global__ __launch_bounds__(64,1) void score_kernel(
 __global__ void scalar_score_kernel(
         const float* __restrict__ pooled,const float* __restrict__ query,
         const float* __restrict__ bias,const int32_t* __restrict__ step,
-        int max_cells,float* __restrict__ cells) {
+        int max_cells,float* __restrict__ cells,const int64_t* __restrict__ units) {
     const int n=step[kStepNKv],full=step[kStepNBid];
     if(n<1||n>max_cells||step[kStepPos]!=n-1||full!=n/R||
        step[kStepWidth]!=(n<2051?n:2051))return;
@@ -160,10 +162,11 @@ __global__ void scalar_score_kernel(
     __shared__ float head_score[HEADS];
     const int head=threadIdx.x;
     if(head<HEADS){
+        const float* key=kv_key(pooled,units,row,D);
         float dot=0.0f;
 #pragma unroll
         for(int d=0;d<D;++d)
-            dot=__fmaf_rn(pooled[size_t(row)*D+d],query[size_t(head)*D+d],dot);
+            dot=__fmaf_rn(key[d],query[size_t(head)*D+d],dot);
         head_score[head]=dot>0.0f?dot:0.0f;
     }
     __syncthreads();
@@ -193,11 +196,12 @@ void native_qsa_score_set_enabled(bool value){enabled.store(value,std::memory_or
 bool native_qsa_score_enabled(){return enabled.load(std::memory_order_relaxed);}
 void native_qsa_score(const float* pooled,const float* query,const float* bias,
                       const QsaShapes& s,const int32_t* step,int64_t max_blocks,int64_t max_cells,
-                      float* cells,void* stream){
+                      float* cells,void* stream,const int64_t* units){
     if(!stream||s.idx_dim!=D||s.idx_n_head!=HEADS||s.idx_block!=R||s.idx_top_k!=2048||
        max_cells<1||max_cells>INT32_MAX-3||max_blocks!=max_cells/R+1)
         throw std::invalid_argument("native QSA score requires128dim/4heads/4cells/2048budget, exact capacities and explicit stream");
-    const Span spans[]={{pooled,size_t(max_blocks)*D*4},{query,HEADS*D*4},
+    // in units, pooled is an offset (kv_units.hpp), not a buffer: its span is empty
+    const Span spans[]={{pooled,units?0:size_t(max_blocks)*D*4},{query,HEADS*D*4},
         {step,kStepCount*4},{cells,size_t(max_cells)*4},{bias,bias?size_t(max_blocks)*4:0}};
     const int count=bias?5:4;
     for(int i=0;i<count;++i)validate(spans[i]);
@@ -205,10 +209,10 @@ void native_qsa_score(const float* pooled,const float* query,const float* bias,
         if(overlaps(spans[i],spans[j]))throw std::invalid_argument("native QSA score spans overlap");
 #if defined(__HIPCC__)
     scalar_score_kernel<<<unsigned(max_blocks),128,0,static_cast<cudaStream_t>(stream)>>>(
-        pooled,query,bias,step,int(max_cells),cells);
+        pooled,query,bias,step,int(max_cells),cells,units);
 #else
     score_kernel<<<unsigned((max_blocks+ROWS-1)/ROWS),dim3(32,WARPS),0,static_cast<cudaStream_t>(stream)>>>(
-        pooled,query,bias,step,int(max_cells),cells);
+        pooled,query,bias,step,int(max_cells),cells,units);
 #endif
     const auto error=cudaGetLastError();
     if(error!=cudaSuccess)throw std::runtime_error(cudaGetErrorString(error));

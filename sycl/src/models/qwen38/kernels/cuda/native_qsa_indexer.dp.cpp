@@ -29,6 +29,8 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <cstdio>
+#include <cstdlib>
 #include <limits>
 #include <stdexcept>
 
@@ -380,6 +382,10 @@ void native_qsa_indexer_append_steps(const float* raw, const int32_t* relative_p
                                      int pos_stride, int n_steps, int32_t pos_base,
                                      const float* gamma, float epsilon, const QsaIndexerBuffers& b,
                                      const QsaShapes& s, int64_t max_cells, const RopeScaling& scaling, void* stream) {
+    if (b.units != nullptr) {
+        std::fprintf(stderr, "native_qsa_indexer_append_steps: the page-pool layout (units) is CUDA/HIP only\n");
+        std::exit(1);
+    }
     if (n_steps <= 0) return;
     if (!stream || s.idx_dim != D || s.idx_block != R || s.n_rot != ROT ||
         max_cells < 1 || max_cells > INT32_MAX || pos_base < 0 || pos_base % R ||
@@ -475,6 +481,10 @@ void native_qsa_indexer_append(const float* raw, const int32_t* relative_pos_dev
 void native_qsa_indexer_append_batch(const float* raw, int64_t n, int64_t p0, int32_t pos_base, const float* gamma,
                                      float epsilon, const QsaIndexerBuffers& b, const QsaShapes& s, int64_t max_cells,
                                      const RopeScaling& scaling, void* stream) {
+    if (b.units != nullptr) {
+        std::fprintf(stderr, "native_qsa_indexer_append_batch: the page-pool layout (units) is CUDA/HIP only\n");
+        std::exit(1);
+    }
     if (n <= 0) return;
     if (!stream || s.idx_dim != D || s.idx_block != R || s.n_rot != ROT || p0 < 0 || p0 + n > max_cells ||
         max_cells > INT32_MAX || pos_base < 0 || pos_base % R || int64_t(pos_base) + max_cells > INT32_MAX ||

@@ -217,6 +217,10 @@ struct QsaIndexerBuffers {
     float* dead = nullptr;
     float* pooled = nullptr;
     int32_t* block_pos = nullptr;
+    /// The page pool's layout (kv_units.hpp): per block, the place of its unit; `pooled` is then
+    /// kv_unit_keys(layout), an offset rather than a buffer.  The table must reach block n_bid + 1, where the spare
+    /// key goes.  Null: `pooled` is the packed array above.
+    const int64_t* units = nullptr;
 };
 
 /// Append one raw indexer key (IDX_DIM wide, fp32, NEVER normed and NEVER rotated - `ref/qsa.py` L201-210) and
@@ -339,18 +343,20 @@ void qsa_gate_apply_f32(const float* attn, const float* q_full, const QsaShapes&
 // returns past its device `n_ids`, and `qsa_attend_kernel` handles an empty selection itself.  So passing a
 // capacity LARGER than this token needs is correct, not merely safe.
 
-/// `max_blocks` must be at least `(max_cells / idx_block) + 2`.
+/// `max_blocks` must be at least `(max_cells / idx_block) + 2`.  `units`: as in QsaIndexerBuffers.
 void qsa_index_step(const float* pooled, const float* q_idx, const float* bias, const QsaShapes& s,
-                    const int32_t* step, int64_t max_blocks, float* cell_scores, void* stream);
+                    const int32_t* step, int64_t max_blocks, float* cell_scores, void* stream,
+                    const int64_t* units = nullptr);
 
 /// `cap` must be `qsa_selection_width(kTopkMaxCells, s)` - the largest width the kernel can ever write.
 void topk_512_step(const float* cell_scores, const QsaShapes& s, int64_t cap, const int32_t* step,
                    int32_t* ids, void* stream);
 
-/// `max_ids` must be the CAPACITY of `k_scratch`/`v_scratch` in ids.
+/// `max_ids` must be the CAPACITY of `k_scratch`/`v_scratch` in ids.  `units` (here and in kv_append_step): the
+/// page pool's layout (kv_units.hpp), the pools then being offsets within a unit; null: packed.
 void kv_gather_step(const uint16_t* k_pool, const uint16_t* v_pool, const int32_t* page_table,
                     const int32_t* ids, const int32_t* step, int64_t max_ids, const QsaShapes& s,
-                    uint16_t* k_scratch, uint16_t* v_scratch, void* stream);
+                    uint16_t* k_scratch, uint16_t* v_scratch, void* stream, const int64_t* units = nullptr);
 
 /// `max_ids` must be at least the largest selection the geometry can produce, because it sizes the SHARED
 /// memory the softmax works in.
@@ -364,6 +370,6 @@ struct KvHostPools;   // kv_stream.hpp
 /// the cell is written there too, and to VRAM only if its block is resident.
 void kv_append_step(uint16_t* k_pool, uint16_t* v_pool, const int32_t* page_table, const int32_t* step,
                     const float* kcur, const float* vcur, const QsaShapes& s, void* stream,
-                    const KvHostPools* host = nullptr);
+                    const KvHostPools* host = nullptr, const int64_t* units = nullptr);
 
 }  // namespace strata::kernels

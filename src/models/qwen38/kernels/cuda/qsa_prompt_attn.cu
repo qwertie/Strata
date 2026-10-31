@@ -9,6 +9,7 @@
 #include "strata/base/gpu/gfx_arch.hpp"
 #include "strata/models/qwen38/kernels/kv_q8.hpp"
 #include "strata/models/qwen38/kernels/kv_q4.hpp"
+#include "strata/models/qwen38/kernels/kv_units.hpp"
 
 #include <cuda_fp16.h>
 #include <cuda_runtime.h>
@@ -165,9 +166,7 @@ __global__ void __launch_bounds__(THREADS) prompt_attn_kernel(const float* __res
     float pa = 0.0f, pb = 0.0f;
     auto row_of = [&](int c0, int c) -> long long {          // as S.row below; -1 past the chunk's cells
         if (c >= min(CH, n - c0)) return -1;
-        const int cell = ids[c0 + c];
-        const long long page = (long long) p.page_table[cell / page_size];
-        return (page * n_kv_heads + kvh) * page_size + (cell % page_size);
+        return kv_place(p.page_table, p.units, ids[c0 + c], kvh, n_kv_heads, page_size);
     };
     auto fetch = [&](int c0) {
         if constexpr (PREFETCH) {
@@ -175,13 +174,15 @@ __global__ void __launch_bounds__(THREADS) prompt_attn_kernel(const float* __res
             for (int j = 0; j < PPT; ++j) {
                 const int i = t + j * THREADS, c = i / KP, pc = i % KP;
                 const long long r = row_of(c0, c);
-                pk[j] = r >= 0 ? __ldg(reinterpret_cast<const uint4*>(p.k_q + r * HD) + pc) : make_uint4(0, 0, 0, 0);
-                pv[j] = r >= 0 ? __ldg(reinterpret_cast<const uint4*>(p.v_q + r * HD) + pc) : make_uint4(0, 0, 0, 0);
+                pk[j] = r >= 0 ? __ldg(reinterpret_cast<const uint4*>(kv_row(p.units, p.k_q, r, HD)) + pc)
+                    : make_uint4(0, 0, 0, 0);
+                pv[j] = r >= 0 ? __ldg(reinterpret_cast<const uint4*>(kv_row(p.units, p.v_q, r, HD)) + pc)
+                    : make_uint4(0, 0, 0, 0);
             }
             const int c = t / 4, g = t % 4;
             const long long r = row_of(c0, c);
-            pa = r >= 0 ? __half2float(__ushort_as_half(p.k_scale[r * (HD / KV_Q8_GROUP) + g])) : 0.0f;
-            pb = r >= 0 ? __half2float(__ushort_as_half(p.v_scale[r * (HD / KV_Q8_GROUP) + g])) : 0.0f;
+            pa = r >= 0 ? __half2float(__ushort_as_half(kv_row(p.units, p.k_scale, r, HD / KV_Q8_GROUP)[g])) : 0.0f;
+            pb = r >= 0 ? __half2float(__ushort_as_half(kv_row(p.units, p.v_scale, r, HD / KV_Q8_GROUP)[g])) : 0.0f;
         }
     };
     if constexpr (PREFETCH) fetch(0);
@@ -200,13 +201,7 @@ __global__ void __launch_bounds__(THREADS) prompt_attn_kernel(const float* __res
             __syncthreads();
         } else {
         if (t < CH) {
-            long long r = -1;
-            if (t < nh) {
-                const int cell = ids[c0 + t];
-                const long long page = (long long) p.page_table[cell / page_size];
-                r = (page * n_kv_heads + kvh) * page_size + (cell % page_size);
-            }
-            S.row[t] = r;
+            S.row[t] = t < nh ? kv_place(p.page_table, p.units, ids[c0 + t], kvh, n_kv_heads, page_size) : -1;
         }
         __syncthreads();   // rows ready; the previous chunk's p.v is done with k, v, s
         // gather the chunk's K and V rows (16-byte pieces; K8V4's V as q4_0 blocks dequantized to fp16)
@@ -223,7 +218,8 @@ __global__ void __launch_bounds__(THREADS) prompt_attn_kernel(const float* __res
                 uint4 lo = make_uint4(0, 0, 0, 0), hi = make_uint4(0, 0, 0, 0);
                 float d = 0.0f;
                 if (r >= 0) {
-                    const block_q4_0* blk = reinterpret_cast<const block_q4_0*>((kv == 0 ? p.k_q4 : p.v_q4) + r * BYTES) + b;
+                    const uint8_t* row = kv_row(p.units, kv == 0 ? p.k_q4 : p.v_q4, r, BYTES);
+                    const block_q4_0* blk = reinterpret_cast<const block_q4_0*>(row) + b;
                     d = __half2float(__ushort_as_half(__ldg(&blk->d)));
                     const uint16_t* q16 = reinterpret_cast<const uint16_t*>(blk->qs);
                     uint32_t w[4];
@@ -251,9 +247,9 @@ __global__ void __launch_bounds__(THREADS) prompt_attn_kernel(const float* __res
                 uint4 kx = make_uint4(0, 0, 0, 0);
                 if (r >= 0) {
                     if constexpr (KV_MODE == 0)
-                        kx = __ldg(reinterpret_cast<const uint4*>(p.k_pool + r * HD) + pc);
+                        kx = __ldg(reinterpret_cast<const uint4*>(kv_row(p.units, p.k_pool, r, HD)) + pc);
                     else   // modes 1 and 3: the K side is INT8
-                        kx = __ldg(reinterpret_cast<const uint4*>(p.k_q + r * HD) + pc);
+                        kx = __ldg(reinterpret_cast<const uint4*>(kv_row(p.units, p.k_q, r, HD)) + pc);
                 }
                 *reinterpret_cast<uint4*>(reinterpret_cast<unsigned char*>(&S.kv.k[c][0]) + pc * 16) = kx;
             }
@@ -266,7 +262,8 @@ __global__ void __launch_bounds__(THREADS) prompt_attn_kernel(const float* __res
 #pragma unroll
                     for (int j = 0; j < QK4_0; ++j) S.kv.v[c][b * QK4_0 + j] = __half(0);
                     if (r >= 0) {
-                        const block_q4_0* blk = reinterpret_cast<const block_q4_0*>(p.v_q4 + r * BYTES) + b;
+                        const block_q4_0* blk =
+                            reinterpret_cast<const block_q4_0*>(kv_row(p.units, p.v_q4, r, BYTES)) + b;
                         const float d = __half2float(__ushort_as_half(blk->d));
 #pragma unroll
                         for (int j = 0; j < QK4_0 / 2; ++j) {
@@ -284,9 +281,9 @@ __global__ void __launch_bounds__(THREADS) prompt_attn_kernel(const float* __res
                     uint4 vx = make_uint4(0, 0, 0, 0);
                     if (r >= 0) {
                         if constexpr (KV_MODE == 1)
-                            vx = __ldg(reinterpret_cast<const uint4*>(p.v_q + r * HD) + pc);
+                            vx = __ldg(reinterpret_cast<const uint4*>(kv_row(p.units, p.v_q, r, HD)) + pc);
                         else
-                            vx = __ldg(reinterpret_cast<const uint4*>(p.v_pool + r * HD) + pc);
+                            vx = __ldg(reinterpret_cast<const uint4*>(kv_row(p.units, p.v_pool, r, HD)) + pc);
                     }
                     *reinterpret_cast<uint4*>(reinterpret_cast<unsigned char*>(&S.kv.v[c][0]) + pc * 16) = vx;
                 }
@@ -297,10 +294,10 @@ __global__ void __launch_bounds__(THREADS) prompt_attn_kernel(const float* __res
                 float a = 0.0f, b = 0.0f;
                 if (r >= 0) {
                     if constexpr (KV_MODE == 1) {
-                        a = __half2float(__ushort_as_half(p.k_scale[r * (HD / KV_Q8_GROUP) + g]));
-                        b = __half2float(__ushort_as_half(p.v_scale[r * (HD / KV_Q8_GROUP) + g]));
+                        a = __half2float(__ushort_as_half(kv_row(p.units, p.k_scale, r, HD / KV_Q8_GROUP)[g]));
+                        b = __half2float(__ushort_as_half(kv_row(p.units, p.v_scale, r, HD / KV_Q8_GROUP)[g]));
                     } else if constexpr (KV_MODE == 3) {   // K as int8, V dequantized to fp16 (scale 1)
-                        a = __half2float(__ushort_as_half(p.k_scale[r * (HD / KV_Q8_GROUP) + g]));
+                        a = __half2float(__ushort_as_half(kv_row(p.units, p.k_scale, r, HD / KV_Q8_GROUP)[g]));
                         b = 1.0f;
                     } else {
                         a = b = 1.0f;
@@ -594,9 +591,7 @@ __global__ void __launch_bounds__(THREADS) prompt_attn_i8_kernel(const float* __
     const int n_chunks = (n + CH2 - 1) / CH2;
     auto cell_of = [&](int c) -> int { return c < n ? __ldg(ids + c) : -1; };
     auto row_of = [&](int cell) -> long long {
-        if (cell < 0) return -1;
-        const long long page = (long long) __ldg(p.page_table + cell / page_size);
-        return (page * n_kv_heads + kvh) * page_size + (cell % page_size);
+        return cell < 0 ? -1 : kv_place(p.page_table, p.units, cell, kvh, n_kv_heads, page_size);
     };
 #if !STRATA_PA_SM80
     // Turing (no cp.async): the warp's next pieces wait in registers and are stored into their stage after this
@@ -617,18 +612,23 @@ __global__ void __launch_bounds__(THREADS) prompt_attn_i8_kernel(const float* __
             const int idx = lane + 32 * j, cell = idx >> 2, pc = idx & 3;
             const long long rr = __shfl_sync(0xffffffffu, r, cell);
             const bool ok = rr >= 0;
-            const size_t off = ok ? (size_t) rr * HD + dim0 + pc * 16 : 0;
+            const long long at = ok ? rr : 0;
+            const size_t off = ok ? dim0 + pc * 16 : 0;
 #if STRATA_PA_SM80
-            cp_async16(&S.kv[st][warp][0][0][0] + swz(cell, pc * 16), p.k_q + off, ok);
-            cp_async16(&S.kv[st][warp][1][0][0] + swz(cell, pc * 16), p.v_q + off, ok);
+            cp_async16(&S.kv[st][warp][0][0][0] + swz(cell, pc * 16), kv_row(p.units, p.k_q, at, HD) + off, ok);
+            cp_async16(&S.kv[st][warp][1][0][0] + swz(cell, pc * 16), kv_row(p.units, p.v_q, at, HD) + off, ok);
 #else
             (void) st;
-            rk[j] = ok ? __ldg(reinterpret_cast<const uint4*>(p.k_q + off)) : make_uint4(0, 0, 0, 0);
-            rv[j] = ok ? __ldg(reinterpret_cast<const uint4*>(p.v_q + off)) : make_uint4(0, 0, 0, 0);
+            rk[j] = ok ? __ldg(reinterpret_cast<const uint4*>(kv_row(p.units, p.k_q, at, HD) + off))
+                       : make_uint4(0, 0, 0, 0);
+            rv[j] = ok ? __ldg(reinterpret_cast<const uint4*>(kv_row(p.units, p.v_q, at, HD) + off))
+                       : make_uint4(0, 0, 0, 0);
 #endif
         }
-        ksr = r >= 0 ? __half2float(__ushort_as_half(__ldg(p.k_scale + r * (HD / KV_Q8_GROUP) + warp))) : 0.0f;
-        vsr = r >= 0 ? __half2float(__ushort_as_half(__ldg(p.v_scale + r * (HD / KV_Q8_GROUP) + warp))) : 0.0f;
+        ksr = r >= 0 ? __half2float(__ushort_as_half(__ldg(kv_row(p.units, p.k_scale, r, HD / KV_Q8_GROUP) + warp)))
+                    : 0.0f;
+        vsr = r >= 0 ? __half2float(__ushort_as_half(__ldg(kv_row(p.units, p.v_scale, r, HD / KV_Q8_GROUP) + warp)))
+                    : 0.0f;
     };
     float ksn, vsn;
     issue(row_of(cell_of(lane)), 0, ksn, vsn);
@@ -857,9 +857,7 @@ __global__ void __launch_bounds__(THREADS) decode_attn_i8_split_kernel(const flo
     // the chunk pipeline: cells two chunks ahead, their pool rows one chunk ahead, the data (cp.async) one ahead
     auto cell_of = [&](int c) -> int { return c < n ? __ldg(ids + c) : -1; };
     auto row_of = [&](int cell) -> long long {
-        if (cell < 0) return -1;
-        const long long page = (long long) __ldg(p.page_table + cell / page_size);
-        return (page * n_kv_heads + kvh) * page_size + (cell % page_size);
+        return cell < 0 ? -1 : kv_place(p.page_table, p.units, cell, kvh, n_kv_heads, page_size);
     };
     auto issue = [&](long long r, int st, float& ksr, float& vsr) {
 #pragma unroll
@@ -867,12 +865,15 @@ __global__ void __launch_bounds__(THREADS) decode_attn_i8_split_kernel(const flo
             const int idx = lane + 32 * j, cell = idx >> 2, pc = idx & 3;
             const long long rr = __shfl_sync(0xffffffffu, r, cell);
             const bool ok = rr >= 0;
-            const size_t off = ok ? (size_t) rr * HD + dim0 + pc * 16 : 0;
-            cp_async16(&S.kv[st][warp][0][0][0] + swz(cell, pc * 16), p.k_q + off, ok);
-            cp_async16(&S.kv[st][warp][1][0][0] + swz(cell, pc * 16), p.v_q + off, ok);
+            const long long at = ok ? rr : 0;
+            const size_t off = ok ? dim0 + pc * 16 : 0;
+            cp_async16(&S.kv[st][warp][0][0][0] + swz(cell, pc * 16), kv_row(p.units, p.k_q, at, HD) + off, ok);
+            cp_async16(&S.kv[st][warp][1][0][0] + swz(cell, pc * 16), kv_row(p.units, p.v_q, at, HD) + off, ok);
         }
-        ksr = r >= 0 ? __half2float(__ushort_as_half(__ldg(p.k_scale + r * (HD / KV_Q8_GROUP) + warp))) : 0.0f;
-        vsr = r >= 0 ? __half2float(__ushort_as_half(__ldg(p.v_scale + r * (HD / KV_Q8_GROUP) + warp))) : 0.0f;
+        ksr = r >= 0 ? __half2float(__ushort_as_half(__ldg(kv_row(p.units, p.k_scale, r, HD / KV_Q8_GROUP) + warp)))
+                    : 0.0f;
+        vsr = r >= 0 ? __half2float(__ushort_as_half(__ldg(kv_row(p.units, p.v_scale, r, HD / KV_Q8_GROUP) + warp)))
+                    : 0.0f;
     };
     float ksn, vsn;
     issue(row_of(cell_of(ci0 * CH2 + lane)), 0, ksn, vsn);
@@ -1209,9 +1210,7 @@ __global__ void __launch_bounds__(THREADS, 3) prompt_attn_i8v3_kernel(const floa
     const int n_chunks = (n + CH2 - 1) / CH2;
     auto cell_of = [&](int c) -> int { return c < n ? __ldg(ids + c) : -1; };
     auto row_of = [&](int cell) -> long long {
-        if (cell < 0) return -1;
-        const long long page = (long long) __ldg(p.page_table + cell / page_size);
-        return (page * n_kv_heads + kvh) * page_size + (cell % page_size);
+        return cell < 0 ? -1 : kv_place(p.page_table, p.units, cell, kvh, n_kv_heads, page_size);
     };
     // this warp's 64-dim slice of K (kv = 0) or V (1) of the chunk whose rows the lanes hold, and the cells' scales
     auto issue = [&](long long r, int kv) {
@@ -1221,11 +1220,13 @@ __global__ void __launch_bounds__(THREADS, 3) prompt_attn_i8v3_kernel(const floa
             const int idx = lane + 32 * j, cell = idx >> 2, pc = idx & 3;
             const long long rr = __shfl_sync(0xffffffffu, r, cell);
             const bool ok = rr >= 0;
-            const size_t off = ok ? (size_t) rr * HD + dim0 + pc * 16 : 0;
-            cp_async16(&S.kv[warp][kv][0][0] + swz(cell, pc * 16), pool + off, ok);
+            const long long at = ok ? rr : 0;
+            const size_t off = ok ? dim0 + pc * 16 : 0;
+            cp_async16(&S.kv[warp][kv][0][0] + swz(cell, pc * 16), kv_row(p.units, pool, at, HD) + off, ok);
         }
         const uint16_t* sc = kv == 0 ? p.k_scale : p.v_scale;
-        S.sc[warp][kv][lane] = r >= 0 ? __half2float(__ushort_as_half(__ldg(sc + r * (HD / KV_Q8_GROUP) + warp))) : 0.0f;
+        S.sc[warp][kv][lane] = r >= 0 ? __half2float(__ushort_as_half(__ldg(kv_row(p.units, sc, r,
+            HD / KV_Q8_GROUP) + warp))) : 0.0f;
     };
     long long r_nxt = row_of(cell_of(lane));   // chunk 0
     issue(r_nxt, 0);
@@ -1563,13 +1564,7 @@ __global__ void __launch_bounds__(THREADS) prompt_attn_v70_kernel(const float* _
     // chunk's lookups fill the other just before the previous p.v, where their global latency hides.
     int rbuf = 0;
     if (t < CH) {
-        long long r = -1;
-        if (t < min(CH, n)) {
-            const int cell = ids[t];
-            const long long page = (long long) p.page_table[cell / page_size];
-            r = (page * n_kv_heads + kvh) * page_size + (cell % page_size);
-        }
-        S.row[0][t] = r;
+        S.row[0][t] = t < min(CH, n) ? kv_place(p.page_table, p.units, ids[t], kvh, n_kv_heads, page_size) : -1;
     }
     for (int c0 = 0; c0 < n; c0 += CH, rbuf ^= 1) {
         const int nh = min(CH, n - c0);
@@ -1592,9 +1587,9 @@ __global__ void __launch_bounds__(THREADS) prompt_attn_v70_kernel(const float* _
                 kx[s] = make_uint4(0, 0, 0, 0);
                 if (r >= 0) {
                     if constexpr (KV_MODE == 0)
-                        kx[s] = __ldg(reinterpret_cast<const uint4*>(p.k_pool + r * HD) + kp[s]);
+                        kx[s] = __ldg(reinterpret_cast<const uint4*>(kv_row(p.units, p.k_pool, r, HD)) + kp[s]);
                     else   // modes 1 and 3: the K side is INT8
-                        kx[s] = __ldg(reinterpret_cast<const uint4*>(p.k_q + r * HD) + kp[s]);
+                        kx[s] = __ldg(reinterpret_cast<const uint4*>(kv_row(p.units, p.k_q, r, HD)) + kp[s]);
                 }
             }
 #pragma unroll
@@ -1609,7 +1604,8 @@ __global__ void __launch_bounds__(THREADS) prompt_attn_v70_kernel(const float* _
 #pragma unroll
                     for (int j = 0; j < QK4_0; ++j) S.v[c][b * QK4_0 + j] = __half(0);
                     if (r >= 0) {
-                        const block_q4_0* blk = reinterpret_cast<const block_q4_0*>(p.v_q4 + r * BYTES) + b;
+                        const block_q4_0* blk =
+                            reinterpret_cast<const block_q4_0*>(kv_row(p.units, p.v_q4, r, BYTES)) + b;
                         const float d = __half2float(__ushort_as_half(blk->d));
 #pragma unroll
                         for (int j = 0; j < QK4_0 / 2; ++j) {
@@ -1633,9 +1629,9 @@ __global__ void __launch_bounds__(THREADS) prompt_attn_v70_kernel(const float* _
                     vx[s] = make_uint4(0, 0, 0, 0);
                     if (r >= 0) {
                         if constexpr (KV_MODE == 1)
-                            vx[s] = __ldg(reinterpret_cast<const uint4*>(p.v_q + r * HD) + vp[s]);
+                            vx[s] = __ldg(reinterpret_cast<const uint4*>(kv_row(p.units, p.v_q, r, HD)) + vp[s]);
                         else
-                            vx[s] = __ldg(reinterpret_cast<const uint4*>(p.v_pool + r * HD) + vp[s]);
+                            vx[s] = __ldg(reinterpret_cast<const uint4*>(kv_row(p.units, p.v_pool, r, HD)) + vp[s]);
                     }
                 }
 #pragma unroll
@@ -1648,10 +1644,10 @@ __global__ void __launch_bounds__(THREADS) prompt_attn_v70_kernel(const float* _
                 float a = 0.0f, b = 0.0f;
                 if (r >= 0) {
                     if constexpr (KV_MODE == 1) {
-                        a = __half2float(__ushort_as_half(p.k_scale[r * (HD / KV_Q8_GROUP) + g]));
-                        b = __half2float(__ushort_as_half(p.v_scale[r * (HD / KV_Q8_GROUP) + g]));
+                        a = __half2float(__ushort_as_half(kv_row(p.units, p.k_scale, r, HD / KV_Q8_GROUP)[g]));
+                        b = __half2float(__ushort_as_half(kv_row(p.units, p.v_scale, r, HD / KV_Q8_GROUP)[g]));
                     } else if constexpr (KV_MODE == 3) {   // K as int8, V dequantized to fp16 (scale 1)
-                        a = __half2float(__ushort_as_half(p.k_scale[r * (HD / KV_Q8_GROUP) + g]));
+                        a = __half2float(__ushort_as_half(kv_row(p.units, p.k_scale, r, HD / KV_Q8_GROUP)[g]));
                         b = 1.0f;
                     } else {
                         a = b = 1.0f;
@@ -1809,14 +1805,8 @@ __global__ void __launch_bounds__(THREADS) prompt_attn_v70_kernel(const float* _
         }
         // the next chunk's pool rows, into the other buffer: the two global lookups per cell hide under p.v
         if (c0 + CH < n && t < CH) {
-            long long r = -1;
             const int idx = c0 + CH + t;
-            if (idx < n) {
-                const int cell = ids[idx];
-                const long long page = (long long) p.page_table[cell / page_size];
-                r = (page * n_kv_heads + kvh) * page_size + (cell % page_size);
-            }
-            S.row[rbuf ^ 1][t] = r;
+            S.row[rbuf ^ 1][t] = idx < n ? kv_place(p.page_table, p.units, ids[idx], kvh, n_kv_heads, page_size) : -1;
         }
     }
     __syncthreads();
@@ -2009,13 +1999,9 @@ __global__ void __launch_bounds__(THREADS) prompt_attn_wmma_kernel(const float* 
     // streaming left non-resident: masked as in the decode kernel)
     auto row_of = [&](int ci) -> long long {
         const int c0 = ci * WCH;
-        long long r = -1;
-        if (c0 + lane < n) {
-            const int cell = __ldg(ids + c0 + lane);
-            const long long page = (long long) __ldg(p.page_table + cell / page_size);
-            if (page >= 0) r = (page * n_kv_heads + kvh) * page_size + (cell % page_size);
-        }
-        return r;
+        if (c0 + lane >= n)
+            return -1LL;
+        return kv_place(p.page_table, p.units, __ldg(ids + c0 + lane), kvh, n_kv_heads, page_size);
     };
     // a chunk's global reads: this wave's V slice (64 bytes of each row) and V scale, and the K fragments (8 or 16
     // consecutive codes per lane) and K scales of its two 16-cell tiles
@@ -2030,21 +2016,25 @@ __global__ void __launch_bounds__(THREADS) prompt_attn_wmma_kernel(const float* 
         d.v[0] = d.v[1] = d.v[2] = d.v[3] = make_uint4(0, 0, 0, 0);
         d.vsc = 0.0f;
         if (row >= 0) {
-            const uint4* src = reinterpret_cast<const uint4*>(p.v_q + row * HD + dim0);
+            const uint4* src = reinterpret_cast<const uint4*>(kv_row(p.units, p.v_q, row, HD) + dim0);
             d.v[0] = __ldg(src); d.v[1] = __ldg(src + 1); d.v[2] = __ldg(src + 2); d.v[3] = __ldg(src + 3);
-            d.vsc = __half2float(__ushort_as_half(__ldg(p.v_scale + row * (HD / KV_Q8_GROUP) + warp)));
+            d.vsc = __half2float(__ushort_as_half(__ldg(kv_row(p.units, p.v_scale, row, HD / KV_Q8_GROUP) + warp)));
         }
 #pragma unroll
         for (int nt = 0; nt < 2; ++nt) {
             const long long rr = __shfl(row, nt * 16 + col);
             d.ksc[nt] = 0.0f;
-            if (rr >= 0) d.ksc[nt] = __half2float(__ushort_as_half(__ldg(p.k_scale + rr * (HD / KV_Q8_GROUP) + warp)));
+            if (rr >= 0) {
+                const uint16_t* scales = kv_row(p.units, p.k_scale, rr, HD / KV_Q8_GROUP);
+                d.ksc[nt] = __half2float(__ushort_as_half(__ldg(scales + warp)));
+            }
 #pragma unroll
             for (int kk = 0; kk < 4; ++kk) {
 #pragma unroll
                 for (int i = 0; i < PA_KL / 4; ++i) d.kx[nt][kk][i] = 0;
                 if (rr >= 0) {
-                    const uint32_t* src = reinterpret_cast<const uint32_t*>(p.k_q + rr * HD + dim0 + kk * 16 + PA_KOFF(half));
+                    const int8_t* codes = kv_row(p.units, p.k_q, rr, HD) + dim0 + kk * 16 + PA_KOFF(half);
+                    const uint32_t* src = reinterpret_cast<const uint32_t*>(codes);
 #if STRATA_PA_GFX11
                     const uint4 v = __ldg(reinterpret_cast<const uint4*>(src));
                     d.kx[nt][kk][0] = v.x; d.kx[nt][kk][1] = v.y; d.kx[nt][kk][2] = v.z; d.kx[nt][kk][3] = v.w;
@@ -2279,7 +2269,8 @@ bool qsa_decode_attn_split(const float* q, const QsaAttnPools& pools, const int3
     return false;
 #else
     if (n_q <= 0) return true;
-    if (s.head_dim != HD || s.n_head != (int64_t) G * s.n_head_kv || cap <= 0 || !ids || !steps || !pools.page_table ||
+    if (s.head_dim != HD || s.n_head != (int64_t) G * s.n_head_kv || cap <= 0 || !ids || !steps
+        || !(pools.page_table || pools.units) ||
         pools.k_q == nullptr || pools.v_q == nullptr || pools.k_scale == nullptr || pools.v_scale == nullptr ||
         pools.k_q4 != nullptr || pools.v_q4 != nullptr)
         return false;
@@ -2375,11 +2366,12 @@ bool qsa_prompt_attn_batch(const float* q, const QsaAttnPools& pools, const int3
     (void) turing; (void) volta;
     if (pools.k_q != nullptr && pools.v_q != nullptr && pools.k_scale != nullptr && pools.v_scale != nullptr &&
         pools.k_q4 == nullptr && pools.v_q4 == nullptr && s.head_dim == HD && s.n_head == (int64_t) G * s.n_head_kv &&
-        cap > 0 && ids && steps && pools.page_table && hip_wmma_usable(n_q, cap))
+        cap > 0 && ids && steps && (pools.page_table || pools.units) && hip_wmma_usable(n_q, cap))
         return launch_wmma(q, pools, ids, steps, cap, s, attn, n_q, (cudaStream_t) stream);
     return false;
 #endif
-    if (s.head_dim != HD || s.n_head != (int64_t) G * s.n_head_kv || cap <= 0 || !ids || !steps || !pools.page_table)
+    if (s.head_dim != HD || s.n_head != (int64_t) G * s.n_head_kv || cap <= 0 || !ids || !steps
+        || !(pools.page_table || pools.units))
         return false;
     cudaStream_t st = (cudaStream_t) stream;
     if (pools.k_q4 != nullptr) {   // Q4_0 K and V (--kv q4_0): mode 4.  STRATA_PROMPT_ATTN_Q4=0: the old kernel (A/B)

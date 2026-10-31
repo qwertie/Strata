@@ -30,17 +30,20 @@ inline uint64_t kv_q8_bytes_per_cell(const QsaShapes& s) {
 /// copy (KV streaming, `kv_stream.hpp`) the cell is written there too, and to VRAM only if its block is resident.
 /// S26 STRATA_LFUSE: n_tok kv_append_q8_step calls (token j: step + j * step_stride, kcur / vcur + j * cur_stride)
 /// in one launch, bitwise the same stores (the tokens' cells are distinct).
+/// `units`: the page pool's layout (kv_units.hpp), the arrays then being offsets within a unit; null: packed.
 void kv_append_q8_steps(int8_t* k_q, int8_t* v_q, uint16_t* k_scale, uint16_t* v_scale, const int32_t* page_table,
                         const int32_t* step, int step_stride, const float* kcur, const float* vcur, int cur_stride,
-                        int n_tok, const QsaShapes& s, void* stream, const KvHostPools* host);
+                        int n_tok, const QsaShapes& s, void* stream, const KvHostPools* host,
+                        const int64_t* units = nullptr);
 void kv_append_q8_step(int8_t* k_q, int8_t* v_q, uint16_t* k_scale, uint16_t* v_scale, const int32_t* page_table,
                        const int32_t* step, const float* kcur, const float* vcur, const QsaShapes& s, void* stream,
-                       const KvHostPools* host = nullptr);
+                       const KvHostPools* host = nullptr, const int64_t* units = nullptr);
 
 /// Gather step[kStepWidth] cells named by `ids` into FP16 scratch `[id][kv_head][head_dim]`; the grid is sized by
 /// `max_ids` (capacity), the kernel reads the real count from `step`.
 void kv_gather_q8_step(const int8_t* k_q, const int8_t* v_q, const uint16_t* k_scale, const uint16_t* v_scale,
                        const int32_t* page_table, const int32_t* ids, const int32_t* step, int64_t max_ids,
-                       const QsaShapes& s, uint16_t* k_scratch, uint16_t* v_scratch, void* stream);
+                       const QsaShapes& s, uint16_t* k_scratch, uint16_t* v_scratch, void* stream,
+                       const int64_t* units = nullptr);
 
 }  // namespace strata::kernels
