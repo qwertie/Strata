@@ -44,8 +44,10 @@ struct FakeModel {
         };
         return m;
     }
+    std::vector<int> asked;   ///< the `n` of each propose call
     void add_drafter(StepModel& m) {
         m.propose = [this](int, int32_t token, int64_t, int n, int32_t* out) {
+            asked.push_back(n);
             for (int i = 0; i < n; ++i)
                 out[i] = i < right ? token + 1 + i : 0;
             return n;
@@ -66,17 +68,24 @@ Decoding conversation(int session, int32_t next, int64_t pos, int64_t max_new) {
 int main() {
     {   // the plan's table: 3 conversations at once, 8 rows
         StepSettings s{3, 8, 8};
-        check(share_guess_rows(s, 3, 0) == std::vector<int>{2, 2, 1}, "3 active: 2, 2, 1");
-        check(share_guess_rows(s, 2, 0) == std::vector<int>{3, 3}, "2 active: 3, 3");
-        check(share_guess_rows(s, 1, 0) == std::vector<int>{7}, "1 active: 7");
+        check(share_guess_rows(s, 3, 3, 0) == std::vector<int>{2, 2, 1}, "3 active: 2, 2, 1");
+        check(share_guess_rows(s, 2, 2, 0) == std::vector<int>{3, 3}, "2 active: 3, 3");
+        check(share_guess_rows(s, 1, 1, 0) == std::vector<int>{7}, "1 active: 7");
         s.lookahead = 4;
-        check(share_guess_rows(s, 1, 0) == std::vector<int>{4}, "1 active: the lookahead if lower");
+        check(share_guess_rows(s, 1, 1, 0) == std::vector<int>{4}, "1 active: the lookahead if lower");
         s.lookahead = 8;
-        check(share_guess_rows(s, 3, 1) == std::vector<int>{1, 2, 2}, "the extra rows rotate");
-        check(share_guess_rows(s, 3, 2) == std::vector<int>{2, 1, 2}, "the extra rows wrap");
+        check(share_guess_rows(s, 3, 3, 1) == std::vector<int>{1, 2, 2}, "the extra rows rotate");
+        check(share_guess_rows(s, 3, 3, 2) == std::vector<int>{2, 1, 2}, "the extra rows wrap");
         s.lookahead = 0;
-        check(share_guess_rows(s, 3, 0) == std::vector<int>{0, 0, 0}, "lookahead 0: no guesses");
-        check(share_guess_rows(StepSettings{3, 3, 4}, 3, 0) == std::vector<int>{0, 0, 0}, "no rows left");
+        check(share_guess_rows(s, 3, 3, 0) == std::vector<int>{0, 0, 0}, "lookahead 0: no guesses");
+        check(share_guess_rows(StepSettings{3, 3, 4}, 3, 3, 0) == std::vector<int>{0, 0, 0}, "no rows left");
+    }
+    {   // priorities: the extra rows go to the highest priority, and rotate only among equals
+        const StepSettings s{4, 10, 8};   // 6 rows left for 4: 1 each and 2 extra
+        check(share_guess_rows(s, 4, 1, 3) == std::vector<int>{2, 2, 1, 1}, "one first: it and the next");
+        check(share_guess_rows(s, 4, 2, 1) == std::vector<int>{2, 2, 1, 1}, "two equals first: both, any turn");
+        check(share_guess_rows(s, 4, 3, 1) == std::vector<int>{1, 2, 2, 1}, "three equals first: two by turn");
+        check(share_guess_rows(s, 4, 3, 2) == std::vector<int>{2, 1, 2, 1}, "three equals first: turns wrap");
     }
     {   // no drafting: one row per conversation, each emits one token per step
         FakeModel fm;
@@ -112,10 +121,21 @@ int main() {
               "a chain of 3 guesses");
         check(fm.room[0] == 104, "room for the guesses");
         check(fm.kept == std::vector<int>{3}, "2 right guesses kept");
+        check(a.guessed == 3 && a.guessed_right == 2, "the guesses are counted");
         check(a.emitted == std::vector<int32_t>({11, 12, 13}) && a.fed == std::vector<int32_t>({10, 11, 12}) &&
                   a.pos == 103 && a.next == 13, "3 tokens from one step");
         Decoding b = conversation(0, 10, 100, 2);
         check(step.run({&b}, err) && fm.last.size() == 2, "no guess past max_new");
+        Decoding one = conversation(0, 10, 100, 1);
+        const size_t asked = fm.asked.size();
+        check(step.run({&one}, err) && fm.last.size() == 1 &&
+                  std::vector<int>(fm.asked.begin() + (std::ptrdiff_t) asked, fm.asked.end()) ==
+                      std::vector<int>({0, 0}),
+              "the drafter is asked for no guess at the last token, and again as the conversation ends");
+        Decoding stopped = conversation(0, 10, 100, 50);
+        stopped.stop = true;
+        check(step.run({&stopped}, err) && fm.asked.size() == asked + 3 && fm.asked.back() == 0,
+              "a stopped conversation's drafter is asked for no guess");
         Step ends(m, {12});
         ends.settings = step.settings;
         Decoding c = conversation(0, 10, 100, 50);

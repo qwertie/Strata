@@ -5,14 +5,15 @@
 
 namespace strata::spec {
 
-std::vector<int> share_guess_rows(const StepSettings& s, int active, int first) {
+std::vector<int> share_guess_rows(const StepSettings& s, int active, int ties, int turn) {
     if (active <= 0)
         return {};
+    ties = std::clamp(ties, 1, active);
     const int left = std::max(s.rows - active, 0);
     std::vector<int> share((size_t) active);
     for (int i = 0; i < active; ++i) {
-        const bool extra = ((i - first) % active + active) % active < left % active;
-        share[(size_t) i] = std::min(left / active + (extra ? 1 : 0), s.lookahead);
+        const int rank = i < ties ? ((i - turn) % ties + ties) % ties : i;   // in the order the extra rows go
+        share[(size_t) i] = std::min(left / active + (rank < left % active ? 1 : 0), s.lookahead);
     }
     return share;
 }
@@ -25,12 +26,17 @@ bool Step::run(const std::vector<Decoding*>& active, std::string& err) {
         d->finish = d->stop ? "cancel" : nullptr;
         if (!d->stop)
             going.push_back(d);
+        else
+            end_drafting(*d);
     }
     if (going.empty())
         return true;
-    const int first = first_ % (int) going.size();
-    first_ = first + 1;
-    const std::vector<int> share = share_guess_rows(settings, (int) going.size(), first);
+    const int ties = (int) (std::find_if(going.begin(), going.end(),
+                                         [&](const Decoding* d) { return d->priority != going[0]->priority; }) -
+                            going.begin());
+    const int turn = turn_ % ties;
+    turn_ = turn + 1;
+    const std::vector<int> share = share_guess_rows(settings, (int) going.size(), ties, turn);
     std::vector<StepRow> rows;
     std::vector<Decoding*> stepping;
     std::vector<size_t> start;   ///< each stepping conversation's first row
@@ -38,8 +44,8 @@ bool Step::run(const std::vector<Decoding*>& active, std::string& err) {
     for (size_t i = 0; i < going.size(); ++i) {
         Decoding& d = *going[i];
         // no guess past what it may still emit, which also keeps its rows inside the context
-        const int want = (int) std::min<int64_t>(share[i], d.max_new - d.produced - 1);
-        const int n = want > 0 && model_.propose ? model_.propose(d.session, d.next, d.pos, want, guesses.data()) : 0;
+        const int want = (int) std::max<int64_t>(std::min<int64_t>(share[i], d.max_new - d.produced - 1), 0);
+        const int n = model_.propose ? model_.propose(d.session, d.next, d.pos, want, guesses.data()) : 0;
         if (!model_.make_room(d.session, d.pos + 1 + n)) {
             d.finish = "length";
             continue;
@@ -60,7 +66,12 @@ bool Step::run(const std::vector<Decoding*>& active, std::string& err) {
         const size_t end = c + 1 < stepping.size() ? start[c + 1] : rows.size();
         kept.push_back(accept(*stepping[c], rows.data() + start[c], picks.data() + start[c], (int) (end - start[c])));
     }
-    return model_.keep(rows, kept, err);
+    if (!model_.keep(rows, kept, err))
+        return false;
+    for (const Decoding* d : stepping)
+        if (d->finish != nullptr)
+            end_drafting(*d);
+    return true;
 }
 
 int Step::accept(Decoding& d, const StepRow* rows, const int32_t* picks, int n) const {
@@ -84,7 +95,14 @@ int Step::accept(Decoding& d, const StepRow* rows, const int32_t* picks, int n) 
     }
     d.pos += e;
     d.next = picks[e - 1];
+    d.guessed += n - 1;
+    d.guessed_right += e - 1;
     return e;
+}
+
+void Step::end_drafting(const Decoding& d) const {
+    if (model_.propose)
+        (void) model_.propose(d.session, d.next, d.pos, 0, nullptr);
 }
 
 bool Step::is_end(int32_t token) const { return std::find(end_.begin(), end_.end(), (int64_t) token) != end_.end(); }

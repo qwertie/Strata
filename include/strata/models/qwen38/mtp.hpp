@@ -64,6 +64,14 @@ public:
     /// copies made at load/bind - fewer bytes per draft step; drafts only, the verify window decides every token.
     /// (The prompt path's batched K/V pass keeps the Q8_0 originals.)
     void set_q4(bool proj, bool head) { q4_ = proj; q4_head_ = head; }
+    /// Before load: the layer's K/V lives in each conversation's page-pool pages (strata-q38, with
+    /// session_set_pool_state), not in a buffer of its own; load carves none, and use_kv_units points it at a
+    /// conversation's.
+    void set_kv_in_pages(bool on) { kv_in_pages_ = on; }
+    /// With set_kv_in_pages: makes the next drafts and prompt passes read and write the K/V of the conversation whose
+    /// units table (kv_units.hpp, one entry per block of the session's max_cells and 2 more) is `units`, by copying
+    /// it on the drafter's stream into the table the drafter's graphs read.
+    bool use_kv_units(const int64_t* units, std::string& err);
     /// --mtp-draft-vocab FILE (opt-in; before bind): the draft head's token subset from FILE instead of
     /// rt/draft_vocab.bin (e.g. data/draft_vocab_en.bin, 40K tokens)
     void set_draft_vocab(const std::string& path) { dvocab_path_ = path; }
@@ -261,6 +269,9 @@ private:
     bool owns_draft_head_ = true;
     void* state_arena_ = nullptr;
     QsaState st_;
+    bool kv_in_pages_ = false;
+    int64_t* kv_units_ = nullptr;   ///< with set_kv_in_pages: the units table `st_` reads, filled by use_kv_units
+    int64_t kv_blocks_ = 0;         ///< its entries
     void* arena_ = nullptr;
 
     // mapped staging: tokens, step records (2*max_t rows), positions per head (2*max_t rows), the selected row,

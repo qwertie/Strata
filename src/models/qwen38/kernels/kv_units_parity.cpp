@@ -235,7 +235,7 @@ int main() {
         for (uint8_t*& page : pages)
             page = dalloc<uint8_t>((size_t) page_bytes);
         std::shuffle(pages.begin(), pages.end(), rng);
-        const int64_t* d_units = upload(k::kv_unit_table(pages, page_bytes, u, blocks));
+        const int64_t* d_units = upload(k::kv_unit_table(pages, page_bytes, u.bytes, blocks));
         const Layer units{f, k::kv_unit_pools(u, f, d_units)};
 
         // ---- the appends

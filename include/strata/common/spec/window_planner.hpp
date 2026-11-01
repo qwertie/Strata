@@ -39,6 +39,14 @@ inline int accepted_prefix(const int32_t* drafts, const int32_t* picks, int n) {
     return a;
 }
 
+/// Gets how many of `n` drafts the --spec-min-p rule offers: those before the first whose probability under the
+/// drafter (`probs`) is below `min_p`.
+inline int count_confident_drafts(const float* probs, int n, double min_p) {
+    int k = 0;
+    while (k < n && probs[k] >= (float) min_p) ++k;
+    return k;
+}
+
 /// Chooses the rows of each verify window of a decode loop, and keeps what the choice learns from: the draft sources
 /// (the request's text) and the draft policy (window costs and acceptance rates, over every request it sees).
 class WindowPlanner {
@@ -89,10 +97,8 @@ public:
         Window w{rows, first, use_mtp};
         policy.set_context(pos);
         if (use_mtp && cost_aware && !first) w.T = std::clamp(chain_rows_, 1, mtp_rows_);
-        else if (use_mtp && min_p > 0.0) {
-            w.T = 1;
-            while (w.T < mtp_rows_ && probs[w.T - 1] >= (float) min_p) ++w.T;
-        }
+        else if (use_mtp && min_p > 0.0)
+            w.T = 1 + count_confident_drafts(probs, mtp_rows_ - 1, min_p);
         std::copy_n(probs, rows_, probs_.begin());
         return w;
     }

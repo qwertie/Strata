@@ -10,6 +10,7 @@
 #include "strata/common/spec/step.hpp"
 #include "strata/common/state/progress.hpp"
 #include "strata/models/qwen38/conversation.hpp"
+#include "strata/models/qwen38/conversation_drafter.hpp"
 #include "strata/models/qwen38/conversation_pages.hpp"
 #include "strata/models/qwen38/kernels/verify_kernels.hpp"
 #include "strata/models/qwen38/model.hpp"
@@ -38,6 +39,8 @@ constexpr int kRefillBatch = 16;
 /// Between two chunks of a prompt, the conversations that decode take steps for this share of the time the chunk
 /// took, so that a long prompt does not stop them (the old engine's STRATA_BATCH_DECODE_SHARE default).
 constexpr double kDecodeShare = 0.5;
+/// With drafting, the verify windows' graphs kept for the most recent row layouts (the old engine's --batch-mtp).
+constexpr size_t kWindowGraphs = 64;
 
 /// Gets the milliseconds from `t0` to now.
 double get_ms_since(Clock::time_point t0) {
@@ -62,7 +65,9 @@ struct Held {
     int slot = -1;                      ///< while decoding: its batch slot (BT lines), or -1: it is the request on the
                                         ///< control lines (T lines)
     Clock::time_point t0;               ///< when it started decoding
-    uint64_t used = 0;                  ///< the request count when it last served a request (the oldest goes first)
+    /// the request count when it last served a request: the oldest goes first, as an idle one to drop and among
+    /// decoding ones of the same priority
+    uint64_t used = 0;
 
     ~Held() {
         strata::core::session_release(ss);
@@ -80,9 +85,9 @@ struct Held {
 /// them, and the requests' protocol.
 class PagedEngine {
 public:
-    /// `slots`: the batch slots (--batch; 0: one conversation at a time).
-    PagedEngine(Model& m, Conversation& conv, strata::core::ExpertPages& experts, const PagedSettings& settings,
-                int slots);
+    /// `slots`: the batch slots (--batch; 0: one conversation at a time).  `drafter`: null when drafting is off.
+    PagedEngine(Model& m, Conversation& conv, strata::core::ExpertPages& experts, ConversationDrafter* drafter,
+                const PagedSettings& settings, int slots);
 
     /// Carves each conversation's session and gives them to the verify windows; false (said on stderr) when one
     /// does not fit.
@@ -129,12 +134,14 @@ private:
     Model& m_;
     Conversation& conv_;   ///< the prompt path and the verify windows, shared by every conversation
     strata::core::ExpertPages& experts_;
+    ConversationDrafter* const drafter_;
     const PagedSettings settings_;
     strata::serve::Input input_;
     strata::spec::Step step_;
     std::vector<std::unique_ptr<Held>> held_;   ///< by session index
     /// held_'s index of the conversation in each batch slot, then of the one a GEN uses ("main")
     std::vector<size_t> at_;
+    std::vector<int32_t> picks_;       ///< the last step's token after each row, for the drafter
     uint64_t sessions_bytes_ = 0;      ///< the device memory of every session (the engine's own included)
     uint64_t requests_ = 0;            ///< the requests served so far (Held::used)
     const Held* reading_ = nullptr;    ///< the conversation whose prompt read_prompt reads, which make_room keeps
@@ -173,22 +180,25 @@ int take_own_options(int& argc, char** argv, PagedSettings& s) {
 /// (Model::open_expert_pages).  The pool takes the free memory less --vram-reserve-mib and the prompt path's own
 /// buffers (on Windows, for a GPU whose memory is the system RAM, what is free of the share the BIOS gives it), but no
 /// more than those experts (the profile's first) and a conversation at --max-context take; experts leave the pages of
-/// `tokens_min` tokens free.
+/// `tokens_min` tokens free.  With the drafter (--mtp), each conversation also keeps the drafter's K/V in the pool, and
+/// the drafter's head stays out of it.
 bool open_pages(Model& m, strata::core::ExpertPages& experts, int64_t tokens_min, int64_t max_experts,
                 std::string& err) {
+    const bool drafting = !m.o.mtp.empty();
     const strata::kernels::cpu::ExpertLayout& lay = strata::kernels::cpu::expert_layout();
     std::vector<uint64_t> blobs;
     for (int64_t l = 0; l < m.g.n_layers; ++l)
         blobs.push_back(lay.blob_bytes(l));
     const uint64_t page = strata::core::choose_expert_page_bytes(blobs);
     strata::core::StateLayout layout;
-    if (!ConversationPages::get_layout(m.g, m.ss, layout, err))
+    if (!ConversationPages::get_layout(m.g, m.ss, drafting ? &m.mtp.kv_state() : nullptr, layout, err))
         return false;
     uint64_t most = layout.bytes_for(m.o.max_context) + layout.regions.size() * page;   // + each region's last page
     for (size_t i = 0; i < m.profile.size() && (int64_t) i < max_experts; ++i)
         most += (blobs[(size_t) m.profile[i].first] + page - 1) / page * page;
     const uint64_t keep = ((uint64_t) m.o.vram_reserve_mib << 20) +
-        strata::prefill::Prefill::bytes_needed_owned(m.g, m.ss, m.o.prefill_chunk, m.srcp != nullptr);
+        strata::prefill::Prefill::bytes_needed_owned(m.g, m.ss, m.o.prefill_chunk, m.srcp != nullptr) +
+        (drafting ? m.mtp.bind_bytes(m.native_head.row_bytes(), m.n_vocab) : 0);
     uint64_t free_b = strata::core::device_free_bytes();
     if (uint64_t room = 0; strata::core::get_share_room(m.primary_device, room))
         free_b = std::min(free_b, room);
@@ -244,14 +254,18 @@ int run_paged_engine(int argc, char** argv) {
         std::fprintf(stderr, "strata-q38: %s\n", why.c_str());
         return 2;
     }
-    if (settings.step.lookahead > 0)
-        std::fprintf(stderr, "strata-q38: --lookahead %d: there is no drafter yet, so no guesses\n",
-                     settings.step.lookahead);
-    // the scope of this step: no drafting, no K/V streaming or elastic K/V (the pool replaces them); the batch slots
-    // are the engine's own conversations, not the old engine's sessions of the whole context
+    const bool drafting = settings.step.lookahead > 0;
+    if (drafting && o.mtp.empty()) {
+        std::fprintf(stderr, "strata-q38: --lookahead %d needs the MTP drafter (--mtp DIR)\n", settings.step.lookahead);
+        return 2;
+    }
+    // the MTP drafter only, its weights loaded only with a lookahead; no K/V streaming or elastic K/V (the pool
+    // replaces them); the batch slots are the engine's own conversations, not the old engine's sessions of the whole
+    // context
     o.serve = false;
     o.batch = 0;
-    o.mtp.clear();
+    if (!drafting)
+        o.mtp.clear();
     o.draft.clear();
     o.spec = std::max(settings.step.rows, 2);   // a native pack's verify windows need room for two rows
     o.kv_grow = false;
@@ -265,6 +279,7 @@ int run_paged_engine(int argc, char** argv) {
     }
     strata::core::session_set_pool_state(true);
     Model m(o);
+    m.mtp.set_kv_in_pages(true);
     strata::core::ExpertPages experts;
     m.open_expert_pages = [&](int64_t max_experts, std::string& err) {
         return open_pages(m, experts, settings.tokens_min, max_experts, err);
@@ -282,19 +297,24 @@ int run_paged_engine(int argc, char** argv) {
     std::string err;
     m.arm_prompt_cpu_share();
     Conversation conv;
-    if (!conv.init_prompt(m, m.ss, nullptr, 0, err) || !conv.init_decode(m, m.ss, o.spec, err)) {
+    ConversationDrafter drafter;
+    if (!conv.init_prompt(m, m.ss, nullptr, 0, err) || !conv.init_decode(m, m.ss, o.spec, err) ||
+        (drafting && !drafter.init(m, slots + 1, err))) {
         std::fprintf(stderr, "strata-q38: %s\n", err.c_str());
         return 1;
     }
-    PagedEngine engine(m, conv, experts, settings, slots);
+    if (drafting)   // the conversations' guesses make many row layouts: the verify windows keep the recent ones' graphs
+        conv.ver.set_batch_graph_limit(kWindowGraphs);
+    PagedEngine engine(m, conv, experts, drafting ? &drafter : nullptr, settings, slots);
     return engine.init() ? engine.serve() : 1;
 }
 
 namespace {
 
 PagedEngine::PagedEngine(Model& m, Conversation& conv, strata::core::ExpertPages& experts,
-                         const PagedSettings& settings, int slots)
-    : m_(m), conv_(conv), experts_(experts), settings_(settings), step_(get_step_model(), m.o.eos_ids) {
+                         ConversationDrafter* drafter, const PagedSettings& settings, int slots)
+    : m_(m), conv_(conv), experts_(experts), drafter_(drafter), settings_(settings),
+      step_(get_step_model(), m.o.eos_ids) {
     step_.settings = settings.step;
     for (int i = 0; i <= slots; ++i) {
         held_.push_back(std::make_unique<Held>());
@@ -348,10 +368,11 @@ bool PagedEngine::init() {
 int PagedEngine::serve() {
     const Options& o = m_.o;
     const int slots = (int) at_.size() - 1;
-    std::printf("INFO context=%lld kv=%s expert_slots=%lld expert_cache_mib=%lld spec=0 prefill_cap=%lld%s engine="
+    std::printf("INFO context=%lld kv=%s expert_slots=%lld expert_cache_mib=%lld spec=%d prefill_cap=%lld%s engine="
                 STRATA_VERSION "\n",
                 (long long) o.max_context, o.kv.c_str(), (long long) m_.xcache.resident(),
-                (long long) (experts_.pool().report().experts.bytes >> 20), (long long) o.prefill_chunk,
+                (long long) (experts_.pool().report().experts.bytes >> 20),
+                drafter_ != nullptr ? settings_.step.lookahead + 1 : 0, (long long) o.prefill_chunk,
                 slots > 0 ? (" batch_slots=" + std::to_string(slots) + " slot_cache=0").c_str() : "");
     std::printf("READY %lld stop conversations memory\n", (long long) o.max_context);
     strata::serve::EngineHooks hooks;
@@ -398,8 +419,12 @@ bool PagedEngine::serve_request(const std::string& line) {
         std::printf("ERR strata-q38 decodes %zu conversations at once, and they all are\n", slots);
         return true;
     }
+    int64_t priority = 0;
     for (const auto& [key, value] : req.keys)
-        (void) strata::serve::read_sampling_key(key, value, smp);   // the engine-specific keys are not this engine's
+        if (key == "priority")
+            priority = std::atoll(value.c_str());
+        else
+            (void) strata::serve::read_sampling_key(key, value, smp);   // the other engines' keys are not this one's
     const int64_t n = (int64_t) ids.size();
     if (n >= o.max_context) {
         std::printf("ERR the prompt (%lld tokens) does not fit the context (%lld)\n", (long long) n,
@@ -414,6 +439,9 @@ bool PagedEngine::serve_request(const std::string& line) {
     Held& h = get_held(target);
     h.used = ++requests_;
     h.dec = strata::spec::Decoding{};
+    h.dec.priority = priority;
+    if (drafter_ != nullptr)
+        drafter_->forget((int) session);
     if (!h.pages.is_ready() &&
         !h.pages.init(m_.g, h.ss, experts_.pool(), (strata::core::ConversationId) session + 1, err)) {
         std::printf("ERR %s\n", err.c_str());
@@ -466,9 +494,10 @@ bool PagedEngine::serve_request(const std::string& line) {
         }
         finish = h.decoding ? "length" : h.dec.finish;
     }
-    // the fields of the old engine's DONE that this one has (no drafts, no expert counts)
-    std::printf("DONE %lld %lld %.1f %.1f %s 0 0 %lld 0 0 0 0 0.0 %lld 0 chunk=%lld experts_streamed=0\n",
-                (long long) h.dec.produced, (long long) n, prompt_ms, get_ms_since(d0), finish, (long long) resume,
+    // the fields of the old engine's DONE that this one has (no expert counts)
+    std::printf("DONE %lld %lld %.1f %.1f %s %lld %lld %lld 0 0 0 0 0.0 %lld 0 chunk=%lld experts_streamed=0\n",
+                (long long) h.dec.produced, (long long) n, prompt_ms, get_ms_since(d0), finish,
+                (long long) h.dec.guessed_right, (long long) h.dec.guessed, (long long) resume,
                 (long long) (read_to - resume), (long long) o.prefill_chunk);
     if (req.batch) {
         if (h.decoding)
@@ -482,7 +511,13 @@ bool PagedEngine::read_prompt(Held& h, const std::vector<int64_t>& ids, int64_t 
                               Clock::time_point t0, int64_t& read_to, bool& fatal, std::string& err) {
     conv_.sp.set_session(h.ss);
     reading_ = &h;
-    conv_.sp.on_chunk = [&](const float*, int64_t T, int64_t pos0, std::string& e) -> bool {
+    std::vector<int32_t> next;   // the drafter's: the token after each of the chunk's
+    conv_.sp.on_chunk = [&](const float* R_rows, int64_t T, int64_t pos0, std::string& e) -> bool {
+        if (drafter_ != nullptr) {
+            next.assign(ids.begin() + pos0 + 1, ids.begin() + pos0 + T + 1);
+            if (!drafter_->read_prompt(conv_.sp, h.pages, h.ss, R_rows, next.data(), T, pos0, (int64_t) ids.size(), e))
+                return false;
+        }
         read_to = pos0 + T;
         const double ms = get_ms_since(t0);
         std::printf("PP %lld %lld %.0f %.1f\n", (long long) read_to, (long long) ids.size(), ms,
@@ -513,12 +548,15 @@ bool PagedEngine::read_prompt(Held& h, const std::vector<int64_t>& ids, int64_t 
 
 bool PagedEngine::decode_step() {
     std::vector<Held*> going;
-    std::vector<strata::spec::Decoding*> active;
     for (const std::unique_ptr<Held>& h : held_)
-        if (h->decoding) {
+        if (h->decoding)
             going.push_back(h.get());
-            active.push_back(&h->dec);
-        }
+    std::stable_sort(going.begin(), going.end(), [](const Held* a, const Held* b) {
+        return a->dec.priority != b->dec.priority ? a->dec.priority > b->dec.priority : a->used < b->used;
+    });
+    std::vector<strata::spec::Decoding*> active;
+    for (Held* h : going)
+        active.push_back(&h->dec);
     std::string err;
     if (!step_.run(active, err)) {
         std::printf("ERR %s\n", err.c_str());
@@ -535,6 +573,10 @@ bool PagedEngine::decode_step() {
         if (d.finish == nullptr)
             continue;
         h->decoding = false;
+        if (drafter_ != nullptr && d.guessed > 0)
+            std::fprintf(stderr, "strata-q38: %lld of %lld guesses right (%.0f%%) over %lld tokens\n",
+                         (long long) d.guessed_right, (long long) d.guessed,
+                         100.0 * (double) d.guessed_right / (double) d.guessed, (long long) d.produced);
         if (std::strcmp(d.finish, "nonfinite") == 0) {   // #879: its state may carry the poison: start over next time
             std::fprintf(stderr, "strata-q38: non-finite logits (#879) at position %lld: the conversation's next "
                                  "request reads its prompt from token 0\n", (long long) d.pos);
@@ -692,18 +734,34 @@ strata::spec::StepModel PagedEngine::get_step_model() {
         for (int r = 0; r < S; ++r)
             if (conv_.ver.nonfinite_in(r))
                 picks[(size_t) r] = -1;
+        picks_ = picks;
         return true;
     };
     model.keep = [this](const std::vector<strata::spec::StepRow>& rows, const std::vector<int>& kept,
                         std::string& err) {
-        if (rows.size() == kept.size())   // one row each, kept
-            return conv_.ver.commit_slots(err);
         std::vector<int> keep(held_.size(), 0);
         for (size_t r = 0, c = 0; r < rows.size(); ++r)
             if (r == 0 || rows[r].session != rows[r - 1].session)
                 keep[(size_t) rows[r].session] = kept[c++];
-        return conv_.ver.commit_slot_prefixes(keep.data(), err);
+        const bool all = rows.size() == kept.size();   // one row each, kept
+        if (!(all ? conv_.ver.commit_slots(err) : conv_.ver.commit_slot_prefixes(keep.data(), err)))
+            return false;
+        if (drafter_ != nullptr)
+            drafter_->note_window(rows, kept, picks_.data());
+        return true;
     };
+    if (drafter_ != nullptr)
+        model.propose = [this](int session, int32_t, int64_t pos, int n, int32_t* out) {
+            Held& h = *held_[(size_t) session];
+            std::string err;
+            if (n > 0 && !make_room(h, pos + 1 + n, err))   // (the drafter writes the guesses' cells)
+                n = 0;
+            const int got = drafter_->propose(session, h.pages, h.ss, conv_.ver.final_R_all(), n, out, err);
+            if (got >= 0)
+                return got;
+            std::fprintf(stderr, "strata-q38: the drafter: %s\n", err.c_str());
+            return 0;
+        };
     return model;
 }
 

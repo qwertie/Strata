@@ -1,6 +1,7 @@
 // include/strata/models/qwen38/conversation_pages.hpp - a Qwen3.8 conversation's state in a GPU page pool: the GDN
 // layers' recurrent state in a fixed region and every QSA layer's K/V and pooled indexer keys in units of the pool's
-// pages, which grow with the conversation (docs/MEMORY_MANAGER_PLAN.md, steps M2d and M2e).
+// pages, which grow with the conversation, and with drafting the MTP drafter's K/V in units too
+// (docs/MEMORY_MANAGER_PLAN.md, steps M2d, M2e and M4).
 //
 // The session the pages are for is carved with session_set_pool_state, so it holds neither; `init` points it at the
 // pool's pages.  The small running state (the PLE history and the indexer's tail, dead key and block position, the
@@ -28,12 +29,14 @@ public:
     ConversationPages& operator=(const ConversationPages&) = delete;
 
     /// Gets the regions a conversation of session `ss` keeps in a page pool: the GDN state, then each QSA layer's
-    /// units.  False (and `err`) when `ss` is not a whole-model session carved without its state.
+    /// units, then, given the MTP drafter's K/V state `drafter` (MtpDrafter::kv_state), the drafter's units.  False
+    /// (and `err`) when `ss` is not a whole-model session carved without its state.
     static bool get_layout(const strata::core::ModelGeometry& g, const strata::core::SessionState& ss,
-                           strata::core::StateLayout& layout, std::string& err);
+                           const strata::core::QsaState* drafter, strata::core::StateLayout& layout,
+                           std::string& err);
     /// Gives the conversation `id` of `pool` (a pool made with get_layout's regions; it must outlive this object) its
     /// fixed region and points `ss` at it: `ss.gdn_state`, and each QSA state's K/V and pooled keys as units
-    /// (QsaState::units).
+    /// (QsaState::units).  The drafter's units, when the pool has them, are for MtpDrafter::use_kv_units.
     bool init(const strata::core::ModelGeometry& g, strata::core::SessionState& ss, strata::core::PagePool& pool,
               strata::core::ConversationId id, std::string& err);
     /// Tells whether init has given the conversation its pages.
@@ -46,17 +49,21 @@ public:
     void truncate(int64_t tokens);
     /// Gets the bytes of the pool's pages the conversation holds (0 before init).
     uint64_t bytes() const;
+    /// Gets the device table of the drafter's units (MtpDrafter::use_kv_units); null when the pool has none.
+    const int64_t* get_drafter_units() const { return has_drafter_ ? tables_.back() : nullptr; }
 
 private:
     strata::core::PagePool* pool_ = nullptr;
     strata::core::ConversationId id_ = 0;
-    strata::kernels::KvUnitLayout unit_;         ///< one indexer block of a QSA layer
+    std::vector<uint64_t> unit_bytes_;           ///< per table, the bytes of one block's unit
     uint64_t page_bytes_ = 0;
+    bool has_drafter_ = false;                   ///< the last table is the drafter's
     int64_t idx_block_ = 0;
     int64_t max_blocks_ = 0;                     ///< entries of each table (the session's max_cells in blocks, + 2)
     int64_t reserved_ = 0;                       ///< the tokens the last reserve() gave pages for
-    std::vector<int64_t*> tables_;               ///< per QSA layer, the device table its state's `units` points at
-    std::vector<size_t> pages_in_table_;         ///< per QSA layer, the pages whose units its table holds
+    /// per QSA layer, the device table its state's `units` points at; then the drafter's (has_drafter_)
+    std::vector<int64_t*> tables_;
+    std::vector<size_t> pages_in_table_;         ///< per table, the pages whose units it holds
 };
 
 }  // namespace strata::qwen38

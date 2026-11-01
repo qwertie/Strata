@@ -101,14 +101,15 @@ inline QsaAttnPools kv_unit_pools(const KvUnitLayout& u, KvFormat f, const int64
 inline float* kv_unit_keys(const KvUnitLayout& u) { return (float*) (uintptr_t) (kKvUnitOrigin + u.key); }
 
 /// Gets the host image of a `units` table for `blocks` blocks: block b is unit `b % per_page` of page
-/// `pages[b / per_page]` (a page holds `page_bytes / u.bytes` units), for a conversation's region in the page pool.
+/// `pages[b / per_page]` (a page holds `page_bytes / unit_bytes` units of KvUnitLayout::bytes each), for a
+/// conversation's region in the page pool.
 inline std::vector<int64_t> kv_unit_table(const std::vector<uint8_t*>& pages, uint64_t page_bytes,
-                                          const KvUnitLayout& u, int64_t blocks) {
-    const uint64_t per_page = page_bytes / u.bytes;
+                                          uint64_t unit_bytes, int64_t blocks) {
+    const uint64_t per_page = page_bytes / unit_bytes;
     std::vector<int64_t> table((size_t) blocks);
     for (int64_t b = 0; b < blocks; ++b)
         table[(size_t) b] = (int64_t) ((uintptr_t) pages.at((size_t) ((uint64_t) b / per_page)) +
-                                       (uint64_t) b % per_page * u.bytes - kKvUnitOrigin);
+                                       (uint64_t) b % per_page * unit_bytes - kKvUnitOrigin);
     return table;
 }
 

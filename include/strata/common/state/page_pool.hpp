@@ -137,6 +137,8 @@ public:
     uint8_t* page_address(PageId page) const;
     /// Gets the size of each page.
     uint64_t page_bytes() const { return config_.page_bytes; }
+    /// Gets the regions every conversation of the pool has.
+    const StateLayout& layout() const { return layout_; }
     /// Gets the pages one conversation of `tokens` tokens takes.
     uint64_t pages_for(int64_t tokens) const;
     PagePoolReport report() const;

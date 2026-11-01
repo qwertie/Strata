@@ -330,14 +330,15 @@ inline int qsa_kv_format(const QsaState& st) {
 }
 uint64_t qsa_state_init(const ModelGeometry& g, int64_t max_cells, void* base, QsaState& st,
                         const QsaState* share_rope = nullptr, int64_t ring_cells = 0);
-/// The page pool holds the K/V (QsaState::units): the main layers' states are sized and carved without their K/V and
-/// pooled keys, and zeroing them leaves those to the pool.  For strata-q38; set before sizing and initializing the
-/// session.  Not with KV streaming or the elastic K/V.
+/// The page pool holds the K/V (QsaState::units): the main layers' states (and the MTP drafter's, which has no ring
+/// then) are sized and carved without their K/V and pooled keys, and zeroing them leaves those to the pool.  For
+/// strata-q38; set before sizing and initializing the session.  Not with KV streaming or the elastic K/V.
 void qsa_set_kv_units(bool enabled);
 /// Gets the indexer's view of a state's keys (with its units, if any).
 strata::kernels::QsaIndexerBuffers qsa_indexer_buffers(const QsaState& st);
 /// Points a state carved with qsa_set_kv_units at the page pool's units: `units` is the device table of each block's
-/// unit (kv_unit_table), and the K/V and pooled-key pointers become offsets within a unit.  For ConversationPages.
+/// unit (kv_unit_table), and the K/V and pooled-key pointers become offsets within a unit.  For ConversationPages and
+/// MtpDrafter::set_kv_in_pages.
 void qsa_use_units(const ModelGeometry& g, QsaState& st, const int64_t* units);
 /// KV streaming: the pools a reader sees (the VRAM slots) and, when streamed, make the selection's blocks resident.
 strata::kernels::QsaAttnPools qsa_attn_pools(const QsaState& st);

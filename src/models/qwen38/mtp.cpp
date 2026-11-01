@@ -163,6 +163,7 @@ MtpDrafter::~MtpDrafter() {
     if (owns_weights_ && dense_) cudaFree(dense_);
     if (owns_weights_ && experts_) cudaFree(experts_);
     if (state_arena_) cudaFree(state_arena_);
+    if (kv_units_) cudaFree(kv_units_);
     if (arena_) cudaFree(arena_);
     if (head_logits_) cudaFree(head_logits_);
     if (owns_draft_head_ && dhead_) { strata::kernels::native_q6_k_unpack(dhead_); cudaFree(dhead_); }
@@ -348,7 +349,7 @@ bool MtpDrafter::load(const std::string& rt_dir, const ModelGeometry& g, Session
     // KV streaming: the drafter only reads its last `window` cells, so with streaming on its K/V is a ring of the
     // window (plus the cells a round writes ahead of its queries) over a host copy, refilled on a resume. The host copy
     // is pinned after the expert arena has pinned what it could: if it does not fit, the K/V stays whole in VRAM.
-    int64_t ring = (window > 0 && window < max_cells) ? window + 4 * (int64_t) max_t + 64 : 0;
+    int64_t ring = (!kv_in_pages_ && window > 0 && window < max_cells) ? window + 4 * (int64_t) max_t + 64 : 0;
     // K8V4 never applies to the drafter: its own attention paths (below, and verify.cpp) handle whole formats
     // only, whatever ring shape it takes (0, a window, or the -1 fully-resident fallback).
     const bool kv_hybrid_was = qsa_kv_hybrid();
@@ -371,6 +372,16 @@ bool MtpDrafter::load(const std::string& rt_dir, const ModelGeometry& g, Session
     qsa_set_kv_int8(kv_int8_was);
     qsa_set_kv_hybrid(kv_hybrid_was);
     qsa_state_zero(st_, g, nullptr);
+    if (kv_in_pages_) {   // the K/V is in a conversation's pages (use_kv_units): a table of its units, empty for now
+        kv_blocks_ = max_cells / s.idx_block + 2;   // as ConversationPages sizes its tables
+        if (cudaMalloc((void**) &kv_units_, (size_t) kv_blocks_ * sizeof(int64_t)) != cudaSuccess) {
+            err = "mtp: the K/V's unit table does not fit";
+            return false;
+        }
+        cudaMemset(kv_units_, 0, (size_t) kv_blocks_ * sizeof(int64_t));
+        qsa_use_units(g, st_, kv_units_);
+        sb += (uint64_t) kv_blocks_ * sizeof(int64_t);
+    }
     cudaDeviceSynchronize();
     vram_ += sb;
 
@@ -966,21 +977,22 @@ bool MtpDrafter::record_front(int T, int row0, cudaStream_t cs, std::string& err
         }
         // stored in the state's own format (#293 appended rotated INT8 K/V as Q4_0, into pools INT8 never has)
         if (!no_batch_kv && st_.kv_q4)
-            kv_append_q4_steps(st_.k_q4, st_.v_q4, st_.page_table, step, 4, T, kcur_, vcur_, s, cs, &st_.host);
+            kv_append_q4_steps(st_.k_q4, st_.v_q4, st_.page_table, step, 4, T, kcur_, vcur_, s, cs, &st_.host,
+                               st_.units);
         else if (!no_batch_kv && st_.kv_int8)
             kv_append_q8_steps(st_.k_q, st_.v_q, st_.k_scale, st_.v_scale, st_.page_table, step, 4, kcur_, vcur_,
-                               (int) (NKV * HD), T, s, cs, &st_.host);
+                               (int) (NKV * HD), T, s, cs, &st_.host, st_.units);
         else
             for (int t = 0; t < T; ++t) {
                 if (st_.kv_q4)
                     kv_append_q4_step(st_.k_q4, st_.v_q4, st_.page_table, step + t * 4, kcur_ + t * NKV * HD,
-                                      vcur_ + t * NKV * HD, s, cs, &st_.host);
+                                      vcur_ + t * NKV * HD, s, cs, &st_.host, st_.units);
                 else if (st_.kv_int8)
                     kv_append_q8_step(st_.k_q, st_.v_q, st_.k_scale, st_.v_scale, st_.page_table, step + t * 4,
-                                      kcur_ + t * NKV * HD, vcur_ + t * NKV * HD, s, cs, &st_.host);
+                                      kcur_ + t * NKV * HD, vcur_ + t * NKV * HD, s, cs, &st_.host, st_.units);
                 else
                     kv_append_step(st_.k_pool, st_.v_pool, st_.page_table, step + t * 4, kcur_ + t * NKV * HD,
-                                   vcur_ + t * NKV * HD, s, cs, &st_.host);
+                                   vcur_ + t * NKV * HD, s, cs, &st_.host, st_.units);
             }
         g_mp.stamp(4, cs);
     } catch (const std::exception& e) {
@@ -1357,6 +1369,18 @@ void MtpDrafter::kv_restore(int64_t upto) {
     const int64_t b1 = (upto + s.page_size - 1) / s.page_size, b0 = std::max<int64_t>(0, b1 - st_.n_slots);
     strata::kernels::kv_ring_restore(qsa_attn_pools(st_), st_.host, qsa_kv_format(st_), b0, b1, st_.n_slots, s, cs_);
     cudaStreamSynchronize(cs_);
+}
+
+bool MtpDrafter::use_kv_units(const int64_t* units, std::string& err) {
+    const OnDevice on_device(device_);
+    if (kv_units_ == nullptr) {
+        err = "mtp: its K/V is not in pages (set_kv_in_pages)";
+        return false;
+    }
+    if (cudaMemcpyAsync(kv_units_, units, (size_t) kv_blocks_ * sizeof(int64_t), cudaMemcpyDeviceToDevice, cs_) !=
+        cudaSuccess)
+        return report_cuda_error(err, "mtp: the K/V's unit table: ");
+    return true;
 }
 
 bool MtpDrafter::prepare_prefill(std::string& err) {

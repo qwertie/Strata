@@ -773,7 +773,7 @@ if(STRATA_ENABLE_CUDA OR STRATA_ENABLE_HIP)
   # Qwen3.8's model loader (strata::qwen38::Model), which the `strata` program below calls
   add_library(strata_qwen38 STATIC src/models/qwen38/model.cpp src/models/qwen38/conversation.cpp
               src/models/qwen38/options.cpp src/models/qwen38/conversation_pages.cpp
-              src/models/qwen38/paged_engine.cpp)
+              src/models/qwen38/conversation_drafter.cpp src/models/qwen38/paged_engine.cpp)
   target_include_directories(strata_qwen38 PRIVATE ${_strata_gpu_include_directories})
   target_link_libraries(strata_qwen38 PUBLIC strata_engine strata_prefill strata_serve strata_spec strata_state
                         ${_strata_gpu_runtime_target})
