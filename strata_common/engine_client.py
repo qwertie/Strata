@@ -531,6 +531,13 @@ def btrace(*a):
 EOS_IDS = {248044, 248046}   # <|endoftext|>, <|im_end|>: the engine's default --eos-ids
 
 
+def get_request_priority(sampling: dict) -> int:
+    """Gets a request's "priority" field (a whole number; higher goes first, and on an engine that can preempt it takes
+    a busy slot from a request of lower priority), 0 when it has none."""
+    p = sampling.get("priority")
+    return p if isinstance(p, int) and not isinstance(p, bool) else 0
+
+
 # The engine's own words for a verifier that cannot go on (its GPU waits were released, or an earlier window never
 # finished, #267): the process may stay alive and even print DONE, but it must not take another request.
 FATAL_PREFIXES = ("ERR verify: timed out at layer ", "ERR verify batch: timed out at layer ",
@@ -661,6 +668,7 @@ class StrataEngine:
         self.can_stop = False            # the engine honours a STOP line mid-request (READY <ctx> stop)
         self.can_list = False            # it answers LIST_CONVERSATIONS and GET_CONTEXT_WINDOWS (... conversations)
         self.can_report_memory = False   # it answers GET_MEMORY_USE (... memory)
+        self.can_preempt = False         # a BGEN of a higher priority ends a busy slot's request (... preempt)
         self.last = {}
         self.info = {}                   # INFO key=value facts (engine 0.1.8+): kv, expert slots, ... (Monitor tab)
         self.terminal_stages: list[dict] = []  # final layer ranges from this engine start's bounded stderr log
@@ -745,6 +753,7 @@ class StrataEngine:
                 self.can_stop = "stop" in f[2:]
                 self.can_list = "conversations" in f[2:]
                 self.can_report_memory = "memory" in f[2:]
+                self.can_preempt = "preempt" in f[2:]
                 break
         loading.set()
         if self.max_context <= 0:
@@ -831,6 +840,9 @@ class StrataEngine:
         # (its flag leaked) and would keep every later request waiting for a slot that nothing will free.
         self.slot_claims: set[int] = set()
         self.slot_releasing: set[int] = set()
+        # slots a request of a higher priority is taking over (preempting): it waits for the event, which the request
+        # it ends (or that one's background BDONE wait) sets once it has read the slot's BDONE
+        self.slot_handover: dict[int, threading.Event] = {}
         self._orphan_seen: dict[int, float] = {}
         # what each slot's sessions hold (prompt + every token a window fed), so a conversation's next turn goes to
         # the slot that has its start (the engine checks it again); when the slot was last used
@@ -1171,6 +1183,9 @@ class StrataEngine:
         seed = sampling.get("seed")
         if isinstance(seed, int) and seed > 0:
             keys += f" seed={seed}"
+        priority = get_request_priority(sampling)
+        if priority != 0:
+            keys += f" priority={priority}"
         # setup's calibration (tools/calibrate.py): engine settings for this request only, measured without a restart
         tune = sampling.get("strata_tune")
         if isinstance(tune, dict):
@@ -1337,26 +1352,39 @@ class StrataEngine:
                 return line
         return None
 
-    def _release_slot_when_done(self, slot: int, stream: list[int] | None = None):
+    def _release_slot_when_done(self, slot: int, stream: list[int] | None = None,
+                                taken: threading.Event | None = None):
         """A slot whose consumer left (a stop token, a stop string, a disconnect): BSTOP it and free it once the engine
         says BDONE (in the background).  `stream`: the prompt and every token of it so far - with the tokens still to
-        come before BDONE, all but the last are what the slot holds then (the next turn of its conversation)."""
+        come before BDONE, all but the last are what the slot holds then (the next turn of its conversation).
+        `taken`: a request preempting this one takes the slot over: no BSTOP (its BGEN ends this request), and at the
+        BDONE the event is set instead of the slot being freed (unless that request gave up meanwhile)."""
         if slot >= len(self.slot_q):                    # the engine restarted with fewer slots: this one is gone
+            if taken is not None:
+                taken.set()
             return
-        try:
-            self._send(f"BSTOP {slot}")
-        except EngineDied:
-            pass
         q, busy, held = self.slot_q[slot], self.slot_busy, self.slot_held   # this process's: restart() replaces them
-        releasing = self.slot_releasing
-        releasing.add(slot)
+        releasing, handover, claims, live = self.slot_releasing, self.slot_handover, self.slot_claims, self.slot_live
+        if taken is None:
+            try:
+                self._send(f"BSTOP {slot}")
+            except EngineDied:
+                pass
+            releasing.add(slot)
 
         def wait():
             end = time.monotonic() + 600.0
             tail = list(stream or [])
+            stopped = taken is None
             while time.monotonic() < end:
+                if not stopped and handover.get(slot) is not taken:   # the request taking the slot over gave up:
+                    stopped = True                                      # this one is not ended by it, so stop it
+                    try:
+                        self._send(f"BSTOP {slot}")
+                    except EngineDied:
+                        pass
                 try:
-                    line = q.get(timeout=5.0)
+                    line = q.get(timeout=0.5 if not stopped else 5.0)
                 except queue.Empty:
                     continue
                 if line is None:
@@ -1371,6 +1399,17 @@ class StrataEngine:
                     if line.split()[3:4] == ["nonfinite"]:   # #879: the engine dropped the slot's state
                         tail = []
                     break
+            if taken is not None:
+                with self.slot_cv:
+                    # the request that was taking the slot over gave up (the engine refused its BGEN, so this request
+                    # ran on), and nobody else frees the slot
+                    if handover.get(slot) is not taken and slot not in releasing:
+                        live[slot] = None
+                        busy[slot] = False
+                        claims.discard(slot)
+                        self.slot_cv.notify_all()
+                taken.set()
+                return
             held[slot] = tail[:-1] if stream and tail else []
             with self.slot_cv:
                 busy[slot] = False
@@ -1422,6 +1461,35 @@ class StrataEngine:
                   "(issue #1603); freed, the waiting request goes on", flush=True)
             self.slot_cv.notify_all()
         return freed
+
+    def _pick_victim(self, priority: int) -> int | None:
+        """Picks a slot to preempt for a request of `priority` (the caller holds slot_cv): one whose request decodes at
+        a lower priority and is not being stopped or taken over, the lowest priority first, then the one that started
+        last.  None: there is none."""
+        victims = [b for b in self.slot_claims if b not in self.slot_handover and b not in self.slot_releasing and
+                   (r := self.slot_live[b]) is not None and r["state"] == "decoding" and not r.get("stopping") and
+                   r.get("priority", 0) < priority]
+        return min(victims, key=lambda b: (self.slot_live[b].get("priority", 0), -self.slot_live[b]["started"]),
+                   default=None)
+
+    def _stop_slot(self, slot: int, live: dict) -> bool:
+        """Sends BSTOP for this request's slot `slot` (`live`: its slot_live entry) unless a request of a higher
+        priority is taking the slot over, whose BGEN ends this request; tells whether it sent it."""
+        with self.slot_cv:
+            if slot in self.slot_handover:
+                return False
+            live["stopping"] = True
+        self._send(f"BSTOP {slot}")
+        return True
+
+    def _await_handover(self, taken: threading.Event, born: int):
+        """Yields None heartbeats until the request a preemption ended has read its BDONE (`taken` is set), or until the
+        engine it was sent to is gone."""
+        beat = time.monotonic()
+        while not taken.wait(0.5) and self.gen == born and self.alive():
+            if time.monotonic() - beat >= 10.0:
+                beat = time.monotonic()
+                yield None
 
     YIELDS_MAX = 2   # #656: how often one request's prompt read gives way to a shorter waiting one
 
@@ -1527,6 +1595,7 @@ class StrataEngine:
         self.progress, self.progress_ms, self.reused = None, 0, 0
         born = self.gen                                 # the engine process this request is sent to
         keys = self.sampling_keys(sampling or {})
+        priority = get_request_priority(sampling or {})
         out: list[int] = []
         pending: list[int] = []
         prompt, left = list(ids), int(max_new)
@@ -1538,6 +1607,8 @@ class StrataEngine:
         holding, born = True, self.gen                  # (the engine it now has the control lines of)
         btrace("ctl acquired")
         slot, gen0, reserved = None, None, None
+        live = None             # this request's entry in slot_live while it has a slot
+        taken, victim_live = None, None   # preempting: the event slot_handover holds, the ended request's entry
         phase = "none"            # solo -> (admit -> slot) ; "done" once the engine has finished with this request
         stop_sent = False
         yields, solo_again, refused = 0, 0, 0
@@ -1627,6 +1698,11 @@ class StrataEngine:
                                 raise QueueWaitExpired("the inference queue wait deadline expired; retry later")
                             with self.slot_cv:
                                 slot = self.pick_slot(prompt)
+                                if slot is None and self.can_preempt:
+                                    slot = self._pick_victim(priority)
+                                    if slot is not None:
+                                        taken = self.slot_handover[slot] = threading.Event()
+                                        victim_live = self.slot_live[slot]
                                 if slot is not None:
                                     self.slot_busy[slot] = True
                                     self.slot_claims.add(slot)
@@ -1674,12 +1750,13 @@ class StrataEngine:
                         if not ok:
                             return
                         holding, born = True, self.gen                  # (the engine it now has the control lines of)
-                    while not self.slot_q[slot].empty():
+                    # (preempting: the slot's lines are those of the request it ends, which reads them)
+                    while taken is None and not self.slot_q[slot].empty():
                         self.slot_q[slot].get_nowait()
                     head = f"BGENI {slot} {left}{keys} {embeddings}" if embeddings else f"BGEN {slot} {left}{keys}"
                     live = {"slot": slot, "request_id": getattr(cancel, "_strata_request_id", None),
                             "state": "reading", "prompt_tokens": len(prompt), "prompt_read": 0, "generated": 0,
-                            "started": time.time(), "first_token": None}
+                            "started": time.time(), "first_token": None, "priority": priority}
                     deadline = getattr(cancel, "_strata_queue_deadline", None)
                     if deadline is not None and time.monotonic() >= deadline:
                         raise QueueWaitExpired("the inference queue wait deadline expired; retry later")
@@ -1727,14 +1804,20 @@ class StrataEngine:
                         refused += 1
                         print(f"[strata] parallel: the engine refused slot {slot} ({e}); trying another slot "
                               f"({refused}/{self.BGEN_REFUSALS_MAX}) (issue #1994)", flush=True)
+                        if taken is not None:           # the request it would have ended keeps the slot
+                            with self.slot_cv:
+                                self.slot_handover.pop(slot, None)
+                                self.slot_live[slot] = victim_live
+                            taken, slot = None, None
                         if refused > self.BGEN_REFUSALS_MAX:
                             raise GpuBusy("the engine's batch slots are not free right now; try again in a moment",
                                       retry_after=5) from e
-                        self.slot_live[slot] = None
-                        self.slot_held[slot] = []
                         phase = "none"
                         self._ctl_erred = False
-                        self._park_slot(slot)
+                        if slot is not None:
+                            self.slot_live[slot] = None
+                            self.slot_held[slot] = []
+                            self._park_slot(slot)
                         slot = None
                         continue
                     cont = bool(self._ctl_result and self._ctl_result[1])
@@ -1750,6 +1833,11 @@ class StrataEngine:
                     break
                 self.ctl.release()
                 holding = False
+                if taken is not None:   # the slot's lines are the ended request's up to its BDONE
+                    yield from self._await_handover(taken, born)
+                    with self.slot_cv:
+                        self.slot_handover.pop(slot, None)
+                    taken = None
                 if not cont:
                     return
                 live.update(state="decoding", first_token=time.time(), generated=len(out))
@@ -1760,7 +1848,7 @@ class StrataEngine:
                         line = self.slot_q[slot].get(timeout=10.0)
                     except queue.Empty:
                         if cancel.is_set() and not stop_sent:
-                            self._send(f"BSTOP {slot}")
+                            self._stop_slot(slot, live)
                             stop_sent = True
                         yield None
                         continue
@@ -1773,40 +1861,50 @@ class StrataEngine:
                         live["generated"] = len(out)
                         if cancel.is_set():
                             if not stop_sent:
-                                self._send(f"BSTOP {slot}")
+                                self._stop_slot(slot, live)
                                 stop_sent = True
                             continue
                         yield t
                         if not going_solo and not stop_sent and self._may_go_solo(int(max_new) - len(out), solo_again,
                                                                                   embeddings):
-                            self._send(f"BSTOP {slot}")         # alone now: on with the drafts (below)
-                            going_solo = True
+                            going_solo = self._stop_slot(slot, live)   # alone now: on with the drafts (below)
                     elif line.startswith("BDONE "):
                         phase = "none"
                         f = line.split()
                         self._apply_bdone(f)
-                        # what the slot's sessions hold now: the prompt and every token fed (all but the last one)
-                        self.slot_held[slot] = list(prompt) + out[gen0:-1] if len(out) > gen0 else []
+                        with self.slot_cv:
+                            taken_by = self.slot_handover.get(slot)
+                            if taken_by is None:
+                                live["state"] = "ending"
+                        if taken_by is not None:        # a request of a higher priority has the slot now
+                            taken_by.set()
+                            slot = None
+                        else:   # what the slot's sessions hold now: the prompt and every token fed (all but the last)
+                            self.slot_held[slot] = list(prompt) + out[gen0:-1] if len(out) > gen0 else []
                         if f[3:4] == ["nonfinite"]:              # #879: the engine dropped the slot's state
-                            self.slot_held[slot] = []
+                            if slot is not None:
+                                self.slot_held[slot] = []
                             raise EngineNonFinite("the engine's logits became non-finite (#879)")
-                        if (going_solo and f[3:4] == ["cancel"] and not cancel.is_set() and len(out) < int(max_new)
-                                and not (out and out[-1] in EOS_IDS)):
+                        if ((f[3:4] == ["preempted"] or (going_solo and f[3:4] == ["cancel"])) and not cancel.is_set()
+                                and len(out) < int(max_new) and not (out and out[-1] in EOS_IDS)):
                             # the solo path continues it: the engine copies the slot's sessions back (all but the
-                            # last token are in them) and decodes with MTP drafts again
+                            # last token are in them) and decodes with MTP drafts again.  Preempted (a request of a
+                            # higher priority took the slot): it waits for a slot again, and the engine resumes the
+                            # conversation it paused
                             carry_leg(carry, self.last)         # #1869: the solo path's DONE replaces these figures
-                            self.slot_live[slot] = None
-                            self.slot_used[slot] = time.time()
-                            with self.slot_cv:
-                                self.slot_busy[slot] = False
-                                self.slot_claims.discard(slot)
-                                self.slot_cv.notify_all()
+                            if slot is not None:
+                                self.slot_live[slot] = None
+                                self.slot_used[slot] = time.time()
+                                with self.slot_cv:
+                                    self.slot_busy[slot] = False
+                                    self.slot_claims.discard(slot)
+                                    self.slot_cv.notify_all()
                             slot, gen0 = None, None
                             if reused0 is None:
                                 reused0 = (self.last or {}).get("reused")
                             prompt, left = list(ids) + out, int(max_new) - len(out)
-                            solo_again += 1
-                            btrace("back to the solo path")
+                            solo_again += going_solo
+                            btrace("preempted" if f[3:4] == ["preempted"] else "back to the solo path")
                             break
                         return
         finally:
@@ -1826,6 +1924,17 @@ class StrataEngine:
                         phase = "slot"
             except EngineDied:
                 pass
+            if taken is not None:               # it preempted, then failed before the hand-over
+                with self.slot_cv:
+                    self.slot_handover.pop(slot, None)
+            if phase == "slot" and slot is not None:
+                with self.slot_cv:
+                    taken_by = self.slot_handover.get(slot)
+                    if taken_by is None:
+                        live["state"] = "ending"
+                if taken_by is not None:        # a request of a higher priority takes the slot once its BDONE is read
+                    self._release_slot_when_done(slot, taken=taken_by)
+                    slot = None
             bdone_in = False
             if phase == "slot" and slot is not None and out and out[-1] in EOS_IDS and self.gen == born:
                 bd = self._bdone_after_eos(slot)            # (#1869) the slot's figures, not the admission's

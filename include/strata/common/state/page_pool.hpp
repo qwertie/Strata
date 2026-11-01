@@ -154,6 +154,10 @@ public:
     PageId use_expert(ExpertKey key);
     /// Frees an expert's pages at its owner's request (without calling `evicted`).
     void remove_expert(ExpertKey key);
+    /// Gives the pages of expert `out` to expert `in`, which must take as many pages and not be in the pool, at its
+    /// owner's request (without calling `evicted`); `in`'s use counts from now.  Gets the run's first page, or
+    /// no_page (changing nothing) when the pool does not hold `out` or already holds `in`.
+    PageId replace_expert(ExpertKey out, ExpertKey in);
     /// Gets the earliest clock time at which a free page that is still closed to experts opens to them; 0 when no
     /// page is closed.
     uint64_t get_next_opening() const;

@@ -33,8 +33,8 @@ uint64_t choose_expert_page_bytes(const std::vector<uint64_t>& blob_bytes);
 /// Experts in the pages of a page pool made over one arena: a GPU's expert cache (whose slots are the pages) or host
 /// memory.  The pool's conversations take the least recently used experts' pages as they grow, and `refill` puts
 /// those experts back once pages are free again.  An expert's last use is its rank in the ranking `open` is given
-/// (an expert outside it ranks after it, in the order it is first admitted), so the coldest leave first.  Not
-/// thread-safe: the engine's step loop is its only caller.
+/// (an expert outside it ranks after it, in the order it is first admitted) until the engine counts a use
+/// (note_use), so the coldest leave first.  Not thread-safe: the engine's step loop is its only caller.
 class ExpertPages {
 public:
     /// The engine's side of the pool: copying an expert in, publishing where experts are, and an expert's last look.
@@ -74,6 +74,14 @@ public:
     /// Gets its first page, or kNotResident when it may not come in or there is no room.  Its bytes are the caller's
     /// to copy in.
     int32_t admit(int64_t layer, int64_t expert, uint64_t used_at = 0);
+    /// Moves expert `in` of `layer` into the pages of expert `out` of the same layer, which leaves as it would for a
+    /// conversation (the `leaving` and `moved` hooks) but is not put back by `refill`, and copies `in`'s bytes in.
+    /// False (and `err`) when the copy failed: then neither is in the pool.  Nothing changes (true) when the pool
+    /// does not hold `out` or already holds `in`.
+    bool replace(int32_t layer, int32_t out, int32_t in, std::string& err);
+    /// Counts a use of an expert the pool holds, so that a conversation evicts it after the experts used less
+    /// recently (nothing when the pool does not hold it).
+    void note_use(ExpertKey key) { (void) pool_->use_expert(key); }
     /// Gets the pool's clock now (the times admit takes).
     uint64_t get_time() const { return now_(); }
     /// Tells whether experts that conversations evicted wait for pages that may be free for them now or soon.

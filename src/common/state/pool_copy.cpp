@@ -2,10 +2,13 @@
 #include "strata/common/state/pool_copy.hpp"
 
 #include "strata/base/gpu/runtime.hpp"
+#include "strata/base/platform/os.hpp"
 
 #include <algorithm>
+#include <chrono>
 #include <cstdio>
 #include <cstring>
+#include <filesystem>
 #include <memory>
 #include <vector>
 #if defined(_WIN32)
@@ -16,6 +19,9 @@
 
 namespace strata::core {
 namespace {
+
+/// The start of every pause file's name (get_pause_file_prefix).
+constexpr char kPausePrefix[] = "paused-";
 
 /// The file's first bytes; then the region count, and per region its block bytes and block count (uint64_t each).
 constexpr char kMagic[8] = {'S', 'T', 'R', 'P', 'A', 'G', 'E', '1'};
@@ -121,6 +127,28 @@ bool load_conversation(const std::string& path, const PagePool& pool, Conversati
     if (!ok)
         err = "could not read the paused conversation from " + path;
     return ok;
+}
+
+std::string get_pause_file_prefix(const std::string& dir) {
+    const auto start = std::chrono::system_clock::now().time_since_epoch().count();
+    return (std::filesystem::path(dir) / (kPausePrefix + std::to_string(strata::platform::get_process_id()) + "-" +
+                                          std::to_string(start) + "-"))
+        .string();
+}
+
+int remove_stale_pause_files(const std::string& dir) {
+    namespace fs = std::filesystem;
+    std::error_code ec;
+    int removed = 0;
+    for (const fs::directory_entry& f : fs::directory_iterator(dir, ec)) {
+        const std::string name = f.path().filename().string();
+        if (name.rfind(kPausePrefix, 0) != 0 || f.path().extension() != ".bin")
+            continue;
+        const uint64_t pid = std::strtoull(name.c_str() + sizeof kPausePrefix - 1, nullptr, 10);
+        if (!strata::platform::is_process_running(pid) && fs::remove(f.path(), ec))
+            ++removed;
+    }
+    return removed;
 }
 
 }  // namespace strata::core

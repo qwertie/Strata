@@ -1,7 +1,7 @@
 // The RAM's page pool (ram_experts.hpp) over an in-memory "SSD": it fills with the ranking's first experts, hands out
 // their bytes and reads the others into its staging ring (once each, also after prefetch), gives experts' pages to a
-// paused conversation and takes them back after it leaves, copies in an expert a GPU evicts, and keeps an expert a
-// step reads from the SSD in place of one used before the step's layer.
+// paused conversation and takes them back after it leaves, copies in an expert a GPU evicts, keeps an expert a step
+// reads from the SSD in place of one used before the step's layer, and replaces one expert by another in place.
 #include "strata/common/experts/ram_experts.hpp"
 
 #include <chrono>
@@ -103,6 +103,15 @@ int main() {
     ram.begin_layer(1, nullptr, 0);
     check(!ram.holds(1, 5) && is_expert(ram.blob(1, 5), 1, 5) && ram.holds(1, 5),
           "an expert a step reads from the SSD takes the place of one used before the layer");
+    int32_t gone = 0, in = 0;   // one expert of layer 2 the pool holds, one it does not
+    while (!ram.holds(2, gone))
+        ++gone;
+    while (ram.holds(2, in))
+        ++in;
+    const int before = ssd.reads;
+    check(ram.pages().replace(2, gone, in, err) && ram.holds(2, in) && !ram.holds(2, gone) && ssd.reads == before + 1 &&
+              is_expert(ram.blob(2, in), 2, in),
+          "an expert replaced in place leaves, and the other takes its pages with its own bytes");
     for (int64_t l = 0; l < 3; ++l)
         for (int64_t e = 0; e < kExperts; ++e)
             check(!ram.holds(l, e) || is_expert(ram.blob(l, e), l, e), "every expert in the pool has its bytes");

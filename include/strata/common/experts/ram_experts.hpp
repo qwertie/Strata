@@ -37,8 +37,8 @@ public:
               const std::vector<uint64_t>& blob_bytes, int64_t n_expert, const std::vector<ExpertKey>& ranking,
               std::string& err);
     /// Copies expert `key` in from `bytes` (any memory: a GPU's pages it is leaving) when the pool does not hold it
-    /// and has room for it among colder experts of its size.
-    void keep_copy(ExpertKey key, const uint8_t* bytes);
+    /// and has room for it among colder experts of its size; tells whether it did.
+    bool keep_copy(ExpertKey key, const uint8_t* bytes);
     /// Tells whether the pool holds expert (`layer`, `expert`).
     bool holds(int64_t layer, int64_t expert) const { return first_page_[index_of(layer, expert)] != kNotResident; }
     /// Gets the experts in the pool, which the paused conversations share.
@@ -78,7 +78,7 @@ private:
 
     size_t index_of(int64_t layer, int64_t expert) const { return (size_t) (layer * n_expert_ + expert); }
     uint8_t* get_page(int32_t first) const { return pages_.pool().page_address((PageId) first); }
-    bool read_from_ssd(const Reads& reads);
+    bool read_from_ssd(const Reads& reads, uint64_t most = UINT64_MAX);
     bool read_in(const Reads& reads);
     uint8_t* take_place(int64_t layer, int64_t expert);
     uint8_t* take_slot(int64_t layer, int64_t expert);

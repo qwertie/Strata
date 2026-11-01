@@ -48,7 +48,9 @@ if "--fake-stage-plan" in args:
     print("strata serve: layer split: layers 0-11 (CUDA0), 12-23 (CUDA1), 24-35 (CUDA2), "
           "36-47 (CUDA3), one hand-off per window", file=sys.stderr, flush=True)
 LISTS = "--lists" in args   # READY ... conversations: it answers LIST_CONVERSATIONS and GET_CONTEXT_WINDOWS
-print("READY 4096 stop" + (" conversations" if LISTS else ""), flush=True)
+PREEMPT = "--preempt" in args   # READY ... preempt: a BGEN of a higher priority= ends a busy slot's request
+print("READY 4096 stop" + (" conversations" if LISTS else "") + (" preempt" if PREEMPT else ""), flush=True)
+priority = {}        # (--preempt) slot -> the priority of the request it decodes
 main_held, slot_held, parked = [], {}, []   # (--lists) what the sessions hold, the conversations parked
 LONG = list(b"LONGREPLY")
 def continued(ids):        # (the whole reply, how much of it the prompt already ends with: a request continued)
@@ -130,6 +132,16 @@ while True:
             if log:
                 log.write(f"REFUSED {slot}\n"); log.flush()
             continue
+        if PREEMPT and slot is not None:
+            p = next((int(k[len("priority="):]) for k in f[3:-1] if k.startswith("priority=")), 0)
+            if slot in active and p <= priority[slot]:
+                print(f"ERR BGEN: slot {slot} decodes a request of priority {priority[slot]}", flush=True)
+                continue
+            if slot in active:
+                print(f"BDONE {slot} {active.pop(slot)[2]} preempted 1.0", flush=True)
+                if log:
+                    log.write(f"PREEMPT {slot}\n"); log.flush()
+            priority[slot] = p
         if log:
             log.write(f"{f[0]} {slot} {len(ids)} {max(len(active), 0)}\n"); log.flush()
         pb = bytes(int(x) & 255 for x in ids)
@@ -386,8 +398,9 @@ class FakeEngineCase(unittest.TestCase):
         if getattr(self, "tmp", None):
             self.tmp.cleanup()
 
-    def chat(self, text, max_tokens=64):
-        body = {"messages": [{"role": "user", "content": text}], "max_tokens": max_tokens, "reasoning_effort": "none"}
+    def chat(self, text, max_tokens=64, **fields):
+        body = {"messages": [{"role": "user", "content": text}], "max_tokens": max_tokens, "reasoning_effort": "none",
+                **fields}
         req = urllib.request.Request(self.base + "/v1/chat/completions", data=json.dumps(body).encode(),
                                      headers={"Content-Type": "application/json"})
         with urllib.request.urlopen(req, timeout=60) as r:
@@ -895,6 +908,37 @@ class ParallelService(FakeEngineCase):
         # never more than two in the slots at once (the fake logs how many were active at each admission)
         active = [int(x.split()[3]) for x in self.log.read_text().splitlines() if x.startswith("BGEN")]
         self.assertTrue(all(a <= 1 for a in active), active)
+
+
+class Preemption(FakeEngineCase):
+    """A request of a higher priority that finds every slot busy takes the slot of one of lower priority (an engine
+    whose READY says "preempt"); the request it ended continues from where it was once a slot is free."""
+
+    def test_the_higher_priority_takes_a_slot_and_every_answer_completes(self):
+        self.start(2, more=["--preempt"])
+        low = ["first question LONGREPLY", "second question LONGREPLY"]
+        out, done = {}, []
+
+        def go(text, prio):
+            out[text] = self.chat(text, priority=prio)["choices"][0]["message"]["content"]
+            done.append(text)
+        threads = [threading.Thread(target=go, args=(t, 0)) for t in low]
+        for th in threads:
+            th.start()
+            time.sleep(0.15)
+        time.sleep(0.15)
+        go("urgent question", 5)
+        for th in threads:
+            th.join(30)
+        self.assertEqual(out, {**{t: "ok, " + "la " * 15 + "done." for t in low}, "urgent question": "ok, done."})
+        self.assertEqual(done[0], "urgent question")
+        self.assertEqual(self.log.read_text().count("PREEMPT"), 1)
+        self.assertEqual(self.engine.slot_handover, {})
+
+    def test_equal_priorities_wait_for_a_slot(self):
+        self.start(2, more=["--preempt"])
+        self.race("first question LONGREPLY", "second question")
+        self.assertNotIn("PREEMPT", self.log.read_text())
 
 
 if __name__ == "__main__":

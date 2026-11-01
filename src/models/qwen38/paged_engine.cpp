@@ -4,6 +4,7 @@
 
 #include "strata/base/gpu/memory_info.hpp"
 #include "strata/common/experts/expert_pages.hpp"
+#include "strata/common/experts/expert_swaps.hpp"
 #include "strata/common/experts/ram_experts.hpp"
 #include "strata/common/experts/ram_tier.hpp"
 #include "strata/common/kernels/cpu/expert_layout.hpp"
@@ -140,6 +141,11 @@ private:
                      int64_t& read_to, bool& fatal, std::string& err);
     /// Runs one step of every decoding conversation and prints what it emitted; false (ERR printed) ends the engine.
     bool decode_step();
+    /// Ends the request that batch slot `slot` decodes, so that one of priority `priority` takes the slot, when that is
+    /// higher than its own: prints its BDONE with the finish "preempted".  The server sends it again later, its prompt
+    /// and the tokens it got so far, which resumes its conversation (take_conversation pauses it).  False when the
+    /// request's priority is as high.
+    bool preempt(size_t slot, int64_t priority);
     /// Puts the conversation that holds the longest start of `ids` (an idle one on the GPU, or a paused one, which
     /// comes back) in place `target` of `at_`, pausing the one there unless that is it.  Gets how many of `ids` it
     /// holds.
@@ -174,6 +180,11 @@ private:
     /// Gets the paused conversation that goes first, the lowest priority then the least recently used, among those in
     /// RAM (`in_ram`) or on the SSD; paused_.end() when there is none.
     std::vector<Paused>::iterator find_lowest(bool in_ram);
+    /// Every --adapt-every steps (the old engine's adaptive tier, with its options): counts a use, in the GPU's pool,
+    /// of the experts there that the steps since the last round routed to; then the experts decoding routed to most
+    /// that the pool does not hold take the pages of the least-routed ones of their layer (at most --adapt-swaps,
+    /// each by --adapt-min-gain more routings).  False (ERR printed) when a copy failed.
+    bool adapt_experts();
     /// Puts back a batch of the experts the conversations evicted (the GPU's first, then the RAM's), or waits until
     /// pages open to them: the serve loop's work between requests.  False when a copy failed (said on stderr).
     bool refill_experts();
@@ -213,6 +224,12 @@ private:
     uint64_t requests_ = 0;            ///< the requests served so far (Held::used)
     const Held* reading_ = nullptr;    ///< the conversation whose prompt read_prompt reads, which make_room keeps
     bool residency_changed_ = false;   ///< `m_.host_res` changed since the device's table was uploaded
+    int64_t steps_ = 0;                ///< the decode steps so far (adapt_experts' rounds)
+    std::vector<float> seen_;          ///< `m_.drive.d.usage` when adapt_experts last decayed it
+    int64_t swapped_ = 0;              ///< the experts adapt_experts moved into the GPU's pool, since the last report
+    double adapt_ms_ = 0;              ///< the time those took
+    int64_t copied_back_ = 0;          ///< the experts the GPU's pool evicted that were copied to RAM, since then
+    double copy_back_ms_ = 0;          ///< the time the copies back took (all evictions', failed copies too)
 };
 
 /// Removes strata-q38's own options from `argv` (the rest is `strata`'s command line).  -1: go on, else exit status.
@@ -443,6 +460,8 @@ int run_paged_engine(int argc, char** argv) {
         return 2;
     }
     m.finish_expert_tiers();
+    if (o.adapt_every > 0 && o.adapt_swaps > 0)   // the routings adapt_experts counts
+        m.drive.d.usage.assign((size_t) (m.g.n_layers * m.g.n_expert), 0.0f);
     std::string err;
     strata::core::RamExperts ram;
     bool copy_back = false;
@@ -483,10 +502,11 @@ PagedEngine::PagedEngine(Model& m, Conversation& conv, strata::core::ExpertPages
     const std::filesystem::path dir = settings.pause_dir.empty()
                                           ? std::filesystem::temp_directory_path(ec) / "strata-q38"
                                           : std::filesystem::path(settings.pause_dir);
-    // a name of its own per run, so that two engines can share the folder
-    const auto run = std::chrono::system_clock::now().time_since_epoch().count();
-    pause_prefix_ = (dir / ("paused-" + std::to_string(run) + "-")).string();
     std::filesystem::create_directories(dir, ec);
+    pause_prefix_ = strata::core::get_pause_file_prefix(dir.string());
+    if (const int stale = strata::core::remove_stale_pause_files(dir.string()); stale > 0)
+        std::fprintf(stderr, "strata-q38: deleted %d files of paused conversations that engines no longer running "
+                             "left in %s\n", stale, dir.string().c_str());
     strata::core::ExpertPages::Hooks hooks;
     hooks.load = [this](strata::core::ExpertKey key, int32_t slot, std::string& err) {
         const uint8_t* blob = m_.srcp->blob_stable(key.layer, key.expert);
@@ -501,7 +521,11 @@ PagedEngine::PagedEngine(Model& m, Conversation& conv, strata::core::ExpertPages
         residency_changed_ = true;
     };
     if (copy_back)
-        hooks.leaving = [this](strata::core::ExpertKey key, const uint8_t* bytes) { ram_.keep_copy(key, bytes); };
+        hooks.leaving = [this](strata::core::ExpertKey key, const uint8_t* bytes) {
+            const Clock::time_point t0 = Clock::now();
+            copied_back_ += ram_.keep_copy(key, bytes);
+            copy_back_ms_ += get_ms_since(t0);
+        };
     experts_.set_hooks(std::move(hooks));
 }
 
@@ -548,7 +572,7 @@ int PagedEngine::serve() {
                 (long long) (experts_.pool().report().experts.bytes >> 20),
                 drafter_ != nullptr ? settings_.step.lookahead + 1 : 0, (long long) o.prefill_chunk,
                 slots > 0 ? (" batch_slots=" + std::to_string(slots) + " slot_cache=0").c_str() : "");
-    std::printf("READY %lld stop conversations memory\n", (long long) o.max_context);
+    std::printf("READY %lld stop conversations memory preempt\n", (long long) o.max_context);
     strata::serve::EngineHooks hooks;
     hooks.is_busy = [this] {
         return is_decoding() || experts_.is_refill_wanted() || ram_.pages().is_refill_wanted();
@@ -586,8 +610,8 @@ bool PagedEngine::serve_request(const std::string& line) {
         std::printf("ERR strata-q38 reads no pictures\n");
         return true;
     }
-    if (req.batch && (req.slot < 0 || (size_t) req.slot >= slots || get_held((size_t) req.slot).decoding)) {
-        std::printf("ERR BGEN: no such free slot (--batch %zu)\n", slots);
+    if (req.batch && (req.slot < 0 || (size_t) req.slot >= slots)) {
+        std::printf("ERR BGEN: no such slot (--batch %zu)\n", slots);
         return true;
     }
     if (!req.batch && slots > 0 &&
@@ -605,6 +629,11 @@ bool PagedEngine::serve_request(const std::string& line) {
     if (n >= o.max_context) {
         std::printf("ERR the prompt (%lld tokens) does not fit the context (%lld)\n", (long long) n,
                     (long long) o.max_context);
+        return true;
+    }
+    if (req.batch && get_held((size_t) req.slot).decoding && !preempt((size_t) req.slot, priority)) {
+        std::printf("ERR BGEN: slot %ld decodes a request of priority %lld, as high as this one's\n", req.slot,
+                    (long long) get_held((size_t) req.slot).dec.priority);
         return true;
     }
     input_.clear_stop();   // a STOP between requests is stale
@@ -752,6 +781,13 @@ bool PagedEngine::decode_step() {
             std::fprintf(stderr, "strata-q38: %lld of %lld guesses right (%.0f%%) over %lld tokens\n",
                          (long long) d.guessed_right, (long long) d.guessed,
                          100.0 * (double) d.guessed_right / (double) d.guessed, (long long) d.produced);
+        if (swapped_ > 0 || copy_back_ms_ > 0) {
+            std::fprintf(stderr, "strata-q38: %lld experts moved into the GPU's pool (%.0f ms in all); %lld it evicted "
+                                 "copied back to RAM (%.1f ms, all evictions)\n",
+                         (long long) swapped_, adapt_ms_, (long long) copied_back_, copy_back_ms_);
+            swapped_ = copied_back_ = 0;
+            adapt_ms_ = copy_back_ms_ = 0;
+        }
         if (std::strcmp(d.finish, "nonfinite") == 0) {   // #879: its state may carry the poison: start over next time
             std::fprintf(stderr, "strata-q38: non-finite logits (#879) at position %lld: the conversation's next "
                                  "request reads its prompt from token 0\n", (long long) d.pos);
@@ -761,6 +797,17 @@ bool PagedEngine::decode_step() {
             std::printf("BDONE %d %lld %s %.1f\n", h->slot, (long long) d.produced, d.finish, get_ms_since(h->t0));
     }
     strata::core::progress_beat();
+    return adapt_experts();
+}
+
+bool PagedEngine::preempt(size_t slot, int64_t priority) {
+    Held& h = get_held(slot);
+    if (priority <= h.dec.priority)
+        return false;
+    h.decoding = false;
+    std::fprintf(stderr, "strata-q38: a request of priority %lld preempts slot %zu's (priority %lld, %lld tokens)\n",
+                 (long long) priority, slot, (long long) h.dec.priority, (long long) h.dec.produced);
+    std::printf("BDONE %zu %lld preempted %.1f\n", slot, (long long) h.dec.produced, get_ms_since(h.t0));
     return true;
 }
 
@@ -956,6 +1003,39 @@ std::vector<Paused>::iterator PagedEngine::find_lowest(bool in_ram) {
              std::make_pair(p->priority, p->used) < std::make_pair(lowest->priority, lowest->used)))
             lowest = p;
     return lowest;
+}
+
+bool PagedEngine::adapt_experts() {
+    const Options& o = m_.o;
+    std::vector<float>& usage = m_.drive.d.usage;
+    if (usage.empty() || ++steps_ % o.adapt_iv(steps_) != 0)
+        return true;
+    const Clock::time_point t0 = Clock::now();
+    const int64_t n_expert = m_.g.n_expert;
+    seen_.resize(usage.size(), 0.0f);
+    for (size_t i = 0; i < usage.size(); ++i)
+        if (usage[i] > seen_[i] && m_.host_res[i] >= 0)
+            experts_.note_use({(int32_t) ((int64_t) i / n_expert), (int32_t) ((int64_t) i % n_expert)});
+    std::vector<strata::core::ExpertSwap> swaps = strata::core::choose_expert_swaps(
+        usage, m_.host_res, m_.g.n_layers, n_expert, o.adapt_min_gain, [](int64_t, int32_t) { return false; });
+    if (swaps.size() > (size_t) o.adapt_swaps)
+        swaps.resize((size_t) o.adapt_swaps);
+    std::string err;
+    for (const strata::core::ExpertSwap& s : swaps)
+        if (!experts_.replace(s.layer, s.out, s.in, err)) {
+            std::printf("ERR moving an expert into the GPU's pool: %s\n", err.c_str());
+            return false;
+        }
+    for (float& u : usage)
+        u *= o.adapt_decay;
+    seen_ = usage;
+    if (!publish_residency(err)) {
+        std::printf("ERR %s\n", err.c_str());
+        return false;
+    }
+    swapped_ += (int64_t) swaps.size();
+    adapt_ms_ += get_ms_since(t0);
+    return true;
 }
 
 bool PagedEngine::refill_experts() {

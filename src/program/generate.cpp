@@ -29,6 +29,7 @@
 #include "strata/common/serve/request.hpp"
 #include "strata/core/expert_cache.hpp"
 #include "strata/common/experts/expert_profile.hpp"
+#include "strata/common/experts/expert_swaps.hpp"
 #include "strata/models/qwen38/conversation_snapshot.hpp"
 #include "strata/common/state/conversation_file.hpp"
 #include "strata/common/state/session_save_reclaim.hpp"
@@ -1153,35 +1154,11 @@ int main(int argc, char** argv) {
             if (drive.d.remote[r]->holds(l, e)) return true;
         return false;
     };
-    // The swaps an adaptive round would make, best first: in each layer the most-routed experts without a VRAM
-    // slot (`res` < 0, routed at least twice, not `held_elsewhere(layer, expert)`) take the slots of the
-    // least-routed resident ones while the gain is at least `min_gain`.
-    struct Swap { float gain; int32_t layer, in, out; };
+    // The swaps an adaptive round would make, best first (strata::core::choose_expert_swaps)
+    using Swap = strata::core::ExpertSwap;
     auto choose_swaps = [&](const std::vector<float>& usage, const std::vector<int32_t>& res, float min_gain,
                             auto&& held_elsewhere) {
-        std::vector<Swap> swaps;
-        std::vector<std::pair<float, int32_t>> cand, vict;
-        for (int64_t l = 0; l < g.n_layers; ++l) {
-            cand.clear();
-            vict.clear();
-            const float* u = usage.data() + l * g.n_expert;
-            const int32_t* r = res.data() + l * g.n_expert;
-            for (int32_t e = 0; e < (int32_t) g.n_expert; ++e) {
-                if (r[e] < 0) { if (u[e] >= 2.0f && !held_elsewhere(l, e)) cand.emplace_back(u[e], e); }
-                else vict.emplace_back(u[e], e);
-            }
-            if (cand.empty() || vict.empty()) continue;
-            std::sort(cand.begin(), cand.end(), [](auto& a, auto& b) { return a.first > b.first; });
-            const size_t nc = std::min(cand.size(), vict.size());
-            std::partial_sort(vict.begin(), vict.begin() + (ptrdiff_t) nc, vict.end(),
-                              [](auto& a, auto& b) { return a.first < b.first; });
-            for (size_t i = 0; i < nc; ++i) {
-                if (cand[i].first < vict[i].first + min_gain) break;
-                swaps.push_back({cand[i].first - vict[i].first, (int32_t) l, cand[i].second, vict[i].second});
-            }
-        }
-        std::sort(swaps.begin(), swaps.end(), [](const Swap& a, const Swap& b) { return a.gain > b.gain; });
-        return swaps;
+        return strata::core::choose_expert_swaps(usage, res, g.n_layers, g.n_expert, min_gain, held_elsewhere);
     };
     auto run_head = [&](void* stream) -> bool {
         if (!native_head.loaded())

@@ -195,6 +195,21 @@ void PagePool::remove_expert(ExpertKey key) {
         free_expert(it->second, 0);
 }
 
+PageId PagePool::replace_expert(ExpertKey out, ExpertKey in) {
+    open_due();
+    const auto it = experts_.find(out);
+    if (it == experts_.end() || experts_.count(in) != 0)
+        return no_page;
+    const PageId first = it->second;
+    Run& r = runs_.at(first);
+    unlist_expert(r, first);
+    r.expert = in;
+    r.last_use = now_;
+    r.uses = 1;
+    list_expert(r, first);
+    return first;
+}
+
 uint64_t PagePool::get_next_opening() const {
     const auto it = opening_.upper_bound({hooks_.now(), no_page});
     return it == opening_.end() ? 0 : it->first;

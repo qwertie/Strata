@@ -29,6 +29,8 @@
 #pragma comment(lib, "winmm.lib")
 #endif
 #else
+#include <cerrno>
+#include <csignal>
 #include <fcntl.h>
 #include <pthread.h>
 #include <sched.h>
@@ -235,6 +237,30 @@ inline bool replace_file(const std::string& from, const std::string& to) {
                        MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH) != 0;
 #else
     return std::rename(from.c_str(), to.c_str()) == 0;
+#endif
+}
+/// Gets this process's id.
+inline uint64_t get_process_id() {
+#if defined(_WIN32)
+    return GetCurrentProcessId();
+#else
+    return (uint64_t) ::getpid();
+#endif
+}
+/// Tells whether a process of id `pid` runs now (one of another user counts too).
+inline bool is_process_running(uint64_t pid) {
+    if (pid == 0 || pid > (uint64_t) INT32_MAX)   // (no process has it; kill(0) would ask about the process group)
+        return false;
+#if defined(_WIN32)
+    HANDLE h = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, (DWORD) pid);
+    if (h == nullptr)
+        return GetLastError() == ERROR_ACCESS_DENIED;
+    DWORD code = 0;
+    const bool running = GetExitCodeProcess(h, &code) && code == STILL_ACTIVE;
+    CloseHandle(h);
+    return running;
+#else
+    return ::kill((pid_t) pid, 0) == 0 || errno == EPERM;
 #endif
 }
 inline void close_fd(fd_t f) {

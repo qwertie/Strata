@@ -132,13 +132,40 @@ int32_t ExpertPages::admit(int64_t layer, int64_t expert, uint64_t used_at) {
     return (int32_t) page;
 }
 
+bool ExpertPages::replace(int32_t layer, int32_t out, int32_t in, std::string& err) {
+    const ExpertKey gone{layer, out}, key{layer, in};
+    const PageId first = pool_->replace_expert(gone, key);
+    if (first == no_page)
+        return true;
+    if (hooks_.leaving)
+        hooks_.leaving(gone, arena_ + (uint64_t) first * pool_->page_bytes());
+    hooks_.moved(gone, kNotResident);
+    if (int32_t& rank = rank_[index_of(key)]; rank >= 0) {
+        evicted_.erase(rank);
+    } else {   // ranked after the ranking, as admit ranks an expert outside it
+        rank = (int32_t) ranked_.size();
+        ranked_.push_back(key);
+    }
+    if (!hooks_.load(key, (int32_t) first, err)) {
+        pool_->remove_expert(key);
+        if (cache_ != nullptr)
+            cache_->evict(layer, out);
+        return false;
+    }
+    if (cache_ != nullptr)
+        cache_->replace(layer, out, in);
+    hooks_.moved(key, (int32_t) first);
+    return true;
+}
+
 /// Forgets an expert whose pages (from `first`) the pool gives to another use, and keeps it for `refill`.
 void ExpertPages::on_evicted(ExpertKey key, PageId first) {
     if (hooks_.leaving)
         hooks_.leaving(key, arena_ + (uint64_t) first * pool_->page_bytes());
     if (cache_ != nullptr)
         cache_->evict(key.layer, key.expert);
-    evicted_.insert(rank_[index_of(key)]);
+    if (const int32_t rank = rank_[index_of(key)]; rank < max_experts_)   // (admit refuses the others)
+        evicted_.insert(rank);
     if (hooks_.moved)
         hooks_.moved(key, kNotResident);
 }

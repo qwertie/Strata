@@ -12,6 +12,10 @@ namespace {
 
 /// The experts read from the SSD in one batch of requests while the pool fills.
 constexpr size_t kFillBatch = 64;
+/// The most bytes of experts one read from the SSD takes on the prompt path's threads (copy_blobs).  The file source
+/// keeps a buffer as large as the largest read on each thread that reads: its 32 stager threads kept 16-28 MiB each for
+/// their batches of 8 experts, 0.8 GiB at a 1 GiB RAM setting.  32 threads keep the drive as busy with smaller reads.
+constexpr uint64_t kStagerReadBytes = 8u << 20;
 
 /// Gets the seconds from `t0` to now.
 double get_seconds_since(std::chrono::steady_clock::time_point t0) {
@@ -82,16 +86,18 @@ bool RamExperts::open(ExpertSource& files, uint64_t bytes, int ring, const State
     return true;
 }
 
-void RamExperts::keep_copy(ExpertKey key, const uint8_t* bytes) {
+bool RamExperts::keep_copy(ExpertKey key, const uint8_t* bytes) {
     if (holds(key.layer, key.expert))
-        return;
+        return false;
     const int32_t first = pages_.admit(key.layer, key.expert);
     if (first == kNotResident)
-        return;
-    if (gpu_copy(get_page(first), bytes, (size_t) blob_bytes_[(size_t) key.layer]))
+        return false;
+    if (gpu_copy(get_page(first), bytes, (size_t) blob_bytes_[(size_t) key.layer])) {
         first_page_[index_of(key.layer, key.expert)] = first;
-    else
-        pages_.pool().remove_expert(key);
+        return true;
+    }
+    pages_.pool().remove_expert(key);
+    return false;
 }
 
 double RamExperts::time_ssd_reads(int round) {
@@ -147,7 +153,7 @@ bool RamExperts::copy_blobs(const int32_t* layers, const int32_t* experts, uint8
             std::memcpy(dst[i], get_page(first), (size_t) blob_bytes_[(size_t) layers[i]]);
         else
             reads.add(layers[i], experts[i], dst[i]);
-    return read_from_ssd(reads);
+    return read_from_ssd(reads, kStagerReadBytes);
 }
 
 void RamExperts::prefetch(int64_t layer, const int64_t* experts, int64_t n) {
@@ -162,10 +168,18 @@ void RamExperts::begin_layer(int64_t, const int32_t*, int64_t) {
     layer_t0_ = pages_.get_time();
 }
 
-/// Reads `reads` from the SSD (nothing: true).
-bool RamExperts::read_from_ssd(const Reads& reads) {
-    return reads.layers.empty() ||
-           files_->copy_blobs(reads.layers.data(), reads.experts.data(), reads.dst.data(), reads.layers.size());
+/// Reads `reads` from the SSD (nothing: true), at most `most` bytes of experts (or one expert) a read.
+bool RamExperts::read_from_ssd(const Reads& reads, uint64_t most) {
+    for (size_t i = 0, end = 0; i < reads.layers.size(); i = end) {
+        for (uint64_t bytes = 0; end < reads.layers.size(); ++end) {
+            bytes += blob_bytes_[(size_t) reads.layers[end]];
+            if (end > i && bytes > most)
+                break;
+        }
+        if (!files_->copy_blobs(&reads.layers[i], &reads.experts[i], &reads.dst[i], end - i))
+            return false;
+    }
+    return true;
 }
 
 /// Reads `reads`, whose places take_place gave, from the SSD; when that fails, the places hold no expert.

@@ -9,6 +9,8 @@ What is here so far is the model-neutral host code, which needs no GPU:
 - `ram_tier`: how much RAM the RAM tier may take (MemAvailable, cgroup limits, NUMA nodes, Windows commit) and which
   experts its compact copy (the cache complement) holds.
 - `exchange_storage.hpp`: the adaptive tier's exchange of experts between the RAM copy and the GPU cache.
+- `expert_swaps.hpp`: the adaptive tier's rule for which experts a GPU's cache takes in and gives up (by decayed routing
+  counts, with a margin), shared by the old engine and strata-q38's GPU pool (step M5b).
 - `hit_hook.hpp`: the seam between Qwen3.8's host loop and the VRAM tier.
 - `uma_cache.hpp`: the GPU cache's size on a GPU that shares the system RAM.
 - `expert_pages`: experts in the pages of a page pool (`src/common/state/page_pool.cpp`) that conversations share: a

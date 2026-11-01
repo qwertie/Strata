@@ -1,5 +1,6 @@
 // A conversation's pages copied between two page pools on host memory and through a file (pool_copy.hpp): the bytes
-// arrive in the other pool's blocks, a place with fewer blocks takes the first ones, and one with more is refused.
+// arrive in the other pool's blocks, a place with fewer blocks takes the first ones, and one with more is refused; the
+// pause files a process that no longer runs left are deleted.
 #include "strata/common/state/pool_copy.hpp"
 
 #include <cstdio>
@@ -81,6 +82,17 @@ int main() {
     std::filesystem::remove(path);
     err.clear();
     check(!load_conversation(path, *d.pool, 5, err) && !err.empty(), "a missing file is refused");
+
+    const std::filesystem::path dir = std::filesystem::temp_directory_path() / "pool_copy_test";
+    std::filesystem::create_directories(dir);
+    const std::string mine = get_pause_file_prefix(dir.string()) + "1.bin";
+    const std::filesystem::path gone = dir / "paused-2147483000-1-1.bin", other = dir / "paused-notes.txt";
+    for (const std::filesystem::path& f : {std::filesystem::path(mine), gone, other})
+        std::fclose(std::fopen(f.string().c_str(), "wb"));
+    check(remove_stale_pause_files(dir.string()) == 1 && std::filesystem::exists(mine) &&
+              !std::filesystem::exists(gone) && std::filesystem::exists(other),
+          "only the pause files of a process that no longer runs are deleted");
+    std::filesystem::remove_all(dir);
     std::printf("pool_copy_test: %d checks passed\n", checks);
     return 0;
 }

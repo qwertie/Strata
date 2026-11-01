@@ -1,9 +1,9 @@
 // The page pool (page_pool.hpp) on host memory with a hand-moved clock: conversations growing across blocks and
 // truncated, fixed regions and blocks in consecutive pages, experts tiling the room of their size around its home
-// point and evicting one of their size, conversations filling the holes of experts they evict and giving them back
-// whole, the allocated and fragmented pages, the token limits and the experts' overflow into the reserve, the
-// hysteresis, growing and shrinking, the report, long random trading without fragmentation, and a pool of two million
-// pages (Qwen3.8 IQ3_S's experts in pages of 25,600 bytes).
+// point and evicting one of their size, an expert replaced in place, conversations filling the holes of experts they
+// evict and giving them back whole, the allocated and fragmented pages, the token limits and the experts' overflow
+// into the reserve, the hysteresis, growing and shrinking, the report, long random trading without fragmentation, and
+// a pool of two million pages (Qwen3.8 IQ3_S's experts in pages of 25,600 bytes).
 #include "strata/common/state/page_pool.hpp"
 
 #include <chrono>
@@ -196,6 +196,22 @@ void test_experts_tile() {
               f.pool.report().free.pages == 2,
           "the free pages of a smaller size do not hold it");
     check(f.pool.add_expert({1, 2}, 2) == 0, "and stay for an expert of their size");
+}
+
+void test_replace() {
+    Fixture f;
+    f.add_experts(12);
+    check(f.pool.report().free.pages == 0, "twelve experts fill the pool");
+    const PageId first = f.pool.use_expert({0, 5});
+    check(f.pool.replace_expert({0, 5}, {0, 20}) == first && f.pool.use_expert({0, 5}) == no_page &&
+              f.pool.use_expert({0, 20}) == first && f.evicted.empty(),
+          "a replaced expert's pages go to the new one, without an eviction");
+    check(f.pool.replace_expert({0, 5}, {0, 21}) == no_page && f.pool.replace_expert({0, 1}, {0, 2}) == no_page,
+          "an expert the pool does not hold is not replaced, nor one by an expert it holds");
+    f.pool.replace_expert({0, 0}, {0, 22});
+    check(f.pool.add_expert({1, 0}, 1, 1) == no_page && f.pool.add_expert({1, 0}, 1) != no_page &&
+              get_experts(f.evicted) == std::vector<int>{1},
+          "the new expert's use counts from the replacement");
 }
 
 void test_holes() {
@@ -574,6 +590,7 @@ int main() {
     test_allocation();
     test_runs();
     test_experts_tile();
+    test_replace();
     test_holes();
     test_allocated_and_fragmented();
     test_minimum();

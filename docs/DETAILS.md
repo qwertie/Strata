@@ -507,6 +507,11 @@ applies at the next start. Network, key, MCP and program keys are not editable t
   `top_k` keeps at most 64 candidates. Penalties (`presence_penalty`, `frequency_penalty`, `repetition_penalty`,
   `penalty_last_n`; llama.cpp's `repeat_penalty` and `repeat_last_n` work too) apply to every token the speculative check
   verifies, as if decoded one at a time, and make a request 1-11% slower because more drafts are rejected.
+- `priority` (a whole number, default 0; OpenAI and Anthropic bodies alike) orders the requests strata-q38 runs at once
+  ("parallel"): a higher one gets a step's extra draft rows first, and a request that finds every slot busy takes the
+  slot of the running request of the lowest priority below its own. That request is paused (its conversation goes to
+  RAM or the SSD) and continues from where it stopped once a slot is free (docs/MEMORY_MANAGER_PLAN.md, M5b). The old
+  engine ignores the field.
 - Sampling defaults, in order of precedence: the request, the web page's shared Chat settings, the config's `sampling` block,
   then the model card. Without a block, thinking requests get temperature 1.0, top_p 0.95, top_k 20, and non-thinking
   requests get 0.7, 0.8, 20 with presence_penalty 1.5 (Qwen3.6-35B-A3B uses presence_penalty 1.5 in both). Greedy is only for
