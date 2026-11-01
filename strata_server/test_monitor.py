@@ -390,13 +390,17 @@ class EngineConversations(unittest.TestCase):
                             "MEMORY ssd engram=70", "SETTINGS context=32768 concurrent=1", "END_MEMORY"])
         got = engine.memory()
         self.assertEqual(engine.proc.stdin.getvalue(), "GET_MEMORY_USE\n")
+        none = {"allocated_pct": None, "fragmented_pct": None}   # no page pool: the old engines
         self.assertEqual(got, {"memories": [
             {"id": "gpu0", "name": "Radeon 8060S", "total": 1000, "free": 300, "unified": True, "paused_count": None,
-             "paused_budget": None, "uses": {"weights": 100, "experts": 450}},
+             "paused_budget": None, **none, "uses": {"weights": 100, "experts": 450}},
             {"id": "ram", "name": None, "total": None, "free": None, "unified": False, "paused_count": 2,
-             "paused_budget": 800, "uses": {"paused": 300}},
+             "paused_budget": 800, **none, "uses": {"paused": 300}},
             {"id": "ssd", "name": None, "total": None, "free": None, "unified": False, "paused_count": None,
-             "paused_budget": None, "uses": {"engram": 70}}], "settings": {"context": 32768, "concurrent": 1}})
+             "paused_budget": None, **none, "uses": {"engram": 70}}], "settings": {"context": 32768, "concurrent": 1}})
+        pool = self.bare(["MEMORY gpu0 experts=9 pool_pages=800 allocated_pages=780 fragmented_pages=3 name=card",
+                          "SETTINGS", "END_MEMORY"]).memory()["memories"][0]
+        self.assertEqual((pool["allocated_pct"], pool["fragmented_pct"], pool["uses"]), (97.5, 0.38, {"experts": 9}))
         self.assertEqual(self.bare(["SETTINGS", "END_MEMORY"]).memory(), {"memories": [], "settings": {}})
         got = self.bare(["CONVERSATION slot0 vram decoding 3 4096 1000 900", "SETTINGS rows=8", "END_MEMORY"]).memory()
         self.assertEqual(got["conversations"], [{"id": "slot0", "place": "vram", "state": "decoding", "count": 3,

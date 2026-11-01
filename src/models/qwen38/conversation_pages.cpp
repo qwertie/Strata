@@ -57,22 +57,23 @@ bool ConversationPages::init(const strata::core::ModelGeometry& g, strata::core:
     const strata::kernels::QsaShapes s = qsa_shapes(g);
     const int64_t n_qsa = g.n_qsa_layers();
     unit_bytes_.clear();
-    for (size_t r = 1; r < pool.layout().regions.size(); ++r)
+    run_bytes_.clear();
+    for (size_t r = 1; r < pool.layout().regions.size(); ++r) {
         unit_bytes_.push_back(pool.layout().regions[r].unit_bytes);
+        run_bytes_.push_back(pool.block_bytes(r));
+    }
     has_drafter_ = (int64_t) unit_bytes_.size() == n_qsa + 1;
-    page_bytes_ = pool.page_bytes();
     if (const std::string why = pool.grow_conversation(id, 0); !why.empty()) {
         err = "the page pool: " + why;
         return false;
     }
-    const std::vector<PageId>& gdn = pool.conversation_pages(id, 0);
-    ss.gdn_state = (float*) pool.page_address(gdn.at(0));
+    ss.gdn_state = (float*) pool.page_address(pool.conversation_blocks(id, 0).at(0));
     idx_block_ = s.idx_block;
     max_blocks_ = ss.max_cells / s.idx_block + 2;
     for (int64_t* t : tables_)   // (an init that failed before)
         (void) cudaFree(t);
     tables_.assign(unit_bytes_.size(), nullptr);
-    pages_in_table_.assign(unit_bytes_.size(), 0);
+    runs_in_table_.assign(unit_bytes_.size(), 0);
     for (size_t j = 0; j < tables_.size(); ++j) {
         if (cudaMalloc((void**) &tables_[j], (size_t) max_blocks_ * sizeof(int64_t)) != cudaSuccess) {
             (void) cudaGetLastError();
@@ -83,7 +84,7 @@ bool ConversationPages::init(const strata::core::ModelGeometry& g, strata::core:
         if ((int64_t) j < n_qsa)
             qsa_use_units(g, ss.qsa_states[j], tables_[j]);
     }
-    if (cudaMemset(ss.gdn_state, 0, gdn.size() * page_bytes_) != cudaSuccess ||
+    if (cudaMemset(ss.gdn_state, 0, pool.block_bytes(0)) != cudaSuccess ||
         cudaDeviceSynchronize() != cudaSuccess) {
         err = std::string("the page pool: ") + cudaGetErrorString(cudaGetLastError());
         return false;
@@ -105,21 +106,21 @@ bool ConversationPages::reserve(int64_t tokens, std::string& err) {
     reserved_ = need;
     bool added = false;
     for (size_t j = 0; j < tables_.size(); ++j) {
-        const std::vector<strata::core::PageId>& pages = pool_->conversation_pages(id_, 1 + j);
-        if (pages.size() == pages_in_table_[j])
+        const std::vector<strata::core::PageId>& runs = pool_->conversation_blocks(id_, 1 + j);
+        if (runs.size() == runs_in_table_[j])
             continue;
         std::vector<uint8_t*> at;
-        for (const strata::core::PageId p : pages)
+        for (const strata::core::PageId p : runs)
             at.push_back(pool_->page_address(p));
-        for (size_t i = pages_in_table_[j]; i < at.size(); ++i)
-            cudaMemset(at[i], 0, page_bytes_);
-        const uint64_t per_page = page_bytes_ / unit_bytes_[j];
-        const int64_t blocks = std::min((int64_t) (at.size() * per_page), max_blocks_);
-        const int64_t first = std::min((int64_t) (pages_in_table_[j] * per_page), blocks);
-        const std::vector<int64_t> table = strata::kernels::kv_unit_table(at, page_bytes_, unit_bytes_[j], blocks);
+        for (size_t i = runs_in_table_[j]; i < at.size(); ++i)
+            cudaMemset(at[i], 0, run_bytes_[j]);
+        const uint64_t per_run = run_bytes_[j] / unit_bytes_[j];
+        const int64_t blocks = std::min((int64_t) (at.size() * per_run), max_blocks_);
+        const int64_t first = std::min((int64_t) (runs_in_table_[j] * per_run), blocks);
+        const std::vector<int64_t> table = strata::kernels::kv_unit_table(at, run_bytes_[j], unit_bytes_[j], blocks);
         cudaMemcpy(tables_[j] + first, table.data() + first, (size_t) (blocks - first) * sizeof(int64_t),
                    cudaMemcpyHostToDevice);
-        pages_in_table_[j] = pages.size();
+        runs_in_table_[j] = runs.size();
         added = true;
     }
     // the kernels that read the tables and pages run on non-blocking streams, which do not wait for these copies
@@ -135,16 +136,16 @@ void ConversationPages::truncate(int64_t tokens) {
     pool_->truncate_conversation(id_, keep);
     reserved_ = keep;
     for (size_t j = 0; j < tables_.size(); ++j)
-        pages_in_table_[j] = pool_->conversation_pages(id_, 1 + j).size();
+        runs_in_table_[j] = pool_->conversation_blocks(id_, 1 + j).size();
 }
 
 uint64_t ConversationPages::bytes() const {
     if (!is_ready())
         return 0;
-    uint64_t pages = 0;
+    uint64_t bytes = 0;
     for (size_t r = 0; r <= tables_.size(); ++r)   // the fixed region, then each table's
-        pages += pool_->conversation_pages(id_, r).size();
-    return pages * page_bytes_;
+        bytes += pool_->conversation_blocks(id_, r).size() * pool_->block_bytes(r);
+    return bytes;
 }
 
 }  // namespace strata::qwen38

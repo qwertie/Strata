@@ -59,30 +59,35 @@ A model split across devices describes one layout per device. Device memory and 
 
 ## The page pool (`page_pool.hpp`)
 
-Step M1 of [docs/MEMORY_MANAGER_PLAN.md](../../../docs/MEMORY_MANAGER_PLAN.md); no engine uses it yet. Qwen3.8
+Steps M1 and M2e-M2f of [docs/MEMORY_MANAGER_PLAN.md](../../../docs/MEMORY_MANAGER_PLAN.md); strata-q38 uses it. Qwen3.8
 describes its conversation for it with `describe_conversation` (`src/models/qwen38/conversation_state.cpp`). A
 `PagePool` is one memory (a GPU's, or the RAM the engine uses) cut into equal pages (2 MiB by default), taken from an
 allocator in chunks (256 MiB by default). The allocator, the clock and the page copy are hooks, so the pool calls no
 GPU runtime and its test (`page_pool_test.cpp`) runs on host memory.
 
-- A page is free, holds an expert (`ExpertKey`: layer and expert), or holds part of one region of a conversation.
-  A `fixed` region takes whole pages once, consecutive ones inside one chunk, so that it is one buffer to the
-  kernels (Qwen3.8's GDN state is 112 MiB); a growing region takes one page per block of tokens, all its rows in the
-  page (`StateRegion::tokens_in` gives the tokens a page holds). A conversation keeps the list of its pages per
-  region (`conversation_pages`); `truncate_conversation` gives back its blocks past a number of tokens and keeps its
-  fixed pages, so their addresses (which captured graphs hold) stay the same.
-- A growing conversation takes the lowest free page, then the page of the expert used longest ago, up to the token
-  maximum. A fixed region goes where it evicts the fewest experts, the lowest such place first. Experts take the
-  highest free page, leave the token minimum's pages free, and wait for the hysteresis after a conversation gave a
-  page back. The `evicted` hook tells the expert's owner, which copies it to RAM or drops it.
-- `resize` adds chunks, or gives back the last ones: their experts are evicted and their conversation pages copied
-  into the others through the `copy` hook, a fixed region in one piece. When those pages have nowhere to go it names
-  the conversations to pause. A resize or a limit that the active conversations or the minimum would not fit is
-  refused with the reason.
-- `report` gives the pages and bytes by use for the `GET_MEMORY_USE` command.
+- The pool keeps runs of consecutive pages inside one chunk, not pages, so it may hold millions of small pages (step
+  M2f: an engine picks pages so that every expert is a whole number of them). A run is free, holds an expert
+  (`ExpertKey`: layer and expert), holds one block of one region of a conversation, or is a hole: an evicted expert's
+  pages that one conversation fills with its blocks. A `fixed` region is one block of whole pages, so that it is one
+  buffer to the kernels (Qwen3.8's GDN state is 112 MiB); a growing region takes blocks of `choose_block_pages`
+  pages, all its rows in the block (`StateRegion::tokens_in` gives the tokens a block holds). A conversation keeps the
+  first page of each block per region (`conversation_blocks`); `truncate_conversation` gives back its blocks past a
+  number of tokens and keeps its fixed pages, so their addresses (which captured graphs hold) stay the same.
+- Each expert size has a home point (the middle of the room the ranking in `PagePoolConfig::expert_ranking` gives it,
+  above the token minimum's reserve); an expert takes the open free run nearest it, else the run of the least-used
+  expert of its size. Experts leave the token minimum's pages free and wait for the hysteresis after a conversation
+  gave pages back. A conversation's block takes room in its own holes, then the lowest free run, then a new hole (the
+  least-used expert of any size, evicted); a fixed region takes the lowest free run, else the lowest stretch of experts.
+  The `evicted` hook tells the expert's owner, which copies it to RAM or drops it.
+- `resize` adds chunks, or gives back the last ones: their experts are evicted and their conversation blocks copied
+  into the others through the `copy` hook. When those pages have nowhere to go it names the conversations to pause. A
+  resize or a limit that the active conversations or the minimum would not fit is refused with the reason.
+- `report` gives the pages and bytes by use for the `GET_MEMORY_USE` command, and the pages allocated and fragmented
+  (free in runs shorter than the smallest expert).
 - Qwen3.8's QSA kernels read and write a layer's growing region where the pool put it: each block of 4 tokens is one
   unit (its K, V, scales and indexer key), found through a table of unit addresses
-  (`include/strata/models/qwen38/kernels/kv_units.hpp`). Without the table they use today's separate buffers.
+  (`include/strata/models/qwen38/kernels/kv_units.hpp`), many units to one of the pool's blocks. Without the table
+  they use today's separate buffers.
 
 The pool is not thread-safe: the engine's step loop is its only caller.
 

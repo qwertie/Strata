@@ -35,6 +35,16 @@ test('a memory below 32 GiB is as wide as its share of 32 GiB; names are escaped
   assert.deepEqual(widths(row), [93.75, 6.25]);
 });
 
+test('a page pool says how much of it is allocated and how much is free in runs no expert fits', () => {
+  const card = { id: 'gpu0', name: 'GPU', total: 2 ** 30, free: 0, unified: false, paused_count: null,
+    paused_budget: null, uses: { experts: 2 ** 29 }, allocated_pct: 97.5, fragmented_pct: 0.38 };
+  assert.match(rows(draw({ available: true, memories: [card], settings: {} }))[0],
+    /mem-facts">1[.,]0 GiB · pool 97[.,]5% allocated, 0[.,]38% fragmented</);
+  // engines without a pool (and memories other than the pool's) say nothing of it
+  assert.doesNotMatch(draw({ available: true, memories: [{ ...card, allocated_pct: null }], settings: {} }),
+    /allocated/);
+});
+
 test('the conversations the engine holds are listed with their state, tokens and memory', () => {
   const html = draw(fixture), table = /<table class="mem-conversations">(.*)<\/table>/.exec(html)?.[1] ?? '';
   assert.equal(table.match(/<tr>/g).length, 1 + fixture.conversations.length);

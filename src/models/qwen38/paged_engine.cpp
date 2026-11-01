@@ -193,7 +193,9 @@ bool open_pages(Model& m, strata::core::ExpertPages& experts, int64_t tokens_min
     strata::core::StateLayout layout;
     if (!ConversationPages::get_layout(m.g, m.ss, drafting ? &m.mtp.kv_state() : nullptr, layout, err))
         return false;
-    uint64_t most = layout.bytes_for(m.o.max_context) + layout.regions.size() * page;   // + each region's last page
+    uint64_t most = layout.bytes_for(m.o.max_context);
+    for (const strata::core::StateRegion& r : layout.regions)   // + each region's last block
+        most += strata::core::choose_block_pages(r, page) * page;
     for (size_t i = 0; i < m.profile.size() && (int64_t) i < max_experts; ++i)
         most += (blobs[(size_t) m.profile[i].first] + page - 1) / page * page;
     const uint64_t keep = ((uint64_t) m.o.vram_reserve_mib << 20) +
@@ -204,10 +206,13 @@ bool open_pages(Model& m, strata::core::ExpertPages& experts, int64_t tokens_min
         free_b = std::min(free_b, room);
     const uint64_t pool_b = std::min(free_b > keep ? free_b - keep : 0, most);
     m.xcache.set_expert_bytes((int64_t) lay.max_blob);
+    std::vector<int32_t> ranked_layers;
+    for (const auto& [layer, expert] : m.profile)
+        ranked_layers.push_back(layer);
     strata::core::PagePoolConfig config;
     config.tokens_min = std::clamp<int64_t>(tokens_min, 0, m.o.max_context);
     if (!m.xcache.open((int64_t) (pool_b / page), m.g.n_layers, m.g.n_expert, (int64_t) page, err) ||
-        !experts.open(m.xcache, layout, config, blobs, m.g.n_expert, max_experts, err))
+        !experts.open(m.xcache, layout, config, blobs, m.g.n_expert, max_experts, ranked_layers, err))
         return false;
     std::fprintf(stderr, "strata-q38: the page pool: %.2f GiB (%.2f GiB free) in pages of %llu bytes for the "
                          "experts and the conversations, %lld tokens of it kept for the conversations\n",
@@ -689,6 +694,9 @@ strata::serve::MemoryReport PagedEngine::describe_memory() const {
     gpu.add("conversations", r.active.bytes + r.fixed.bytes);
     gpu.add("pool_free", r.free.bytes);
     gpu.add("scratch", sessions_bytes_);
+    gpu.pool_pages = r.total.pages;
+    gpu.allocated_pages = r.allocated.pages;
+    gpu.fragmented_pages = r.fragmented.pages;
     report.at("ram").add("experts", m_.o.mmap_experts ? m_.src.resident_bytes()
                                                       : strata::kernels::cpu::expert_layout().total);
     report.settings = {{"context", m_.o.max_context}, {"concurrent", settings_.step.concurrent},

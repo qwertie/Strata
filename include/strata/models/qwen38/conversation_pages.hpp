@@ -1,7 +1,7 @@
 // include/strata/models/qwen38/conversation_pages.hpp - a Qwen3.8 conversation's state in a GPU page pool: the GDN
 // layers' recurrent state in a fixed region and every QSA layer's K/V and pooled indexer keys in units of the pool's
 // pages, which grow with the conversation, and with drafting the MTP drafter's K/V in units too
-// (docs/MEMORY_MANAGER_PLAN.md, steps M2d, M2e and M4).
+// (docs/MEMORY_MANAGER_PLAN.md, steps M2d, M2e, M2f and M4).
 //
 // The session the pages are for is carved with session_set_pool_state, so it holds neither; `init` points it at the
 // pool's pages.  The small running state (the PLE history and the indexer's tail, dead key and block position, the
@@ -56,14 +56,15 @@ private:
     strata::core::PagePool* pool_ = nullptr;
     strata::core::ConversationId id_ = 0;
     std::vector<uint64_t> unit_bytes_;           ///< per table, the bytes of one block's unit
-    uint64_t page_bytes_ = 0;
+    /// per table, the bytes of one of the pool's blocks for it (PagePool::block_bytes): a run of pages of many units
+    std::vector<uint64_t> run_bytes_;
     bool has_drafter_ = false;                   ///< the last table is the drafter's
     int64_t idx_block_ = 0;
     int64_t max_blocks_ = 0;                     ///< entries of each table (the session's max_cells in blocks, + 2)
     int64_t reserved_ = 0;                       ///< the tokens the last reserve() gave pages for
     /// per QSA layer, the device table its state's `units` points at; then the drafter's (has_drafter_)
     std::vector<int64_t*> tables_;
-    std::vector<size_t> pages_in_table_;         ///< per table, the pages whose units it holds
+    std::vector<size_t> runs_in_table_;          ///< per table, the pool's blocks whose units it holds
 };
 
 }  // namespace strata::qwen38

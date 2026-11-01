@@ -2,13 +2,20 @@
 #include "strata/common/experts/expert_pages.hpp"
 
 #include <algorithm>
+#include <numeric>
 #include <stdexcept>
 
 namespace strata::core {
 
 uint64_t choose_expert_page_bytes(const std::vector<uint64_t>& blob_bytes) {
-    uint64_t best = 256 << 10, best_used = UINT64_MAX;
-    for (uint64_t page = 256 << 10; page <= 512 << 10; page += 256) {
+    constexpr uint64_t align = 256, smallest = 16 << 10, largest = 512 << 10;
+    uint64_t gcd = 0;
+    for (const uint64_t b : blob_bytes)
+        gcd = std::gcd(gcd, b);
+    if (gcd % align == 0 && gcd >= smallest)
+        return gcd;
+    uint64_t best = smallest, best_used = UINT64_MAX;
+    for (uint64_t page = smallest; page <= largest; page += align) {
         uint64_t used = 0;
         for (const uint64_t b : blob_bytes)
             used += (b + page - 1) / page * page;
@@ -22,16 +29,17 @@ uint64_t choose_expert_page_bytes(const std::vector<uint64_t>& blob_bytes) {
 
 bool ExpertPages::open(ExpertCache& cache, const StateLayout& layout, PagePoolConfig config,
                        const std::vector<uint64_t>& blob_bytes, int64_t n_expert, int64_t max_experts,
-                       std::string& err) {
+                       const std::vector<int32_t>& ranked_layers, std::string& err) {
     const uint64_t page = (uint64_t) cache.slot_bytes(), pages = (uint64_t) cache.slots();
     if (!cache.valid() || cache.slot_offsets() != nullptr || cache.resident() != 0 || page == 0) {
         err = "the expert pages need an open, empty cache of uniform slots";
         return false;
     }
-    // chunks of about the configured size that tile the arena, so that no more than a page per chunk is left over
-    const uint64_t chunks = (pages * page + config.chunk_bytes - 1) / config.chunk_bytes;
+    // The whole arena is one chunk: nothing gives part of it back yet, and an expert may not cross a chunk's end, so
+    // chunks would leave a run too short for any expert at each end (0.36% of the Strix Halo's 15.5 GiB pool in 256
+    // MiB chunks).  Giving memory back while running (MEMORY_MANAGER_PLAN.md step M6) has to choose chunks again.
     config.page_bytes = page;
-    config.chunk_bytes = pages / chunks * page;
+    config.chunk_bytes = pages * page;
     cache_ = &cache;
     n_expert_ = n_expert;
     max_experts_ = max_experts;
@@ -39,6 +47,9 @@ bool ExpertPages::open(ExpertCache& cache, const StateLayout& layout, PagePoolCo
     for (const uint64_t b : blob_bytes)
         pages_.push_back((uint32_t) ((b + page - 1) / page));
     rank_.assign(blob_bytes.size() * (size_t) n_expert, -1);
+    config.expert_ranking.clear();
+    for (size_t i = 0; i < ranked_layers.size() && (int64_t) i < max_experts; ++i)
+        config.expert_ranking.push_back(pages_.at((size_t) ranked_layers[i]));
     PagePoolHooks hooks;
     hooks.alloc = [this, chunk = config.chunk_bytes, pages, page](size_t) -> void* {
         if ((chunks_given_ + 1) * chunk > pages * page)
@@ -55,7 +66,7 @@ bool ExpertPages::open(ExpertCache& cache, const StateLayout& layout, PagePoolCo
         err = std::string("the page pool: ") + e.what();
         return false;
     }
-    if (const PoolResize r = pool_->resize(chunks * config.chunk_bytes); !r.refusal.empty()) {
+    if (const PoolResize r = pool_->resize(config.chunk_bytes); !r.refusal.empty()) {
         err = "the page pool: " + r.refusal;
         return false;
     }

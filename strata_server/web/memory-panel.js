@@ -45,7 +45,8 @@ export function drawMemoryPanel(element, view) {
  *   memories: MemoryUse[], settings: Record<string, number>, conversations?: HeldConversation[]}} MemoryView
  * @typedef {{id: string, name: string | null, total: number | null, free: number | null, unified: boolean,
  *   uses: Record<string, number>, paused_count: number | null, paused_budget: number | null, other?: number,
- *   in_share?: number, borrowed?: number | null, gpu_borrowed?: number}} MemoryUse
+ *   in_share?: number, borrowed?: number | null, gpu_borrowed?: number, allocated_pct?: number | null,
+ *   fragmented_pct?: number | null}} MemoryUse
  * @typedef {{id: string, place: string, state: string, count: number, capacity: number, bytes: number,
  *   used: number}} HeldConversation
  */
@@ -70,7 +71,9 @@ function drawBar(x) {
   const label = "borrowed" in x ? `${name} — BIOS share ${gb(x.total)} GiB` :
     x.gpu_borrowed ? `${name} ${gb(x.total)} GiB (GPU borrows ${gb(x.gpu_borrowed)} GiB)` : name;
   const facts = [x.total && label === name ? `${gb(x.total)} GiB` : "", x.paused_count == null ? "" :
-    `${fmt(x.paused_count)} paused` + (x.paused_budget ? ` (budget ${gb(x.paused_budget, 2)} GiB)` : "")]
+    `${fmt(x.paused_count)} paused` + (x.paused_budget ? ` (budget ${gb(x.paused_budget, 2)} GiB)` : ""),
+    x.allocated_pct == null ? "" :
+    `pool ${fmt(x.allocated_pct, 1)}% allocated, ${fmt(x.fragmented_pct, 2)}% fragmented`]
     .filter(Boolean).join(" · ");
   const title = (/** @type {{use: string}} */ p) => esc(USES[p.use] || p.use);
   const seg = (/** @type {{use: string, bytes: number, drawn?: number}} */ p) =>

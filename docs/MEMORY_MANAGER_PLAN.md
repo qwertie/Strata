@@ -75,24 +75,46 @@ assumption beforehand.
 Each GPU's memory and the RAM the engine uses are each one pool of equal-size pages. A page holds an expert, or a
 block of a conversation's tokens, or is free.
 
-- The page size depends on the model and its quantization: an expert is 1.95 MiB in Qwen3.8 IQ3_S but about 8.6 MB in
-  DeepSeek's 2.00 bpw set, which mixes three expert types of 7.7 to 10.2 MB. The engine picks the size when it loads
-  the model. Where expert sizes differ, an expert takes several consecutive pages inside one chunk, rather than every
-  page being as big as the largest expert (which would waste up to a quarter of the memory).
-
-- A pool takes its memory in chunks (about 256 MiB). Pages need not be next to each other, so growing the memory used
+- The page size is the greatest common divisor of the model's expert sizes, so every expert is a whole number of
+  pages and no page is part empty (step M2f). The experts of one layer are all one size; sizes differ by layer. Qwen3.8
+  IQ3_S has 7 sizes from 1,510,400 to 2,662,400 bytes: pages of 25,600 bytes, 59 to 104 per expert. DeepSeek's 2.00
+  bpw set has 8 sizes from 7,741,440 to 10,229,760 bytes: pages of 92,160 bytes, 84 to 111 per expert. A page is a
+  multiple of 256 bytes and at least 16 KiB; a model whose divisor is not gets the size from 16 to 512 KiB that wastes
+  least.
+- So a pool has millions of pages (about 2 million for all of Qwen3.8 IQ3_S's experts). The pool keeps runs of
+  consecutive pages (free, one expert, one block of a conversation, or a conversation's hole), not pages, and finds room
+  through ordered indexes.
+- Each expert size has a home point: the middle of the room the expert profile's hottest experts of that size need,
+  the sizes in order above the conversations' reserve. An expert takes the free run nearest its home, so the experts
+  of one size sit together and an evicted one leaves a hole that fits the next one of its size. When there is no free
+  run, evicting the least-used expert of the same size always makes room. Nothing moves experts to defragment: the
+  unit tests trade pages at random (20,000 steps in a small pool, 300 steps of three conversations of up to 100,000
+  tokens in a pool of 1.9 million pages) and the experts afterwards fill the pool as well as they fill an empty one.
+- The conversations' end is the bottom of the pool: the `--tokens-min` reserve, which experts leave free, and the
+  conversations' fixed regions (a recurrent state of 112 MiB takes one run; when no free run is long enough, the
+  lowest stretch of experts is evicted for it). A growing conversation past its free runs evicts the least-used expert
+  of any size and fills that hole with its blocks before it takes another; the hole goes back whole when its last
+  block leaves.
+- A conversation's growing region takes blocks of several consecutive pages when one page would waste much: Qwen3.8's
+  int8 K/V unit (an indexer block of 4 tokens, 2 KV heads) is 4,736 bytes, so a page of 25,600 bytes would hold 5 of
+  them and waste 7.5%; a block of 5 pages holds 27 and wastes 0.1%. (f16: 8,704 bytes, 32% of a page wasted, 0.8% in
+  blocks of 12 pages; q4: 2,816 bytes, 1%; k8v4: 3,776 bytes, 11.5%, 0.4% in blocks of 4. The drafter's K/V has the
+  main K/V's format, int8 under k8v4.)
+- `GET_MEMORY_USE` gives a pool's pages, how many are allocated, and how many are free in runs shorter than the
+  smallest expert (fragmented: free memory no expert can use); the panel shows both as shares of the pool.
+- A pool takes its memory in chunks (about 256 MiB; strata-q38's pool on the GPU is one chunk, the expert cache's
+  arena, because a run may not cross a chunk's end). Pages need not be next to each other, so growing the memory used
   adds chunks; shrinking it first empties chunks (their experts are evicted, conversation pages are copied to other
   chunks or paused) and then gives them back. No virtual-memory API is needed, so this works on AMD as well as NVIDIA
   (today's live resize, the `VRAM` command, is NVIDIA-only).
-- Conversations and experts trade pages without a setting: a growing conversation takes the least-used expert's
-  page, up to the conversation maximum. Experts take pages back only after a conversation ends or is paused, and only
-  after a short wait, so that the two do not thrash.
+- Conversations and experts trade pages without a setting, up to the conversation maximum. Experts take pages back
+  only after a conversation ends or is paused, and only after a short wait, so that the two do not thrash.
 - On the SSD, an expert is read with its sector-aligned surroundings into a staging buffer, because reads without the
   file cache must be aligned. DeepSeek's Engram reader (its own threads reading the SSD) is the model for this.
 - A conversation's memory is described with the existing state descriptor
   (`include/strata/common/state/state_layout.hpp`): fixed regions (the GDN state, the drafter's state) take whole
-  pages once; per-token regions (K/V) take a page per block of tokens as the conversation grows. The pool holds the
-  blocks; a conversation keeps a list of its pages.
+  pages once; per-token regions (K/V) take a block of consecutive pages per group of tokens as the conversation
+  grows. The pool holds the blocks; a conversation keeps a list of its blocks.
 - Weights that are always needed (the dense layers, the head) are outside the pools.
 - On a PC whose graphics memory is system RAM (Strix Halo), the GPU's pool is the share the BIOS gives the GPU, not
   what the runtime reports as the GPU's size. The runtime reports the share plus what the GPU may borrow from the
@@ -233,6 +255,7 @@ The server forwards both through one endpoint (`GET/POST /v1/memory`); "save as 
 | M2c2 | The one-conversation step: the hit tables and verify hits into `Model`, and a `Conversation` (prompt read, one decode step) wrapping `Prefill` and `Verifier`, called by the old CLI path | the old engine's tokens and speed unchanged. Done (the serve path still has its own step) |
 | M2d | The new engine (`strata-q38`, a thin `main()` over `src/models/qwen38` and the shared serve loop): one conversation in the pool, no drafting | token-identical at temperature 0 against the old engine; speed; the pool's pages grow with the conversation. Done: identical tokens with one-row windows; through the server on the Strix Halo, prompts 884-1,108 tok/s against 798-1,042 and decode 26-28 against 25-27; conversation memory 145 MB at 66 tokens and 245 MB at 8.3K, against 3,092 MB reserved by the old engine |
 | M2e | Experts in the pool's pages: the expert cache's slots go through the pool, evicted experts go to the RAM tier or are dropped | the same tokens; conversations take expert pages and give them back. Done (`ExpertPages`, `src/common/experts/expert_pages.cpp`): one pool on the GPU, pages of 332,800 bytes for Qwen3.8 IQ3_S (the size per model that wastes least, 4.4% here); on a GPU whose memory is the system RAM the pool stays within the BIOS share (Windows: DXGI's dedicated memory); an evicted expert is dropped (the CPU reads it from the RAM copy or the files) and comes back between requests; `--tokens-min` (default 8192) replaces `--conversation-mib`. Copying evicted experts back to RAM is left for M5, which gives the RAM copy room of its own |
+| M2f | Exact-fit pages: the page size is the greatest common divisor of the expert sizes; a pool of millions of pages; experts placed by size around home points; conversations fill expert holes; the pool's allocated and fragmented shares in `GET_MEMORY_USE` and the panel | the same tokens; no fragmentation in random trading; experts that leave come back. Done (`src/common/state/page_pool.cpp`): pages of 25,600 bytes for Qwen3.8 IQ3_S (0% of the experts' pages unused, against 4.4% with M2e's 332,800), the pool keeps runs of pages and ordered indexes, each expert size has a home point and an expert takes the free run nearest it or evicts one of its size, a conversation's K/V blocks are runs of 5 pages (27 int8 units, 0.1% unused, against 7.5% in one page). On the Strix Halo the same 7,846 experts take 15.97 GB instead of 16.69 GB; with the trading test's pool (18.6 GiB) 9,719 experts fit instead of 9,298, and after an 8.5K-token conversation all of them came back (M2e's build stayed 34 MB short). Fragmented share 0% (0.36% with 256 MiB chunks, so the GPU's pool is one chunk). Speed against the M4 build, 4 alternating rounds at 204,800 context, medians: 2K prompt 878 -> 862 tok/s, decode 24.65 -> 24.35; 8K prompt 1,062 -> 1,057, decode 24.13 -> 24.58 (noise). Unit tests: 1.9M pages, 23,960 experts placed in 0.05 s, 300 random steps of three conversations in 0.7 s, every expert back afterwards |
 | M3 | Several conversations, the step with rows per step and conversations at once | answers identical per conversation; speed against `--batch`. Done (`strata::spec::Step`, `src/common/spec/step.cpp`): `strata-q38 --batch N --rows R --lookahead L` speaks the old engine's batch protocol (BGEN, BADM, BT, BDONE, BSTOP), so the server's "parallel" works unchanged; each step is one verify window with a row per conversation, each reading its own pages; `share_guess_rows` (the 2, 2, 1 rule) is ready for M4. A conversation takes pages when it gets its first request, nothing per slot at start: on the Strix Halo at 204,800 tokens, four held conversations took 0.49 GB (112 MiB of GDN state each) against the old engine's 12.4 GB, at the same or better speed (aggregate decode, 3 alternating rounds: 1, 2, 3 conversations 26.1, 40.9, 49.5 tok/s against 24.8, 39.7, 48.0). A conversation decoded beside others gives its tokens alone up to a late token in some prompts (mid: token 24 to 63 of 96), also with every expert on the GPU and in the old engine's `--batch`: the multi-row windows round differently |
 | M4 | Drafting with the row-sharing rule and the lookahead | identical answers; speed against today's MTP. Done (`ConversationDrafter`, `src/models/qwen38/conversation_drafter.cpp`): `strata-q38 --mtp DIR --lookahead N` loads the MTP drafter (only with a lookahead) and each step asks it for each conversation's share of guesses, stopping below `--spec-min-p`; the drafter's K/V is one more region of each conversation in the pool (801 MiB of drafter against 1,034 MiB with its own K/V ring), and it reads a step's kept rows one step late, in the same pass as its next guesses. A request's `priority=N` orders a step's conversations; the extra rows go to the highest priority and rotate between equals. Answers (5 prompts, 128 tokens): with one guess a step, the same as without drafting up to the token where the old engine's own MTP also drifts (short 66, mid 119; two answers whole); with up to 3 guesses (the server's windows) they drift earlier (14, 24), at near-ties (the top candidates within 0.1-0.3 logits). On the Strix Halo (204,800 context, 3 alternating rounds, medians, tok/s): one conversation, a story / code: old MTP 34.4 / 44.7 (53% / 70% of drafts right), rows 4 lookahead 3 36.6 / 44.5 (58% / 70%), 1x3 35.3 / 46.5, 1x8 31.4 / 44.8 (40% / 56%), no drafting 25.7 / 24.1; three conversations: 3x8 54.7, 3x3 49.8, no drafting 49.7, the old engine's `--batch` 48.9 |
 | M5 | Pausing to RAM and SSD, priorities; experts read from the SSD without the file cache | pause and resume give the same answers; files saved before load; with too little memory for the experts, the same answers as with enough, and RAM use stays at the setting |
@@ -258,7 +281,10 @@ the new one is at least as fast.
   new engine only if upstream takes it, or if the fork publishes a feed of its own. The Terminal and source installs
   can use the fork's build.
 
-- Page size: experts of different sizes take several consecutive pages; should conversation blocks use the same page size, or a second, smaller size?
+- Page size (decided in M2f): one page size, the greatest common divisor of the expert sizes; conversation blocks
+  take several consecutive pages where one page would waste much of a page. Open: a conversation's hole wastes the
+  pages past its last whole block (a 59-page hole holds 11 blocks of 5 pages, 4 pages unused while the hole is
+  partly used); filling a whole hole with K/V units would need a unit table per hole instead of per block.
 - Should a paused conversation's pages on the SSD use the session file format (`conversation_file.hpp`), so
   "save" and "pause to SSD" are one thing?
 - What the panel shows for an old engine's settings it cannot change live: greyed out, or "applies after a restart"

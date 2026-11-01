@@ -4,7 +4,7 @@
 //
 //   GET_MEMORY_USE
 //     MEMORY <id> [total=<B>] [free=<B>] [unified=1] [<use>=<B> ...] [paused_count=<n>] [paused_budget=<B>]
-//            [name=<text>]                                     one line per memory, then
+//            [pool_pages=<n> allocated_pages=<n> fragmented_pages=<n>] [name=<text>]   one line per memory, then
 //     [CONVERSATION <id> <place> <state> <tokens> <capacity> <bytes> <used>]     with per_conversation: one per
 //                                                                                conversation (LIST_CONVERSATIONS')
 //     SETTINGS [context=<tokens>] [concurrent=<n>] [rows=<n>] [lookahead=<n>] [tokens_min=<tokens>]
@@ -15,8 +15,9 @@
 // GPU such as Strix Halo's).  <use>: the bytes the engine holds there for one use - `weights` (the dense weights),
 // `experts`, `conversations` (the conversations it holds: sessions allocated for their whole context, or pool pages),
 // `paused` (parked conversations), `drafter`, `scratch`, `engram` (DeepSeek's n-gram table).  paused_count: the
-// parked conversations there; paused_budget: the most they may take.  name: the device's name, to the end of the
-// line.
+// parked conversations there; paused_budget: the most they may take.  pool_pages: the pages of a page pool there
+// (strata-q38's), of which allocated_pages hold experts or conversations and fragmented_pages are free in runs
+// shorter than the smallest expert, which no expert can use.  name: the device's name, to the end of the line.
 // settings: the context in tokens, the conversations decoded at once, the rows one step computes, the most guesses
 // one conversation adds in a step and the conversation tokens kept free of experts.  A value the engine does not know
 // is left out, not guessed.  The command changes nothing.
@@ -42,6 +43,9 @@ struct Memory {
     std::vector<std::pair<std::string, uint64_t>> uses;   ///< bytes held per use, in the order first added
     uint64_t paused_budget = 0;                           ///< the most parked conversations may take; 0: no budget
     int paused_count = 0;                                 ///< parked conversations held here
+    /// The pages of the page pool here (0: none; the old engines'), how many are allocated, and how many are free in
+    /// runs too short for any expert (PagePoolReport::allocated, fragmented).
+    uint64_t pool_pages = 0, allocated_pages = 0, fragmented_pages = 0;
 
     /// Adds `bytes` to use `use`; a zero adds nothing.
     void add(const std::string& use, uint64_t bytes) {
@@ -96,6 +100,11 @@ inline std::string format_memory_report(MemoryReport report, const std::vector<c
             put(use, bytes);
         if (m.paused_count > 0 || m.paused_budget > 0) put("paused_count", (uint64_t) m.paused_count);
         if (m.paused_budget > 0) put("paused_budget", m.paused_budget);
+        if (m.pool_pages > 0) {
+            put("pool_pages", m.pool_pages);
+            put("allocated_pages", m.allocated_pages);
+            put("fragmented_pages", m.fragmented_pages);
+        }
         if (!m.name.empty()) s += " name=" + m.name;
         s += '\n';
     }

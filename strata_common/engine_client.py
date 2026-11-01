@@ -1106,9 +1106,11 @@ class StrataEngine:
         """GET /v1/memory: `GET_MEMORY_USE` (an engine whose READY says "memory";
         include/strata/common/serve/memory_report.hpp) - what the engine holds in each memory and its settings:
         {"memories": [{"id", "name", "total", "free", "unified", "uses": {use: bytes}, "paused_count",
-        "paused_budget"}], "settings": {key: number}}, and "conversations" (list_conversations' entries) from an engine
-        that lists them there (strata-q38).  A value the engine did not say is None (uses: absent).  The same turn rules
-        as list_conversations."""
+        "paused_budget", "allocated_pct", "fragmented_pct"}], "settings": {key: number}}, and "conversations"
+        (list_conversations' entries) from an engine that lists them there (strata-q38).  allocated_pct and
+        fragmented_pct: the shares, in percent, of a page pool's pages that are allocated, and that are free in runs
+        too short for any expert (strata-q38's pool).  A value the engine did not say is None (uses: absent).  The same
+        turn rules as list_conversations."""
         memories, settings, held = [], {}, []
         for f in self._ask("GET_MEMORY_USE", "MEMORY", end="END_MEMORY", also=("SETTINGS", "CONVERSATION")):
             # MEMORY <id> [key=value ...] [name=<text to the end>]  /  CONVERSATION ...  /  SETTINGS [key=value ...]
@@ -1120,10 +1122,15 @@ class StrataEngine:
             if f[0] == "SETTINGS":
                 settings = keys
                 continue
+            pool = keys.pop("pool_pages", 0)
+            share = {k: round(100 * keys.pop(f"{k}_pages", 0) / pool, 2) if pool else None
+                     for k in ("allocated", "fragmented")}
             memories.append({"id": f[1], "name": " ".join(f[at:])[5:] or None, "total": keys.pop("total", None),
                              "free": keys.pop("free", None), "unified": bool(keys.pop("unified", 0)),
                              "paused_count": keys.pop("paused_count", None),
-                             "paused_budget": keys.pop("paused_budget", None), "uses": keys})
+                             "paused_budget": keys.pop("paused_budget", None),
+                             "allocated_pct": share["allocated"], "fragmented_pct": share["fragmented"],
+                             "uses": keys})
         return {"memories": memories, "settings": settings, **({"conversations": held} if held else {})}
 
     @staticmethod

@@ -1,9 +1,9 @@
 // include/strata/common/experts/expert_pages.hpp - a GPU's expert cache in the pages of the page pool that the GPU's
-// conversations take pages from too (docs/MEMORY_MANAGER_PLAN.md, step M2e).
+// conversations take pages from too (docs/MEMORY_MANAGER_PLAN.md, steps M2e and M2f).
 //
 // The cache's arena is opened as uniform slots of one page each, and the pool is made over that arena, so a page's
 // number is a slot's: the kernels find an expert at the arena plus its first page times the page size, as in any
-// cache of uniform slots, and an expert larger than a page takes several (ExpertCache::set_expert_bytes).  Experts
+// cache of uniform slots, and an expert takes several consecutive pages (ExpertCache::set_expert_bytes).  Experts
 // come in through ExpertCache::admit, in the expert profile's order, and leave when a growing conversation takes
 // their pages.  An expert that leaves is not copied anywhere: the CPU then computes it from the RAM copy of the
 // experts when that holds it, else from the model's files, as for any expert the GPU does not hold.  Copying it back
@@ -24,8 +24,11 @@
 namespace strata::core {
 
 /// Gets the page size for experts whose sizes are `blob_bytes` (one per layer; the experts of a layer are all one
-/// size): the multiple of 256 bytes from 256 KiB to 512 KiB that wastes the least of the pages the experts take.  The
-/// lower bound keeps the pool's page count, which its linear scans walk, in the tens of thousands.
+/// size): their greatest common divisor, so that every expert is a whole number of pages and no page is part empty
+/// (25,600 bytes for Qwen3.8 IQ3_S, 92,160 for DeepSeek's 2.00 bpw set).  A page must be a multiple of 256 bytes,
+/// the alignment the cache gives every slot, and at least 16 KiB, so that a pool has no more pages than its slot
+/// tables can count; when the divisor is not, the multiple of 256 bytes from 16 KiB to 512 KiB that wastes the least
+/// of the pages the experts take.
 uint64_t choose_expert_page_bytes(const std::vector<uint64_t>& blob_bytes);
 
 /// The expert cache of one GPU, whose slots are the pages of a page pool it makes over the cache's arena.  The pool's
@@ -46,9 +49,12 @@ public:
     /// Makes the pool over `cache`'s arena (open, with uniform slots of the page size and no expert yet), with the
     /// conversations' `layout` and `config`'s limits; `config`'s page and chunk sizes are taken from the cache.  The
     /// experts of layer l are `blob_bytes[l]` bytes, `n_expert` per layer; at most `max_experts` experts are
-    /// admitted.  From then on the cache's `admit` takes pages from the pool.
+    /// admitted.  `ranked_layers` is the layer of each expert of the expert profile, hottest first: the pool gives
+    /// each expert size room for the ones of the first `max_experts` that fit (PagePoolConfig::expert_ranking).  From
+    /// then on the cache's `admit` takes pages from the pool.
     bool open(ExpertCache& cache, const StateLayout& layout, PagePoolConfig config,
-              const std::vector<uint64_t>& blob_bytes, int64_t n_expert, int64_t max_experts, std::string& err);
+              const std::vector<uint64_t>& blob_bytes, int64_t n_expert, int64_t max_experts,
+              const std::vector<int32_t>& ranked_layers, std::string& err);
     void set_hooks(Hooks hooks) { hooks_ = std::move(hooks); }
     /// Gets the page pool that the experts share with the GPU's conversations.
     PagePool& pool() { return *pool_; }

@@ -5,7 +5,8 @@
 // same, their scales, and the pooled indexer keys `[block][idx_dim]`, every array indexed by one row number.  The
 // page pool (page_pool.hpp) instead keeps one conversation's QSA layer as a growing region whose UNIT is one block of
 // `idx_block` cells (= one KV page): all of that block's arrays together, one after the other, as
-// `describe_conversation` sizes it.  A pool page holds many units, and the pages of a conversation are anywhere.
+// `describe_conversation` sizes it.  One of the pool's blocks (a run of its pages) holds many units, and a
+// conversation's blocks are anywhere.
 //
 // The kernels address both layouts with the same arithmetic.  A cell's row is `(page * n_kv_heads + kv_head) *
 // page_size + cell % page_size` as always; its address in array X is `X + base + row * row_bytes(X)`, where:
@@ -100,16 +101,16 @@ inline QsaAttnPools kv_unit_pools(const KvUnitLayout& u, KvFormat f, const int64
 /// Gets the pooled-key array of a layer in units (its offset plus kKvUnitOrigin), the `pooled` the indexer takes.
 inline float* kv_unit_keys(const KvUnitLayout& u) { return (float*) (uintptr_t) (kKvUnitOrigin + u.key); }
 
-/// Gets the host image of a `units` table for `blocks` blocks: block b is unit `b % per_page` of page
-/// `pages[b / per_page]` (a page holds `page_bytes / unit_bytes` units of KvUnitLayout::bytes each), for a
-/// conversation's region in the page pool.
-inline std::vector<int64_t> kv_unit_table(const std::vector<uint8_t*>& pages, uint64_t page_bytes,
-                                          uint64_t unit_bytes, int64_t blocks) {
-    const uint64_t per_page = page_bytes / unit_bytes;
+/// Gets the host image of a `units` table for `blocks` blocks: block b is unit `b % per_run` of the run of pages that
+/// starts at `runs[b / per_run]` (a run holds `run_bytes / unit_bytes` units of KvUnitLayout::bytes each), for a
+/// conversation's region in the page pool, whose blocks are such runs (PagePool::conversation_blocks).
+inline std::vector<int64_t> kv_unit_table(const std::vector<uint8_t*>& runs, uint64_t run_bytes, uint64_t unit_bytes,
+                                          int64_t blocks) {
+    const uint64_t per_run = run_bytes / unit_bytes;
     std::vector<int64_t> table((size_t) blocks);
     for (int64_t b = 0; b < blocks; ++b)
-        table[(size_t) b] = (int64_t) ((uintptr_t) pages.at((size_t) ((uint64_t) b / per_page)) +
-                                       (uint64_t) b % per_page * unit_bytes - kKvUnitOrigin);
+        table[(size_t) b] = (int64_t) ((uintptr_t) runs.at((size_t) ((uint64_t) b / per_run)) +
+                                       (uint64_t) b % per_run * unit_bytes - kKvUnitOrigin);
     return table;
 }
 

@@ -1,11 +1,17 @@
 // The page pool (page_pool.hpp) on host memory with a hand-moved clock: conversations growing across blocks and
-// truncated, fixed regions in consecutive pages, experts of one or several pages filling and giving back pages, the
-// token limits, the hysteresis, growing and shrinking, and the report.
+// truncated, fixed regions and blocks in consecutive pages, experts tiling the room of their size around its home
+// point and evicting one of their size, conversations filling the holes of experts they evict and giving them back
+// whole, the allocated and fragmented pages, the token limits and the experts' overflow into the reserve, the
+// hysteresis, growing and shrinking, the report, long random trading without fragmentation, and a pool of two million
+// pages (Qwen3.8 IQ3_S's experts in pages of 25,600 bytes).
 #include "strata/common/state/page_pool.hpp"
 
+#include <chrono>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <map>
+#include <set>
 #include <stdexcept>
 
 using namespace strata::core;
@@ -32,6 +38,13 @@ StateLayout get_layout() {
     return layout;
 }
 
+/// Gets a conversation of K/V only: one page a block of 4 tokens.
+StateLayout get_kv_layout() {
+    StateLayout layout;
+    layout.add(RegionKind::per_token, 8, 2);
+    return layout;
+}
+
 PagePoolConfig get_config(int64_t tokens_min = 0, int64_t tokens_max = INT64_MAX) {
     PagePoolConfig config;
     config.page_bytes = page;
@@ -42,15 +55,16 @@ PagePoolConfig get_config(int64_t tokens_min = 0, int64_t tokens_max = INT64_MAX
     return config;
 }
 
-/// A pool of 3 chunks (12 pages) on host memory, and what it called.
+/// A pool of `chunks` chunks (12 pages by default) on host memory, and what it called.
 struct Fixture {
     uint64_t clock = 0;
     int chunks = 0, max_chunks = 100;
     std::vector<ExpertKey> evicted;
     PagePool pool;
 
-    explicit Fixture(PagePoolConfig config = get_config()) : pool(get_layout(), config, get_hooks()) {
-        check(pool.resize(3 * chunk).refusal.empty() && chunks == 3, "the pool takes 3 chunks");
+    explicit Fixture(PagePoolConfig config = get_config(), const StateLayout& layout = get_layout(), int n = 3)
+        : pool(layout, config, get_hooks()) {
+        check(pool.resize(n * config.chunk_bytes).refusal.empty() && chunks == n, "the pool takes its chunks");
     }
     PagePoolHooks get_hooks() {
         PagePoolHooks hooks;
@@ -72,16 +86,12 @@ struct Fixture {
         };
         return hooks;
     }
-    /// Adds experts 0 to `count` - 1 of layer 0, expert n at clock time n.
+    /// Adds experts 0 to `count` - 1 of layer 0, of one page each, expert n at clock time n.
     void add_experts(int count) {
         for (int n = 0; n < count; clock = ++n)
-            pool.add_expert({0, n});
+            pool.add_expert({0, n}, 1);
     }
 };
-
-bool is_key(ExpertKey key, int expert) {
-    return key.layer == 0 && key.expert == expert;
-}
 
 /// Gets the experts' numbers in `keys` (all of layer 0).
 std::vector<int> get_experts(const std::vector<ExpertKey>& keys) {
@@ -96,42 +106,38 @@ void test_allocation() {
     check(f.pool.report().total.pages == 12 && f.pool.report().free.pages == 12, "a new pool's pages are free");
     check(f.pool.pages_for(0) == 2 && f.pool.pages_for(5) == 4, "pages_for: the fixed pages and the blocks");
     check(f.pool.grow_conversation(1, 5).empty(), "a conversation of 5 tokens");
-    check(f.pool.conversation_pages(1, 0) == std::vector<PageId>{0, 1}, "the fixed region takes whole pages once");
-    check(f.pool.conversation_pages(1, 1) == std::vector<PageId>{2, 3}, "5 tokens take 2 blocks");
-    check(f.pool.grow_conversation(1, 8).empty() && f.pool.conversation_pages(1, 1).size() == 2,
+    check(f.pool.conversation_blocks(1, 0) == Pages{0} && f.pool.block_bytes(0) == 2 * page,
+          "the fixed region is one block of whole pages, at the bottom");
+    check(f.pool.conversation_blocks(1, 1) == Pages{2, 3}, "5 tokens take 2 blocks");
+    check(f.pool.grow_conversation(1, 8).empty() && f.pool.conversation_blocks(1, 1).size() == 2,
           "tokens 6 to 8 fit the second block");
-    check(f.pool.grow_conversation(1, 9).empty() && f.pool.conversation_pages(1, 1).back() == 4,
+    check(f.pool.grow_conversation(1, 9).empty() && f.pool.conversation_blocks(1, 1).back() == 4,
           "token 9 takes a third block, the lowest free page");
     check(f.pool.grow_conversation(1, 3).empty() && f.pool.report().tokens == 9, "fewer tokens keep the pages");
     check(f.pool.page_address(1) == f.pool.page_address(0) + page && f.pool.page_address(4) != nullptr,
           "pages of a chunk are adjacent");
+    PagePoolConfig tiny = get_config();
+    tiny.page_bytes = 8;
+    check(PagePool(get_layout(), tiny, f.get_hooks()).block_bytes(1) == 16,
+          "a page smaller than one token's K/V makes a block of several pages");
     bool threw = false;
     try {
-        PagePoolConfig tiny = get_config();
-        tiny.page_bytes = 8;
-        PagePool pool(get_layout(), tiny, f.get_hooks());
+        tiny.chunk_bytes = 8;
+        PagePool pool(get_kv_layout(), tiny, f.get_hooks());
     } catch (const std::invalid_argument&) {
         threw = true;
     }
-    check(threw, "a page smaller than one token's K/V is refused");
+    check(threw, "a block larger than a chunk is refused");
 }
 
 void test_runs() {
-    Fixture f;
-    check(f.pool.grow_conversation(1, 4).empty(), "conversation 1 on pages 0 to 2");
-    f.add_experts(9);
-    f.pool.remove_expert({0, 3});
-    check(f.pool.grow_conversation(2, 1).empty() && f.pool.conversation_pages(2, 0) == Pages{8, 9} &&
-              get_experts(f.evicted) == std::vector<int>{2, 0} && f.pool.conversation_pages(2, 1) == Pages{11},
-          "a fixed region goes where it evicts the fewest experts, its block to the least-used expert's page");
-
     Fixture g;   // conversations 1 and 2 grow in turns, so that their blocks alternate from page 6 on
     for (int64_t tokens = 4; tokens <= 16; tokens += 4)
         check(g.pool.grow_conversation(1, tokens).empty() && g.pool.grow_conversation(2, tokens).empty(), "growth");
-    check(g.pool.conversation_pages(2, 0) == Pages{4, 5} && g.pool.conversation_pages(1, 1) == Pages{2, 6, 8, 10},
+    check(g.pool.conversation_blocks(2, 0) == Pages{4} && g.pool.conversation_blocks(1, 1) == Pages{2, 6, 8, 10},
           "a fixed region skips a chunk that has no room for it in one piece");
     g.pool.truncate_conversation(1, 4);
-    check(g.pool.conversation_pages(1, 1) == Pages{2} && g.pool.conversation_pages(1, 0) == Pages{0, 1} &&
+    check(g.pool.conversation_blocks(1, 1) == Pages{2} && g.pool.conversation_blocks(1, 0) == Pages{0} &&
               g.pool.report().free.pages == 3 && g.pool.report().tokens == 20,
           "a truncated conversation gives back its last blocks and keeps its fixed pages");
     check(g.pool.grow_conversation(3, 4) == "the pool has no room in one piece for the conversation's fixed state" &&
@@ -141,12 +147,12 @@ void test_runs() {
     Fixture h;   // conversation 4's pages are in the last chunk, and the first chunk has one free page left
     for (ConversationId id = 1; id <= 4; ++id)
         check(h.pool.grow_conversation(id, 4).empty(), "four conversations fill the pool");
-    check(h.pool.conversation_pages(4, 0) == Pages{9, 10}, "conversation 4's fixed region on pages 9 and 10");
+    check(h.pool.conversation_blocks(4, 0) == Pages{9}, "conversation 4's fixed region on pages 9 and 10");
     std::memset(h.pool.page_address(10), 0x77, page);
     h.pool.remove_conversation(2);
     h.pool.remove_conversation(3);
-    check(h.pool.resize(2 * chunk).refusal.empty() && h.pool.conversation_pages(4, 0) == Pages{4, 5} &&
-              h.pool.conversation_pages(4, 1) == Pages{3} && h.pool.page_address(5)[0] == 0x77,
+    check(h.pool.resize(2 * chunk).refusal.empty() && h.pool.conversation_blocks(4, 0) == Pages{4} &&
+              h.pool.conversation_blocks(4, 1) == Pages{3} && h.pool.page_address(5)[0] == 0x77,
           "a shrink moves a fixed region in one piece");
     bool threw = false;
     try {
@@ -159,58 +165,112 @@ void test_runs() {
     check(threw, "a fixed region larger than a chunk is refused");
 }
 
-void test_experts_trade_pages() {
-    Fixture f;
-    check(f.pool.grow_conversation(1, 4).empty(), "a conversation of 3 pages");
-    f.add_experts(9);
-    check(f.pool.report().free.pages == 0 && f.pool.use_expert({0, 0}) == 11 && f.evicted.empty(),
-          "experts fill the free pages from the top");
-    f.pool.use_expert({0, 1});
-    check(f.pool.add_expert({0, 1}) == 10 && f.evicted.empty(), "adding a held expert counts a use");
-    check(f.pool.add_expert({1, 0}) == 9 && f.evicted.size() == 1 && is_key(f.evicted[0], 2),
-          "a new expert in a full pool takes the page of the one used longest ago");
-    check(f.pool.grow_conversation(1, 5).empty() && f.evicted.size() == 2 && is_key(f.evicted[1], 3) &&
-              f.pool.conversation_pages(1, 1).back() == 8,
-          "a growing conversation takes the least-used expert's page");
-    check(f.pool.use_expert({0, 3}) == no_page, "an evicted expert is gone");
-    f.pool.remove_expert({0, 4});
-    check(f.pool.report().free.pages == 1 && f.pool.add_expert({0, 4}) == 7 && f.evicted.size() == 2,
-          "a removed expert's page is open to experts at once");
+/// Gets a pool of one chunk of 16 pages whose ranking is 2 experts of 2 pages and 4 of 3 pages (their rooms pages 0
+/// to 3 and 4 to 15, their homes 2 and 10), filled with them: ranking place r holds expert r of layer 0, used at
+/// 100 - r.
+PagePoolConfig get_tiling_config() {
+    PagePoolConfig config = get_config();
+    config.chunk_bytes = 16 * page;
+    config.expert_ranking = {3, 2, 3, 2, 3, 3};
+    return config;
+}
+Pages fill_tiling(Fixture& f) {
+    f.clock = 100;
+    Pages at;
+    for (int r = 0; r < 6; ++r)
+        at.push_back(f.pool.add_expert({0, r}, get_tiling_config().expert_ranking[(size_t) r], 100 - r));
+    return at;
 }
 
-void test_expert_runs() {
-    Fixture f;
-    check(f.pool.add_expert({0, 0}, 3) == 9 && f.pool.report().experts.pages == 3,
-          "an expert of 3 pages takes the highest free run");
-    check(f.pool.add_expert({0, 1}, 2) == 6, "a run stays inside one chunk");
-    check(f.pool.add_expert({0, 2}, 5) == no_page, "an expert larger than a chunk has no room");
-    f.clock = 10;
-    check(f.pool.grow_conversation(1, 20).empty() && f.evicted.empty(), "a conversation takes the 7 free pages");
-    check(f.pool.grow_conversation(1, 24).empty() && get_experts(f.evicted) == std::vector<int>{0} &&
-              f.pool.conversation_pages(1, 1).back() == 9 && f.pool.report().free.pages == 2,
-          "its next block evicts a whole expert and takes the run's first page");
-    check(f.pool.get_next_opening() == 110, "the rest of the run waits for the hysteresis");
-    check(f.pool.add_expert({0, 2}, 2) == 6 && get_experts(f.evicted) == std::vector<int>{0, 1},
-          "meanwhile an expert replaces one used before it");
-    check(f.pool.add_expert({0, 3}, 2, 5) == no_page, "but not one used after it");
-    f.clock = 110;
-    check(f.pool.get_next_opening() == 0 && f.pool.add_expert({0, 3}, 2, 5) == 10,
-          "after the hysteresis it takes the open run");
-    check(f.pool.add_expert({0, 4}, 1, 1) == no_page, "a full pool keeps experts used after a new one");
-    check(f.pool.add_expert({0, 4}) == 11 && get_experts(f.evicted) == std::vector<int>{0, 1, 3} &&
-              f.pool.report().free.pages == 1,
-          "an expert of one page evicts the whole run of the expert used longest ago");
-    f.pool.remove_expert({0, 2});
-    check(f.evicted.size() == 3 && f.pool.report().experts.pages == 1, "a removed expert is not reported evicted");
+void test_experts_tile() {
+    Fixture f(get_tiling_config(), get_kv_layout(), 1);
+    check(f.pool.get_home(2) == 2 && f.pool.get_home(3) == 10, "each size's home is the middle slot of its room");
+    check(fill_tiling(f) == Pages{10, 2, 7, 0, 4, 13} && f.pool.report().free.pages == 0,
+          "experts fill their rooms outwards from their homes, without a page left over");
+    check(f.pool.add_expert({1, 0}, 3, 50) == no_page && f.evicted.empty(),
+          "a full pool keeps the experts used after a new one");
+    check(f.pool.add_expert({1, 0}, 3) == 13 && get_experts(f.evicted) == std::vector<int>{5},
+          "a new expert evicts exactly one: the least-used of its size");
+    f.pool.remove_expert({0, 3});
+    check(f.pool.add_expert({1, 1}, 3) == 4 && get_experts(f.evicted) == std::vector<int>{5, 4} &&
+              f.pool.report().free.pages == 2,
+          "the free pages of a smaller size do not hold it");
+    check(f.pool.add_expert({1, 2}, 2) == 0, "and stay for an expert of their size");
+}
+
+void test_holes() {
+    PagePoolConfig config = get_tiling_config();
+    Fixture f(config, get_kv_layout(), 1);
+    fill_tiling(f);
+    check(f.pool.grow_conversation(1, 4).empty() && f.pool.conversation_blocks(0 + 1, 0) == Pages{13} &&
+              get_experts(f.evicted) == std::vector<int>{5},
+          "a conversation evicts the least-used expert of any size and takes its hole");
+    check(f.pool.grow_conversation(1, 12).empty() && f.pool.conversation_blocks(1, 0) == Pages{13, 14, 15} &&
+              f.evicted.size() == 1,
+          "it fills the hole before it takes another");
+    check(f.pool.grow_conversation(1, 16).empty() && f.pool.conversation_blocks(1, 0).back() == 4 &&
+              get_experts(f.evicted) == std::vector<int>{5, 4} && f.pool.report().experts.pages == 10 &&
+              f.pool.report().free.pages == 2,
+          "the next block takes the next least-used expert's hole; its unused pages count as free");
+    f.pool.truncate_conversation(1, 12);
+    check(f.pool.report().free.pages == 3 && f.pool.get_next_opening() == 200,
+          "a hole goes back whole when its last block leaves, closed to experts for the hysteresis");
+    f.pool.remove_conversation(1);
+    f.clock = 200;
+    check(f.pool.add_expert({0, 4}, 3, 96) == 4 && f.pool.add_expert({0, 5}, 3, 95) == 13 &&
+              f.pool.report().free.pages == 0,
+          "the evicted experts come back to their own places");
+}
+
+void test_allocated_and_fragmented() {
+    Fixture f(get_tiling_config(), get_kv_layout(), 1);
+    check(f.pool.report().allocated.pages == 0 && f.pool.report().fragmented.pages == 0, "an empty pool");
+    fill_tiling(f);
+    f.pool.remove_expert({0, 3});
+    check(f.pool.report().allocated.pages == 14 && f.pool.report().fragmented.pages == 0,
+          "a free run as long as the smallest expert is not fragmented");
+    check(f.pool.grow_conversation(1, 4).empty() && f.pool.conversation_blocks(1, 0) == Pages{0} &&
+              f.pool.report().allocated.pages == 15 && f.pool.report().fragmented.pages == 1 &&
+              f.pool.report().fragmented.bytes == page,
+          "a block in it leaves a page that no expert can use");
+    f.pool.remove_conversation(1);
+    check(f.pool.report().allocated.pages == 14 && f.pool.report().fragmented.pages == 0,
+          "the block's page joins the run again");
 }
 
 void test_minimum() {
-    Fixture f(get_config(8));   // 8 tokens: 4 pages
+    PagePoolConfig config = get_config(8);   // 8 tokens: 4 pages
+    config.expert_ranking.assign(8, 1);
+    Fixture f(config);
     f.add_experts(8);
-    check(f.pool.report().free.pages == 4 && f.evicted.empty(), "experts leave the minimum's pages free");
-    check(f.pool.add_expert({1, 0}) != no_page && f.evicted.size() == 1, "past the minimum an expert replaces one");
-    check(f.pool.grow_conversation(1, 8).empty() && f.evicted.size() == 1, "a conversation takes the kept pages");
+    check(f.pool.report().free.pages == 4 && f.evicted.empty() && f.pool.get_home(1) == 8,
+          "experts leave the minimum's pages free, at the bottom");
+    check(f.pool.add_expert({1, 0}, 1) != no_page && f.evicted.size() == 1, "past the minimum an expert replaces one");
+    check(f.pool.grow_conversation(1, 8).empty() && f.evicted.size() == 1 &&
+              f.pool.conversation_blocks(1, 0) == Pages{0},
+          "a conversation takes the kept pages");
     check(f.pool.grow_conversation(1, 9).empty() && f.evicted.size() == 2, "and experts' pages past the minimum");
+}
+
+void test_overflow() {
+    PagePoolConfig config = get_config(8);   // the reserve: pages 0 to 3
+    config.expert_ranking.assign(6, 1);
+    Fixture f(config);
+    f.add_experts(6);
+    check(f.pool.grow_conversation(1, 4).empty() && f.pool.grow_conversation(2, 4).empty() &&
+              f.pool.conversation_blocks(2, 0) == Pages{10} && f.pool.conversation_blocks(2, 1) == Pages{3} &&
+              f.pool.report().free.pages == 0,
+          "a fixed region past the reserve takes the free run above the experts");
+    f.pool.remove_conversation(1);
+    f.clock = 50;
+    const PageId closed = f.pool.add_expert({1, 0}, 1);
+    check(closed >= 4 && closed < 10 && f.evicted.size() == 1,
+          "while the reserve's free pages are closed, a new expert evicts one of its size instead");
+    f.clock = 200;
+    check(f.pool.add_expert({1, 1}, 1) == 2 && f.pool.add_expert({1, 2}, 1) == 1 && f.evicted.size() == 1,
+          "once they open, experts overflow into the reserve's pages past what it must keep");
+    check(f.pool.add_expert({1, 3}, 1) != no_page && f.evicted.size() == 2 && f.pool.report().free.pages == 1,
+          "and leave the rest free");
 }
 
 void test_maximum() {
@@ -230,26 +290,27 @@ void test_hysteresis() {
     check(f.pool.grow_conversation(1, 40).empty() && f.pool.report().free.pages == 0, "a conversation fills the pool");
     f.pool.remove_conversation(1);
     f.clock = 50;
-    check(f.pool.add_expert({0, 0}) == no_page, "experts wait for the hysteresis");
-    check(f.pool.grow_conversation(2, 4).empty() && f.pool.conversation_pages(2, 0)[0] == 0,
+    check(f.pool.add_expert({0, 0}, 1) == no_page, "experts wait for the hysteresis");
+    check(f.pool.grow_conversation(2, 4).empty() && f.pool.conversation_blocks(2, 0)[0] == 0,
           "conversations do not");
     f.pool.set_paused(2, true);
     check(f.pool.grow_conversation(2, 5) == "the conversation is paused", "a paused conversation does not grow");
     f.clock = 100;
-    check(f.pool.add_expert({0, 0}) == 11, "after the hysteresis experts take the pages");
+    check(f.pool.add_expert({0, 0}, 1) == 6, "after the hysteresis experts take the pages (of no size's room: the "
+                                             "middle of the pool)");
 }
 
 void test_resize() {
     Fixture f;
     check(f.pool.grow_conversation(1, 12).empty() && f.pool.grow_conversation(2, 4).empty(), "pages 0 to 7");
     f.add_experts(4);
-    check(f.pool.use_expert({0, 3}) == 8, "experts on pages 11 to 8");
-    const std::vector<PageId> kv = f.pool.conversation_pages(2, 1);
+    check(f.pool.report().experts.pages == 4 && f.pool.report().free.pages == 0, "experts on pages 8 to 11");
+    const std::vector<PageId> kv = f.pool.conversation_blocks(2, 1);
     std::memset(f.pool.page_address(kv[0]), 0x5a, page);
     f.pool.remove_conversation(1);
     check(f.pool.resize(chunk + 100).refusal.empty() && f.chunks == 1, "the pool shrinks to its first chunk");
     check(f.evicted.size() == 4, "the given-back chunks' experts are evicted");
-    const std::vector<PageId> moved = f.pool.conversation_pages(2, 1);
+    const std::vector<PageId> moved = f.pool.conversation_blocks(2, 1);
     check(moved[0] < 4 && f.pool.page_address(moved[0])[page - 1] == 0x5a, "a moved page keeps its contents");
     check(f.pool.report().total.pages == 4 && f.pool.report().free.pages == 1, "the smaller pool's pages");
     check(f.pool.resize(3 * chunk).refusal.empty() && f.pool.report().free.pages == 9, "and grows again");
@@ -278,8 +339,8 @@ void test_report() {
     f.pool.grow_conversation(1, 5);
     f.pool.grow_conversation(2, 4);
     f.pool.set_paused(2, true);
-    f.pool.add_expert({0, 0});
-    f.pool.add_expert({0, 1});
+    f.pool.add_expert({0, 0}, 1);
+    f.pool.add_expert({0, 1}, 1);
     const PagePoolReport r = f.pool.report();
     check(r.active.pages == 2 && r.fixed.pages == 2 && r.paused.pages == 3 && r.experts.pages == 2 &&
               r.free.pages == 3,
@@ -289,19 +350,242 @@ void test_report() {
     check(r.total.bytes == 12 * page && r.paused.bytes == 3 * page, "bytes are pages times the page size");
     check(r.active_conversations == 1 && r.paused_conversations == 1 && r.tokens == 9, "the conversations");
 }
+
+void test_block_runs() {
+    StateLayout layout;   // K/V of 2 rows x 48 bytes a token: a token's 96 bytes take 2 pages, 2 tokens 3 exactly
+    layout.add(RegionKind::per_token, 48, 2);
+    PagePoolConfig config = get_config();
+    config.chunk_bytes = 8 * page;
+    Fixture f(config, layout);
+    check(f.pool.block_bytes(0) == 3 * page && f.pool.pages_for(5) == 9, "a block of 3 pages holds 2 tokens");
+    check(f.pool.grow_conversation(1, 4).empty() && f.pool.conversation_blocks(1, 0) == Pages{0, 3},
+          "each block is 3 consecutive pages");
+    check(f.pool.grow_conversation(1, 6).empty() && f.pool.conversation_blocks(1, 0).back() == 8,
+          "a block does not cross a chunk's end");
+    StateRegion int8;   // Qwen3.8's int8 K/V unit: 4 tokens of 2 heads in 4,736 bytes
+    int8.kind = RegionKind::per_block;
+    int8.unit_bytes = 4736;
+    int8.block = 4;
+    check(choose_block_pages(int8, 25600) == 5 && choose_block_pages(int8, 2 << 20) == 1,
+          "pages of 25,600 bytes make blocks of 5 (27 units, 0.1% unused)");
+}
+
+void test_random_trading() {
+    // experts of 1 to 4 pages and conversations trading pages at random in 4 chunks of 16 pages, as an engine trades
+    // them: experts leave only when evicted, and come back (hottest first) between steps.  No two of them ever share
+    // a page, the free pages are the rest, and once the conversations have left the experts fill the pool as well as
+    // they fill an empty one.
+    PagePoolConfig config = get_config(8);
+    config.chunk_bytes = 16 * page;
+    std::vector<uint32_t> sizes;
+    for (int r = 0; r < 30; ++r)
+        sizes.push_back(1 + (r * 7) % 4);
+    config.expert_ranking = sizes;
+    const uint64_t t0 = 1000000;
+    std::map<int, std::pair<PageId, uint32_t>> held;   // expert -> first page, pages
+    const auto refill = [&](Fixture& f) {
+        for (const ExpertKey& key : f.evicted)
+            held.erase(key.expert);
+        f.evicted.clear();
+        for (int r = 0; r < (int) sizes.size(); ++r)
+            if (held.count(r) == 0)
+                if (const PageId first = f.pool.add_expert({0, r}, sizes[(size_t) r], t0 - r); first != no_page)
+                    held[r] = {first, sizes[(size_t) r]};
+    };
+    Fixture fresh(config, get_layout(), 4);
+    refill(fresh);
+    const uint64_t fits = fresh.pool.report().experts.pages;
+    held.clear();
+    Fixture f(config, get_layout(), 4);
+    f.clock = t0;
+    refill(f);
+    std::set<ConversationId> live;
+    uint64_t seed = 1;
+    const auto next = [&](uint64_t n) {
+        seed = seed * 6364136223846793005ull + 1442695040888963407ull;
+        return (seed >> 33) % n;
+    };
+    for (int step = 0; step < 20000; ++step) {
+        f.clock += next(60);
+        const ConversationId id = 1 + next(3);
+        switch (next(4)) {
+        case 0:
+            refill(f);
+            break;
+        case 1:
+            if (f.pool.grow_conversation(id, (int64_t) next(60)).empty())
+                live.insert(id);
+            break;
+        default:
+            if (live.count(id) == 0)
+                break;
+            if (next(2) == 0)
+                f.pool.truncate_conversation(id, (int64_t) next(30));
+            else {
+                f.pool.remove_conversation(id);
+                live.erase(id);
+            }
+        }
+        for (const ExpertKey& key : f.evicted)
+            held.erase(key.expert);
+        f.evicted.clear();
+        std::vector<int> owner(64, 0);
+        uint64_t used = 0;
+        const auto claim = [&](PageId first, uint64_t pages) {
+            for (PageId p = first; p < first + pages; ++p) {
+                check(p / 16 == first / 16 && owner[p] == 0, "every run is inside one chunk and on pages of its own");
+                owner[p] = 1;
+            }
+            used += pages;
+        };
+        for (const auto& [e, at] : held)
+            claim(at.first, at.second);
+        for (const ConversationId c : live)
+            for (size_t r = 0; r < 2; ++r)
+                for (const PageId first : f.pool.conversation_blocks(c, r))
+                    claim(first, f.pool.block_bytes(r) / page);
+        const PagePoolReport rep = f.pool.report();
+        check(rep.experts.pages + rep.fixed.pages + rep.active.pages + rep.paused.pages == used &&
+                  rep.free.pages + used == 64,
+              "the free pages are the ones nothing holds");
+    }
+    for (const ConversationId c : live)
+        f.pool.remove_conversation(c);
+    f.clock += 1000;
+    refill(f);
+    std::printf("page_pool_test: after 20,000 random trades the experts fill %llu pages, in an empty pool %llu\n",
+                (unsigned long long) f.pool.report().experts.pages, (unsigned long long) fits);
+    check(f.pool.report().experts.pages == fits, "the trading leaves the experts as much room as before");
+}
+
+void test_many_pages() {
+    // Qwen3.8 IQ3_S: 48 layers of 512 experts, 7 sizes from 59 to 104 pages of 25,600 bytes; a pool of 1.9M pages
+    // (in chunks of 10,000) holds 96% of them.  A conversation of 112 MiB of fixed state and 12 layers of K/V units
+    // grows to 204,800 tokens, then leaves.
+    constexpr uint64_t big_page = 25600, chunk_pages = 10000, chunks = 190;
+    const uint32_t sizes[] = {59, 67, 73, 77, 85, 91, 104};
+    StateLayout layout;
+    layout.add(RegionKind::fixed, 112ull << 20);
+    for (int l = 0; l < 12; ++l)
+        layout.add(RegionKind::per_block, 4736, 1, 4);
+    std::vector<ExpertKey> ranked;   // the experts hottest first, a layer's experts spread over the ranking
+    for (int32_t e = 0; e < 512; ++e)
+        for (int32_t l = 0; l < 48; ++l)
+            ranked.push_back({l, (e * 37 + l * 11) % 512});
+    PagePoolConfig config;
+    config.page_bytes = big_page;
+    config.chunk_bytes = chunk_pages * big_page;
+    config.tokens_min = 8192;
+    for (const ExpertKey& k : ranked)
+        config.expert_ranking.push_back(sizes[k.layer % 7]);
+    uint64_t clock = 1000000;
+    std::vector<ExpertKey> evicted;
+    PagePoolHooks hooks;
+    hooks.alloc = [](size_t) { return (void*) 4096; };   // nothing reads the pages
+    hooks.free = [](void*) {};
+    hooks.now = [&] { return clock; };
+    hooks.evicted = [&](ExpertKey key, PageId) { evicted.push_back(key); };
+    PagePool pool(layout, config, hooks);
+    check(pool.resize(chunks * config.chunk_bytes).refusal.empty() && pool.report().total.pages == 1900000,
+          "1.9M pages");
+    const auto start = std::chrono::steady_clock::now();
+    const auto seconds = [&] {
+        return std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count();
+    };
+    const uint64_t t0 = clock;   // the hottest expert's last use; a colder one's is earlier, as ExpertPages gives
+    const auto add = [&](size_t rank) {
+        const ExpertKey k = ranked[rank];
+        return pool.add_expert(k, sizes[k.layer % 7], t0 - 1 - rank) != no_page;
+    };
+    size_t held = 0;
+    while (held < ranked.size() && add(held))
+        ++held;
+    const uint64_t expert_pages = pool.report().experts.pages;
+    const double fill_s = seconds();
+    check(held > 23000 && pool.report().free.pages < pool.pages_for(8192) + 104 * 7 + chunks * 104,
+          "the experts fill the pool down to the token minimum's reserve");
+    for (int64_t tokens = 2048; tokens <= 204800; tokens += 2048, clock += 10)
+        check(pool.grow_conversation(1, tokens).empty(), "the conversation grows by evicting experts");
+    const size_t gone = evicted.size();
+    check(gone > 0, "the conversation took experts' pages");
+    const double grow_s = seconds() - fill_s;
+    pool.remove_conversation(1);
+    clock += 10000;
+    std::set<ExpertKey> left(evicted.begin(), evicted.end());
+    size_t back = 0;
+    for (size_t rank = 0; rank < held; ++rank)
+        if (left.count(ranked[rank]) != 0 && add(rank))
+            ++back;
+    const double refill_s = seconds() - fill_s - grow_s;
+    std::printf("page_pool_test: 1.9M pages: %zu experts (%llu pages) in %.3f s; a 204,800-token conversation "
+                "evicted %zu in %.3f s; %zu came back in %.3f s, %llu expert pages held\n",
+                held, (unsigned long long) expert_pages, fill_s, gone, grow_s, back, refill_s,
+                (unsigned long long) pool.report().experts.pages);
+    check(back == gone && pool.report().experts.pages == expert_pages,
+          "every evicted expert comes back once the conversation leaves");
+
+    // three conversations of up to 100,000 tokens growing, shrinking and ending at random for 300 steps, the
+    // evicted experts put back after each step, as the engine puts them back between requests
+    uint64_t seed = 5;
+    const auto next = [&](uint64_t n) {
+        seed = seed * 6364136223846793005ull + 1442695040888963407ull;
+        return (seed >> 33) % n;
+    };
+    std::set<ConversationId> live;
+    std::map<ExpertKey, size_t> rank_of;
+    for (size_t r = 0; r < held; ++r)
+        rank_of[ranked[r]] = r;
+    std::set<size_t> out;   // the ranks of the evicted experts
+    evicted.clear();
+    for (int step = 0; step < 300; ++step) {
+        clock += 1000;
+        const ConversationId id = 1 + next(3);
+        if (next(3) > 0) {
+            if (pool.grow_conversation(id, 1 + (int64_t) next(100000)).empty())
+                live.insert(id);
+        } else if (live.count(id) != 0 && next(2) == 0)
+            pool.truncate_conversation(id, (int64_t) next(50000));
+        else if (live.count(id) != 0) {
+            pool.remove_conversation(id);
+            live.erase(id);
+        }
+        for (const ExpertKey& key : evicted)
+            out.insert(rank_of.at(key));
+        evicted.clear();
+        clock += 3000;
+        for (auto it = out.begin(); it != out.end() && add(*it);)
+            it = out.erase(it);
+    }
+    for (const ConversationId c : live)
+        pool.remove_conversation(c);
+    clock += 10000;
+    for (auto it = out.begin(); it != out.end() && add(*it);)
+        it = out.erase(it);
+    std::printf("page_pool_test: then 300 random steps of 3 conversations; afterwards %llu expert pages held, "
+                "%zu experts out (%.3f s in all)\n",
+                (unsigned long long) pool.report().experts.pages, out.size(), seconds());
+    check(out.empty() && pool.report().experts.pages == expert_pages,
+          "after random trading every expert comes back");
+    check(seconds() < 10, "two million pages take seconds, not minutes");
+}
 }  // namespace
 
 int main() {
     test_allocation();
     test_runs();
-    test_experts_trade_pages();
-    test_expert_runs();
+    test_experts_tile();
+    test_holes();
+    test_allocated_and_fragmented();
     test_minimum();
+    test_overflow();
     test_maximum();
     test_hysteresis();
     test_resize();
     test_shrink_refusals();
     test_report();
+    test_block_runs();
+    test_random_trading();
+    test_many_pages();
     std::printf("page_pool_test: %d checks passed\n", checks);
     return 0;
 }

@@ -53,6 +53,17 @@ int main() {
               "END_MEMORY\n",
           "a line per conversation");
     check(format_memory_report(MemoryReport{}, {}) == "SETTINGS\nEND_MEMORY\n", "an engine that knows nothing");
+    MemoryReport pool;
+    Memory& card = pool.gpu(1);
+    card.add("experts", 9);
+    card.pool_pages = 1000;
+    card.allocated_pages = 973;
+    card.fragmented_pages = 2;
+    card.name = "card";
+    check(format_memory_report(pool, {}) ==
+              "MEMORY gpu1 experts=9 pool_pages=1000 allocated_pages=973 fragmented_pages=2 name=card\n"
+              "SETTINGS\nEND_MEMORY\n",
+          "a page pool's pages, before the name");
     MemoryReport budget;
     budget.at("ram").paused_budget = 5;
     check(format_memory_report(budget, {}) == "MEMORY ram paused_count=0 paused_budget=5\nSETTINGS\nEND_MEMORY\n",
