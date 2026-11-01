@@ -2827,17 +2827,6 @@ int main(int argc, char** argv) {
         auto stage_ver = [&](int st) -> strata::core::Verifier& {
             return st == 0 ? ver : split_same ? ver_same : stages[(size_t) st - 1]->ver;
         };
-        // Gets what a later stage's verifiers know of its own expert cache
-        auto stage_hits = [&](const GpuStage& gs) {
-            strata::core::VerifyHits vs;
-            vs.d_res = gs.d_res;
-            vs.h_res = host_res.empty() ? nullptr : host_res.data();
-            vs.cache_base = gs.cache.device_slot(0);
-            vs.blob = thits.blob;
-            vs.slot_off = gs.cache.slot_offsets();
-            vs.n_slots = gs.cache.slots();
-            return vs;
-        };
         const int n_stages = split_devs.empty() ? 1 : (int) split_at.size() + 1;
         // --pipeline-windows (decided where the split was): two verifiers per stage, one for the even windows and one
         // for the odd ones, sharing one stream of their card, and a hand-off per parity - so stage 0 can run window
@@ -2871,16 +2860,10 @@ int main(int argc, char** argv) {
             // kVerifyMaxT slots in groups the hand-off holds one row per slot (otherwise kVerifyMaxT, as before)
             const int hrows = !batch_mtp && o.batch_groups > 1 ? std::max<int>(strata::kernels::kVerifyMaxT, o.batch)
                                                                : strata::kernels::kVerifyMaxT;
-            const size_t hb = (size_t) hrows * (size_t) strata::core::Verifier::handoff_floats(g) * sizeof(float);
             std::vector<float*> hand((size_t) n_stages - 1, nullptr);
-            for (float*& h : hand) {
-                float* hh = nullptr;
-                if (cudaHostAlloc((void**) &hh, hb, cudaHostAllocMapped | cudaHostAllocPortable) != cudaSuccess ||
-                    cudaHostGetDevicePointer((void**) &h, hh, 0) != cudaSuccess) {
-                    std::fprintf(stderr, "strata serve: the layer-split hand-off allocation failed\n");
-                    return 1;
-                }
-                std::memset(hh, 0, hb);
+            if (!alloc_split_handoffs(g, hrows, hand)) {
+                std::fprintf(stderr, "strata serve: the layer-split hand-off allocation failed\n");
+                return 1;
             }
             // STRATA_SPLIT_OVERLAP=1 (opt-in; measured on 2x RX 7900 XTX only): a ready word per hand-off, raised by the
             // writing stage's GPU, so the next stage's window is launched early and the host never syncs between
@@ -2931,7 +2914,8 @@ int main(int argc, char** argv) {
                     // --batch-mtp: every stage runs the same 2-rows-per-slot windows as the first (up to kVerifyMaxT
                     // rows, the hand-off's size) and bounds its captured batch layouts like the first (below)
                     if (batch_mtp) gs.ver.set_batch_graph_limit(64);
-                    ok_s = gs.ver.init(gs.wt, g, gs.ss, stage_hits(gs), gs.head.loaded() ? &gs.head : nullptr,
+                    ok_s = gs.ver.init(gs.wt, g, gs.ss, model.get_verify_hits(gs),
+                                       gs.head.loaded() ? &gs.head : nullptr,
                                        batch_mtp ? strata::kernels::kVerifyMaxT
                                                  : std::max(o.spec, std::min(o.batch, (int) strata::kernels::kVerifyMaxT)), err);
                     split_drive.cache_base[st] = gs.cache.device_slot(0);
@@ -2955,17 +2939,10 @@ int main(int argc, char** argv) {
         // watchdog's verifier), and the drafter's own row buffer, which either parity's rows are copied into
         float* pl_mtp_R = nullptr;
         if (pipe) {
-            const size_t hb = (size_t) strata::kernels::kVerifyMaxT *
-                              (size_t) strata::core::Verifier::handoff_floats(g) * sizeof(float);
             std::vector<float*> hand_b((size_t) n_stages - 1, nullptr);   // the odd windows' hand-off per boundary
-            for (float*& h : hand_b) {
-                float* hh = nullptr;
-                if (cudaHostAlloc((void**) &hh, hb, cudaHostAllocMapped | cudaHostAllocPortable) != cudaSuccess ||
-                    cudaHostGetDevicePointer((void**) &h, hh, 0) != cudaSuccess) {
-                    std::fprintf(stderr, "strata serve: --pipeline-windows: the second hand-off allocation failed\n");
-                    return 1;
-                }
-                std::memset(hh, 0, hb);
+            if (!alloc_split_handoffs(g, strata::kernels::kVerifyMaxT, hand_b)) {
+                std::fprintf(stderr, "strata serve: --pipeline-windows: the second hand-off allocation failed\n");
+                return 1;
             }
             ver_b.set_stage(0, split_at[0], nullptr, hand_b[0]);
             for (int st = 1; st < n_stages; ++st) {
@@ -2974,8 +2951,8 @@ int main(int argc, char** argv) {
                 gs.ver_b.set_stage(split_at[(size_t) st - 1], last ? -1 : split_at[(size_t) st], hand_b[(size_t) st - 1],
                                    last ? nullptr : hand_b[(size_t) st]);
                 const strata::core::OnDevice on(gs.dev);
-                if (!gs.ver_b.init(gs.wt, g, gs.ss, stage_hits(gs), gs.head.loaded() ? &gs.head : nullptr, o.spec,
-                                   err)) {
+                if (!gs.ver_b.init(gs.wt, g, gs.ss, model.get_verify_hits(gs), gs.head.loaded() ? &gs.head : nullptr,
+                                   o.spec, err)) {
                     std::fprintf(stderr, "strata serve: --pipeline-windows: the second verifier on CUDA%d (stage %d): %s "
                                          "(raise --vram-reserve-mib by ~200, or --pipeline-windows 0)\n",
                                  gs.dev, st + 1, err.c_str());

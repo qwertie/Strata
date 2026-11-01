@@ -1998,7 +1998,8 @@ class Service:
         borrowed = 0                             # what GPUs whose memory is system RAM hold beyond their BIOS share
         mapped = next((m.get("mapped") or 0 for m in memories if m["id"] == "ram"), 0)   # left to take off "borrowed"
         for m in memories:
-            split = m["unified"] and read_shared_gpu_memory(m["name"], int(m["id"][3:]),
+            # (gpu<N>.<card>: another card of strata-q38's layer split on GPU N, whose share gpu<N> reports)
+            split = m["unified"] and "." not in m["id"] and read_shared_gpu_memory(m["name"], int(m["id"][3:]),
                                                             getattr(getattr(eng, "proc", None), "pid", None))
             if split:
                 used, beyond = sum(m["uses"].values()), split["borrowed"]

@@ -1,6 +1,7 @@
 // A conversation's pages copied between two page pools on host memory and through a file (pool_copy.hpp): the bytes
 // arrive in the other pool's blocks, a place with fewer blocks takes the first ones, and one with more is refused; the
-// pause files a process that no longer runs left are deleted.
+// pause files a process that no longer runs left are deleted; one card's regions of a layer split go to their place in
+// a pool that holds every card's regions, and back.
 #include "strata/common/state/pool_copy.hpp"
 
 #include <cstdio>
@@ -21,14 +22,17 @@ void check(bool value, const char* description) {
     }
 }
 
-/// A pool of 64 pages of 64 bytes on host memory, for a conversation of a 100-byte state and 16 bytes a token.
+/// A pool of 64 pages of 64 bytes on host memory, for a conversation of a 100-byte state and 16 bytes a token, those
+/// regions `parts` times (a layer split's cards one after another).
 struct Pool {
     std::vector<std::unique_ptr<uint8_t[]>> chunks;
     std::unique_ptr<PagePool> pool;
-    Pool() {
+    explicit Pool(int parts = 1) {
         StateLayout layout;
-        layout.add(RegionKind::fixed, 100);
-        layout.add(RegionKind::per_token, 8, 2);
+        for (int i = 0; i < parts; ++i) {
+            layout.add(RegionKind::fixed, 100);
+            layout.add(RegionKind::per_token, 8, 2);
+        }
         PagePoolConfig config;
         config.page_bytes = 64;
         config.chunk_bytes = 64 * 64;
@@ -82,6 +86,21 @@ int main() {
     std::filesystem::remove(path);
     err.clear();
     check(!load_conversation(path, *d.pool, 5, err) && !err.empty(), "a missing file is refused");
+
+    Pool both(2), back, want20;
+    const RegionSpan second{2, 2};
+    check(both.pool->grow_conversation(9, 20).empty() &&
+              copy_conversation(*a.pool, 1, *both.pool, 9, err, {}, second) &&
+              back.pool->grow_conversation(4, 20).empty() && want20.pool->grow_conversation(4, 20).empty() &&
+              copy_conversation(*both.pool, 9, *back.pool, 4, err, second) &&
+              copy_conversation(*a.pool, 1, *want20.pool, 4, err) && back.get_bytes(4) == want20.get_bytes(4),
+          "a card's regions go to their place among every card's and come back");
+    check(!copy_conversation(*both.pool, 9, *back.pool, 4, err), "a copy of every card's regions into one card's is "
+          "refused");
+    check(save_conversation(*both.pool, 9, path, err, second) && e.pool->grow_conversation(6, 12).empty() &&
+              load_conversation(path, *e.pool, 6, err) && e.get_bytes(6) == c.get_bytes(3),
+          "a card's regions go to a file of their own");
+    std::filesystem::remove(path);
 
     const std::filesystem::path dir = std::filesystem::temp_directory_path() / "pool_copy_test";
     std::filesystem::create_directories(dir);

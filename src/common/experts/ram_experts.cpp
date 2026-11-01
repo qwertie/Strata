@@ -126,6 +126,7 @@ double RamExperts::time_copy_in(const uint8_t* bytes, uint64_t n) {
 }
 
 const uint8_t* RamExperts::blob(int64_t layer, int64_t expert) {
+    const std::unique_lock lock(mu_);
     if (holds(layer, expert))
         return get_page((int32_t) pages_.pool().use_expert({(int32_t) layer, (int32_t) expert}));
     if (const uint8_t* staged = find_staged(layer, expert))
@@ -151,15 +152,19 @@ bool RamExperts::copy_blob(int64_t layer, int64_t expert, uint8_t* dst) {
 
 bool RamExperts::copy_blobs(const int32_t* layers, const int32_t* experts, uint8_t* const* dst, size_t n) {
     Reads reads;
-    for (size_t i = 0; i < n; ++i)
-        if (const int32_t first = first_page_[index_of(layers[i], experts[i])]; first != kNotResident)
-            std::memcpy(dst[i], get_page(first), (size_t) blob_bytes_[(size_t) layers[i]]);
-        else
-            reads.add(layers[i], experts[i], dst[i]);
+    {
+        const std::shared_lock lock(mu_);
+        for (size_t i = 0; i < n; ++i)
+            if (const int32_t first = first_page_[index_of(layers[i], experts[i])]; first != kNotResident)
+                std::memcpy(dst[i], get_page(first), (size_t) blob_bytes_[(size_t) layers[i]]);
+            else
+                reads.add(layers[i], experts[i], dst[i]);
+    }
     return read_from_ssd(reads, kStagerReadBytes);
 }
 
 void RamExperts::prefetch(int64_t layer, const int64_t* experts, int64_t n) {
+    const std::unique_lock lock(mu_);
     Reads reads;
     for (int64_t i = 0; i < n; ++i)
         if (!holds(layer, experts[i]) && find_staged(layer, experts[i]) == nullptr)

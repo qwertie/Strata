@@ -9,6 +9,7 @@
 
 #include <cstdint>
 #include <map>
+#include <shared_mutex>
 #include <string>
 #include <vector>
 
@@ -20,8 +21,9 @@ namespace strata::core {
 /// conversations use; else it is read into a ring of staging buffers.  The pool's conversations are paused ones
 /// (pool_copy.hpp); they take the least recently used experts' pages, and `pages().refill` puts those back.
 ///
-/// Threads: the engine's thread makes every call but copy_blob and copy_blobs, which the prompt path's stager
-/// threads make while the engine's thread reads a prompt chunk and changes nothing here.
+/// Threads: the engine's thread makes every call but blob, prefetch, copy_blob and copy_blobs, which the prompt path's
+/// threads make too while the engine's thread reads a prompt chunk and makes no other call (a layer split's next card
+/// reads its part of a chunk on a thread of its own while the first card reads the next chunk).
 class RamExperts : public ExpertSource {
 public:
     RamExperts() = default;
@@ -111,6 +113,8 @@ private:
     /// one read from the SSD, as the layer's work may still read it (the previous layers' work is done).  0 before
     /// the first layer: only lower-ranked experts give way.
     uint64_t layer_t0_ = 0;
+    /// Held by blob and prefetch, which change the pool and the ring; shared by copy_blobs, which only reads them
+    mutable std::shared_mutex mu_;
 };
 
 }  // namespace strata::core

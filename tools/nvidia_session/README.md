@@ -128,13 +128,19 @@ leaves Windows' commit limit too little. Each check runs 2 times a build (`-Runs
 | `memory-q38-1card` | `strata-q38` on the bigger card, M7's build against this one | its answers and speed did not change (it now measures the card's link at start and paces the experts it puts back by it) |
 | `multi-split-auto-SB`, `-BS` | the old engine's `--layer-split auto`, both card orders, M7's build against this one | the old engine is unchanged now that its split planner is shared code (`src/common/experts/layer_split.cpp`): the same answers, and the same `layer split auto: K=...` line (the startup lines are compared too) |
 | `memory-speed-split-q38` | the old engine's `--layer-split auto` on both cards ("before") against `strata-q38` on the bigger card ("after") | today's split's speed against the new engine's; DIFF here only means `strata-q38` decoded more than 5% slower |
-| `memory-q38-2cards-SB`, `-BS` | `strata-q38` on the bigger card against `strata-q38 --layer-split auto` on both cards | the same tokens on two cards as on one (step M8) |
-| `memory-cut-move-SB`, `-BS` | `strata-q38` on both cards, a 96-token story, against the same with the first card's memory halved after 24 tokens and set back after 48 (`CHANGE_SETTINGS`; the answers to the changes go to `*.out.settings`) | a cut moved while decoding gives the same tokens (step M9) |
+| `memory-q38-2cards-SB`, `-BS` | `strata-q38` on the bigger card against `strata-q38 --layer-split auto` on both cards, both with `--expert-cache 4000 --pcie-frac 0` (the same experts on the GPUs: the profile's first 4000, each on the card of its layer) | the same tokens on two cards as on one (step M8): each card its own page pool, the verify windows and the prompt path handing their rows from card to card, a conversation paused and resumed across both cards |
+| `memory-cut-move-SB`, `-BS` | `strata-q38` on both cards, a 96-token story, against the same with the first card's memory halved after 24 tokens and set back after 48 (`CHANGE_SETTINGS`; the answers to the changes go to `*.out.settings`) | for now: a card's pool resized while two cards decode (its experts leave and come back, its conversation pages move); the layer cut itself does not move yet (step M9), so a DIFF here can be experts computed on the CPU while they were out |
 | `memory-rows-card`, `-ram`, `-ssd` | `tools\measure_rows.py` on the bigger card: as many experts on the card as fit, most of them in RAM, about half on the SSD | M7's table of conversations at once and rows per step on NVIDIA (docs/DETAILS.md has the Strix Halo's numbers). Needs `strata-iq3_s.json`, the run config setup writes; skipped without it |
 
-Not done yet: `strata-q38` still runs on one card, so the two-card checks are recorded as SKIP ("strata-q38
-refuses a layer split") until step M8's engine part is built; the kit runs them as soon as it is. The old engine's
-checks and `memory-q38-1card` run now.
+`strata-q38` runs on several cards since M8's second part (only tested on one GPU with two stages so far: the
+Strix Halo has one). What the session must confirm, beyond the table's PASS:
+
+- `memory-q38-2cards-*`: PASS (the same tokens), in both card orders. The stderr of a two-card run says
+  `the page pool of gpu<N> (layers A-B)` once per card, and `--layer-split auto`'s `K=` line; the cut it chose and
+  each card's pool size go in the report. Its speed against `memory-q38-1card` goes in it too (no target yet).
+- `memory-cut-move-*`: the engine stays up and its `*.out.settings` answers have no `ERR`; the tokens may differ
+  (see the table).
+- A check that SKIPs says `is not there yet` in its stderr: drafting on a split is refused for now.
 
 **Measured on this PC by hand.** Under the table, `memory-q38-1card`'s stderr (`*.out.stderr`) has a line
 `strata-q38: the GPU's link to RAM: X GB/s to the GPU, Y GB/s back, Z ms a round trip`, and the old engine's split

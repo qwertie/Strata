@@ -3,7 +3,7 @@
 //
 // It answers the server's line protocol (`--serve` is implied) like `strata --serve --batch N`: GEN, BGEN, STOP,
 // BSTOP, QUIT, LIST_CONVERSATIONS, GET_CONTEXT_WINDOWS, GET_MEMORY_USE and CHANGE_SETTINGS (BYIELD is dropped: a
-// prompt read never gives way).  One GPU.  Each conversation's GDN state and K/V (and the MTP drafter's K/V) take
+// prompt read never gives way).  Each conversation's GDN state and K/V (and the MTP drafter's K/V) take
 // page-pool pages as it grows; the experts are in the same pool (ExpertPages): a growing conversation takes the
 // least-used experts' pages, and between requests the experts take back the pages conversations left.  Up to
 // --concurrent conversations decode together, each step one pass through the model with a row per conversation and
@@ -18,7 +18,15 @@
 // needs its pages) is paused, its pages copied to the RAM's pool or to a file on the SSD, and comes back when a
 // request continues it.
 //
-// CHANGE_SETTINGS (memory_report.hpp) changes, between two steps, each pool's size (`memory_mib.gpu<N>`,
+// On a layer split (`--layer-split K[,K2..]|auto`, docs/MEMORY_MANAGER_PLAN.md step M8) each card runs a range of
+// layers and has a page pool of its own, with the experts of its layers and each conversation's state for them; the
+// verify windows and the prompt path hand their rows from card to card.  `--split-device 0,..` puts several cards on
+// one GPU, each with its own weights and pool: the test of a split on a PC with one GPU.  A paused conversation is one
+// conversation in the RAM's pool (each card's regions one after another) or one file per card.  Not yet: drafting on a
+// split, an expert computed on another card than its layer's, and moving the cut while running (step M9).
+//
+// CHANGE_SETTINGS (memory_report.hpp) changes, between two steps, each pool's size (`memory_mib.gpu<N>`, per card
+// `memory_mib.gpu<N>.<card>` for a later card on the GPU of an earlier one,
 // `memory_mib.ram`: a pool takes and gives back memory in chunks of 256 MiB; a shrink evicts the experts of the
 // chunks it gives back and moves or pauses the conversations there), `tokens_min`, `tokens_max`, `ssd_pause_mib`,
 // `drafter` (off gives its weights back), `concurrent`, `rows` and `lookahead`.  A shrink is refused only when the
@@ -34,8 +42,10 @@ namespace strata::qwen38 {
 /// lookahead, whether the drafter starts loaded (off: loaded for the conversations' layout, then given back, until
 /// CHANGE_SETTINGS turns it on).  `--batch N` is the batch slots, and `--concurrent N` how many of them decode at once
 /// (default all).  `--expert-cache N` is the most experts the GPU holds, as many as N slots of the largest expert
-/// hold; `auto`, as many as fit.  `--gpu-mib N`: the GPU's pool (default: what is free less --vram-reserve-mib and the
-/// prompt path's buffers, but no more than those experts and a conversation at --max-context take).  The RAM:
+/// hold; `auto`, as many as fit; on a layer split, the profile's first N, each on the card of its layer.  `--gpu-mib
+/// N[,N2..]`: the GPU's pool, one per card of a layer split (one value: each card's) (default: what is free less
+/// --vram-reserve-mib and the prompt path's buffers, but no more than those experts and a conversation at
+/// --max-context take).  The RAM:
 /// `--ram-mib N`, the RAM's pool (default: what the RAM has free less the resident headroom, but no more than every
 /// expert takes, and like the GPU's default leaving a tenth of Windows' commit limit, at least 8 GiB, uncommitted;
 /// `--resident-budget-gib N` stands for it);

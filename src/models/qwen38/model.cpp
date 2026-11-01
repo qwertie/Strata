@@ -239,12 +239,12 @@ int Model::load() {
             return !out.empty();
         };
         split_auto = o.layer_split == "auto";
-        bool ok = o.serve && (split_auto || ints(o.layer_split, split_at));
+        bool ok = (o.serve || own_stages) && (split_auto || ints(o.layer_split, split_at));
         if (ok && !o.split_device.empty()) ok = ints(o.split_device, split_devs);
         else if (ok)
             for (int d = 1; d < n_dev && (split_auto || split_devs.size() < split_at.size()); ++d) split_devs.push_back(d);
         if (ok && !split_auto && split_devs.empty() && split_at.size() == 1) split_devs.push_back(0);   // one GPU
-        split_same = ok && split_devs.size() == 1 && split_devs[0] == 0 && !split_auto;
+        split_same = ok && split_devs.size() == 1 && split_devs[0] == 0 && !split_auto && !own_stages;
         if (split_same && o.conversation_cache_mib > 0 && o.conversation_cache_slots > 0 && o.prompt_cache > 0) {
             std::fprintf(stderr, "strata serve: conversation parking does not support a layer split on one GPU "
                                  "(--split-device 0); disable parking with --conversation-cache-mib 0\n");
@@ -258,8 +258,8 @@ int Model::load() {
             ok = (split_auto || split_at.size() == split_devs.size()) && split_devs.size() < (size_t) SplitDrive::kMax;
             for (size_t i = 0; ok && i < split_at.size(); ++i) ok = split_at[i] >= 2 && (i == 0 || split_at[i] > split_at[i - 1]);
             for (size_t i = 0; ok && !split_same && i < split_devs.size(); ++i) {
-                ok = split_devs[i] > 0 && split_devs[i] < n_dev;
-                for (size_t j = 0; ok && j < i; ++j) ok = split_devs[i] != split_devs[j];
+                ok = (split_devs[i] > 0 || own_stages) && split_devs[i] < n_dev;
+                for (size_t j = 0; ok && j < i && !own_stages; ++j) ok = split_devs[i] != split_devs[j];
             }
         }
         if (!ok) {
@@ -1569,8 +1569,8 @@ int Model::load() {
         stages.push_back(std::make_unique<GpuStage>());
         GpuStage& st = *stages.back();
         st.dev = split_devs[i];
-        double free_gib = 0;
-        if (!strata::core::RemoteExperts::preflight(st.dev, free_gib, err)) {
+        double free_gib = 0;   // (own_stages: a stage on CUDA0, which the preflight takes for a helper's mistake)
+        if (st.dev != primary_device && !strata::core::RemoteExperts::preflight(st.dev, free_gib, err)) {
             std::fprintf(stderr, "strata generate: %s\n", err.c_str());
             return 1;
         }
@@ -3374,9 +3374,9 @@ int Model::load() {
         const auto& lay = strata::kernels::cpu::expert_layout();
         // the drafter and the head are already allocated by now (they load above, before this), so what is left
         // to hold back is the windows - and `free_b` has already lost the drafter.
-        const int64_t room = stage_room(st.dev, true, false);
+        const int64_t room = open_stage_pages ? 0 : stage_room(st.dev, true, false);
         const strata::core::OnDevice on(st.dev);
-        {
+        if (!open_stage_pages) {
             size_t fb = 0, tb = 0;
             cudaMemGetInfo(&fb, &tb);
             std::fprintf(stderr, "strata generate: layer split, CUDA%d: %.2f GiB free of %.2f, room for experts %.2f GiB\n",
@@ -3394,8 +3394,9 @@ int Model::load() {
         // #841: a stage's cache can fail to open with the VRAM free (the card's allocation is also charged to the
         // Windows commit, or the free figure ran high): it is tried again with 90% of the slots, up to 3 times, each
         // try said.  Nothing changes when the first open works.
-        bool stage_open = false;
         st.cache.set_slot_guard(slot_guard);   // STRATA_MMQ_DIRECT: the stages' prompt MMQ reads their own slots
+        // (with open_stage_pages `sized` is empty: the hook opened the cache, or `err` says why not)
+        bool stage_open = open_stage_pages && open_stage_pages(st, err);
         for (int attempt = 0; !sized.empty(); ++attempt) {
             stage_open = native_pack ? st.cache.open_sized(sized, g.n_layers, g.n_expert, err)
                                      : st.cache.open((int64_t) sized.size(), g.n_layers, g.n_expert, (int64_t) lay.max_blob, err);
@@ -3410,7 +3411,7 @@ int Model::load() {
         }
         if (!stage_open) {
             std::fprintf(stderr, "strata generate: layer split, CUDA%d expert cache: %s\n", st.dev,
-                         sized.empty() ? "no room" : err.c_str());
+                         sized.empty() && !open_stage_pages ? "no room" : err.c_str());
             return 1;
         }
         int64_t filled = 0;
@@ -3947,6 +3948,29 @@ strata::core::VerifyHits Model::get_verify_hits() const {
     vh.slot_off = xcache.slot_offsets();   // E-6: the device plan's pointers
     vh.n_slots = xcache.slots();
     return vh;
+}
+
+strata::core::VerifyHits Model::get_verify_hits(const GpuStage& st) const {
+    strata::core::VerifyHits vh;
+    vh.d_res = st.d_res;
+    vh.h_res = host_res.empty() ? nullptr : host_res.data();
+    vh.cache_base = st.cache.device_slot(0);
+    vh.blob = thits.blob;
+    vh.slot_off = st.cache.slot_offsets();
+    vh.n_slots = st.cache.slots();
+    return vh;
+}
+
+bool alloc_split_handoffs(const strata::core::ModelGeometry& g, int rows, std::vector<float*>& hand) {
+    const size_t bytes = (size_t) rows * (size_t) strata::core::Verifier::handoff_floats(g) * sizeof(float);
+    for (float*& h : hand) {
+        float* host = nullptr;
+        if (cudaHostAlloc((void**) &host, bytes, cudaHostAllocMapped | cudaHostAllocPortable) != cudaSuccess ||
+            cudaHostGetDevicePointer((void**) &h, host, 0) != cudaSuccess)
+            return false;
+        std::memset(host, 0, bytes);
+    }
+    return true;
 }
 
 Model::~Model() {

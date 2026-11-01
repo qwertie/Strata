@@ -302,11 +302,15 @@ function Invoke-Memory {
         Add-Row memory-2cards SKIP 'one card'
     } else {
         $one = "strata-q38.exe --cards $Big $q38"
-        $split = "`"--args=$Q38Memory --layer-split auto`""
+        # the same experts on the GPUs in both (the profile's first 4000, each on the card of its layer) and none of
+        # a layer's experts read over the bus, so that one card and two compute each expert in the same place
+        $same = "--expert-cache 4000 --pcie-frac 0"
+        $oneSame = "strata-q38.exe --cards $Big `"--args=$Q38Memory $same`""
+        $split = "`"--args=$Q38Memory $same --layer-split auto`""
         Invoke-Versus memory-speed-split-q38 multi "strata.exe --cards $Small,$Big `"--args=--layer-split auto`"" $one
         foreach ($order in 'SB', 'BS') {
             $cards = Get-CardList $order
-            Invoke-Versus "memory-q38-2cards-$order" multi $one "strata-q38.exe --cards $cards $split"
+            Invoke-Versus "memory-q38-2cards-$order" multi $oneSame "strata-q38.exe --cards $cards $split"
             Invoke-Versus "memory-cut-move-$order" cutmove "strata-q38.exe --cards $cards $split" (
                 "strata-q38.exe --cards $cards $split --move-cut")
         }
@@ -343,8 +347,8 @@ function Invoke-Pairs([string]$Check, [string]$Scenario, [string]$Exe, [string]$
 }
 
 # Runs drive.py's $Scenario with $BeforeArgs and with $AfterArgs (its arguments besides --out and --data), alternating,
-# $Count times each, then judges the check. Runs that finished earlier are kept. Skipped when an engine refuses a
-# layer split (strata-q38 until step M8's engine part is built).
+# $Count times each, then judges the check. Runs that finished earlier are kept. Skipped when strata-q38 refuses what
+# the check asks for as not built yet.
 function Invoke-Sides([string]$Check, [string]$Scenario, [string]$BeforeArgs, [string]$AfterArgs, [int]$Count) {
     $dir = "$Results\$Check"
     New-Item -ItemType Directory -Force $dir | Out-Null
@@ -355,8 +359,8 @@ function Invoke-Sides([string]$Check, [string]$Scenario, [string]$BeforeArgs, [s
             $drive = $(if ($side -eq 'before') { $BeforeArgs } else { $AfterArgs })
             $null = Invoke-Step "$Check-$side-$r" ("`"$Py`" `"$PSScriptRoot\drive.py`" $Scenario " +
                 "--out `"$out`" --data `"$DataDir`" $drive")
-            if (-not $DryRun -and (Select-String -Quiet 'runs on one GPU' "$out.stderr" -ErrorAction Ignore)) {
-                return Add-Row $Check SKIP 'strata-q38 refuses a layer split (step M8 not built yet)'
+            if (-not $DryRun -and (Select-String -Quiet 'is not there yet' "$out.stderr" -ErrorAction Ignore)) {
+                return Add-Row $Check SKIP 'strata-q38 refuses it as not built yet (see its stderr)'
             }
         }
     }

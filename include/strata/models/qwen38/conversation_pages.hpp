@@ -28,9 +28,10 @@ public:
     ConversationPages(const ConversationPages&) = delete;
     ConversationPages& operator=(const ConversationPages&) = delete;
 
-    /// Gets the regions a conversation of session `ss` keeps in a page pool: the GDN state, then each QSA layer's
-    /// units, then, given the MTP drafter's K/V state `drafter` (MtpDrafter::kv_state), the drafter's units.  False
-    /// (and `err`) when `ss` is not a whole-model session carved without its state.
+    /// Gets the regions a conversation of session `ss` keeps in a page pool: the GDN state of the session's layers,
+    /// then each of its QSA layers' units, then, given the MTP drafter's K/V state `drafter` (MtpDrafter::kv_state),
+    /// the drafter's units.  The session may be a layer split's card's, carved for a range of the layers.  False (and
+    /// `err`) when `ss` was carved with its state, or its range lacks a GDN or a QSA layer.
     static bool get_layout(const strata::core::ModelGeometry& g, const strata::core::SessionState& ss,
                            const strata::core::QsaState* drafter, strata::core::StateLayout& layout,
                            std::string& err);
@@ -66,6 +67,8 @@ public:
 
 private:
     bool write_tables(bool zero_new, std::string& err);
+    /// Gets the QSA layers of the range session `ss` was carved for (its qsa_alloc is 1 for a range without one).
+    static int64_t count_qsa_layers(const strata::core::ModelGeometry& g, const strata::core::SessionState& ss);
 
     strata::core::PagePool* pool_ = nullptr;
     strata::core::ConversationId id_ = 0;

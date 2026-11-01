@@ -45,12 +45,19 @@ public:
     /// (`ver.commit_slots`, `ver.commit_slot_prefixes`).  For strata-q38's step over several conversations.
     bool run_rows(const int* sessions, int S, const int32_t* tokens, const int64_t* pos, int32_t* out,
                   std::string& err);
+    /// Hands the CPU expert pool's work in the windows to the layer split's stage that runs each layer (`split`
+    /// outlives this object; null: one GPU).  For strata-q38 on several cards.
+    void set_split_drive(SplitDrive* split) { split_ = split; }
 
 private:
     /// Runs `window` (a verify window through the CPU expert pool) and fails also when the pool failed during it.
     bool run_through_pool(const std::function<bool()>& window, std::string& err);
+    /// Gets the CPU expert pool's entry the windows call, and its argument.
+    strata::core::PoolMultiFn get_pool() const { return split_ != nullptr ? &drive_pool_split : &drive_pool_multi; }
+    void* get_pool_user() const { return split_ != nullptr ? (void*) split_ : (void*) &m_->drive; }
 
     Model* m_ = nullptr;   ///< set by init_decode
+    SplitDrive* split_ = nullptr;
 };
 
 /// Gets the sampling of a request's verify windows from its options (greedy without a temperature; a seed of 0 is

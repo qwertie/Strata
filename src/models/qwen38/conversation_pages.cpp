@@ -22,14 +22,14 @@ bool ConversationPages::get_layout(const strata::core::ModelGeometry& g, const s
                                    const strata::core::QsaState* drafter, strata::core::StateLayout& layout,
                                    std::string& err) {
     using namespace strata::core;
-    const int64_t n_qsa = g.n_qsa_layers();
-    if (n_qsa == 0 || ss.qsa_ord0 != 0 || ss.qsa_alloc != n_qsa || ss.gdn_alloc != g.n_gdn_layers() ||
-        ss.gdn_state != nullptr) {
-        err = "the page pool needs a whole-model session carved without its state (session_set_pool_state)";
+    const int64_t n_qsa = g.n_qsa_layers(), n_gdn = g.n_gdn_layers(), qsa_here = count_qsa_layers(g, ss);
+    if (qsa_here == 0 || ss.gdn_alloc == 0 || ss.gdn_state != nullptr) {
+        err = "the page pool needs a session carved without its state (session_set_pool_state) for a range of layers "
+              "with a GDN and a QSA layer";
         return false;
     }
     const strata::kernels::QsaShapes s = qsa_shapes(g);
-    const auto fmt = (strata::kernels::KvFormat) qsa_kv_format(ss.qsa_states[0]);
+    const auto fmt = (strata::kernels::KvFormat) qsa_kv_format(ss.qsa_states[ss.qsa_primary()]);
     try {
         const strata::kernels::KvUnitLayout unit = strata::kernels::kv_unit_layout(s, fmt);
         const uint64_t key_bytes = (uint64_t) s.idx_dim * sizeof(float);
@@ -40,6 +40,8 @@ bool ConversationPages::get_layout(const strata::core::ModelGeometry& g, const s
             err = "the page pool's layout does not match the K/V's units (" + std::to_string(unit.bytes) + " B)";
             return false;
         }
+        layout.regions[0].unit_bytes = layout.regions[0].unit_bytes / (uint64_t) n_gdn * (uint64_t) ss.gdn_alloc;
+        layout.regions.resize((size_t) (1 + qsa_here));   // the session's own layers
         if (drafter != nullptr)
             layout.add(RegionKind::per_block,
                        strata::kernels::kv_unit_layout(s, (strata::kernels::KvFormat) qsa_kv_format(*drafter)).bytes, 1,
@@ -55,7 +57,7 @@ bool ConversationPages::init(const strata::core::ModelGeometry& g, strata::core:
                              strata::core::PagePool& pool, strata::core::ConversationId id, std::string& err) {
     using namespace strata::core;
     const strata::kernels::QsaShapes s = qsa_shapes(g);
-    const int64_t n_qsa = g.n_qsa_layers();
+    const int64_t n_qsa = count_qsa_layers(g, ss);
     unit_bytes_.clear();
     run_bytes_.clear();
     for (size_t r = 1; r < pool.layout().regions.size(); ++r) {
@@ -82,7 +84,7 @@ bool ConversationPages::init(const strata::core::ModelGeometry& g, strata::core:
         }
         cudaMemset(tables_[j], 0, (size_t) max_blocks_ * sizeof(int64_t));
         if ((int64_t) j < n_qsa)
-            qsa_use_units(g, ss.qsa_states[j], tables_[j]);
+            qsa_use_units(g, ss.qsa_states[ss.qsa_ord0 + (int64_t) j], tables_[j]);
     }
     if (cudaMemset(ss.gdn_state, 0, pool.block_bytes(0)) != cudaSuccess ||
         cudaDeviceSynchronize() != cudaSuccess) {
@@ -168,6 +170,12 @@ uint64_t ConversationPages::bytes() const {
     for (size_t r = 0; r <= tables_.size(); ++r)   // the fixed region, then each table's
         bytes += pool_->conversation_blocks(id_, r).size() * pool_->block_bytes(r);
     return bytes;
+}
+
+int64_t ConversationPages::count_qsa_layers(const strata::core::ModelGeometry& g,
+                                            const strata::core::SessionState& ss) {
+    const int64_t interval = std::max<int64_t>(g.qsa_interval, 1);
+    return g.n_qsa_layers() > 0 ? ss.layer_hi / interval - ss.layer_lo / interval : 0;
 }
 
 }  // namespace strata::qwen38

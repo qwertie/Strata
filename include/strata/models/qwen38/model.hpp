@@ -129,6 +129,8 @@ public:
     cudaError_t put_residency(int32_t* dst) const;
     /// Gets what a verify window on CUDA0 knows of the expert cache: the residency tables and the slots.
     strata::core::VerifyHits get_verify_hits() const;
+    /// Gets what a layer split's later stage `st`'s verify windows know of its own expert cache.
+    strata::core::VerifyHits get_verify_hits(const GpuStage& st) const;
 
     /// Tells whether the host has the memory for the prompt path's default CPU share (and says why not on stderr).
     bool is_cpu_share_default_ok();
@@ -165,7 +167,10 @@ public:
     std::vector<int64_t> split_at;   ///< --layer-split: the first layer of each later stage
     std::vector<int> split_devs;     ///< the device of each later stage
     bool split_auto = false;         ///< --layer-split auto: the split points are searched once the weights are in
-    bool split_same = false;         ///< a split on one GPU (--split-device 0)
+    bool split_same = false;         ///< a split on one GPU (--split-device 0) whose stages share CUDA0's state
+    /// strata-q38: a layer split without --serve, each stage with weights, an expert cache and a session of its own
+    /// on its card, CUDA0 too (--split-device 0,..: several stages on one GPU, the test of a split on one card)
+    bool own_stages = false;
     /// A layer split across GPUs; cleared by --split-skip-if-fits before any stage loads
     bool multi_gpu = false;
     bool remote_caches = false;      ///< --expert-cache-remote asks for a helper GPU's expert cache
@@ -230,6 +235,9 @@ public:
     /// place of the cache's own sizing; load() calls it when it would open the cache, before the profile fills it.
     /// Empty (the `strata` program): the cache's own slots.
     std::function<bool(int64_t max_experts, std::string& err)> open_expert_pages;
+    /// strata-q38: opens a layer split's later stage's expert cache `st.cache` in the pages of its card's page pool,
+    /// in place of load()'s sizing of it from `st.profile` (load() then fills it as before).  Empty: load() sizes it.
+    std::function<bool(GpuStage& st, std::string& err)> open_stage_pages;
     bool auto_cache = false;            ///< --expert-cache auto: the cache was sized to the free VRAM
     bool reserve_adapted = false;       ///< #496: the auto sizing lowered the reserve so a small card's cache fits
     std::array<strata::core::RemoteExperts, 3> remote_experts;   ///< --expert-cache-remote: the helper GPUs' caches
@@ -261,6 +269,9 @@ private:
     std::vector<float> ple_emb_host;          ///< the per-layer embedding row `ss.ple` stages on the host
 };
 
+/// Allocates the hand-offs of a layer split's verify windows (`hand`: one per boundary between stages, of `rows` rows
+/// of geometry `g`), zeroed, in mapped page-locked memory that a stage on any card reads; false when one did not fit.
+bool alloc_split_handoffs(const strata::core::ModelGeometry& g, int rows, std::vector<float*>& hand);
 /// Gets " (N MiB of M MiB VRAM free on this GPU)" for an allocation's failure message (clears the CUDA error first).
 std::string vram_free_note();
 /// Gets the share (%) of an expert cache's slots the prompt path may borrow with --prefill auto.

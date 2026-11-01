@@ -26,13 +26,13 @@ bool Conversation::init_decode(Model& m, strata::core::SessionState& ss, int max
 }
 
 bool Conversation::run_window(int T, const int32_t* tokens, int64_t pos0, int32_t* out, std::string& err) {
-    return run_through_pool([&] { return ver.run(T, tokens, pos0, &drive_pool_multi, &m_->drive, out, err); }, err);
+    return run_through_pool([&] { return ver.run(T, tokens, pos0, get_pool(), get_pool_user(), out, err); }, err);
 }
 
 bool Conversation::run_rows(const int* sessions, int S, const int32_t* tokens, const int64_t* pos, int32_t* out,
                             std::string& err) {
     return run_through_pool(
-        [&] { return ver.run_slot_rows(sessions, S, tokens, pos, &drive_pool_multi, &m_->drive, out, err); }, err);
+        [&] { return ver.run_slot_rows(sessions, S, tokens, pos, get_pool(), get_pool_user(), out, err); }, err);
 }
 
 bool Conversation::run_through_pool(const std::function<bool()>& window, std::string& err) {
