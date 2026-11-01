@@ -23,7 +23,9 @@ namespace strata::core {
 ///
 /// Threads: the engine's thread makes every call but blob, prefetch, copy_blob and copy_blobs, which the prompt path's
 /// threads make too while the engine's thread reads a prompt chunk and makes no other call (a layer split's next card
-/// reads its part of a chunk on a thread of its own while the first card reads the next chunk).
+/// reads its part of a chunk on a thread of its own while the first card reads the next chunk).  The prompt path asks
+/// blob only for experts the pool holds (transient() false), which takes no page and no staging buffer, so a pointer
+/// it got stays valid while the prompt is read.
 class RamExperts : public ExpertSource {
 public:
     RamExperts() = default;

@@ -82,6 +82,11 @@ public:
     /// Takes or gives back chunks so that the pool holds `bytes` (PagePool::resize, whose refusal it gets).  After a
     /// growth, `refill` brings in the experts of the first `max_experts` that the pool lacks.
     PoolResize resize(uint64_t bytes);
+    /// Makes `ranking` (hottest first) the experts the pool holds, at most `max_experts` of them, as `open` does: the
+    /// experts it holds that are not among the first `max_experts` leave (the `leaving` and `moved` hooks), and
+    /// `refill` brings in the others.  strata-q38 gives a layer split's card its new layers' experts when the cut
+    /// moves.
+    void set_ranking(const std::vector<ExpertKey>& ranking, int64_t max_experts);
     /// Gets the slot of a pool's page: what the cache's residency and the kernels use.
     int32_t get_slot(PageId page) const;
     void set_hooks(Hooks hooks) { hooks_ = std::move(hooks); }

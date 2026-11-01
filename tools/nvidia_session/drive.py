@@ -8,8 +8,8 @@ Scenarios (the engine's --serve protocol unless said otherwise):
   q38state  Qwen3.8: prefix reuse, parking, SAVE / RESTORE, and a RESTORE of --other (the build before's file)
   q36       Qwen3.6: the same for its engine (strata-q36)
   multi     Qwen3.8: a 2,000-token prompt, a 128-token answer, a second turn; the startup lines appended
-  cutmove   strata-q38: a 96-token story; with --move-cut the first card's memory is halved after 24 tokens and set
-            back after 48 (the layer cut moves while it decodes); the answers to those changes go to FILE.settings
+  cutmove   strata-q38: a 96-token story in a batch slot; with --move-cut the first card's memory is halved after 24
+            tokens and set back after 48 (the layer cut moves between two steps); the answers go to FILE.settings
   ds        DeepSeek V4.1: greedy and seeded answers, a 128-token one for the speed
   server    the HTTP server on port 8091 with this engine (Qwen3.8): two greedy chats and their speed
 FILE gets the engine's stdout (or the server's answers), FILE.stderr its stderr; FILE ends with "exit <code>".
@@ -117,34 +117,15 @@ class Engine:
         if ends:
             self.until(*ends)
 
-    def gen(self, head: str, ids: list[int], changes: dict[int, str] | None = None) -> list[int]:
-        """Sends `GEN <head> <ids>` and returns the prompt followed by the answer's tokens.  `changes`: after how many
-        tokens to send which CHANGE_SETTINGS fields; their answers go to the .settings file, not the output."""
+    def gen(self, head: str, ids: list[int]) -> list[int]:
+        """Sends `GEN <head> <ids>` and returns the prompt followed by the answer's tokens."""
         self.note(f">>> GEN {head} {describe(ids)}")
         self.p.stdin.write(f"GEN {head} {','.join(map(str, ids))}\n")
         self.p.stdin.flush()
-        got, changes, answering = [], dict(changes or {}), False
-        while True:
-            line = self.lines.get(timeout=900)
-            if line is None:
-                raise SystemExit("the engine ended early")
-            # the answer to a change comes between two tokens, and tokens decoded before it may come first
-            if answering and not line.startswith("T "):
-                self.note_settings(line)
-                answering = not line.startswith(("END_MEMORY", "ERR"))
-                continue
-            self.out.write(line)
-            if line.startswith(("DONE", "ERR")):
-                self.out.flush()
-                return ids + got
-            if not line.startswith("T "):
-                continue
+        got = []
+        while (line := self.until("T ", "DONE", "ERR")).startswith("T "):
             got.append(int(line.split()[1]))
-            if (fields := changes.pop(len(got), None)) is not None:
-                self.note_settings(f">>> after {len(got)} tokens: CHANGE_SETTINGS {fields}\n")
-                self.p.stdin.write(f"CHANGE_SETTINGS {fields}\n")
-                self.p.stdin.flush()
-                answering = True
+        return ids + got
 
     def note_settings(self, text: str):
         """Appends `text` to FILE.settings, which keeps the answers to CHANGE_SETTINGS out of the compared output."""
@@ -162,17 +143,35 @@ class Engine:
                 return lines
         raise SystemExit("the engine ended early")
 
-    def bgen(self, slot: int, max_new: int, ids: list[int]) -> list[int]:
-        """Sends a BGEN, waits for its slot to end, and returns the prompt followed by the answer's tokens."""
+    def bgen(self, slot: int, max_new: int, ids: list[int], changes: dict[int, str] | None = None) -> list[int]:
+        """Sends a BGEN, waits for its slot to end, and returns the prompt followed by the answer's tokens.  `changes`:
+        after how many tokens to send which CHANGE_SETTINGS fields (the engine takes them between two of the slot's
+        steps); their answers go to the .settings file, not the output."""
         self.note(f">>> BGEN {slot} {max_new} {describe(ids)}")
         self.p.stdin.write(f"BGEN {slot} {max_new} {','.join(map(str, ids))}\n")
         self.p.stdin.flush()
-        got = []
+        got, changes, answering = [], dict(changes or {}), False
         while True:
-            f = self.until("T ", "BT ", "BDONE", "BADM", "ERR").split()
+            line = self.lines.get(timeout=900)
+            if line is None:
+                raise SystemExit("the engine ended early")
+            f = line.split() or [""]
+            # the answer to a change comes between two steps, and tokens decoded before it may come first (and the
+            # slot's end, when the move forgot its conversation)
+            if answering and f[0] not in ("T", "BT", "BDONE"):
+                self.note_settings(line)
+                answering = f[0] not in ("END_MEMORY", "ERR")
+                continue
+            self.out.write(line)
             if f[0] == "T" or f[0] == "BT" and f[1] == str(slot):
-                got.append(int(f[1] if f[0] == "T" else f[2]))
+                got.append(int(f[-1]))
+                if (fields := changes.pop(len(got), None)) is not None:
+                    self.note_settings(f">>> after {len(got)} tokens: CHANGE_SETTINGS {fields}\n")
+                    self.p.stdin.write(f"CHANGE_SETTINGS {fields}\n")
+                    self.p.stdin.flush()
+                    answering = True
             elif f[0] == "ERR" or f[0] == "BDONE" and f[1] == str(slot) or f[0] == "BADM" and f[2] == "0":
+                self.out.flush()
                 return ids + got
 
     def admit(self, cmds: list[str]):
@@ -211,7 +210,7 @@ def model_args(a) -> list[str]:
         return ["--native", str(gguf), "--max-context", "32768", "--prefill", "auto", "--mtp", "2", "--batch", "2"]
     if a.scenario == "ds":
         return ["--pack", str(deepseek_pack(a)), "--max-context", "8192", "--eos", "1", "--dspark-conf", "0.65"]
-    more = {"q38": ["--batch", "2"], "q38state": ["--conversation-cache-mib", "4096"]}
+    more = {"q38": ["--batch", "2"], "q38state": ["--conversation-cache-mib", "4096"], "cutmove": ["--batch", "1"]}
     return qwen38_args(d) + more.get(a.scenario, [])
 
 
@@ -317,7 +316,7 @@ def cutmove(e: Engine, a):
         report = "".join(e.ask_quietly("GET_MEMORY_USE", "END_MEMORY"))
         mib = int(re.search(r"memory_mib\.gpu0=(\d+)", report)[1])
         changes = {24: f"memory_mib.gpu0={mib // 2}", 48: f"memory_mib.gpu0={mib}"}
-    e.gen("96", story, changes)
+    e.bgen(0, 96, story, changes)
 
 
 def ds(e: Engine, a):

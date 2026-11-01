@@ -1,7 +1,8 @@
 // A conversation's pages copied between two page pools on host memory and through a file (pool_copy.hpp): the bytes
 // arrive in the other pool's blocks, a place with fewer blocks takes the first ones, and one with more is refused; the
 // pause files a process that no longer runs left are deleted; one card's regions of a layer split go to their place in
-// a pool that holds every card's regions, and back.
+// a pool that holds every card's regions, and back; and a card's share of a fixed region goes to its byte range of a
+// larger one, to a file, and back.
 #include "strata/common/state/pool_copy.hpp"
 
 #include <cstdio>
@@ -100,6 +101,30 @@ int main() {
     check(save_conversation(*both.pool, 9, path, err, second) && e.pool->grow_conversation(6, 12).empty() &&
               load_conversation(path, *e.pool, 6, err) && e.get_bytes(6) == c.get_bytes(3),
           "a card's regions go to a file of their own");
+    std::filesystem::remove(path);
+
+    // the share: 40 bytes of a's fixed region at byte 50 of both's first fixed region, then a's K/V at both's second
+    const RegionSpan card_part{1, 1, 0, 0, 40}, whole_part{3, 1, 0, 50, 40};
+    Pool again;
+    check(copy_conversation(*a.pool, 1, *both.pool, 9, err, card_part, whole_part) &&
+              std::equal(a.pool->page_address(a.pool->conversation_blocks(1, 0)[0]),
+                         a.pool->page_address(a.pool->conversation_blocks(1, 0)[0]) + 40,
+                         both.pool->page_address(both.pool->conversation_blocks(9, 0)[0]) + 50),
+          "a share of a fixed region goes to its byte range of another");
+    check(again.pool->grow_conversation(2, 20).empty() &&
+              copy_conversation(*both.pool, 9, *again.pool, 2, err, whole_part, card_part) &&
+              save_conversation(*both.pool, 9, path, err, whole_part) && e.pool->grow_conversation(7, 20).empty() &&
+              load_conversation(path, *e.pool, 7, err, card_part),
+          "it comes back, and through a file");
+    const std::vector<uint8_t> want_back = again.get_bytes(2), file_back = e.get_bytes(7);
+    const std::vector<uint8_t> share = a.get_bytes(1), kv = want20.get_bytes(4);
+    check(std::equal(want_back.begin(), want_back.begin() + 40, share.begin()) &&
+              std::equal(file_back.begin(), file_back.begin() + 40, share.begin()) &&
+              std::equal(want_back.begin() + (long) fixed, want_back.end(), kv.begin() + (long) fixed) &&
+              std::equal(file_back.begin() + (long) fixed, file_back.end(), kv.begin() + (long) fixed),
+          "the share's bytes and the K/V's are the card's");
+    check(!copy_conversation(*a.pool, 1, *both.pool, 9, err, card_part, {3, 1, 0, 50, 30}),
+          "shares of different sizes are refused");
     std::filesystem::remove(path);
 
     const std::filesystem::path dir = std::filesystem::temp_directory_path() / "pool_copy_test";

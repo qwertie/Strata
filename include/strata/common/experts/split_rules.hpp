@@ -135,6 +135,10 @@ inline size_t pick_with_headroom(const std::vector<Placement>& c, double tol) {
 
 constexpr double kLinkScaleMin = 4.0;
 
+/// Gets the predicted milliseconds one layer of a decode window takes on a card of `speed` (its multiprocessors times
+/// its clock in GHz): the old engine's fit, in which an RTX 3090 (82 SMs at 1.70 GHz) takes about 0.52 ms.
+inline double get_layer_ms(double speed) { return 0.33 * (84.0 * 2.617) / speed; }
+
 /// Per stage: the factor on its miss term, from the probed H2D GB/s of each stage (<= 0: not probed -> 1.0).
 inline std::vector<double> link_miss_scale(const std::vector<double>& gbps, double min_ratio = kLinkScaleMin) {
     double fastest = 0.0;

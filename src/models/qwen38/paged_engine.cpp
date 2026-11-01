@@ -10,8 +10,10 @@
 #include "strata/common/experts/card_rules.hpp"
 #include "strata/common/experts/expert_pages.hpp"
 #include "strata/common/experts/expert_swaps.hpp"
+#include "strata/common/experts/layer_split.hpp"
 #include "strata/common/experts/ram_experts.hpp"
 #include "strata/common/experts/ram_tier.hpp"
+#include "strata/common/experts/split_rules.hpp"
 #include "strata/common/kernels/cpu/expert_layout.hpp"
 #include "strata/common/serve/loop.hpp"
 #include "strata/common/serve/request.hpp"
@@ -40,6 +42,9 @@
 #include <numeric>
 #include <optional>
 #include <string>
+#include <thread>
+#include <tuple>
+#include <utility>
 #include <vector>
 
 namespace strata::qwen38 {
@@ -59,6 +64,10 @@ constexpr int kRefillBatch = 16;
 /// The time the experts put back into the GPU's pool in one step of the serve loop may take on its link: a slow link
 /// puts back fewer (get_refill_batch).
 constexpr double kRefillBudgetMs = 10.0;
+/// The milliseconds the CPU pool takes for one routed expert of a decode step, from RAM, against which a hop to
+/// another card is weighed (--remote-experts auto, card_rules' is_hop_cheaper): the Strix Halo's pool computed 70,349
+/// experts in 2,449 ms and 43,808 in 1,550 ms (two stages, 6 requests each, the reads from the SSD not counted).
+constexpr double kCpuExpertMs = 0.035;
 /// The bytes each way that measure the GPU's link to RAM at start.
 constexpr size_t kLinkProbeBytes = 64ull << 20;
 /// Between two chunks of a prompt, the conversations that decode take steps for this share of the time the chunk
@@ -92,6 +101,7 @@ struct PagedSettings {
     int64_t ssd_pause_mib = kDefaultSsdPauseMib;   ///< --ssd-pause-mib
     std::string pause_dir;                         ///< --pause-dir; empty: the temporary folder's strata-q38
     std::string copy_back = "auto";                ///< --copy-back
+    std::string remote_experts = "auto";           ///< --remote-experts
     bool drafter = true;                           ///< --drafter on|off: its weights loaded (with --lookahead)
     strata::spec::StepSettings step;               ///< --rows, --lookahead and --concurrent (default --batch)
 };
@@ -110,7 +120,15 @@ struct Card {
     /// its memory's id in GET_MEMORY_USE and CHANGE_SETTINGS: gpu<dev>, and gpu<dev>.<index> for a card on the GPU of
     /// an earlier card (the test of a split on one GPU)
     std::string id;
-    const GpuStage* stage = nullptr;              ///< null for card 0
+    GpuStage* stage = nullptr;                    ///< null for card 0
+    /// the layers whose dense weights it holds, which the cut keeps it within: every layer, or with
+    /// --trim-stage-weights its own at the start
+    int64_t weights_lb = 0, weights_le = 0;
+    strata::core::LinkSpeed link;                 ///< its link to RAM, measured at start
+    double layer_ms = 0;                          ///< the predicted ms of one layer of a decode window on it
+    /// the hand-offs its verify windows take their rows from (null for card 0) and give them to (null for the last)
+    const float* hand_in = nullptr;
+    float* hand_out = nullptr;
     strata::core::ExpertCache* cache = nullptr;   ///< the expert cache whose slots are the pool's pages
     strata::core::ExpertPages experts;            ///< the page pool: its experts and the conversations' pages
     strata::core::SessionState* own = nullptr;    ///< the engine's own session on it (the rope table and PLE it lends)
@@ -120,6 +138,11 @@ struct Card {
     int32_t* d_res = nullptr;                     ///< the residency table on its device
     uint64_t sessions_bytes = 0;                  ///< the device memory of the sessions on it (`own`'s included)
     int refill_batch = kRefillBatch;              ///< the most experts one refill puts into its pool (kRefillBudgetMs)
+    /// per expert (layer * n_expert + expert) of another card's layers that its pool holds: its slot, else
+    /// kNotResident (empty unless the cards lend pages: PagedEngine::place_card_experts)
+    std::vector<int32_t> lent;
+    /// computes the `lent` experts that a verify window of their own card routes to
+    strata::core::PeerExperts hop;
 };
 using Cards = std::deque<Card>;   ///< (a deque: a card stays where it is as the next one is added)
 
@@ -186,32 +209,33 @@ struct Held {
 struct Paused {
     uint64_t serial = 0;              ///< its number (LIST_CONVERSATIONS' parked<serial>) and its id in the RAM's pool
     std::vector<int32_t> live;        ///< the tokens it holds
-    /// per card, its session's state beside the pages (conversation_unpaged_save)
-    std::vector<std::vector<uint8_t>> unpaged;
+    /// its sessions' state beside the pages (conversation_unpaged_save), apart from the layer cut: each card's PLE
+    /// history, and every QSA layer's indexer state in the layers' order
+    std::vector<std::vector<uint8_t>> ple;
+    std::vector<uint8_t> qsa;
     int64_t priority = 0;             ///< its last request's
     uint64_t used = 0;                ///< Held::used
     uint64_t bytes = 0;               ///< its pages' bytes
     std::string file;                 ///< on the SSD: card 0's file (get_pause_file); empty: in the RAM's pool
+    std::vector<int64_t> file_cut;    ///< on the SSD: the layer cut its files have the cards' parts at (get_cut)
 };
 
 /// The engine once its model is up: its conversations, the pages they share with the experts, the step that decodes
 /// them, and the requests' protocol.
 class PagedEngine {
 public:
-    /// `cards`: the GPUs' pools, prompt paths and windows; `ram`: the RAM's pool (experts and paused conversations),
-    /// whose conversation layout has each card's regions one after another; `copy_back`: an expert a GPU's pool
-    /// evicts is copied to it.  `slots`: the batch slots (--batch; 0: one conversation at a time).  `drafter`: null
-    /// when drafting is off.
-    PagedEngine(Model& m, Conversation& conv, Cards& cards, strata::core::RamExperts& ram, bool copy_back,
-                ConversationDrafter* drafter, const PagedSettings& settings, int slots);
+    /// `cards`: the GPUs' pools, prompt paths and windows, and `split` the CPU pool's routing of their layers
+    /// (init_card_paths); `ram`: the RAM's pool (experts and paused conversations), whose conversation layout has the
+    /// whole model's regions (open_ram); `copy_back`: an expert a GPU's pool evicts is copied to it.  `slots`: the
+    /// batch slots (--batch; 0: one conversation at a time).  `drafter`: null when drafting is off.
+    PagedEngine(Model& m, Conversation& conv, Cards& cards, SplitDrive& split, strata::core::RamExperts& ram,
+                bool copy_back, ConversationDrafter* drafter, const PagedSettings& settings, int slots);
     /// Deletes the paused conversations' files.
     ~PagedEngine();
 
     /// Carves each conversation's session on each card and gives them to the cards' verify windows; false (said on
     /// stderr) when one does not fit.
     bool init();
-    /// Gives the engine each card's regions in the RAM pool's conversation layout (open_ram).
-    void set_ram_spans(std::vector<strata::core::RegionSpan> spans) { spans_ = std::move(spans); }
     /// Answers the server's commands until QUIT or the end of stdin; returns the exit status.
     int serve();
 
@@ -231,6 +255,40 @@ private:
     std::string resize_ram(uint64_t bytes);
     void report_resize(const char* name, const strata::core::PagePoolReport& before,
                        const strata::core::PagePoolReport& after, Clock::time_point t0) const;
+    /// Runs the layer split's planner on the cards' pool sizes (their memory settings), for the conversations that
+    /// decode and the token minimum; gets the cut it chose (get_cut's form), or today's when no other can run (a card
+    /// would lack a layer's dense weights, a GDN layer or a QSA layer).
+    std::vector<int64_t> plan_cut() const;
+    /// Moves the layer cut to `cut` between two steps: every conversation is paused into the RAM's pool, each card
+    /// takes its new layers (the pool's layout for them and their experts, the sessions' carve, the verify windows'
+    /// and the prompt paths' layers), the decoding conversations come back, and each card fills its pool with its
+    /// experts before the next step, so that the steps compute the same experts on the GPUs as before.  False (and
+    /// `err`) when a conversation did not fit in the RAM's pool, or a pool cannot have the new layout: the cut stays.
+    bool move_cut(const std::vector<int64_t>& cut, std::string& err);
+    /// Gives each card's pool the experts it wants that fit (refill), waiting for pages that open soon; then uploads
+    /// the residency tables.
+    bool fill_cards(std::string& err);
+    /// Gives each card's pool the experts it is to hold (ExpertPages::set_ranking): its layers' share of the profile's
+    /// first --expert-cache (get_card_ranking), or with `lend`, while the cards lend pages (holder_), those that
+    /// place_experts puts on it, which may be of another card's layers that their card has no room for, where a hop
+    /// beats the CPU (is_hop_wanted).  The experts it no longer holds leave now; refills bring in the others.
+    void place_card_experts(bool lend);
+    /// Tells whether a card's pool may hold the experts of another card's layers, which `holder` then computes in one
+    /// hop: always with --remote-experts on; with auto, when one hop over its link costs less than the CPU computing
+    /// one expert (kCpuExpertMs).
+    bool is_hop_wanted(const Card& holder) const;
+    /// Gets the layer cut: the first layer of each card after the first.
+    std::vector<int64_t> get_cut() const;
+    /// Gets the regions of `card`'s pool a paused conversation's copy takes: its GDN state, then its QSA layers' (and
+    /// the drafter's, last).
+    strata::core::RegionSpan get_gpu_span(const Card& card) const;
+    /// Gets where the part of a conversation of a card that runs layers [lb, le) is in the RAM pool's layout, which has
+    /// the whole model's regions: its share of the GDN state, and its QSA layers' regions (and the drafter's, last).
+    strata::core::RegionSpan get_ram_span(int64_t lb, int64_t le) const;
+    /// Copies `h`'s running state beside its pages to `p`, apart from the layer cut (Paused::ple, Paused::qsa).
+    bool save_unpaged(const Held& h, Paused& p, std::string& err) const;
+    /// Puts `p`'s running state beside the pages back into `h`, each card its layers'.
+    bool restore_unpaged(const Paused& p, Held& h, std::string& err) const;
     /// Sets the conversation token limits: the GPU pools' minimum, and the maximum's budget of the conversations paused
     /// in RAM (moving those past it to the SSD).  Gets why not, having changed no pool, or an empty string.
     std::string set_token_limits(int64_t min, int64_t max);
@@ -281,8 +339,9 @@ private:
     bool note_gdn_place(Held& h, size_t card, std::string& err);
     /// Moves `h`'s conversation out of the cards' pools into the RAM's (first moving the RAM's paused conversations
     /// down to the SSD while they would take more than --tokens-max allows), or else into files, one per card; `h`
-    /// holds nothing after.  False (and `err`) when a copy failed: then `h` keeps its conversation.
-    bool pause(Held& h, std::string& err);
+    /// holds nothing after.  `ram_only`: into the RAM's pool beyond that budget, or not at all (move_cut).  False (and
+    /// `err`) when a copy failed or the RAM's pool had no room for it: then `h` keeps its conversation.
+    bool pause(Held& h, std::string& err, bool ram_only = false);
     /// Puts paused conversation `p` back in `h`, which holds nothing: its pages, then its session's state.
     bool resume(const Paused& p, Held& h, std::string& err);
     /// Moves the lowest-priority conversation paused in RAM to the SSD (forgetting it when the copy fails); false when
@@ -335,6 +394,11 @@ private:
     Card& get_card_of(int64_t layer) const {
         return *std::find_if(cards_.begin(), cards_.end(), [&](const Card& c) { return layer < c.le; });
     }
+    /// Tells whether a card other than the one that runs `layer` holds its expert `expert` (Card::lent).
+    bool is_lent(int64_t layer, int64_t expert) const {
+        const int32_t holder = holder_.empty() ? -1 : holder_[(size_t) layer];
+        return holder >= 0 && cards_[(size_t) holder].lent[(size_t) (layer * m_.g.n_expert + expert)] >= 0;
+    }
     /// Describes the conversations for LIST_CONVERSATIONS and GET_CONTEXT_WINDOWS.
     std::vector<strata::core::HeldConversation> list_conversations() const;
     /// Describes the memories for GET_MEMORY_USE.
@@ -345,8 +409,8 @@ private:
     Model& m_;
     Conversation& conv_;   ///< card 0's prompt path and verify windows, shared by every conversation
     Cards& cards_;
+    SplitDrive& split_;
     strata::core::RamExperts& ram_;
-    std::vector<strata::core::RegionSpan> spans_;   ///< each card's regions in the RAM pool's conversation layout
     /// The MTP drafter, whose K/V the conversations' pages have (it can be switched on); null without --lookahead
     ConversationDrafter* const drafter_;
     PagedSettings settings_;
@@ -362,6 +426,9 @@ private:
     uint64_t requests_ = 0;            ///< the requests served so far (Held::used)
     const Held* reading_ = nullptr;    ///< the conversation whose prompt read_prompt reads, which make_room keeps
     bool residency_changed_ = false;   ///< `m_.host_res` changed since the device's table was uploaded
+    /// Per layer, the card whose pool holds the layer's experts that its own card's does not (SplitDrive::holder), or
+    /// -1; empty while the cards lend no pages (one card, or --remote-experts off)
+    std::vector<int32_t> holder_;
     int64_t steps_ = 0;                ///< the decode steps so far (adapt_experts' rounds)
     /// decode_step refills experts too, until none are wanted: a pool grew, or is filling after the start
     /// (ExpertPages::open)
@@ -393,7 +460,7 @@ int take_own_options(int& argc, char** argv, PagedSettings& s) {
                        {"--ssd-pause-mib", &s.ssd_pause_mib}, {"--rows", &rows},
                        {"--lookahead", &lookahead},           {"--concurrent", &concurrent},
                        {"--pause-dir", nullptr, &s.pause_dir}, {"--copy-back", nullptr, &s.copy_back},
-                       {"--drafter", nullptr, &drafter}};
+                       {"--drafter", nullptr, &drafter},      {"--remote-experts", nullptr, &s.remote_experts}};
     int out = 1;
     for (int i = 1; i < argc; ++i) {
         const Own* o = std::find_if(std::begin(own), std::end(own),
@@ -420,6 +487,10 @@ int take_own_options(int& argc, char** argv, PagedSettings& s) {
         std::fprintf(stderr, "strata-q38: --copy-back takes auto, on or off\n");
         return 2;
     }
+    if (s.remote_experts != "auto" && s.remote_experts != "on" && s.remote_experts != "off") {
+        std::fprintf(stderr, "strata-q38: --remote-experts takes auto, on or off\n");
+        return 2;
+    }
     if (drafter != "on" && drafter != "off") {
         std::fprintf(stderr, "strata-q38: --drafter takes on or off\n");
         return 2;
@@ -439,14 +510,59 @@ std::vector<uint64_t> get_blob_bytes(const Model& m) {
     return blobs;
 }
 
+/// Gets whether `card` runs `m`'s MTP drafter (--mtp), which Model::load_drafter puts on a layer split's last card.
+bool has_drafter(const Model& m, const Card& card) {
+    return !m.o.mtp.empty() && card.stage == m.get_drafter_stage();
+}
+
+/// Gets the experts of the expert profile of layers [lb, le), hottest first.  With a layer split, `max_experts` (the
+/// most the GPUs hold: --expert-cache) becomes how many of them are among the profile's first `max_experts`, so that
+/// the cards hold the experts one GPU would; without one, they are CUDA0's profile and `max_experts` stays.
+std::vector<strata::core::ExpertKey> get_card_ranking(const Model& m, int64_t lb, int64_t le, int64_t& max_experts) {
+    std::vector<strata::core::ExpertKey> ranking;
+    if (m.profile_all.empty()) {
+        for (const auto& [layer, expert] : m.profile)
+            ranking.push_back({layer, expert});
+        return ranking;
+    }
+    int64_t held = 0;
+    for (size_t i = 0; i < m.profile_all.size(); ++i)
+        if (const auto [layer, expert] = m.profile_all[i]; layer >= lb && layer < le) {
+            ranking.push_back({layer, expert});
+            held += (int64_t) i < max_experts;
+        }
+    max_experts = held;
+    return ranking;
+}
+
+/// Gets the regions a conversation keeps in the pool of `card` (whose pool is open) when the card runs layers
+/// [lb, le): ConversationPages::get_layout's for its session carved for them, and the drafter's K/V region of its
+/// pool when it runs the drafter (has_drafter).
+bool get_card_layout(const Model& m, const Card& card, int64_t lb, int64_t le, strata::core::StateLayout& layout,
+                     std::string& err) {
+    strata::core::SessionState carve = *card.own;   // (a copy of the description only: the memory stays the session's)
+    strata::core::session_set_layers(carve, m.g, lb, le);
+    if (!ConversationPages::get_layout(m.g, carve, nullptr, layout, err))
+        return false;
+    if (has_drafter(m, card))
+        layout.regions.push_back(card.experts.pool().layout().regions.back());
+    return true;
+}
+
 uint64_t get_gpu_room(const Model& m, const Card& card, uint64_t mapped);
-bool init_card_paths(Model& m, Conversation& conv, const Cards& cards, SplitDrive& split, std::string& err);
+bool init_card_paths(Model& m, Conversation& conv, Cards& cards, SplitDrive& split, std::string& err);
+void set_stage(const Cards& cards, size_t k);
 uint64_t get_ram_room(uint64_t headroom);
 uint64_t get_commit_room();
 
+/// Gets the layers [lb, le) card `k` runs at layer cut `cut` (PagedEngine::get_cut's form) of a model of `n_layers`.
+std::pair<int64_t, int64_t> get_card_layers(const std::vector<int64_t>& cut, size_t k, int64_t n_layers) {
+    return {k == 0 ? 0 : cut[k - 1], k < cut.size() ? cut[k] : n_layers};
+}
+
 /// Adds the card that runs layers [lb, le) of `m` to `cards`: CUDA0's (card 0, over the Model's own cache and
 /// session and `conv`'s windows) or the layer split's stage `stage`.  Its link to RAM is measured before its pool
-/// takes the memory the measuring copies need.
+/// takes the memory the measuring copies need, and its speed is predicted from its multiprocessors and clock.
 Card& add_card(Model& m, Conversation& conv, Cards& cards, GpuStage* stage) {
     Card& card = cards.emplace_back();
     card.index = cards.size() - 1;
@@ -461,11 +577,19 @@ Card& add_card(Model& m, Conversation& conv, Cards& cards, GpuStage* stage) {
     card.cs = stage != nullptr ? (void*) stage->stream : m.main_cs;
     card.ver = stage != nullptr ? &stage->ver : &conv.ver;
     card.sp = stage != nullptr ? &stage->sp : &conv.sp;
-    const strata::core::LinkSpeed link = strata::core::measure_host_link(card.dev, kLinkProbeBytes);
+    card.weights_lb = m.stage_weights_trimmed ? card.lb : 0;
+    card.weights_le = m.stage_weights_trimmed ? card.le : m.g.n_layers;
+    const strata::core::LinkSpeed link = card.link = strata::core::measure_host_link(card.dev, kLinkProbeBytes);
     card.refill_batch = strata::core::get_refill_batch(link, strata::kernels::cpu::expert_layout().max_blob,
                                                        kRefillBudgetMs, kRefillBatch);
     std::fprintf(stderr, "strata-q38: %s's link to RAM: %.1f GB/s to the GPU, %.1f GB/s back, %.3f ms a round trip\n",
                  card.id.c_str(), link.to_gbps, link.from_gbps, link.latency_ms);
+    int sms = 0, khz = 0;
+    if (cudaDeviceGetAttribute(&sms, cudaDevAttrMultiProcessorCount, card.dev) != cudaSuccess ||
+        cudaDeviceGetAttribute(&khz, cudaDevAttrClockRate, card.dev) != cudaSuccess || khz <= 0)
+        khz = 1800000;   // (the old engine's guess)
+    (void) cudaGetLastError();
+    card.layer_ms = strata::program::split_rules::get_layer_ms(std::max(1.0, sms * (khz / 1e6)));
     return card;
 }
 
@@ -474,23 +598,12 @@ Card& add_card(Model& m, Conversation& conv, Cards& cards, GpuStage* stage) {
 /// `max_experts` that are of the card's layers, so that the cards hold the experts one GPU would.  The pool takes
 /// `gpu_mib` (-1: what get_gpu_room gives, but no more than those experts (the profile's first) and a conversation at
 /// --max-context take), in chunks of kChunkBytes; experts leave the pages of `tokens_min` tokens free.  With the
-/// drafter (--mtp, on one GPU only), each conversation also keeps the drafter's K/V in the pool, and the drafter's
-/// head stays out of it.
+/// drafter (--mtp), the pool of the card that runs it (has_drafter) also keeps each conversation's drafter K/V, and
+/// the drafter's head stays out of it.
 bool open_pages(Model& m, Card& card, int64_t tokens_min, int64_t gpu_mib, int64_t max_experts, std::string& err) {
     const strata::core::OnDevice on(card.dev);
-    std::vector<std::pair<int32_t, int32_t>> profile;   // the card's share of the expert profile, hottest first
-    if (m.profile_all.empty()) {
-        profile = m.profile;
-    } else {
-        int64_t held = 0;
-        for (size_t i = 0; i < m.profile_all.size(); ++i)
-            if (const auto [layer, expert] = m.profile_all[i]; layer >= card.lb && layer < card.le) {
-                profile.push_back({layer, expert});
-                held += (int64_t) i < max_experts;
-            }
-        max_experts = held;
-    }
-    const bool drafting = !m.o.mtp.empty();
+    const std::vector<strata::core::ExpertKey> ranking = get_card_ranking(m, card.lb, card.le, max_experts);
+    const bool drafting = has_drafter(m, card);
     const std::vector<uint64_t> blobs = get_blob_bytes(m);
     const uint64_t page = strata::core::choose_expert_page_bytes(blobs);
     strata::core::StateLayout layout;
@@ -499,15 +612,12 @@ bool open_pages(Model& m, Card& card, int64_t tokens_min, int64_t gpu_mib, int64
     uint64_t most = layout.bytes_for(m.o.max_context);
     for (const strata::core::StateRegion& r : layout.regions)   // + each region's last block
         most += strata::core::choose_block_pages(r, page) * page;
-    for (size_t i = 0; i < profile.size() && (int64_t) i < max_experts; ++i)
-        most += (blobs[(size_t) profile[i].first] + page - 1) / page * page;
+    for (size_t i = 0; i < ranking.size() && (int64_t) i < max_experts; ++i)
+        most += (blobs[(size_t) ranking[i].layer] + page - 1) / page * page;
     const uint64_t room = get_gpu_room(m, card, 0);
     const uint64_t pool_b = gpu_mib >= 0 ? std::min((uint64_t) gpu_mib << 20, room) : std::min(room, most);
     const uint64_t chunk = std::max<uint64_t>(std::min(kChunkBytes, pool_b) / page, 1) * page;
     card.cache->set_expert_bytes((int64_t) strata::kernels::cpu::expert_layout().max_blob);
-    std::vector<strata::core::ExpertKey> ranking;
-    for (const auto& [layer, expert] : profile)
-        ranking.push_back({layer, expert});
     strata::core::PagePoolConfig config;
     config.tokens_min = std::clamp<int64_t>(tokens_min, 0, m.o.max_context);
     strata::core::ChunkMemory memory;   // (called later from any card's work: each on its own GPU)
@@ -537,16 +647,18 @@ bool open_pages(Model& m, Card& card, int64_t tokens_min, int64_t gpu_mib, int64
 }
 
 /// Gets the memory `card`'s pool may take besides what it holds: what its GPU has free less --vram-reserve-mib and the
-/// prompt path's own buffers, and the drafter's head when there is a drafter.  On Windows, for a GPU whose memory is
-/// the system RAM, what is free is what is free of the share the BIOS gives it (get_share_room, `mapped` the RAM's
-/// page-locked pool), not the runtime's free memory: that is the share and what the GPU may borrow beyond it, and HIP
-/// takes page-locked host memory off it twice (on the Strix Halo, 8 GiB of hipHostMalloc took 16 GiB off it).  Its
-/// memory counts in Windows' commit charge, so no more than get_commit_room either.  Cards on one GPU each see what
-/// is free of it.
+/// prompt path's own buffers, and the drafter's head when the card runs it (has_drafter).  On Windows, for a GPU whose
+/// memory is the system RAM, what is free is what is free of the share the BIOS gives it (get_share_room, `mapped` the
+/// RAM's page-locked pool), not the runtime's free memory: that is the share and what the GPU may borrow beyond it,
+/// and HIP takes page-locked host memory off it twice (on the Strix Halo, 8 GiB of hipHostMalloc took 16 GiB off
+/// it).  Its memory counts in Windows' commit charge, so no more than get_commit_room either.  Cards on one GPU each
+/// see what is free of it.
 uint64_t get_gpu_room(const Model& m, const Card& card, uint64_t mapped) {
     const uint64_t keep = ((uint64_t) m.o.vram_reserve_mib << 20) +
         strata::prefill::Prefill::bytes_needed_owned(m.g, *card.own, m.o.prefill_chunk, m.srcp != nullptr) +
-        (!m.o.mtp.empty() ? m.mtp.bind_bytes(m.native_head.row_bytes(), m.n_vocab) : 0);
+        (has_drafter(m, card)
+             ? m.mtp.bind_bytes((card.stage != nullptr ? card.stage->head : m.native_head).row_bytes(), m.n_vocab)
+             : 0);
     const strata::core::OnDevice on(card.dev);
     uint64_t free_b = 0;
     if (strata::core::get_share_room(card.dev, mapped, free_b))
@@ -582,10 +694,10 @@ uint64_t get_commit_room() {
 /// get_ram_room (the RAM free less the resident headroom, within the commit margin), but no more than every expert
 /// and the staging ring take.  It holds first the experts of the profile the GPUs' pools do not, in the profile's
 /// order, then copies of the GPUs', then the experts outside the profile, as far as they fit.  Its conversation layout
-/// is each card's regions one after another, so that a paused conversation is one conversation in it (`spans`: each
-/// card's regions there).
+/// has the whole model's regions, so that a paused conversation is one conversation in it wherever the layer cut is
+/// (PagedEngine::get_ram_span).
 bool open_ram(Model& m, const Cards& cards, const PagedSettings& s, strata::core::RamExperts& ram, bool& copy_back,
-              std::vector<strata::core::RegionSpan>& spans, std::string& err) {
+              std::string& err) {
     using strata::core::ExpertKey;
     const std::vector<uint64_t> blobs = get_blob_bytes(m);
     const auto at = [&](int64_t l, int64_t e) { return (size_t) (l * m.g.n_expert + e); };
@@ -612,11 +724,8 @@ bool open_ram(Model& m, const Cards& cards, const PagedSettings& s, strata::core
     config.page_bytes = cards[0].experts.pool().page_bytes();
     config.chunk_bytes = kChunkBytes / config.page_bytes * config.page_bytes;
     strata::core::StateLayout layout;
-    for (const Card& card : cards) {
-        const std::vector<strata::core::StateRegion>& regions = card.experts.pool().layout().regions;
-        spans.push_back({layout.regions.size(), regions.size()});
-        layout.regions.insert(layout.regions.end(), regions.begin(), regions.end());
-    }
+    if (!get_card_layout(m, cards.back(), 0, m.g.n_layers, layout, err))
+        return false;
     const Clock::time_point t0 = Clock::now();
     if (!ram.open(m.src, bytes, ring, layout, config, blobs, m.g.n_expert, ranking, err))
         return false;
@@ -676,6 +785,16 @@ int run_paged_engine(int argc, char** argv) {
     // setting wins
     strata::platform::set_env("GPU_RESOURCE_CACHE_SIZE", "0", false);
 #endif
+    // a card computing another card's experts (--remote-experts) runs them on a stream of its own while that card's
+    // verify window spins on the GPU for them; the runtime spreads its streams over a few hardware queues (HIP 4 a
+    // priority, CUDA 8 connections), and a hop that landed behind a spinning kernel waited for ever (two stages on the
+    // Strix Halo's GPU, 2 of 2 runs; 0 of 1 with 16 queues, which a stream of the highest priority did not fix).  An
+    // explicit setting wins.
+    if (settings.remote_experts != "off" &&
+        std::any_of(argv + 1, argv + argc, [](const char* a) { return std::strcmp(a, "--layer-split") == 0; })) {
+        strata::platform::set_env("GPU_MAX_HW_QUEUES", "16", false);
+        strata::platform::set_env("CUDA_DEVICE_MAX_CONNECTIONS", "32", false);
+    }
     prepare_process(argc, argv);
     prime_gpu_queues();
     Options o;
@@ -708,6 +827,8 @@ int run_paged_engine(int argc, char** argv) {
     o.spec = strata::kernels::kVerifyMaxT;   // the verify windows' room: --rows may change up to it
     o.kv_grow = false;
     o.kv_resident = 0;
+    // strata-q38 does not pipeline verify windows across cards; 0 also keeps the drafter on the last card (mtp_first)
+    o.pipeline_windows = 0;
     if (o.prefill_chunk <= 0) o.prefill_chunk = 2048;   // open_pages leaves room for the prompt path's own buffers
     if (o.resident_budget > 0 && settings.ram_mib < 0)
         settings.ram_mib = (int64_t) (o.resident_budget >> 20);
@@ -716,10 +837,8 @@ int run_paged_engine(int argc, char** argv) {
     o.mmap_experts = true;
     o.resident_cpu_experts = o.resident_pin = o.resident_soft = false;
     o.resident_budget = 0;
-    if (const char* why = o.expert_cache_per_layer ? "--expert-cache-per-layer: its experts share the page pool"
-                          : !o.layer_split.empty() && drafting ? "drafting on a layer split is not there yet"
-                                                               : nullptr) {
-        std::fprintf(stderr, "strata-q38: %s\n", why);
+    if (o.expert_cache_per_layer) {
+        std::fprintf(stderr, "strata-q38: --expert-cache-per-layer: its experts share the page pool\n");
         return 2;
     }
     strata::core::session_set_pool_state(true);
@@ -757,8 +876,7 @@ int run_paged_engine(int argc, char** argv) {
     std::string err;
     strata::core::RamExperts ram;
     bool copy_back = false;
-    std::vector<strata::core::RegionSpan> spans;
-    if (!open_ram(m, cards, settings, ram, copy_back, spans, err)) {
+    if (!open_ram(m, cards, settings, ram, copy_back, err)) {
         std::fprintf(stderr, "strata-q38: %s\n", err.c_str());
         return 1;
     }
@@ -772,11 +890,11 @@ int run_paged_engine(int argc, char** argv) {
         return 1;
     }
     if (drafting)   // the conversations' guesses make many row layouts: the verify windows keep the recent ones' graphs
-        conv.ver.set_batch_graph_limit(kWindowGraphs);
+        for (const Card& card : cards)
+            card.ver->set_batch_graph_limit(kWindowGraphs);
     if (drafting && !settings.drafter)   // loaded for the pool's layout of the drafter's K/V, switched on later
         m.unload_drafter();
-    PagedEngine engine(m, conv, cards, ram, copy_back, drafting ? &drafter : nullptr, settings, slots);
-    engine.set_ram_spans(std::move(spans));
+    PagedEngine engine(m, conv, cards, split, ram, copy_back, drafting ? &drafter : nullptr, settings, slots);
     return engine.init() ? engine.serve() : 1;
 }
 
@@ -786,7 +904,7 @@ namespace {
 /// (through hand-offs in page-locked RAM, so that cards without peer access work), and the CPU expert pool's work in
 /// the windows going to the card that runs each layer (`split`, which must outlive them).  The Model's stages run in
 /// the order of their layers, as the old engine's layer split runs them.
-bool init_card_paths(Model& m, Conversation& conv, const Cards& cards, SplitDrive& split, std::string& err) {
+bool init_card_paths(Model& m, Conversation& conv, Cards& cards, SplitDrive& split, std::string& err) {
     const Options& o = m.o;
     const size_t n = cards.size();
     std::vector<float*> hand(n - 1, nullptr);
@@ -795,10 +913,10 @@ bool init_card_paths(Model& m, Conversation& conv, const Cards& cards, SplitDriv
         return false;
     }
     for (size_t k = n; k-- > 0;) {   // a card's prompt path is set up after the next card's, which it hands to
-        const Card& card = cards[k];
-        const bool last = k + 1 == n;
-        card.sp->set_stage(card.lb, last ? -1 : card.le, last ? nullptr : cards[k + 1].sp);
-        card.ver->set_stage(card.lb, last ? -1 : card.le, k == 0 ? nullptr : hand[k - 1], last ? nullptr : hand[k]);
+        Card& card = cards[k];
+        card.hand_in = k == 0 ? nullptr : hand[k - 1];
+        card.hand_out = k + 1 == n ? nullptr : hand[k];
+        set_stage(cards, k);
         if (k == 0)
             break;
         const GpuStage& st = *card.stage;
@@ -833,9 +951,18 @@ bool init_card_paths(Model& m, Conversation& conv, const Cards& cards, SplitDriv
     return true;
 }
 
-PagedEngine::PagedEngine(Model& m, Conversation& conv, Cards& cards, strata::core::RamExperts& ram, bool copy_back,
-                         ConversationDrafter* drafter, const PagedSettings& settings, int slots)
-    : m_(m), conv_(conv), cards_(cards), ram_(ram), drafter_(drafter), settings_(settings),
+/// Gives card `k` of `cards` its layers in its prompt path and verify windows (Card::lb and le), as their stage of the
+/// layer split, handing their rows on to the next card's.
+void set_stage(const Cards& cards, size_t k) {
+    const Card& card = cards[k];
+    const bool last = k + 1 == cards.size();
+    card.sp->set_stage(card.lb, card.le, last ? nullptr : cards[k + 1].sp);
+    card.ver->set_stage(card.lb, card.le, card.hand_in, card.hand_out);
+}
+
+PagedEngine::PagedEngine(Model& m, Conversation& conv, Cards& cards, SplitDrive& split, strata::core::RamExperts& ram,
+                         bool copy_back, ConversationDrafter* drafter, const PagedSettings& settings, int slots)
+    : m_(m), conv_(conv), cards_(cards), split_(split), ram_(ram), drafter_(drafter), settings_(settings),
       step_(get_step_model(), m.o.eos_ids) {
     apply_step_settings();
     for (int i = 0; i <= slots; ++i) {
@@ -863,9 +990,13 @@ PagedEngine::PagedEngine(Model& m, Conversation& conv, Cards& cards, strata::cor
                    c.cache->fill_slot_blocking(slot, blob, err,
                                                (int64_t) strata::kernels::cpu::expert_layout().blob_bytes(key.layer));
         };
-        hooks.moved = [this](strata::core::ExpertKey key, int32_t slot) {
-            m_.host_res[(size_t) key.layer * (size_t) m_.g.n_expert + (size_t) key.expert] = slot;
-            residency_changed_ = true;
+        // an expert of another card's layers goes to the card's `lent`, not to the residency table its layer's card
+        // reads; an evicted one leaves whichever holds it
+        hooks.moved = [this, &c = card](strata::core::ExpertKey key, int32_t slot) {
+            const size_t i = (size_t) key.layer * (size_t) m_.g.n_expert + (size_t) key.expert;
+            const bool own = c.lent.empty() || (slot >= 0 ? key.layer >= c.lb && key.layer < c.le : c.lent[i] < 0);
+            (own ? m_.host_res[i] : c.lent[i]) = slot;
+            residency_changed_ = residency_changed_ || own;
         };
         if (copy_back)
             hooks.leaving = [this](strata::core::ExpertKey key, const uint8_t* bytes) {
@@ -888,18 +1019,20 @@ bool PagedEngine::init() {
         const OnDevice on(card.dev);
         // every session on the card reads the engine's own session's rope table there
         const QsaState* rope = &card.own->qsa_states[card.own->qsa_primary()];
-        const uint64_t bytes = session_bytes(m_.g, m_.o.max_context, m_.K, card.lb, card.le, false);
-        card.sessions_bytes = session_bytes(m_.g, m_.o.max_context, m_.K, card.lb, card.le) + held_.size() * bytes;
+        // (carved for every layer, as the card's own session: move_cut changes the layers they are for)
+        const uint64_t bytes = session_bytes(m_.g, m_.o.max_context, m_.K, 0, -1, false);
+        card.sessions_bytes = session_bytes(m_.g, m_.o.max_context, m_.K) + held_.size() * bytes;
         std::vector<SessionState*> sessions;
         for (const std::unique_ptr<Held>& h : held_) {
             Part& part = *h->parts.emplace_back(std::make_unique<Part>());
             part.dev = card.dev;
             if (cudaMalloc(&part.mem, bytes) != cudaSuccess ||
-                session_init(m_.g, m_.o.max_context, m_.K, part.mem, part.ss, card.lb, card.le, rope) == 0) {
+                session_init(m_.g, m_.o.max_context, m_.K, part.mem, part.ss, 0, -1, rope) == 0) {
                 std::fprintf(stderr, "strata-q38: no room for conversation %zu's session on %s (%.1f MiB)\n",
                              sessions.size(), card.id.c_str(), (double) bytes / 1048576.0);
                 return false;
             }
+            session_set_layers(part.ss, m_.g, card.lb, card.le);
             PleRun& ple = part.ss.ple;   // the engine's PLE weights and buffers, with this conversation's history
             ple = card.own->ple;
             ple.token = &part.ss.ple_token;
@@ -914,6 +1047,23 @@ bool PagedEngine::init() {
             return false;
         }
     }
+    if (cards_.size() < 2 || settings_.remote_experts == "off" || m_.profile_all.empty())
+        return true;
+    const ModelGeometry& g = m_.g;
+    for (Card& card : cards_) {
+        card.lent.assign((size_t) (g.n_layers * g.n_expert), kNotResident);
+        if (std::string err; !card.hop.attach(card.dev, *card.cache, card.lent.data(), g.n_layers, g.n_expert, err)) {
+            std::fprintf(stderr, "strata-q38: %s cannot compute other cards' experts: %s\n", card.id.c_str(),
+                         err.c_str());
+            for (Card& c : cards_)
+                c.lent.clear();
+            return settings_.remote_experts != "on";   // (auto: the cards lend no pages)
+        }
+        split_.hop[card.index] = &card.hop;
+    }
+    holder_.assign((size_t) g.n_layers, -1);
+    split_.holder = holder_.data();
+    place_card_experts(true);
     return true;
 }
 
@@ -1178,6 +1328,12 @@ bool PagedEngine::decode_step() {
             swapped_ = copied_back_ = 0;
             adapt_ms_ = copy_back_ms_ = 0;
         }
+        for (const Card& card : cards_)
+            if (card.hop.experts() > 0)
+                std::fprintf(stderr, "strata-q38: so far %s computed %lld experts of other cards' layers (%lld rows) "
+                                     "in one hop each layer, %.1f ms waited for\n",
+                             card.id.c_str(), (long long) card.hop.experts(), (long long) card.hop.entries(),
+                             card.hop.ms_wait);
         if (std::strcmp(d.finish, "nonfinite") == 0) {   // #879: its state may carry the poison: start over next time
             std::fprintf(stderr, "strata-q38: non-finite logits (#879) at position %lld: the conversation's next "
                                  "request reads its prompt from token 0\n", (long long) d.pos);
@@ -1303,39 +1459,41 @@ bool PagedEngine::note_gdn_place(Held& h, size_t card, std::string& err) {
     return !moved || cards_[card].ver->drop_batch_graphs(err);
 }
 
-bool PagedEngine::pause(Held& h, std::string& err) {
+bool PagedEngine::pause(Held& h, std::string& err, bool ram_only) {
     const Clock::time_point t0 = Clock::now();
     Paused p;
     p.serial = ++serial_;
     p.priority = h.dec.priority;
     p.used = h.used;
-    p.unpaged.resize(h.parts.size());
-    for (size_t k = 0; k < h.parts.size(); ++k) {
-        const strata::core::OnDevice on(h.parts[k]->dev);
-        if (!strata::core::conversation_unpaged_save(h.parts[k]->ss, m_.g, p.unpaged[k], err))
-            return false;
-    }
+    if (!save_unpaged(h, p, err))
+        return false;
     strata::core::PagePool& ram = ram_.pages().pool();
     const int64_t tokens = h.parts[0]->pages.get_pool_tokens((int64_t) h.live.size());
     p.bytes = ram.pages_for(tokens) * ram.page_bytes();
-    const uint64_t budget = get_ram_pause_budget();
+    const uint64_t budget = ram_only ? UINT64_MAX : get_ram_pause_budget();
     while (p.bytes <= budget && get_paused_bytes(true) + p.bytes > budget)
         if (!move_down())
             break;
     const bool in_ram = get_paused_bytes(true) + p.bytes <= budget && ram.grow_conversation(p.serial, tokens).empty();
     if (in_ram) {
         ram.set_paused(p.serial, true);
+    } else if (ram_only) {
+        err = "the RAM's pool has no room for a conversation of " + std::to_string(h.live.size()) + " tokens";
+        return false;
     } else {   // the files take every block the cards' pools gave the conversation
         p.file = get_pause_file(p.serial);
+        p.file_cut = get_cut();
         p.bytes = h.get_bytes();
     }
     bool ok = true;
     for (size_t k = 0; ok && k < h.parts.size(); ++k) {
         const strata::core::OnDevice on(h.parts[k]->dev);
-        const strata::core::PagePool& pool = cards_[k].experts.pool();
-        const ConversationPages& pages = h.parts[k]->pages;
-        ok = in_ram ? strata::core::copy_conversation(pool, pages.id(), ram, p.serial, err, {}, spans_[k])
-                    : strata::core::save_conversation(pool, pages.id(), get_pause_file(p.serial, k), err);
+        const Card& card = cards_[k];
+        const strata::core::ConversationId id = h.parts[k]->pages.id();
+        ok = in_ram ? strata::core::copy_conversation(card.experts.pool(), id, ram, p.serial, err, get_gpu_span(card),
+                                                      get_ram_span(card.lb, card.le))
+                    : strata::core::save_conversation(card.experts.pool(), id, get_pause_file(p.serial, k), err,
+                                                      get_gpu_span(card));
     }
     if (!ok) {
         drop_pages(p);
@@ -1357,19 +1515,75 @@ bool PagedEngine::resume(const Paused& p, Held& h, std::string& err) {
     const Clock::time_point t0 = Clock::now();
     if ((!h.has_pages() && !init_pages(h, err)) || !make_room(h, (int64_t) p.live.size(), err))
         return false;
-    for (size_t k = 0; k < h.parts.size(); ++k) {
-        const strata::core::PagePool& gpu = cards_[k].experts.pool();
-        Part& part = *h.parts[k];
-        const strata::core::OnDevice on(part.dev);
-        if (!(p.file.empty()
-                  ? strata::core::copy_conversation(ram_.pages().pool(), p.serial, gpu, part.pages.id(), err, spans_[k])
-                  : strata::core::load_conversation(get_pause_file(p.serial, k), gpu, part.pages.id(), err)) ||
-            !strata::core::conversation_unpaged_restore(p.unpaged[k], part.ss, m_.g, p.live, err))
+    strata::core::PagePool& ram = ram_.pages().pool();
+    // files of the cards' parts at another cut come together in the RAM's pool, whose layout has every layer
+    const bool through_ram = !p.file.empty() && p.file_cut != get_cut();
+    if (through_ram) {
+        const int64_t tokens = h.parts[0]->pages.get_pool_tokens((int64_t) p.live.size());
+        if (const std::string why = ram.grow_conversation(p.serial, tokens); !why.empty()) {
+            err = "the RAM's pool has no room for a conversation paused before the layer cut moved: " + why;
             return false;
+        }
+        for (size_t k = 0; k < cards_.size(); ++k) {
+            const auto [lb, le] = get_card_layers(p.file_cut, k, m_.g.n_layers);
+            if (!strata::core::load_conversation(get_pause_file(p.serial, k), ram, p.serial, err,
+                                                 get_ram_span(lb, le))) {
+                ram.remove_conversation(p.serial);
+                return false;
+            }
+        }
     }
+    bool ok = true;
+    for (size_t k = 0; ok && k < h.parts.size(); ++k) {
+        const Card& card = cards_[k];
+        const strata::core::ConversationId id = h.parts[k]->pages.id();
+        const strata::core::OnDevice on(card.dev);
+        ok = p.file.empty() || through_ram
+                 ? strata::core::copy_conversation(ram, p.serial, card.experts.pool(), id, err,
+                                                   get_ram_span(card.lb, card.le), get_gpu_span(card))
+                 : strata::core::load_conversation(get_pause_file(p.serial, k), card.experts.pool(), id, err,
+                                                   get_gpu_span(card));
+    }
+    if (through_ram)
+        ram.remove_conversation(p.serial);
+    if (!ok || !restore_unpaged(p, h, err))
+        return false;
     h.live = p.live;
     std::fprintf(stderr, "strata-q38: a conversation of %zu tokens is back from %s (%.0f ms)\n", p.live.size(),
                  p.file.empty() ? "RAM" : "the SSD", get_ms_since(t0));
+    return true;
+}
+
+bool PagedEngine::save_unpaged(const Held& h, Paused& p, std::string& err) const {
+    strata::core::ConversationStateSizes z;
+    if (!strata::core::conversation_state_sizes(m_.g, z, err))
+        return false;
+    for (const std::unique_ptr<Part>& part : h.parts) {
+        const strata::core::OnDevice on(part->dev);
+        std::vector<uint8_t> state;   // the PLE history, then each of the card's QSA layers' (tail, dead, block_pos)
+        if (!strata::core::conversation_unpaged_save(part->ss, m_.g, state, err))
+            return false;
+        const size_t ple = state.size() - (size_t) part->ss.qsa_alloc * (z.tail + z.dead + z.block_pos);
+        p.ple.emplace_back(state.begin(), state.begin() + (std::ptrdiff_t) ple);
+        p.qsa.insert(p.qsa.end(), state.begin() + (std::ptrdiff_t) ple, state.end());
+    }
+    return true;
+}
+
+bool PagedEngine::restore_unpaged(const Paused& p, Held& h, std::string& err) const {
+    strata::core::ConversationStateSizes z;
+    if (!strata::core::conversation_state_sizes(m_.g, z, err))
+        return false;
+    const size_t per_layer = z.tail + z.dead + z.block_pos;
+    for (size_t k = 0; k < h.parts.size(); ++k) {
+        strata::core::SessionState& ss = h.parts[k]->ss;
+        const strata::core::OnDevice on(h.parts[k]->dev);
+        std::vector<uint8_t> state = p.ple[k];
+        const auto first = p.qsa.begin() + (std::ptrdiff_t) ((size_t) ss.qsa_ord0 * per_layer);
+        state.insert(state.end(), first, first + (std::ptrdiff_t) ((size_t) ss.qsa_alloc * per_layer));
+        if (!strata::core::conversation_unpaged_restore(state, ss, m_.g, p.live, err))
+            return false;
+    }
     return true;
 }
 
@@ -1384,11 +1598,12 @@ bool PagedEngine::move_down() {
 void PagedEngine::move_to_ssd(std::vector<Paused>::iterator p) {
     std::string err;
     bool ok = true;
-    for (size_t k = 0; ok && k < spans_.size(); ++k)
+    for (size_t k = 0; ok && k < cards_.size(); ++k)
         ok = strata::core::save_conversation(ram_.pages().pool(), p->serial, get_pause_file(p->serial, k), err,
-                                             spans_[k]);
+                                             get_ram_span(cards_[k].lb, cards_[k].le));
     drop_pages(*p);
     p->file = get_pause_file(p->serial);
+    p->file_cut = get_cut();
     if (ok) {
         trim_ssd();
         return;
@@ -1459,11 +1674,16 @@ bool PagedEngine::adapt_experts() {
     const int64_t n_expert = m_.g.n_expert;
     seen_.resize(usage.size(), 0.0f);
     for (size_t i = 0; i < usage.size(); ++i)
-        if (usage[i] > seen_[i] && m_.host_res[i] >= 0)
-            get_card_of((int64_t) i / n_expert)
-                .experts.note_use({(int32_t) ((int64_t) i / n_expert), (int32_t) ((int64_t) i % n_expert)});
+        if (const int64_t l = (int64_t) i / n_expert, e = (int64_t) i % n_expert; usage[i] > seen_[i]) {
+            Card* const holder = m_.host_res[i] >= 0 ? &get_card_of(l)
+                                 : is_lent(l, e)     ? &cards_[(size_t) holder_[(size_t) l]]
+                                                     : nullptr;
+            if (holder != nullptr)
+                holder->experts.note_use({(int32_t) l, (int32_t) e});
+        }
     std::vector<strata::core::ExpertSwap> swaps = strata::core::choose_expert_swaps(
-        usage, m_.host_res, m_.g.n_layers, n_expert, o.adapt_min_gain, [](int64_t, int32_t) { return false; });
+        usage, m_.host_res, m_.g.n_layers, n_expert, o.adapt_min_gain,
+        [this](int64_t l, int32_t e) { return is_lent(l, e); });
     if (swaps.size() > (size_t) o.adapt_swaps)
         swaps.resize((size_t) o.adapt_swaps);
     std::string err;
@@ -1610,7 +1830,7 @@ strata::serve::MemoryReport PagedEngine::describe_memory() const {
     uint64_t on_ssd = 0;   // the experts neither pool holds
     for (int64_t l = 0; l < m_.g.n_layers; ++l)
         for (int64_t e = 0; e < m_.g.n_expert; ++e)
-            if (m_.host_res[(size_t) (l * m_.g.n_expert + e)] < 0 && !ram_.holds(l, e))
+            if (m_.host_res[(size_t) (l * m_.g.n_expert + e)] < 0 && !is_lent(l, e) && !ram_.holds(l, e))
                 on_ssd += strata::kernels::cpu::expert_layout().blob_bytes(l);
     strata::serve::Memory& ssd = report.at("ssd");
     ssd.add("experts", on_ssd);
@@ -1744,6 +1964,16 @@ std::string PagedEngine::change_settings(const SettingValues& values, std::strin
     if (s.drafter && !settings_.drafter && !switch_drafter(true, err))
         note("", err);
     resize(false);
+    if (std::any_of(gpu_bytes.begin(), gpu_bytes.end(), [](const auto& b) { return b.has_value(); })) {
+        const std::vector<int64_t> cut = plan_cut();
+        const bool move = cut != get_cut();
+        if (move && !move_cut(cut, err))
+            note("moving the layer cut: ", err);
+        if ((!move || cut != get_cut()) && !holder_.empty()) {   // (a cut move places them for its new cut)
+            place_card_experts(true);
+            refilling_ = true;
+        }
+    }
     if (s.tokens_min != min_first)
         note("", set_token_limits(s.tokens_min, s.tokens_max));
     apply_step_settings();
@@ -1828,6 +2058,238 @@ void PagedEngine::report_resize(const char* name, const strata::core::PagePoolRe
     const auto gib = [](const strata::core::PagePoolReport::Use& u) { return (double) u.bytes / 1073741824.0; };
     std::fprintf(stderr, "strata-q38: the %s's pool: %.2f -> %.2f GiB in %.0f ms (experts %.2f -> %.2f GiB)\n", name,
                  gib(before.total), gib(after.total), get_ms_since(t0), gib(before.experts), gib(after.experts));
+}
+
+std::vector<int64_t> PagedEngine::plan_cut() const {
+    using namespace strata::core;
+    const ModelGeometry& g = m_.g;
+    if (cards_.size() < 2)
+        return {};
+    const std::vector<StateRegion>& whole = ram_.pages().pool().layout().regions;   // (every layer's: open_ram)
+    const uint64_t page = cards_[0].experts.pool().page_bytes();
+    LayerSizes sizes;
+    for (int64_t l = 0, qsa = 0; l < g.n_layers; ++l) {
+        const bool is_qsa = is_qsa_layer(g, l);
+        sizes.dense.push_back(0);   // (outside the pools)
+        sizes.expert.push_back((strata::kernels::cpu::expert_layout().blob_bytes(l) + page - 1) / page * page);
+        sizes.fixed_state.push_back(is_qsa ? 0 : whole[0].unit_bytes / (uint64_t) g.n_gdn_layers());
+        sizes.token_bytes.push_back(is_qsa ? whole[(size_t) (1 + qsa++)].unit_bytes / whole[1].unit_tokens() : 0);
+    }
+    int64_t decoding = 0, tokens = settings_.tokens_min;   // the cards keep room for these conversations' state
+    for (const std::unique_ptr<Held>& h : held_)
+        if (h->decoding) {
+            ++decoding;
+            tokens = std::max(tokens, h->dec.pos + h->dec.max_new - h->dec.produced + settings_.step.lookahead + 1);
+        }
+    std::vector<uint64_t> pools;
+    std::vector<double> links;
+    for (const Card& card : cards_) {
+        pools.push_back(card.experts.pool().report().total.bytes);
+        links.push_back(card.link.to_gbps);
+    }
+    SplitProblem problem = make_paged_split_problem(sizes, pools, std::max<int64_t>(decoding, 1),
+                                                    std::min(tokens, m_.o.max_context));
+    const std::vector<double> miss_scale = strata::program::split_rules::link_miss_scale(links);
+    for (size_t k = 0; k < cards_.size(); ++k)
+        problem.cards[k] = {cards_[k].layer_ms, miss_scale[k]};
+    for (size_t i = 0; i < m_.profile_all.size() && (int64_t) i < m_.o.expert_cache; ++i)
+        problem.ranked_layers.push_back(m_.profile_all[i].first);
+    const int64_t interval = std::max<int64_t>(g.qsa_interval, 1);
+    problem.can_start = [&](const std::vector<SplitFill>& fills) {
+        for (size_t k = 0; k < fills.size(); ++k) {
+            const int64_t lb = fills[k].lb, le = fills[k].le, qsa = le / interval - lb / interval;
+            if (lb < cards_[k].weights_lb || le > cards_[k].weights_le || qsa == 0 || qsa == le - lb)
+                return false;
+        }
+        return true;
+    };
+    const SplitPlan plan = plan_layer_split(problem, "strata-q38: the layer cut: ");
+    return plan.cuts.empty() || plan.start_unchecked ? get_cut() : plan.cuts;
+}
+
+bool PagedEngine::move_cut(const std::vector<int64_t>& cut, std::string& err) {
+    using namespace strata::core;
+    const Clock::time_point t0 = Clock::now();
+    const std::vector<int64_t> before = get_cut();
+    std::vector<std::pair<Held*, Paused>> out;   // the conversations paused here
+    // puts back those that decode (`all`: every one), the others staying paused
+    const auto bring_back = [&](bool all) {
+        for (auto& [h, p] : out) {
+            if (!all && !h->decoding) {
+                paused_.push_back(std::move(p));
+                continue;
+            }
+            std::string why;
+            const bool ok = resume(p, *h, why);
+            drop_pages(p);
+            if (ok)
+                continue;
+            std::fprintf(stderr, "strata-q38: a conversation could not come back after the layer cut moved, so it is "
+                                 "forgotten: %s\n", why.c_str());
+            h->forget();
+            if (h->decoding)   // (a batch slot's: CHANGE_SETTINGS comes between a request's steps only there)
+                end_preempted((size_t) h->slot);
+        }
+    };
+    for (const std::unique_ptr<Held>& h : held_) {
+        if (h->live.empty()) {
+            for (const std::unique_ptr<Part>& part : h->parts)
+                if (part->pages.is_ready())
+                    part->pages.release();
+            continue;
+        }
+        if (!pause(*h, err, true)) {
+            bring_back(true);
+            return false;
+        }
+        out.emplace_back(h.get(), std::move(paused_.back()));
+        paused_.pop_back();
+    }
+    std::vector<StateLayout> old_layouts;
+    for (size_t k = 0; k < cards_.size(); ++k) {
+        PagePool& pool = cards_[k].experts.pool();
+        const auto [lb, le] = get_card_layers(cut, k, m_.g.n_layers);
+        old_layouts.push_back(pool.layout());
+        StateLayout layout;
+        std::string why;
+        if (!get_card_layout(m_, cards_[k], lb, le, layout, why) || !(why = pool.set_layout(layout)).empty()) {
+            err = cards_[k].id + "'s pool: " + why;
+            for (size_t j = 0; j < k; ++j)
+                (void) cards_[j].experts.pool().set_layout(old_layouts[j]);
+            bring_back(true);
+            return false;
+        }
+    }
+    // the experts lent to other cards leave first: one of a layer its holder takes would stay in `lent`, where the
+    // holder's own windows do not look
+    if (!holder_.empty())
+        place_card_experts(false);
+    bool ok = true;
+    for (size_t k = 0; k < cards_.size(); ++k) {
+        Card& card = cards_[k];
+        std::tie(card.lb, card.le) = get_card_layers(cut, k, m_.g.n_layers);
+        if (card.stage != nullptr) {
+            card.stage->lb = card.lb;
+            card.stage->le = card.le;
+        }
+        session_set_layers(*card.own, m_.g, card.lb, card.le);
+        for (const std::unique_ptr<Held>& h : held_) {
+            Part& part = *h->parts[k];
+            session_set_layers(part.ss, m_.g, card.lb, card.le);
+            part.gdn_seen = nullptr;
+        }
+        set_stage(cards_, k);
+        ok = card.ver->drop_batch_graphs(err) && ok;
+        split_.end[k] = card.le;
+    }
+    // a moved layer's experts leave the card it left, even those it is to hold for the layer's new card: the hook put
+    // them in the device's table, not in `lent`
+    place_card_experts(false);
+    if (!holder_.empty())
+        place_card_experts(true);
+    m_.split_at = cut;
+    residency_changed_ = refilling_ = true;
+    bring_back(false);
+    trim_ram();   // the conversations left paused went to RAM beyond --tokens-max's budget
+    if (!ok || !fill_cards(err))
+        return false;
+    std::string layers;
+    for (const Card& card : cards_)
+        layers += (layers.empty() ? "" : ", ") + card.id + " layers " + std::to_string(card.lb) + "-" +
+                  std::to_string(card.le - 1);
+    std::fprintf(stderr, "strata-q38: the layer cut moved: K=%s -> K=%s (%s; %zu conversations paused for it) in %.0f "
+                         "ms\n",
+                 format_cuts(before).c_str(), format_cuts(cut).c_str(), layers.c_str(), out.size(), get_ms_since(t0));
+    return true;
+}
+
+bool PagedEngine::fill_cards(std::string& err) {
+    for (Card& card : cards_)
+        while (card.experts.is_refill_wanted()) {
+            uint64_t wait_ms = 0;
+            if (card.experts.refill(card.refill_batch, wait_ms, err) < 0)
+                return false;
+            if (wait_ms > 0)
+                std::this_thread::sleep_for(std::chrono::milliseconds(wait_ms));
+        }
+    return publish_residency(err);
+}
+
+void PagedEngine::place_card_experts(bool lend) {
+    using namespace strata::core;
+    const int64_t n_layers = m_.g.n_layers, n_expert = m_.g.n_expert;
+    ExpertPlacement placed;
+    std::vector<ExpertKey> first;   // the profile's first --expert-cache: what one GPU would hold
+    for (size_t i = 0; i < m_.profile_all.size() && (int64_t) i < m_.o.expert_cache; ++i)
+        first.push_back({m_.profile_all[i].first, m_.profile_all[i].second});
+    if (lend && !holder_.empty()) {
+        const uint64_t page = cards_[0].experts.pool().page_bytes();
+        std::vector<CardPool> pools;   // each card's pages less those kept for --tokens-min
+        for (const Card& card : cards_) {
+            const PagePool& pool = card.experts.pool();
+            const uint64_t pages = pool.report().total.pages;
+            pools.push_back({card.lb, card.le, (pages - std::min(pages, pool.pages_for(settings_.tokens_min))) * page});
+        }
+        std::vector<uint64_t> bytes;
+        for (const uint64_t b : get_blob_bytes(m_))
+            bytes.push_back((b + page - 1) / page * page);
+        placed = place_experts(pools, first, n_layers, n_expert, bytes,
+                               [&](int, int holder) { return is_hop_wanted(cards_[(size_t) holder]); });
+    }
+    if (!holder_.empty())   // in place: SplitDrive::holder points into it
+        for (int64_t l = 0; l < n_layers; ++l)
+            holder_[(size_t) l] = placed.remote.empty() ? -1 : placed.remote[(size_t) l];
+    std::string lenders;
+    for (Card& card : cards_) {
+        int64_t max_experts = m_.o.expert_cache;
+        std::vector<ExpertKey> ranking = get_card_ranking(m_, card.lb, card.le, max_experts);
+        if (!placed.card.empty()) {   // those placed on it, hottest first, then the rest of its layers'
+            const auto is_on_card = [&](const ExpertKey& k) {
+                return placed.card[(size_t) (k.layer * n_expert + k.expert)] == (int32_t) card.index;
+            };
+            std::vector<ExpertKey> held;
+            std::copy_if(first.begin(), first.end(), std::back_inserter(held), is_on_card);
+            max_experts = (int64_t) held.size();
+            const int64_t others = std::count_if(held.begin(), held.end(), [&](const ExpertKey& k) {
+                return k.layer < card.lb || k.layer >= card.le;
+            });
+            std::remove_copy_if(ranking.begin(), ranking.end(), std::back_inserter(held), is_on_card);
+            ranking = std::move(held);
+            if (others > 0)
+                lenders += (lenders.empty() ? "" : ", ") + card.id + " " + std::to_string(others);
+        }
+        const OnDevice on(card.dev);
+        card.experts.set_ranking(ranking, max_experts);
+    }
+    if (!lenders.empty())
+        std::fprintf(stderr, "strata-q38: experts of other cards' layers, computed where they are in one hop: %s\n",
+                     lenders.c_str());
+}
+
+bool PagedEngine::is_hop_wanted(const Card& holder) const {
+    const uint64_t row = (uint64_t) strata::kernels::cpu::H * sizeof(float);
+    return settings_.remote_experts == "on" ||
+           strata::core::is_hop_cheaper(strata::core::get_hop_ms(holder.link, settings_.step.rows, row, row), 1,
+                                        kCpuExpertMs);
+}
+
+std::vector<int64_t> PagedEngine::get_cut() const {
+    std::vector<int64_t> cut;
+    for (size_t k = 1; k < cards_.size(); ++k)
+        cut.push_back(cards_[k].lb);
+    return cut;
+}
+
+strata::core::RegionSpan PagedEngine::get_gpu_span(const Card& card) const {
+    return {1, SIZE_MAX, 0, 0, card.experts.pool().layout().regions[0].unit_bytes};
+}
+
+strata::core::RegionSpan PagedEngine::get_ram_span(int64_t lb, int64_t le) const {
+    const strata::core::ModelGeometry& g = m_.g;
+    const int64_t interval = std::max<int64_t>(g.qsa_interval, 1), q0 = lb / interval, q1 = le / interval;
+    const uint64_t gdn_layer = ram_.pages().pool().layout().regions[0].unit_bytes / (uint64_t) g.n_gdn_layers();
+    return {(size_t) (1 + q0), le == g.n_layers ? SIZE_MAX : (size_t) (q1 - q0), 0, (uint64_t) (lb - q0) * gdn_layer,
+            (uint64_t) (le - q1 - (lb - q0)) * gdn_layer};
 }
 
 std::string PagedEngine::set_token_limits(int64_t min, int64_t max) {

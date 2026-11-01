@@ -6,6 +6,7 @@
 #include <cstdio>
 #include <iterator>
 #include <stdexcept>
+#include <utility>
 
 namespace strata::core {
 
@@ -36,17 +37,53 @@ PagePool::PagePool(const StateLayout& layout, PagePoolConfig config, PagePoolHoo
       pages_per_chunk_(config_.chunk_bytes / config_.page_bytes) {
     if (pages_per_chunk_ == 0)
         throw std::invalid_argument("a chunk of the page pool holds no page");
+    if (const std::string why = place_blocks(); !why.empty())
+        throw std::invalid_argument(why);
+    if (!config_.expert_ranking.empty())
+        smallest_expert_ = *std::min_element(config_.expert_ranking.begin(), config_.expert_ranking.end());
+}
+
+std::string PagePool::set_layout(const StateLayout& layout) {
+    if (!conversations_.empty())
+        return "the pool holds conversations";
+    const StateLayout old = std::exchange(layout_, layout);
+    std::string why = place_blocks();
+    if (why.empty())
+        why = check_limits(page_count(), config_.tokens_min, config_.tokens_max);
+    if (!why.empty()) {
+        layout_ = old;
+        (void) place_blocks();
+        return why;
+    }
+    place_homes();
+    return {};
+}
+
+void PagePool::set_expert_ranking(std::vector<uint32_t> ranking) {
+    config_.expert_ranking = std::move(ranking);
+    smallest_expert_ = config_.expert_ranking.empty()
+                           ? 0
+                           : *std::min_element(config_.expert_ranking.begin(), config_.expert_ranking.end());
+    fragmented_pages_ = 0;
+    for (const PageId first : free_runs_)
+        if (const uint32_t pages = runs_.at(first).pages; pages < smallest_expert_)
+            fragmented_pages_ += pages;
+    place_homes();
+}
+
+/// Sets block_pages_ and smallest_block_ from the layout; gets why a block does not fit a chunk, or an empty string.
+std::string PagePool::place_blocks() {
+    block_pages_.clear();
+    smallest_block_ = UINT32_MAX;
     for (size_t r = 0; r < layout_.regions.size(); ++r) {
         block_pages_.push_back(choose_block_pages(layout_.regions[r], config_.page_bytes));
         if (block_pages_.back() > pages_per_chunk_)
-            throw std::invalid_argument(is_fixed(r)
-                                            ? "a fixed region of a conversation is larger than a chunk of the page pool"
-                                            : "a block of a growing region is larger than a chunk of the page pool");
+            return is_fixed(r) ? "a fixed region of a conversation is larger than a chunk of the page pool"
+                               : "a block of a growing region is larger than a chunk of the page pool";
         if (!is_fixed(r))
             smallest_block_ = std::min(smallest_block_, block_pages_.back());
     }
-    if (!config_.expert_ranking.empty())
-        smallest_expert_ = *std::min_element(config_.expert_ranking.begin(), config_.expert_ranking.end());
+    return {};
 }
 
 PagePool::~PagePool() {

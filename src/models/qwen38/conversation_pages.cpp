@@ -2,6 +2,7 @@
 // (conversation_pages.hpp).
 #include "strata/models/qwen38/conversation_pages.hpp"
 
+#include "strata/base/gpu/on_device.hpp"
 #include "strata/core/layout.hpp"
 #include "strata/models/qwen38/conversation_snapshot.hpp"
 #include "strata/models/qwen38/layer.hpp"
@@ -14,6 +15,7 @@
 namespace strata::qwen38 {
 
 ConversationPages::~ConversationPages() {
+    const strata::core::OnDevice on(device_);
     for (int64_t* t : tables_)
         cudaFree(t);
 }
@@ -72,7 +74,10 @@ bool ConversationPages::init(const strata::core::ModelGeometry& g, strata::core:
     ss.gdn_state = (float*) pool.page_address(pool.conversation_blocks(id, 0).at(0));
     idx_block_ = s.idx_block;
     max_blocks_ = ss.max_cells / s.idx_block + 2;
+    for (size_t j = unit_bytes_.size(); j < tables_.size(); ++j)   // the pool's layout lost layers (a moved cut)
+        (void) cudaFree(tables_[j]);
     tables_.resize(unit_bytes_.size(), nullptr);
+    (void) cudaGetDevice(&device_);
     runs_in_table_.assign(unit_bytes_.size(), 0);
     for (size_t j = 0; j < tables_.size(); ++j) {
         if (tables_[j] == nullptr &&

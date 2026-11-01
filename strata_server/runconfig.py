@@ -86,18 +86,19 @@ def view(cfg: dict, path: str | Path) -> dict:
             "note": "Saved to the run config; used from the next start of the model."}
 
 
-def check_live(changes, to_default: bool) -> dict:
+def check_live(changes, to_default: bool, cards: list[str] | None = None) -> dict:
     """Checks POST /v1/memory's "set" ({setting: value}): gets the values as CHANGE_SETTINGS spells them (whole
     numbers; drafter "on" or "off"), or raises a ValueError naming the first bad setting or value.  `to_default`:
-    the values are to be saved to the run config too, so only settings with a flag there are accepted."""
+    the values are to be saved to the run config too, so only settings with a flag there are accepted; `cards`: the
+    engine's GPU pool settings (get_card_settings), which --gpu-mib holds (one size per card)."""
     if not isinstance(changes, dict) or not changes:
         raise ValueError('send {"set": {"<setting>": <value>, ...}}')
     out = {}
     for key, v in changes.items():
-        if key not in LIVE_FLAGS and not re.fullmatch(r"memory_mib\.gpu[0-9]+", key):
-            raise ValueError(f"{key!r} is not a memory setting (expected memory_mib.gpu<N> or one of "
-                             f"{', '.join(LIVE_FLAGS)})")
-        if to_default and key not in LIVE_FLAGS:
+        if key not in LIVE_FLAGS and not _is_card_setting(key):
+            raise ValueError(f"{key!r} is not a memory setting (expected memory_mib.gpu<N>, "
+                             f"memory_mib.gpu<N>.<card> or one of {', '.join(LIVE_FLAGS)})")
+        if to_default and key not in LIVE_FLAGS and key not in (cards or []):
             raise ValueError(f"{key} has no default in the run config; change it for this session only")
         if key == "drafter":
             if not isinstance(v, bool) and v not in ("on", "off"):
@@ -118,14 +119,32 @@ def read_live_defaults(path: str | Path | None) -> dict:
     return {key: _arg(cfg, flag) for key, flag in LIVE_FLAGS.items()}
 
 
-def apply_live(cfg: dict, values: dict) -> tuple[dict, list[str]]:
+def apply_live(cfg: dict, values: dict, settings: dict | None = None) -> tuple[dict, list[str]]:
     """Gets the config with check_live's `values` written as their engine flags in "args" (as the person's, as
-    apply does), and the settings whose default changed."""
+    apply does), and the settings whose default changed.  `settings`: the engine's settings after the change; a GPU
+    pool's size (get_card_settings) is saved as --gpu-mib's list of every card's pool, in the cards' order."""
     new = json.loads(json.dumps(cfg))                  # a deep copy: the caller's dict is left alone
-    changed = [key for key, v in values.items() if _arg(new, LIVE_FLAGS[key]) != v]
-    for key in changed:
-        _set_arg(new, LIVE_FLAGS[key], values[key])
+    cards = get_card_settings(settings or {})
+    changed = []
+    if any(key in cards for key in values):
+        sizes = ",".join(str(values.get(k, settings[k])) for k in cards)
+        if str(_arg(new, "--gpu-mib")) != sizes:
+            _set_arg(new, "--gpu-mib", sizes)
+            changed = list(cards)
+    for key, v in values.items():
+        if key not in cards and _arg(new, LIVE_FLAGS[key]) != v:
+            _set_arg(new, LIVE_FLAGS[key], v)
+            changed.append(key)
     return new, changed
+
+
+def get_card_settings(settings: dict) -> list[str]:
+    """Gets the engine's GPU pool settings (memory_mib.gpu<N>, memory_mib.gpu<N>.<card>) in its cards' order."""
+    return [key for key in settings if _is_card_setting(key)]
+
+
+def _is_card_setting(key: str) -> bool:
+    return re.fullmatch(r"memory_mib\.gpu[0-9]+(\.[0-9]+)?", key) is not None
 
 
 def _number(key, v, whole=False, lo=0.0, hi=None, lo_open=False):

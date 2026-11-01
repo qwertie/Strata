@@ -90,8 +90,6 @@ uint64_t session_bytes(const ModelGeometry& g, int64_t max_cells, int64_t k, int
 
 uint64_t session_init(const ModelGeometry& g, int64_t max_cells, int64_t k, void* base, SessionState& s,
                       int64_t layer_lo, int64_t layer_hi, const QsaState* rope_from) {
-    if (layer_hi < 0 || layer_hi > g.n_layers) layer_hi = g.n_layers;
-    if (layer_lo < 0) layer_lo = 0;
     uint8_t* p = (uint8_t*) base;
     uint64_t used = 0;
     auto take = [&](uint64_t bytes) {
@@ -102,14 +100,7 @@ uint64_t session_init(const ModelGeometry& g, int64_t max_cells, int64_t k, void
 
     s.max_cells = max_cells;
     s.k = k;
-    s.layer_lo = layer_lo;
-    s.layer_hi = layer_hi;
-    const int64_t I = std::max<int64_t>(g.qsa_interval, 1);
-    const int64_t q_n_range = layer_hi / I - layer_lo / I;
-    s.qsa_ord0 = layer_lo / I;
-    s.qsa_alloc = std::max<int64_t>(q_n_range, g.n_qsa_layers() > 0 ? 1 : 0);
-    s.gdn_ord0 = layer_lo - layer_lo / I;
-    s.gdn_alloc = std::max<int64_t>((layer_hi - layer_lo) - q_n_range, 0);
+    session_set_layers(s, g, layer_lo, layer_hi);
 
     gdn_buffers_init(g, take(gdn_buffers_bytes(g)), s.gdn);
     s.gdn_state = g_pool_state ? nullptr : (float*) take((uint64_t) s.gdn_alloc * gdn_state_floats(g) * 4);
@@ -144,6 +135,19 @@ uint64_t session_init(const ModelGeometry& g, int64_t max_cells, int64_t k, void
     s.ple_hist = (float*) take(ple_hist_bytes());
     s.R = s.block.R;
     return used;
+}
+
+void session_set_layers(SessionState& s, const ModelGeometry& g, int64_t layer_lo, int64_t layer_hi) {
+    if (layer_hi < 0 || layer_hi > g.n_layers) layer_hi = g.n_layers;
+    if (layer_lo < 0) layer_lo = 0;
+    s.layer_lo = layer_lo;
+    s.layer_hi = layer_hi;
+    const int64_t I = std::max<int64_t>(g.qsa_interval, 1);
+    const int64_t q_n_range = layer_hi / I - layer_lo / I;
+    s.qsa_ord0 = layer_lo / I;
+    s.qsa_alloc = std::max<int64_t>(q_n_range, g.n_qsa_layers() > 0 ? 1 : 0);
+    s.gdn_ord0 = layer_lo - layer_lo / I;
+    s.gdn_alloc = std::max<int64_t>((layer_hi - layer_lo) - q_n_range, 0);
 }
 
 void session_release(SessionState& s) {

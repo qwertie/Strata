@@ -27,7 +27,7 @@ public:
     ConversationDrafter(const ConversationDrafter&) = delete;
     ConversationDrafter& operator=(const ConversationDrafter&) = delete;
 
-    /// Binds `m`'s drafter (Model::mtp, loaded with set_kv_in_pages) to the model's head and readies it for
+    /// Binds `m`'s drafter (Model::mtp, loaded with set_kv_in_pages) to the head of its card and readies it for
     /// `sessions` conversations; the guesses keep to --spec-min-p.  Called again for a drafter loaded again.
     bool init(Model& m, int sessions, std::string& err);
     /// Writes the drafter's K/V of the prompt cells [cell0, cell0 + n) of a conversation (its `pages` and session
@@ -68,6 +68,7 @@ private:
     double min_p_ = 0.0;
     uint64_t row_floats_ = 0;   ///< the floats of one residual row
     float* rows_ = nullptr;     ///< the bound residual rows: a conversation's rows of the window, copied in by draft()
+    int device_ = 0;            ///< the drafter's GPU, which `rows_` is on (a layer split's last card's)
     std::vector<Last> last_;    ///< per session
     std::vector<int32_t> drafts_;
     std::vector<float> probs_;

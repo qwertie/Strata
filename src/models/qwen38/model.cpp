@@ -1061,6 +1061,7 @@ int Model::load() {
     // only be trimmed once the split is known).  Every other run keeps the 0.1.39 order: weights first, then the
     // search - so without the trim nothing about a split moves.
     const bool late_weights = trim_asked && multi_gpu && split_auto;
+    stage_weights_trimmed = stage_trim || late_weights;
     // keep_routers: CUDA0 with --mmap-experts keeps every layer's router (ffn_gate_inp, ~2.5 MiB a layer) - the file
     // tier's routing-aware prefetch (RouterLookahead, below) copies all of them from CUDA0's arena, and would
     // otherwise turn itself off
@@ -1816,7 +1817,7 @@ int Model::load() {
                 const double f = p != nullptr ? std::atof(p) : 0.0;
                 if (f > 0.0) speed = std::max(1.0, speed * f);
             }
-            layer_ms[(size_t) i] = 0.33 * (84.0 * 2.617) / speed;
+            layer_ms[(size_t) i] = strata::program::split_rules::get_layer_ms(speed);
             std::fprintf(stderr, "strata generate: layer split auto: CUDA%d %d SMs at %.2f GHz -> %.2f ms per layer, "
                                  "%.2f GiB free before its session carve\n", dev, sms, khz / 1e6, layer_ms[(size_t) i],
                          (double) cap[(size_t) i] / 1073741824.0);
@@ -2078,14 +2079,17 @@ int Model::load() {
             strata::core::ExpertCache::set_vmm(on);
         }
         session_layers.emplace_back(0, hi0);
-        if (cudaMalloc(&sbuf, strata::core::session_bytes(g, o.max_context, K, 0, hi0)) != cudaSuccess) {
+        // strata-q38 moves the cut while it runs (session_set_layers), so its sessions are carved for every layer
+        const int64_t carved_hi = own_stages ? -1 : hi0;
+        if (cudaMalloc(&sbuf, strata::core::session_bytes(g, o.max_context, K, 0, carved_hi)) != cudaSuccess) {
             std::fprintf(stderr, "strata generate: session state allocation failed\n");
             return 1;
         }
-        if (strata::core::session_init(g, o.max_context, K, sbuf, ss, 0, hi0) == 0) {
+        if (strata::core::session_init(g, o.max_context, K, sbuf, ss, 0, carved_hi) == 0) {
             std::fprintf(stderr, "strata generate: session_init failed\n");
             return 1;
         }
+        strata::core::session_set_layers(ss, g, 0, hi0);
         if (g.n_qsa_layers() > 0 && ss.qsa_states[ss.qsa_primary()].kv_mode == 1)
             std::fprintf(stderr, "strata generate: KV streaming: %lld of %lld cells per QSA layer in VRAM, the K/V in "
                                  "%.2f GiB of pinned RAM\n",
@@ -2115,11 +2119,14 @@ int Model::load() {
         const strata::core::OnDevice on(st.dev);
         void* sbuf_s = nullptr;
         session_layers.emplace_back(st.lb, st.le);
-        if (cudaMalloc(&sbuf_s, strata::core::session_bytes(g, o.max_context, K, st.lb, st.le)) != cudaSuccess ||
-            strata::core::session_init(g, o.max_context, K, sbuf_s, st.ss, st.lb, st.le) == 0) {
+        const int64_t carved_lb = own_stages ? 0 : st.lb, carved_le = own_stages ? -1 : st.le;   // (as CUDA0's)
+        if (cudaMalloc(&sbuf_s, strata::core::session_bytes(g, o.max_context, K, carved_lb, carved_le)) !=
+                cudaSuccess ||
+            strata::core::session_init(g, o.max_context, K, sbuf_s, st.ss, carved_lb, carved_le) == 0) {
             std::fprintf(stderr, "strata generate: layer split, CUDA%d: the session state failed\n", st.dev);
             return 1;
         }
+        strata::core::session_set_layers(st.ss, g, st.lb, st.le);
         const bool last = i + 1 == stages.size();
         const strata::core::WeightRef* wo_s = st.wt.find("output.weight");
         if (wo_s == nullptr ||
@@ -2316,10 +2323,8 @@ int Model::load() {
         }
         // the draft layer is the canonical model's MTP head (512 experts) even when the target is pruned,
         // so it always sees the canonical geometry; `static` because MtpDrafter keeps a reference
-        // with a layer split across GPUs the drafter reads the last stage's residual: it lives on that device
-        const strata::core::OnDevice on_mtp(last_st && !mtp_first ? last_st->dev : -1);
-        if (!o.mtp.empty() && !load_drafter_on(last_st && !mtp_first ? last_st->ss : ss, err)) { std::fprintf(stderr, "strata generate: %s%s\n", err.c_str(), vram_free_note().c_str()); return 1; }
-        mtp.set_ple_session(&ss);
+        if (!o.mtp.empty() && !load_drafter(err)) { std::fprintf(stderr, "strata generate: %s%s\n", err.c_str(), vram_free_note().c_str()); return 1; }
+        const strata::core::OnDevice on_mtp(mtp.device());   // the batch slots' drafters below go on its GPU too
 #if defined(STRATA_HAVE_DFLASH2)
         if (o.draft == "dflash2") {
             const char* why = o.mtp.empty() ? "it needs --mtp (the fallback) and --spec 2 or more"
@@ -2370,7 +2375,7 @@ int Model::load() {
             // Slot b's drafter lives where the solo drafter does (the guard above: the last stage's GPU), carved from the
             // LAST stage's slot-b session (bslot_ss.back(): stage 0's on one GPU): it borrows that session's context
             // length and RoPE table, which are on that device.  Its PLE history is the first stage's slot session: PLE
-            // runs on the first stage, as for the solo drafter (`mtp.set_ple_session(&ss)` above).
+            // runs on the first stage, as for the solo drafter (load_drafter's `mtp.set_ple_session(&ss)`).
             for (int b = 0; b < o.batch; ++b) {
                 auto d = std::make_unique<strata::core::MtpDrafter>();
                 if (!d->load(o.mtp, draft_geometry, *bslot_ss.back()[(size_t) b], o.spec, err, o.mtp_window, &mtp)) {
@@ -3914,20 +3919,16 @@ cudaError_t Model::put_residency(int32_t* dst) const {
 
 void Model::unload_drafter() {
     // MtpDrafter gives its memory back only in its destructor, and a new one is the unloaded state
+    const strata::core::OnDevice on(mtp.device());   // (its destructor frees on the current device)
     mtp.~MtpDrafter();
     new (&mtp) strata::core::MtpDrafter();
 }
 
 bool Model::load_drafter(std::string& err) {
-    if (!load_drafter_on(ss, err))
-        return false;
-    mtp.set_ple_session(&ss);
-    return true;
-}
-
-/// Sets the MTP drafter's options from --mtp-* and loads it from --mtp, its K/V (unless in pages) beside session
-/// `on`'s (load and load_drafter).
-bool Model::load_drafter_on(strata::core::SessionState& on, std::string& err) {
+    // with a layer split across GPUs the drafter reads the last stage's residual: it lives on that device, its K/V
+    // (unless in pages) beside that stage's session
+    GpuStage* const st = get_drafter_stage();
+    const strata::core::OnDevice on(st != nullptr ? st->dev : -1);
     mtp.set_prompt_len((int64_t) o.tokens.size());
     mtp.set_hnorm_per_stream(o.mtp_hnorm_stream);   // --mtp-hnorm stream (opt-in), before any capture
     mtp.set_q4(o.mtp_q4 == "all" || o.mtp_q4 == "proj", o.mtp_q4 == "all" || o.mtp_q4 == "head");   // before load
@@ -3936,7 +3937,10 @@ bool Model::load_drafter_on(strata::core::SessionState& on, std::string& err) {
     // the next window's drafts), and the round/step graphs carry the forcing kernel
     const int mtp_t = o.pipeline_windows >= 2 ? strata::kernels::kVerifyMaxT : o.spec;
     if (o.pipeline_windows >= 2) mtp.set_force_capture(true);
-    return mtp.load(o.mtp, draft_geometry, on, mtp_t, err, o.mtp_window);
+    if (!mtp.load(o.mtp, draft_geometry, st != nullptr ? st->ss : ss, mtp_t, err, o.mtp_window))
+        return false;
+    mtp.set_ple_session(&ss);
+    return true;
 }
 
 strata::core::VerifyHits Model::get_verify_hits() const {
@@ -4325,6 +4329,8 @@ void drive_pool_split(void* user, const float* x_f, const int32_t* ids, int64_t 
     d.d.cache_base = s->cache_base[st];
     d.d.cache_slot_off = s->cache_slot_off[st];
     d.d.pcie_num = s->pcie_num[st];
+    if (s->holder != nullptr)
+        d.d.peer = s->holder[layer] >= 0 ? s->hop[s->holder[layer]] : nullptr;
     drive_pool_multi(s->base, x_f, ids, n_tok, k, out, layer);
 }
 

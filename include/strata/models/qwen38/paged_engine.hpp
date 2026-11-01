@@ -22,8 +22,12 @@
 // layers and has a page pool of its own, with the experts of its layers and each conversation's state for them; the
 // verify windows and the prompt path hand their rows from card to card.  `--split-device 0,..` puts several cards on
 // one GPU, each with its own weights and pool: the test of a split on a PC with one GPU.  A paused conversation is one
-// conversation in the RAM's pool (each card's regions one after another) or one file per card.  Not yet: drafting on a
-// split, an expert computed on another card than its layer's, and moving the cut while running (step M9).
+// conversation in the RAM's pool (each card's regions one after another) or one file per card.  A card with pages to
+// spare holds experts of other cards' layers that their cards have no room for, and computes them in one hop
+// (`--remote-experts auto|on|off`; auto: where a hop over the card's link costs less than the CPU computing an
+// expert).  The MTP drafter runs on the last card.  When a card's memory setting changes, the cut moves if the
+// planner says so (step M9): between two steps every conversation is paused to RAM, the cards take their new layers,
+// and the conversations come back.
 //
 // CHANGE_SETTINGS (memory_report.hpp) changes, between two steps, each pool's size (`memory_mib.gpu<N>`, per card
 // `memory_mib.gpu<N>.<card>` for a later card on the GPU of an earlier one,

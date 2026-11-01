@@ -127,6 +127,12 @@ public:
     PoolResize resize(uint64_t bytes);
     /// Changes the token limits; returns why not (changing nothing) or an empty string.
     std::string set_token_limits(int64_t min, int64_t max);
+    /// Gives the conversations the regions of `layout` from now on, while the pool holds none (strata-q38 moves a
+    /// layer split's cut, which changes the layers each card keeps state for).  Returns why not (changing nothing):
+    /// it holds conversations, a fixed region or a block is larger than a chunk, or the token minimum does not fit.
+    std::string set_layout(const StateLayout& layout);
+    /// Replaces PagePoolConfig::expert_ranking, which places the expert sizes' home points (ExpertPages::set_ranking).
+    void set_expert_ranking(std::vector<uint32_t> ranking);
 
     /// Gives conversation `id` (added if new) the pages for `tokens` tokens; fewer tokens than it has keep its
     /// pages.  Returns why not (changing nothing) or an empty string.
@@ -216,6 +222,7 @@ private:
     bool is_fixed(size_t region) const { return layout_.regions[region].kind == RegionKind::fixed; }
     bool is_chunk_start(PageId page) const { return page % pages_per_chunk_ == 0; }
     PageId page_count() const { return (PageId) (chunks_.size() * pages_per_chunk_); }
+    std::string place_blocks();
     void place_homes();
     PoolResize shrink(size_t chunks);
     std::string check_limits(uint64_t pages, int64_t min, int64_t max) const;
@@ -243,7 +250,7 @@ private:
     Runs::iterator get_run_at(PageId page);
     std::string gib(uint64_t pages) const;
 
-    const StateLayout layout_;
+    StateLayout layout_;
     PagePoolConfig config_;
     PagePoolHooks hooks_;
     const uint64_t pages_per_chunk_;

@@ -82,6 +82,7 @@ private:
     /// per QSA layer, the device table its state's `units` points at; then the drafter's (has_drafter_)
     std::vector<int64_t*> tables_;
     std::vector<size_t> runs_in_table_;          ///< per table, the pool's blocks whose units it holds
+    int device_ = 0;                             ///< the GPU the tables are on (a layer split's card's)
 };
 
 }  // namespace strata::qwen38

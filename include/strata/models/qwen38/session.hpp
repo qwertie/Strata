@@ -104,6 +104,11 @@ uint64_t session_bytes(const ModelGeometry& g, int64_t max_cells, int64_t k, int
 /// the same context.
 uint64_t session_init(const ModelGeometry& g, int64_t max_cells, int64_t k, void* base, SessionState& s,
                       int64_t layer_lo = 0, int64_t layer_hi = -1, const QsaState* rope_from = nullptr);
+/// Sets the layers session `s` runs and owns the state of to [layer_lo, layer_hi), in session_init's range convention:
+/// its range and its QSA and GDN ordinals (session_init calls it before it carves).  On a session carved for every
+/// layer with session_set_pool_state, a later call moves its range without carving again: its QSA states stay carved,
+/// and the page pool holds its GDN state (strata-q38 moves a layer split's cut while it runs).
+void session_set_layers(SessionState& s, const ModelGeometry& g, int64_t layer_lo, int64_t layer_hi = -1);
 /// The page pool holds a conversation's state (strata-q38): sessions are sized and carved without the GDN layers'
 /// recurrent state (`gdn_state` stays null for the pool's owner to set) and without the QSA layers' K/V
 /// (qsa_set_kv_units).  Set before sizing and initializing a session.

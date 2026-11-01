@@ -30,12 +30,21 @@ constexpr size_t kBounceBytes = 8u << 20;
 
 using File = std::unique_ptr<std::FILE, int (*)(std::FILE*)>;
 
-/// Gets the regions of `pool`'s layout that `span` names, as far as the layout has them.
-std::vector<size_t> get_regions(const PagePool& pool, RegionSpan span) {
-    std::vector<size_t> regions;
+/// One region of a span, or the share of a fixed region a span takes: the bytes of each of its blocks from `offset`.
+struct Piece {
+    size_t region = 0;
+    uint64_t offset = 0, bytes = 0;
+};
+
+/// Gets the pieces of `pool`'s layout that `span` names: its share of a fixed region, then its regions, as far as the
+/// layout has them.
+std::vector<Piece> get_pieces(const PagePool& pool, RegionSpan span) {
+    std::vector<Piece> pieces;
+    if (span.part != SIZE_MAX)
+        pieces.push_back({span.part, span.offset, span.bytes});
     for (size_t r = span.first; r < pool.layout().regions.size() && r - span.first < span.count; ++r)
-        regions.push_back(r);
-    return regions;
+        pieces.push_back({r, 0, pool.block_bytes(r)});
+    return pieces;
 }
 
 /// Copies `bytes` of pages (in any memory) to the file `f` (`to_file`) or from it, through `bounce` a piece at a time.
@@ -53,24 +62,25 @@ bool copy_through(std::FILE* f, uint8_t* pages, uint64_t bytes, bool to_file, st
 
 bool copy_conversation(const PagePool& from, ConversationId from_id, const PagePool& to, ConversationId to_id,
                        std::string& err, RegionSpan from_span, RegionSpan to_span) {
-    const std::vector<size_t> src_regions = get_regions(from, from_span), dst_regions = get_regions(to, to_span);
-    bool same = src_regions.size() == dst_regions.size() && from.page_bytes() == to.page_bytes();
-    for (size_t i = 0; same && i < dst_regions.size(); ++i)
-        same = from.block_bytes(src_regions[i]) == to.block_bytes(dst_regions[i]);
+    const std::vector<Piece> src_pieces = get_pieces(from, from_span), dst_pieces = get_pieces(to, to_span);
+    bool same = src_pieces.size() == dst_pieces.size() && from.page_bytes() == to.page_bytes();
+    for (size_t i = 0; same && i < dst_pieces.size(); ++i)
+        same = src_pieces[i].bytes == dst_pieces[i].bytes;
     if (!same) {
         err = "the two page pools differ in layout or page size";
         return false;
     }
-    for (size_t i = 0; i < dst_regions.size(); ++i) {
-        const size_t r = dst_regions[i];
-        const std::vector<PageId>& src = from.conversation_blocks(from_id, src_regions[i]);
-        const std::vector<PageId>& dst = to.conversation_blocks(to_id, r);
+    for (size_t i = 0; i < dst_pieces.size(); ++i) {
+        const Piece& s = src_pieces[i];
+        const Piece& d = dst_pieces[i];
+        const std::vector<PageId>& src = from.conversation_blocks(from_id, s.region);
+        const std::vector<PageId>& dst = to.conversation_blocks(to_id, d.region);
         if (src.size() < dst.size()) {
             err = "the conversation's copy has fewer blocks than its new place";
             return false;
         }
         for (size_t b = 0; b < dst.size(); ++b)
-            if (!gpu_copy(to.page_address(dst[b]), from.page_address(src[b]), to.block_bytes(r))) {
+            if (!gpu_copy(to.page_address(dst[b]) + d.offset, from.page_address(src[b]) + s.offset, d.bytes)) {
                 err = "a copy of the conversation's pages failed";
                 return false;
             }
@@ -81,16 +91,16 @@ bool copy_conversation(const PagePool& from, ConversationId from_id, const PageP
 bool save_conversation(const PagePool& pool, ConversationId id, const std::string& path, std::string& err,
                        RegionSpan span) {
     File f(std::fopen(path.c_str(), "wb"), &std::fclose);
-    const std::vector<size_t> regions = get_regions(pool, span);
-    std::vector<uint64_t> head{regions.size()};
-    for (const size_t r : regions)
-        head.insert(head.end(), {pool.block_bytes(r), pool.conversation_blocks(id, r).size()});
+    const std::vector<Piece> pieces = get_pieces(pool, span);
+    std::vector<uint64_t> head{pieces.size()};
+    for (const Piece& c : pieces)
+        head.insert(head.end(), {c.bytes, pool.conversation_blocks(id, c.region).size()});
     std::vector<uint8_t> bounce(kBounceBytes);
     bool ok = f != nullptr && std::fwrite(kMagic, 1, sizeof kMagic, f.get()) == sizeof kMagic &&
               std::fwrite(head.data(), sizeof(uint64_t), head.size(), f.get()) == head.size();
-    for (const size_t r : regions)
-        for (const PageId p : pool.conversation_blocks(id, r))
-            ok = ok && copy_through(f.get(), pool.page_address(p), pool.block_bytes(r), true, bounce);
+    for (const Piece& c : pieces)
+        for (const PageId p : pool.conversation_blocks(id, c.region))
+            ok = ok && copy_through(f.get(), pool.page_address(p) + c.offset, c.bytes, true, bounce);
 #if defined(_WIN32)
     ok = ok && std::fflush(f.get()) == 0 && _commit(_fileno(f.get())) == 0;
 #else
@@ -108,20 +118,20 @@ bool save_conversation(const PagePool& pool, ConversationId id, const std::strin
 bool load_conversation(const std::string& path, const PagePool& pool, ConversationId id, std::string& err,
                        RegionSpan span) {
     File f(std::fopen(path.c_str(), "rb"), &std::fclose);
-    const std::vector<size_t> regions = get_regions(pool, span);
+    const std::vector<Piece> pieces = get_pieces(pool, span);
     char magic[sizeof kMagic] = {};
-    std::vector<uint64_t> head(1 + 2 * regions.size());
+    std::vector<uint64_t> head(1 + 2 * pieces.size());
     bool ok = f != nullptr && std::fread(magic, 1, sizeof magic, f.get()) == sizeof magic &&
               std::memcmp(magic, kMagic, sizeof magic) == 0 &&
               std::fread(head.data(), sizeof(uint64_t), head.size(), f.get()) == head.size() &&
-              head[0] == regions.size();
+              head[0] == pieces.size();
     std::vector<uint8_t> bounce(kBounceBytes);
-    for (size_t i = 0; ok && i < regions.size(); ++i) {
+    for (size_t i = 0; ok && i < pieces.size(); ++i) {
         const uint64_t block = head[1 + 2 * i], stored = head[2 + 2 * i];
-        const std::vector<PageId>& blocks = pool.conversation_blocks(id, regions[i]);
-        ok = block == pool.block_bytes(regions[i]) && stored >= blocks.size();
+        const std::vector<PageId>& blocks = pool.conversation_blocks(id, pieces[i].region);
+        ok = block == pieces[i].bytes && stored >= blocks.size();
         for (size_t b = 0; ok && b < blocks.size(); ++b)
-            ok = copy_through(f.get(), pool.page_address(blocks[b]), block, false, bounce);
+            ok = copy_through(f.get(), pool.page_address(blocks[b]) + pieces[i].offset, block, false, bounce);
         // past the file's blocks the conversation does not hold (cells it had for guesses when it was saved)
         const int64_t skip = ok ? (int64_t) ((stored - blocks.size()) * block) : 0;
 #if defined(_WIN32)

@@ -2036,7 +2036,8 @@ class Service:
                 raise ValueError('send {"set": {...}, "save": "session" or "default"}')
             if save == "default" and not self.config_path:
                 raise ValueError("this server was started without a run config: there is no default to save to")
-            values = runconfig.check_live(req.get("set"), save == "default")
+            values = runconfig.check_live(req.get("set"), save == "default",
+                                          runconfig.get_card_settings(self.memory_last["settings"]))
         except ValueError as e:                        # (a JSONDecodeError is one)
             return fail(400, "invalid_request_error", str(e))
         if not self.loaded():
@@ -2055,7 +2056,8 @@ class Service:
         if save == "default":
             try:
                 with self.config_lock:
-                    new, changed = runconfig.apply_live(runconfig.load(self.config_path), values)
+                    new, changed = runconfig.apply_live(runconfig.load(self.config_path), values,
+                                                        answered.get("settings"))
                     if changed:
                         bak = runconfig.save(self.config_path, new)
             except (OSError, ValueError) as e:

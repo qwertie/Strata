@@ -70,6 +70,10 @@ struct SplitDrive {
     const uint8_t* cache_base[kMax] = {};
     const uint64_t* cache_slot_off[kMax] = {};
     int pcie_num[kMax] = {};
+    /// strata-q38: per layer, the stage whose pool holds the layer's experts that its own stage's does not, which
+    /// computes them in one hop (`hop` of that stage), or -1; null: the pool's peer (`Drive`'s) stays as it is
+    const int32_t* holder = nullptr;
+    strata::core::PeerExperts* hop[kMax] = {};
 };
 /// Layer split: the pool for a verify window, routed to the stage that runs the layer (`user` is a SplitDrive).
 void drive_pool_split(void* user, const float* x_f, const int32_t* ids, int64_t n_tok, int64_t k, float* out,
@@ -122,9 +126,12 @@ public:
     /// strata-q38's drafter switch: gives back the MTP drafter's weights and buffers.  ConversationDrafter::init binds
     /// a drafter loaded again (load_drafter).
     void unload_drafter();
-    /// Loads the MTP drafter from --mtp again after unload_drafter, on one GPU, as load() did; false (and `err`) when
-    /// it could not.
+    /// Sets the MTP drafter's options from --mtp-* and loads it from --mtp on its card (get_drafter_stage), for load()
+    /// and again after unload_drafter; false (and `err`) when it could not.
     bool load_drafter(std::string& err);
+    /// Gets the layer split's stage whose card runs the MTP drafter, which binds that stage's weights and head; null
+    /// when the drafter is on CUDA0 (no split, or mtp_first).
+    GpuStage* get_drafter_stage() const { return last_st != nullptr && !mtp_first ? last_st : nullptr; }
     /// Copies `host_res` to the device table `dst` (CUDA0's or a stage's) and waits for the copy.
     cudaError_t put_residency(int32_t* dst) const;
     /// Gets what a verify window on CUDA0 knows of the expert cache: the residency tables and the slots.
@@ -171,6 +178,9 @@ public:
     /// strata-q38: a layer split without --serve, each stage with weights, an expert cache and a session of its own
     /// on its card, CUDA0 too (--split-device 0,..: several stages on one GPU, the test of a split on one card)
     bool own_stages = false;
+    /// --trim-stage-weights took effect: the layer split's cards hold the dense weights of their own layers only
+    /// (CUDA0 too, unless the split was searched), so strata-q38 does not move its cut
+    bool stage_weights_trimmed = false;
     /// A layer split across GPUs; cleared by --split-skip-if-fits before any stage loads
     bool multi_gpu = false;
     bool remote_caches = false;      ///< --expert-cache-remote asks for a helper GPU's expert cache
@@ -264,7 +274,6 @@ public:
     bool graph_hits = false;
 
 private:
-    bool load_drafter_on(strata::core::SessionState& on, std::string& err);
     strata::core::NativeEmbed native_embed;   ///< the native pack's embedding table, which set_native_embed points to
     std::vector<float> ple_emb_host;          ///< the per-layer embedding row `ss.ple` stages on the host
 };

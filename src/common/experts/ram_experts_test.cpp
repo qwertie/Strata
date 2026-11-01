@@ -1,7 +1,8 @@
 // The RAM's page pool (ram_experts.hpp) over an in-memory "SSD": it fills with the ranking's first experts, hands out
 // their bytes and reads the others into its staging ring (once each, also after prefetch), gives experts' pages to a
 // paused conversation and takes them back after it leaves, copies in an expert a GPU evicts, keeps an expert a step
-// reads from the SSD in place of one used before the step's layer, and replaces one expert by another in place.
+// reads from the SSD in place of one used before the step's layer, replaces one expert by another in place, and takes
+// a new ranking (a layer split's cut moved).
 #include "strata/common/experts/ram_experts.hpp"
 
 #include <chrono>
@@ -140,6 +141,22 @@ int main() {
         for (const PageId p : pool.conversation_blocks(9, r))
             check(p < 12 && pool.page_address(p)[0] == (uint8_t) ++i && pool.page_address(p)[kPage - 1] == (uint8_t) i,
                   "the conversation's pages keep their bytes in the first chunk");
+    check_bytes();
+
+    // a new ranking of layer 1's experts only (a card that runs that layer alone now): the others leave
+    pool.remove_conversation(9);
+    std::vector<ExpertKey> layer1;
+    for (int32_t e = 0; e < kExperts; ++e)
+        layer1.push_back({1, e});
+    ram.pages().set_ranking(layer1, 4);
+    bool others_left = true;
+    for (int32_t e = 0; e < kExperts; ++e)
+        others_left = others_left && !ram.holds(0, e) && !ram.holds(2, e);
+    check(others_left && !ram.holds(1, 7), "the experts outside the new ranking's first leave");
+    while (ram.pages().is_refill_wanted() && ram.pages().refill(16, wait_ms, err) > 0) {
+    }
+    check(ram.holds(1, 0) && ram.holds(1, 3) && !ram.holds(1, 4) && pool.report().experts.pages == 8,
+          "the new ranking's first come in");
     check_bytes();
     std::printf("ram_experts_test: %d checks passed\n", checks);
     return 0;

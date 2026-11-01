@@ -119,6 +119,17 @@ class MemorySettings(FakeEngineCase):
         self.assertEqual(self.saved(), cfg)
         self.assertEqual(got["settings"]["rows"], 6)
 
+    def test_a_layer_split_saves_every_card(self):
+        from strata_server import runconfig
+        settings = {"rows": 8, "memory_mib.gpu0": 9216, "memory_mib.gpu0.1": 9216, "memory_mib.ram": 8192}
+        values = runconfig.check_live({"memory_mib.gpu0.1": 4096, "rows": 4}, True, list(settings)[1:3])
+        new, changed = runconfig.apply_live({"args": ["--gpu-mib", "9216,9216"]}, values,
+                                            {**settings, "memory_mib.gpu0.1": 4096})
+        self.assertEqual(new["args"], ["--gpu-mib", "9216,4096", "--rows", "4"])
+        self.assertEqual(changed, ["memory_mib.gpu0", "memory_mib.gpu0.1", "rows"])
+        with self.assertRaises(ValueError):                               # a card the engine does not have
+            runconfig.check_live({"memory_mib.gpu1.2": 4096}, True, list(settings)[1:3])
+
     def test_only_from_strata_s_own_page(self):
         self.start()
         self.assertEqual(self.post({"set": {"rows": 4}}, origin="https://evil.example")[0], 403)

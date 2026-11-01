@@ -44,17 +44,22 @@ public:
     bool open(int device, const std::vector<std::pair<int32_t, int32_t>>& ranked, const ExpertCache& primary,
               ExpertSource& src, int64_t n_layers, int64_t n_expert, int reserve_mib, int64_t max_slots,
               std::string& err);
+    /// Opens the compute side only, on `device`, over experts that another pool holds: `cache`'s slots, where `res`
+    /// (layer * n_expert + expert: a slot, or a negative value) says; both must outlive it, and `adapt` must not be
+    /// called.  strata-q38 lends a card's spare pages to other cards' experts this way (paged_engine.cpp).
+    bool attach(int device, const ExpertCache& cache, const int32_t* res, int64_t n_layers, int64_t n_expert,
+                std::string& err);
     void close();
     bool valid() const { return device_ >= 0; }
     int device() const { return device_; }
 
     /// Whether the peer holds (layer, expert) right now.
-    bool has(int64_t layer, int64_t expert) const { return res_[(size_t) (layer * n_expert_ + expert)] >= 0; }
+    bool has(int64_t layer, int64_t expert) const { return slot_of_[(size_t) (layer * n_expert_ + expert)] >= 0; }
 
     /// The device address of (layer, expert)'s blob on the peer, or null when it is not resident.
     const uint8_t* slot_ptr(int64_t layer, int64_t expert) {
-        const int32_t sl = res_[(size_t) (layer * n_expert_ + expert)];
-        return sl >= 0 ? cache_.device_slot(sl) : nullptr;
+        const int32_t sl = slot_of_[(size_t) (layer * n_expert_ + expert)];
+        return sl >= 0 ? slots_->device_slot(sl) : nullptr;
     }
     /// Whether the primary (device 0) and the peer can read each other's memory directly (NVLink / PCIe P2P).
     bool p2p() const { return p2p_; }
@@ -83,12 +88,20 @@ public:
     double ms_wait = 0;                               ///< host time spent in finish() waiting for the peer
 
 private:
+    bool open_buffers(int device, std::string& err);
+
     int device_ = -1;
     bool p2p_ = false;
     int64_t n_layers_ = 0, n_expert_ = 0;
     ExpertCache cache_;
     ExpertSource* src_ = nullptr;
     std::vector<int32_t> res_;                        ///< [n_layers * n_expert] -> peer slot or -1
+    /// the cache and the residency the launches read: `cache_` and `res_`, or attach's
+    const ExpertCache* slots_ = &cache_;
+    const int32_t* slot_of_ = nullptr;
+    /// opened by attach: the rows go back through the tier's own host buffers, as the caller's rows are page-locked
+    /// for another card only with --peer-device (set_peer_portable)
+    bool attached_ = false;
     std::vector<std::pair<int32_t, int32_t>> pending_;   ///< (residency index, slot) once the copies land
     int64_t resident_ = 0, entries_ = 0, experts_ = 0, swaps_ = 0;
     cudaStream_t stream_ = nullptr, refill_ = nullptr;

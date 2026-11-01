@@ -2,6 +2,7 @@
 // (conversation_drafter.hpp).
 #include "strata/models/qwen38/conversation_drafter.hpp"
 
+#include "strata/base/gpu/on_device.hpp"
 #include "strata/common/spec/window_planner.hpp"
 
 #include <cuda_runtime.h>
@@ -10,13 +11,18 @@
 
 namespace strata::qwen38 {
 
-ConversationDrafter::~ConversationDrafter() { (void) cudaFree(rows_); }
+ConversationDrafter::~ConversationDrafter() {
+    const strata::core::OnDevice on(device_);
+    (void) cudaFree(rows_);
+}
 
 bool ConversationDrafter::init(Model& m, int sessions, std::string& err) {
     mtp_ = &m.mtp;
     min_p_ = m.o.spec_min_p;
     row_floats_ = (uint64_t) m.g.hc * (uint64_t) m.g.n_embd;
     const int max_t = mtp_->max_t();
+    const GpuStage* st = m.get_drafter_stage();
+    const strata::core::OnDevice on(device_ = mtp_->device());
     if (rows_ == nullptr && cudaMalloc((void**) &rows_, (size_t) max_t * row_floats_ * sizeof(float)) != cudaSuccess) {
         (void) cudaGetLastError();
         err = "the drafter's residual rows do not fit";
@@ -25,7 +31,7 @@ bool ConversationDrafter::init(Model& m, int sessions, std::string& err) {
     drafts_.resize((size_t) max_t);
     probs_.resize((size_t) max_t);
     last_.assign((size_t) sessions, Last{});
-    return mtp_->bind(m.wt, &m.native_head, rows_, err);
+    return mtp_->bind(st != nullptr ? st->wt : m.wt, st != nullptr ? &st->head : &m.native_head, rows_, err);
 }
 
 bool ConversationDrafter::read_prompt(strata::prefill::Prefill& sp, const ConversationPages& pages,

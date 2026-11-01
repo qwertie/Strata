@@ -4,6 +4,7 @@
 #include <algorithm>
 #include <numeric>
 #include <stdexcept>
+#include <utility>
 
 namespace strata::core {
 namespace {
@@ -65,6 +66,30 @@ PoolResize ExpertPages::resize(uint64_t bytes) {
     if (pool_->report().total.pages > had)   // the experts that did not fit before may come in now
         want_missing();
     return r;
+}
+
+void ExpertPages::set_ranking(const std::vector<ExpertKey>& ranking, int64_t max_experts) {
+    std::vector<int32_t> rank(rank_.size(), -1);
+    std::vector<uint32_t> sizes;
+    for (size_t i = 0; i < ranking.size(); ++i) {
+        rank.at(index_of(ranking[i])) = (int32_t) i;
+        if ((int64_t) i < max_experts)
+            sizes.push_back(pages_.at((size_t) ranking[i].layer));
+    }
+    for (size_t i = 0; i < rank.size(); ++i) {   // the experts it holds that the new ranking leaves out leave
+        const ExpertKey key{(int32_t) (i / (size_t) n_expert_), (int32_t) (i % (size_t) n_expert_)};
+        if (const PageId first = pool_->find_expert(key);
+            first != no_page && (rank[i] < 0 || rank[i] >= max_experts)) {
+            on_evicted(key, first);
+            pool_->remove_expert(key);
+        }
+    }
+    rank_ = std::move(rank);
+    ranked_ = ranking;
+    max_experts_ = max_experts;
+    evicted_.clear();   // (the old ranks on_evicted kept: want_missing finds the new ones)
+    pool_->set_expert_ranking(std::move(sizes));
+    want_missing();
 }
 
 /// Marks the experts of the first max_experts_ ranks that the pool does not hold for `refill` to bring in.

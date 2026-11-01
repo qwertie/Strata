@@ -106,6 +106,9 @@ void PeerExperts::close() {
         if (stream_) cudaStreamDestroy(stream_);
         if (refill_) cudaStreamDestroy(refill_);
     }
+    slots_ = &cache_;
+    slot_of_ = nullptr;
+    attached_ = false;
     d_x_ = d_out_ = h_x_ = h_out_ = nullptr;
     d_meta_ = h_meta_ = d_scratch_ = nullptr;
     d_q8_ = nullptr;
@@ -157,30 +160,9 @@ bool PeerExperts::open(int device, const std::vector<std::pair<int32_t, int32_t>
         }
     }
     OnDevice on(device);
-    device_ = device;
     // scratch first, so the slots take what is really left
-    int64_t ff = strata::kernels::cpu::FF;
-    if (lay.native)
-        for (const auto& f : lay.fmt) ff = std::max<int64_t>(ff, f.n_ff);
-    const size_t scratch = std::max<size_t>((size_t) strata::kernels::moe_hit_grouped_scratch_bytes(CAP, H, ff),
-                                            strata::kernels::native_expert_scratch_bytes(CAP, ff));
-    const bool alloc_ok =
-        ck(cudaStreamCreateWithFlags(&stream_, cudaStreamNonBlocking), "stream", err) &&
-        ck(cudaStreamCreateWithFlags(&refill_, cudaStreamNonBlocking), "refill stream", err) &&
-        ck(cudaEventCreateWithFlags(&refill_ev_, cudaEventDisableTiming), "event", err) &&
-        ck(cudaHostAlloc((void**) &h_x_, (size_t) CAP * H * sizeof(float), cudaHostAllocPortable | cudaHostAllocMapped), "input staging", err) &&
-        ck(cudaHostAlloc((void**) &h_out_, (size_t) CAP * H * sizeof(float), cudaHostAllocPortable | cudaHostAllocMapped), "result staging", err) &&
-        ck(cudaHostAlloc(&h_meta_, sizeof(Meta), cudaHostAllocPortable | cudaHostAllocMapped), "plan staging", err) &&
-        ck(cudaMalloc((void**) &d_x_, (size_t) CAP * H * sizeof(float)), "input", err) &&
-        ck(cudaMalloc((void**) &d_out_, (size_t) CAP * H * sizeof(float)), "result", err) &&
-        ck(cudaMalloc(&d_meta_, sizeof(Meta)), "plan", err) &&
-        ck(cudaMalloc((void**) &d_q8_, (size_t) CAP * (H / 32) * 36), "activations", err) &&
-        ck(cudaMalloc(&d_scratch_, scratch), "scratch", err);
-    if (!alloc_ok) { close(); return false; }
-    if (strata::kernels::cpu::hadamard_spec().any()) {   // APR: this device's copies of the sign vectors
-        d_sx_ = strata::kernels::hadamard_device_signs(strata::kernels::cpu::hadamard_signs((int) H), (int) H);
-        d_sh_ = strata::kernels::hadamard_device_signs(strata::kernels::cpu::hadamard_signs((int) ff), (int) ff);
-    }
+    if (!open_buffers(device, err)) return false;
+    slot_of_ = res_.data();
 
     // the pairs the primary does not hold, in rank order, as many as fit
     size_t free_b = 0, total_b = 0;
@@ -235,10 +217,51 @@ bool PeerExperts::open(int device, const std::vector<std::pair<int32_t, int32_t>
     return true;
 }
 
+bool PeerExperts::attach(int device, const ExpertCache& cache, const int32_t* res, int64_t n_layers,
+                         int64_t n_expert, std::string& err) {
+    close();
+    n_layers_ = n_layers;
+    n_expert_ = n_expert;
+    slots_ = &cache;
+    slot_of_ = res;
+    attached_ = true;
+    OnDevice on(device);
+    return open_buffers(device, err);
+}
+
+/// Takes the streams and the buffers a launch uses on `device`, which becomes the tier's (closed again on failure).
+bool PeerExperts::open_buffers(int device, std::string& err) {
+    const auto& lay = strata::kernels::cpu::expert_layout();
+    device_ = device;
+    int64_t ff = strata::kernels::cpu::FF;
+    if (lay.native)
+        for (const auto& f : lay.fmt) ff = std::max<int64_t>(ff, f.n_ff);
+    const size_t scratch = std::max<size_t>((size_t) strata::kernels::moe_hit_grouped_scratch_bytes(CAP, H, ff),
+                                            strata::kernels::native_expert_scratch_bytes(CAP, ff));
+    const bool alloc_ok =
+        ck(cudaStreamCreateWithFlags(&stream_, cudaStreamNonBlocking), "stream", err) &&
+        ck(cudaStreamCreateWithFlags(&refill_, cudaStreamNonBlocking), "refill stream", err) &&
+        ck(cudaEventCreateWithFlags(&refill_ev_, cudaEventDisableTiming), "event", err) &&
+        ck(cudaHostAlloc((void**) &h_x_, (size_t) CAP * H * sizeof(float), cudaHostAllocPortable | cudaHostAllocMapped), "input staging", err) &&
+        ck(cudaHostAlloc((void**) &h_out_, (size_t) CAP * H * sizeof(float), cudaHostAllocPortable | cudaHostAllocMapped), "result staging", err) &&
+        ck(cudaHostAlloc(&h_meta_, sizeof(Meta), cudaHostAllocPortable | cudaHostAllocMapped), "plan staging", err) &&
+        ck(cudaMalloc((void**) &d_x_, (size_t) CAP * H * sizeof(float)), "input", err) &&
+        ck(cudaMalloc((void**) &d_out_, (size_t) CAP * H * sizeof(float)), "result", err) &&
+        ck(cudaMalloc(&d_meta_, sizeof(Meta)), "plan", err) &&
+        ck(cudaMalloc((void**) &d_q8_, (size_t) CAP * (H / 32) * 36), "activations", err) &&
+        ck(cudaMalloc(&d_scratch_, scratch), "scratch", err);
+    if (!alloc_ok) { close(); return false; }
+    if (strata::kernels::cpu::hadamard_spec().any()) {   // APR: this device's copies of the sign vectors
+        d_sx_ = strata::kernels::hadamard_device_signs(strata::kernels::cpu::hadamard_signs((int) H), (int) H);
+        d_sh_ = strata::kernels::hadamard_device_signs(strata::kernels::cpu::hadamard_signs((int) ff), (int) ff);
+    }
+    return true;
+}
+
 bool PeerExperts::launch(int64_t layer, const float* x, const int32_t* ids, int64_t n_tok, int64_t k,
                          const int32_t* kind, std::string& err, float* out) {
     static const bool direct_env = [] { const char* v = std::getenv("STRATA_PEER_DIRECT"); return v == nullptr || std::atoi(v) != 0; }();
-    const bool direct = direct_env && out != nullptr;
+    const bool direct = direct_env && out != nullptr && !attached_;
     launched_direct_ = false;
     launched_rows_ = 0;
     row_of_.clear();
@@ -253,9 +276,9 @@ bool PeerExperts::launch(int64_t layer, const float* x, const int32_t* ids, int6
         for (int64_t j = 0; j < i; ++j)
             if (kind[j] == 2 && ids[j] == ids[i]) { seen = true; break; }
         if (seen) continue;
-        const int32_t slot = res_[(size_t) (layer * n_expert_ + ids[i])];
+        const int32_t slot = slot_of_[(size_t) (layer * n_expert_ + ids[i])];
         if (slot < 0) { err = "peer experts: an entry was planned for the peer but is not resident"; return false; }
-        m.ptr[groups] = (unsigned long long) cache_.device_slot(slot);
+        m.ptr[groups] = (unsigned long long) slots_->device_slot(slot);
         m.start[groups] = rows;
         for (int64_t j = i; j < n; ++j)
             if (kind[j] == 2 && ids[j] == ids[i]) {

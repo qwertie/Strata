@@ -291,8 +291,9 @@ function Invoke-Emulate {
 
 # The memory manager's checks (docs/MEMORY_MANAGER_PLAN.md, steps M7 to M9), with -Before at the M7 commit: strata-q38
 # on one card against the build before; the old engine's layer split, whose planner moved to shared code, against the
-# build before; that split's speed against strata-q38's; strata-q38 on both cards (each order), and with its cut moved
-# while it decodes, against one card; tools\measure_rows.py on the bigger card.
+# build before; that split's speed against strata-q38's; strata-q38 on both cards (each order), with the second card
+# computing experts of the first card's layers in one hop, and with its cut moved while it decodes, against one card;
+# tools\measure_rows.py on the bigger card.
 function Invoke-Memory {
     if (-not (Test-Need memory @("$DataDir\models\IQ3_S", "$DataDir\packs\iq3_s"))) { return }
     $q38 = "`"--args=$Q38Memory`""
@@ -311,8 +312,16 @@ function Invoke-Memory {
         foreach ($order in 'SB', 'BS') {
             $cards = Get-CardList $order
             Invoke-Versus "memory-q38-2cards-$order" multi $oneSame "strata-q38.exe --cards $cards $split"
-            Invoke-Versus "memory-cut-move-$order" cutmove "strata-q38.exe --cards $cards $split" (
-                "strata-q38.exe --cards $cards $split --move-cut")
+            # the first card's pool too small for its share of those experts: the second card holds the rest and
+            # computes them in one hop, so that the GPUs still hold what one card does
+            $hop = "`"--args=$Q38Memory $same --layer-split 24 --gpu-mib 3072,8192 --remote-experts on`""
+            Invoke-Versus "memory-hop-$order" multi $oneSame "strata-q38.exe --cards $cards $hop"
+            # pools with room to spare (12 GiB on the bigger card, 5 GiB on the smaller), so that with the first
+            # card's halved the cut moves and each of the profile's first 3000 experts still fits on a card
+            $mib = ($order.ToCharArray() | ForEach-Object { if ($_ -eq 'B') { 12288 } else { 5120 } }) -join ','
+            $move = "`"--args=$Q38Memory --expert-cache 3000 --pcie-frac 0 --gpu-mib $mib --layer-split auto`""
+            Invoke-Versus "memory-cut-move-$order" cutmove "strata-q38.exe --cards $cards $move" (
+                "strata-q38.exe --cards $cards $move --move-cut")
         }
     }
     $config = "$Root\strata-iq3_s.json"

@@ -2,8 +2,9 @@
 // truncated, fixed regions and blocks in consecutive pages, experts tiling the room of their size around its home
 // point and evicting one of their size, an expert replaced in place, conversations filling the holes of experts they
 // evict and giving them back whole, the allocated and fragmented pages, the token limits and the experts' overflow
-// into the reserve, the hysteresis, growing and shrinking, the report, long random trading without fragmentation, and
-// a pool of two million pages (Qwen3.8 IQ3_S's experts in pages of 25,600 bytes).
+// into the reserve, the hysteresis, growing and shrinking, the report, long random trading without fragmentation, a
+// new layout and expert ranking (a layer split's cut moved), and a pool of two million pages (Qwen3.8 IQ3_S's experts
+// in pages of 25,600 bytes).
 #include "strata/common/state/page_pool.hpp"
 
 #include <chrono>
@@ -252,6 +253,30 @@ void test_allocated_and_fragmented() {
     f.pool.remove_conversation(1);
     check(f.pool.report().allocated.pages == 14 && f.pool.report().fragmented.pages == 0,
           "the block's page joins the run again");
+}
+
+/// A layer split's cut moves: the conversations' regions change while the pool holds none, and the experts' ranking.
+void test_new_layout() {
+    Fixture f(get_config(8));   // 8 tokens of the reserve: 4 pages
+    check(f.pool.grow_conversation(1, 4).empty() && !f.pool.set_layout(get_kv_layout()).empty() &&
+              f.pool.pages_for(4) == 3,
+          "no new layout while the pool holds a conversation");
+    f.pool.remove_conversation(1);
+    check(f.pool.set_layout(get_kv_layout()).empty() && f.pool.pages_for(4) == 1 &&
+              f.pool.grow_conversation(2, 4).empty() && f.pool.conversation_blocks(2, 0).size() == 1,
+          "an empty pool's conversations take the new regions");
+    f.pool.remove_conversation(2);
+    StateLayout too_large;   // a fixed region of 5 pages, and a chunk of 4
+    too_large.add(RegionKind::fixed, 5 * page);
+    StateLayout too_wide;    // 2 pages a token: the reserve of 8 tokens would take 16 of the 12 pages
+    too_wide.add(RegionKind::per_token, 8, 16);
+    check(!f.pool.set_layout(too_large).empty() && !f.pool.set_layout(too_wide).empty() && f.pool.pages_for(4) == 1,
+          "a layout whose fixed region exceeds a chunk or whose reserve does not fit is refused, the old one stays");
+    f.pool.set_expert_ranking({5});
+    check(f.pool.report().fragmented.pages == 12, "with a ranking of 5-page experts, every 4-page run is fragmented");
+    f.pool.set_expert_ranking({1, 1});
+    check(f.pool.report().fragmented.pages == 0 && f.pool.get_home(1) == 3,
+          "with one of 1-page experts none is, and their home is above the reserve of the new layout");
 }
 
 void test_minimum() {
@@ -593,6 +618,7 @@ int main() {
     test_replace();
     test_holes();
     test_allocated_and_fragmented();
+    test_new_layout();
     test_minimum();
     test_overflow();
     test_maximum();

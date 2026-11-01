@@ -19,7 +19,7 @@ constexpr int64_t kLayers = 48, kExperts = 512;
 constexpr uint64_t kGiB = 1ull << 30;
 
 /// Gets one decode layer's predicted ms on a card of `sms` multiprocessors at `ghz` (the old engine's rule).
-double get_layer_ms(int sms, double ghz) { return 0.33 * (84.0 * 2.617) / (sms * ghz); }
+double get_layer_ms(int sms, double ghz) { return strata::program::split_rules::get_layer_ms(sms * ghz); }
 
 /// Gets per-layer sizes shaped like Qwen3.8 IQ3_S: experts of 1,510,400 to 2,662,400 bytes, 56 MB of dense weights,
 /// a GDN layer's 3 MiB of state on three of four layers and K/V on the fourth.
