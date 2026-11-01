@@ -308,7 +308,7 @@ if(STRATA_BUILD_TESTS)
   add_test(NAME tuning_header_arch_family_test COMMAND tuning_header_arch_family_test)
 
   # the auto layer split's minimum stage size (#1616): header-only rule, no GPU
-  add_executable(split_rules_test src/models/qwen38/split_rules_test.cpp)
+  add_executable(split_rules_test src/common/experts/split_rules_test.cpp)
   target_include_directories(split_rules_test PRIVATE include)
   add_test(NAME split_rules_test COMMAND split_rules_test)
 
@@ -343,7 +343,7 @@ target_link_libraries(strata-plan PRIVATE strata_plan)
 if(STRATA_ENABLE_CUDA OR STRATA_ENABLE_HIP)
   add_library(strata_core STATIC src/base/gpu/device.cu src/base/gpu/pinned.cu src/base/gpu/graph.cpp
                                src/base/platform/memory.cpp src/core/weights.cpp src/core/layout.cpp
-                               src/base/gpu/runtime.cu)
+                               src/base/gpu/runtime.cu src/base/gpu/links.cu)
   target_include_directories(strata_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
   # the DFlash2 drafter (src/models/qwen38/dflash2.cpp, src/models/qwen38/kernels/cuda/dflash2.cu) exists in the CUDA and HIP builds; the Metal and SYCL builds compile without it
   target_compile_definitions(strata_core PUBLIC STRATA_HAVE_DFLASH2=1)
@@ -787,7 +787,7 @@ if(STRATA_ENABLE_CUDA OR STRATA_ENABLE_HIP)
               src/models/qwen38/conversation_drafter.cpp src/models/qwen38/paged_engine.cpp)
   target_include_directories(strata_qwen38 PRIVATE ${_strata_gpu_include_directories})
   target_link_libraries(strata_qwen38 PUBLIC strata_engine strata_prefill strata_serve strata_spec strata_state
-                        ${_strata_gpu_runtime_target})
+                        strata_split ${_strata_gpu_runtime_target})
 
   add_executable(strata src/program/generate.cpp)
   strata_utf8_manifest(strata)
@@ -1604,6 +1604,9 @@ target_link_libraries(strata_serve PUBLIC Threads::Threads)
 # The page pool (src/common/state): no GPU, the caller allocates its chunks.
 add_library(strata_state STATIC src/common/state/page_pool.cpp)
 target_include_directories(strata_state PUBLIC include)
+# The layer split's planner and the rules for experts on several cards (src/common/experts): no GPU.
+add_library(strata_split STATIC src/common/experts/layer_split.cpp src/common/experts/card_rules.cpp)
+target_include_directories(strata_split PUBLIC include)
 if(STRATA_BUILD_TESTS)
   add_executable(arch_defaults_test src/core/arch_defaults_test.cpp src/core/arch_defaults.cpp)
   target_include_directories(arch_defaults_test PRIVATE include)
@@ -1629,6 +1632,12 @@ if(STRATA_BUILD_TESTS)
   add_executable(page_pool_test src/common/state/page_pool_test.cpp)
   target_link_libraries(page_pool_test PRIVATE strata_state)
   add_test(NAME page_pool_test COMMAND page_pool_test)
+  add_executable(layer_split_test src/common/experts/layer_split_test.cpp)
+  target_link_libraries(layer_split_test PRIVATE strata_split)
+  add_test(NAME layer_split_test COMMAND layer_split_test)
+  add_executable(card_rules_test src/common/experts/card_rules_test.cpp)
+  target_link_libraries(card_rules_test PRIVATE strata_split)
+  add_test(NAME card_rules_test COMMAND card_rules_test)
   add_executable(suffix_drafter_test src/common/spec/suffix_drafter_test.cpp)
   target_link_libraries(suffix_drafter_test PRIVATE strata_spec)
   add_test(NAME suffix_drafter_test COMMAND suffix_drafter_test)

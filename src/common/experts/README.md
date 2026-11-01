@@ -22,6 +22,14 @@ What is here so far is the model-neutral host code, which needs no GPU:
   recently used one of its size (else it goes to a staging ring). It calls the runtime through
   `src/base/gpu/runtime.hpp`.
 
+- `layer_split`: the layer split's planner (step M8): where to cut the layers between cards so that their pools hold
+  most of the expert profile, from each card's speed, link and room and the model's per-layer sizes. The old engine's
+  `--layer-split auto` calls it; `split_rules.hpp` has its rules that need no search (the smallest stage, each card's
+  share of the layers, the miss cost of a narrow link).
+- `card_rules`: the rules for experts on several cards, from the links' measured speeds
+  (`src/base/gpu/links.cu`): a layer's experts on another card computed there in one hop when that costs less than
+  the CPU, refills paced by a card's link, copying an evicted expert back to RAM, and which card holds which experts.
+
 The SYCL build compiles `expert_profile` and `ram_tier` too, without copies of them; `expert_pages` and `ram_experts`
 are for strata-q38, which the SYCL build does not make.
 

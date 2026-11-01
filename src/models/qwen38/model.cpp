@@ -54,7 +54,8 @@
 #include "strata/common/kernels/prefill/moe_mmq.hpp"
 #endif
 #include "strata/models/qwen38/native_dense.hpp"
-#include "strata/models/qwen38/split_rules.hpp"
+#include "strata/common/experts/layer_split.hpp"
+#include "strata/common/experts/split_rules.hpp"
 #include "strata/models/qwen38/batch_groups.hpp"
 #include "strata/models/qwen38/kernels/cvec.hpp"
 #include "strata/base/gpu/emulate.hpp"
@@ -1792,7 +1793,7 @@ int Model::load() {
     if (multi_gpu && split_auto) {
         const auto& lay = strata::kernels::cpu::expert_layout();
         const int ns = (int) stages.size() + 1;
-        std::vector<int64_t> cap((size_t) ns), used((size_t) ns);
+        std::vector<int64_t> cap((size_t) ns);
         // what stage i has left for experts if it runs [lb, le): its room, minus its session and (a later stage) its weights
         auto stage_left = [&](int i, int64_t lb, int64_t le) -> int64_t {
             return cap[(size_t) i] - (int64_t) strata::core::session_bytes(g, o.max_context, K, lb, le) -
@@ -1844,115 +1845,26 @@ int Model::load() {
                          i == 0 ? 0 : stages[(size_t) i - 1]->dev, bw, link_scale[(size_t) i]);
         }
         const double miss_ms = std::getenv("STRATA_SPLIT_MISS_MS") ? std::atof(std::getenv("STRATA_SPLIT_MISS_MS")) : 190.0;
-        // ---- THE COVERAGE CURVE: HOW MUCH ROUTED MASS A CACHE HOLDS, AND WHY IT IS NO LONGER A POWER LAW.
-        //
-        // `mass[r]` used to be (r+1)^-1.2, fitted to the 5080+3090 sweep.  That fit is still right ON THE RIG IT
-        // WAS FITTED TO - at 20,000 pairs held it predicts 99.35% of the routed mass and that rig measured 99.4%.
-        // It is wrong on the IQ3_S 4-way rig, badly: it claims the top 5,805 pairs hold 94.9% of the mass, and
-        // that rig measures 69.2% (four boots, 14.9M decode lookups).  No exponent reconciles them, because the
-        // curve is a property of the MODEL'S ROUTING, not a universal constant - and the profile file carries
-        // only a RANKING, with no counts, so it cannot be read off the data either.  (tools/make_profile.py has
-        // the frequencies, and drops them; see the note there.)
-        //
-        // What the two rigs do agree on is that the hit rate follows the HELD COUNT and almost nothing else: two
-        // different splits held 14,541 and 14,384 pairs and measured 92.2% and 89.8% of the routed mass.  So the
-        // curve is taken over the held FRACTION f, as H(f) = 1 - (1 - f)^b, and each rank's mass is that curve's
-        // increment, which makes any prefix of N pairs sum to exactly H(N/total) while a cache holding
-        // colder-than-prefix pairs still scores below it.
-        //
-        // b = 3 IS CHOSEN TO LEAVE THE PREVIOUSLY VALIDATED REGIME WHERE IT WAS.  At 20,000 held (f = 0.8138) it
-        // gives 99.35%, against the old fit's 99.35% and that rig's measured 99.4% - the 2-GPU placement is
-        // untouched.  At f = 0.59 it gives 93.2% against 92.2% measured.  Below f ~ 0.5 the two curves diverge,
-        // and that is the whole point: it is exactly the regime where the old one was wrong, and where it told
-        // the search that stranding a card's VRAM costs almost nothing.
-        //
-        // THE CURVE IS A FIT TO ONE MODEL'S TRAFFIC.  STRATA_SPLIT_COVER_B overrides b for a model whose routing
-        // is sharper or flatter, and STRATA_SPLIT_MISS_MS still scales the miss cost it feeds.
-        const size_t n_ranked = profile.size();
-        const double cover_b = std::getenv("STRATA_SPLIT_COVER_B") ? std::atof(std::getenv("STRATA_SPLIT_COVER_B")) : 3.0;
-        std::vector<double> mass(n_ranked);
-        double total_mass = 0;
-        // Up to 3 GPUs the 0.1.39 curve (r+1)^-1.2 is kept, so 2- and 3-GPU placements do not move (the new curve is a
-        // fit to a 4-way rig and was not measured on them); STRATA_SPLIT_COVER_B asks for the coverage curve at any
-        // GPU count.
-        const bool coverage_curve = ns >= 4 || std::getenv("STRATA_SPLIT_COVER_B") != nullptr;
-        for (size_t r = 0; r < n_ranked; ++r) {
-            if (!coverage_curve) {
-                total_mass += (mass[r] = std::pow((double) r + 1.0, -1.2));
-                continue;
-            }
-            const double hi = std::pow(1.0 - (double) r / (double) n_ranked, cover_b);
-            const double lo = std::pow(1.0 - (double) (r + 1) / (double) n_ranked, cover_b);
-            total_mass += (mass[r] = hi - lo);
-        }
-        auto cost = [&](int64_t l) -> int64_t {
+        // the profile's routed mass by rank (layer_split.cpp): up to 3 GPUs the 0.1.39 curve (r+1)^-1.2, so 2- and 3-GPU
+        // placements do not move; the coverage curve was fitted on a 4-way rig.  STRATA_SPLIT_COVER_B asks for the
+        // coverage curve at any GPU count, with that exponent (a model whose routing is sharper or flatter).
+        strata::core::SplitProblem problem;
+        problem.n_layers = g.n_layers;
+        for (int i = 0; i < ns; ++i)
+            problem.cards.push_back({layer_ms[(size_t) i], link_scale[(size_t) i]});
+        for (const auto& pr : profile)
+            problem.ranked_layers.push_back(pr.first);
+        problem.expert_bytes = [&](int64_t l) -> int64_t {
             return native_pack ? strata::core::ExpertCache::slot_stride((int64_t) lay.blob_bytes(l), slot_guard)
                                : (int64_t) lay.max_blob;
         };
-        // the predicted window time (ms) of a placement, and the routed mass its caches hold
-        std::vector<int64_t> held_cnt((size_t) ns, 0);   // per-stage fill count, for the startability gate
+        problem.room = stage_left;
+        problem.miss_ms = miss_ms;
+        problem.cover_b = std::getenv("STRATA_SPLIT_COVER_B") ? std::atof(std::getenv("STRATA_SPLIT_COVER_B")) : 3.0;
+        problem.coverage_curve = ns >= 4 || std::getenv("STRATA_SPLIT_COVER_B") != nullptr;
+        problem.near_tie_pct =
+            std::getenv("STRATA_SPLIT_NEAR_TIE_PCT") ? std::atof(std::getenv("STRATA_SPLIT_NEAR_TIE_PCT")) : 4.0;
         const int64_t kAutoLendPct = get_auto_lend_pct();
-        auto predict = [&](const std::vector<int64_t>& at, double& held_mass, int64_t& held) -> double {
-            // THE CARVE, PRICED: a placement gives stage i the layers [lb, le), and that range's session is a
-            // real cost on its device - subtracted here so the search knows what it leaves for experts.  This
-            // is why the sessions are allocated after the search: `session_bytes` is pure arithmetic.
-            std::vector<int64_t> capr((size_t) ns);
-            for (int i = 0; i < ns; ++i) {
-                const int64_t lb = i == 0 ? 0 : at[(size_t) i - 1];
-                const int64_t le = i + 1 < ns ? at[(size_t) i] : g.n_layers;
-                capr[(size_t) i] = stage_left(i, lb, le);
-            }
-            std::fill(used.begin(), used.end(), 0);
-            std::fill(held_cnt.begin(), held_cnt.end(), 0);
-            held_mass = 0;
-            held = 0;
-            std::vector<double> mass_i((size_t) ns, 0.0), held_i((size_t) ns, 0.0);
-            std::vector<bool> full((size_t) ns, false);
-            for (size_t r = 0; r < profile.size(); ++r) {
-                const int64_t l = profile[r].first;
-                int st = 0;
-                while (st + 1 < ns && l >= at[(size_t) st]) ++st;
-                mass_i[(size_t) st] += mass[r];
-                if (full[(size_t) st]) continue;
-                if (used[(size_t) st] + cost(l) > capr[(size_t) st]) { full[(size_t) st] = true; continue; }   // as the fill
-                used[(size_t) st] += cost(l);
-                held_mass += mass[r];
-                held_i[(size_t) st] += mass[r];
-                ++held;
-                ++held_cnt[(size_t) st];
-            }
-            held_mass /= std::max(total_mass, 1e-9);
-            // Each stage's misses on its own link (link_scale; 1.0 everywhere = the fitted single-constant formula).
-            double ms = 0.0;
-            for (int i = 0; i < ns; ++i)
-                ms += miss_ms * link_scale[(size_t) i] * std::max(0.0, mass_i[(size_t) i] - held_i[(size_t) i]) /
-                      std::max(total_mass, 1e-9);
-            for (int i = 0; i < ns; ++i) {
-                const int64_t lb = i == 0 ? 0 : at[(size_t) i - 1], le = i + 1 < ns ? at[(size_t) i] : g.n_layers;
-                ms += (double) (le - lb) * layer_ms[(size_t) i];
-            }
-            return ms;
-        };
-        std::vector<int64_t> best, at((size_t) ns - 1);
-        double best_ms = 1e30, best_mass = 0;
-        int64_t best_held = 0, tried = 0;
-        // TIES GO TO THE BALANCED PLACEMENT.  When every placement holds the whole profile (the model fits the cards,
-        // as IQ3_S does on two or more 32 GB cards) the predicted decode window is the same for all of them - the
-        // layers' times just add - and which one "won" was floating-point noise in the sum: 3 layers on the first
-        // card, 30 on the second.  A prompt flows through the stages as a pipeline, so its speed is the slowest stage's:
-        // measured on 4x R9700 with --trim-stage-weights, 6,36,41 read a 32K prompt at 1,750 tok/s and 12,24,36 at 2,780,
-        // same decode speed, same tokens.  Among placements whose window time agrees to 1e-6 ms the one with the
-        // smallest slowest stage (layers x ms per layer) is kept; an earlier one stays on a second tie.
-        double best_max = 1e30;
-        auto stage_max = [&](const std::vector<int64_t>& cuts) {
-            double m = 0;
-            for (int i = 0; i < ns; ++i) {
-                const int64_t lb = i == 0 ? 0 : cuts[(size_t) i - 1], le = i + 1 < ns ? cuts[(size_t) i] : g.n_layers;
-                m = std::max(m, (double) (le - lb) * layer_ms[(size_t) i]);
-            }
-            return m;
-        };
-        const double tie_eps = 1e-6;
         // ---- LAYER SPLIT STARTABILITY GATE (LAYER 1).  The search must not price placements only by decode time:
         // a split is usable only if the prompt path can start, which requires (serve, `fits_one` 5625-5636 + own_fits
         // 5855-5869): every participant must lend a chunk, or else afford its own prompt buffers with the serve-time
@@ -1996,19 +1908,18 @@ int Model::load() {
             // stage's need past its cache and reject a split serve accepts.
             return strata::prefill::Prefill::bytes_needed_no_ring(g, ss, c);
         };
-        struct PartStat { int64_t lb, le; int64_t used; int64_t cnt; int64_t cap; };
-        auto can_start = [&](const std::vector<PartStat>& parts) -> bool {
+        auto can_start = [&](const std::vector<strata::core::SplitFill>& parts) -> bool {
             const int64_t kMaxBlob = (int64_t) strata::kernels::cpu::expert_layout().max_blob;
             auto slots_est_of = [&](int i, uint64_t cn) -> int64_t {
-                if (parts[i].cnt <= 0) return -1;
+                if (parts[i].held <= 0) return -1;
                 const uint64_t avg = (parts[i].used > 0)
-                    ? (uint64_t) parts[i].used / (uint64_t) parts[i].cnt : (uint64_t) kMaxBlob;
+                    ? (uint64_t) parts[i].used / (uint64_t) parts[i].held : (uint64_t) kMaxBlob;
                 return (int64_t) ((cn + avg - 1) / avg);
             };
             auto fit_one = [&](int i, int64_t c, bool cap) -> bool {   // mirrors fits_one (5820-5824)
                 const int64_t k = slots_est_of(i, chunk_bytes(parts[i].lb, c));
-                if (k <= 0 || k + 128 > parts[i].cnt) return false;
-                return !(cap && k * 100 > kAutoLendPct * parts[i].cnt);
+                if (k <= 0 || k + 128 > parts[i].held) return false;
+                return !(cap && k * 100 > kAutoLendPct * parts[i].held);
             };
             auto all_fit = [&](int64_t c, bool cap) -> bool {
                 for (int i = 0; i < ns; ++i) if (!fit_one(i, c, cap)) return false;
@@ -2028,7 +1939,7 @@ int Model::load() {
             } else {
                 for (int64_t c = o.prefill_chunk; c >= 256; c /= 2) if (all_fit(c, false)) { chunk = c; break; }
             }
-            auto room_mib = [&](int i) -> int64_t { return (int64_t) ((parts[i].cap - parts[i].used) >> 20); };
+            auto room_mib = [&](int i) -> int64_t { return (int64_t) ((parts[i].room - parts[i].used) >> 20); };
             static const bool gate_dbg = std::getenv("STRATA_LAYER_SPLIT_GATE") != nullptr;
             if (gate_dbg) {
                 std::fprintf(stderr, "gate: K=%lld chunk=%lld", (long long) (ns == 2 ? parts[1].lb : 0), (long long) chunk);
@@ -2036,8 +1947,8 @@ int Model::load() {
                     const uint64_t cn = chunk_bytes(parts[i].lb, chunk > 0 ? chunk : 256);
                     std::fprintf(stderr, " | CUDA%d lb=%lld cnt=%lld used=%lldMiB cap=%lldMiB room=%lldMiB need=%lldMiB slots=%lld",
                                  i == 0 ? 0 : (int) stages[(size_t) i - 1]->dev, (long long) parts[i].lb,
-                                 (long long) parts[i].cnt, (long long) (parts[i].used >> 20),
-                                 (long long) (parts[i].cap >> 20), (long long) room_mib(i),
+                                 (long long) parts[i].held, (long long) (parts[i].used >> 20),
+                                 (long long) (parts[i].room >> 20), (long long) room_mib(i),
                                  (long long) (cn >> 20), (long long) slots_est_of(i, cn));
                 }
                 std::fprintf(stderr, "\n");
@@ -2050,227 +1961,13 @@ int Model::load() {
             for (int i = 0; i < ns; ++i) {
                 const uint64_t cn = chunk_bytes(parts[i].lb, chunk);
                 const int64_t k = slots_est_of(i, cn);
-                const bool lends = k > 0 && k + 128 <= parts[i].cnt && k * 100 <= kAutoLendPct * parts[i].cnt;
+                const bool lends = k > 0 && k + 128 <= parts[i].held && k * 100 <= kAutoLendPct * parts[i].held;
                 if (lends) continue;
                 if (room_mib(i) >= (int64_t) (cn >> 20) + 1536) continue;   // affords its own buffers
                 return false;
             }
             return true;
         };
-        // participant stats for a candidate, from the fill `predict` just computed (ns==2/3 + proportional)
-        auto parts_of = [&](const std::vector<int64_t>& at) {
-            std::vector<PartStat> parts((size_t) ns);
-            for (int i = 0; i < ns; ++i) {
-                parts[i].lb = i == 0 ? 0 : at[i - 1];
-                parts[i].le = i + 1 < ns ? at[i] : g.n_layers;
-                parts[i].used = used[i];
-                parts[i].cnt = held_cnt[i];
-                parts[i].cap = stage_left(i, parts[i].lb, parts[i].le);
-            }
-            return parts;
-        };
-        bool gate_on = true;   // off only when no placement can start (below): then the best one is kept and a warning said
-        int64_t min_stage_layers = 1;   // #1616: 3 in the second pass below, when the first pick has a one- or two-layer stage
-        std::vector<int64_t> stage_floors;   // #2644: each stage's share of the room, in the share pass below (empty: off)
-        // #1428: 2 and 3 GPUs - every placement priced, kept (a few hundred) so the near-tie warning below can name the
-        // best placement that is really a different one (not the neighbour one layer over)
-        std::vector<std::pair<double, std::vector<int64_t>>> priced;
-        auto consider = [&]() {
-            if (min_stage_layers > 1 && strata::program::split_rules::smallest_stage(at, g.n_layers) < min_stage_layers)
-                return;
-            if (!stage_floors.empty() && strata::program::split_rules::below_floors(at, g.n_layers, stage_floors))
-                return;
-            double hm = 0;
-            int64_t held = 0;
-            const double ms = predict(at, hm, held);
-            ++tried;
-            if (ns <= 3) priced.emplace_back(ms, at);
-            const double mx = stage_max(at);
-            if (ms < best_ms - tie_eps || (ms <= best_ms + tie_eps && mx < best_max - tie_eps)) {
-                // feasibility gate: mirrors the serve path (`fits_one` + own_fits) for the 512-token last resort;
-                // a placement the prompt path cannot start is not chosen (#1094) - unless nothing can start, below
-                if (gate_on && !can_start(parts_of(at))) return;
-                best = at; best_ms = std::min(ms, best_ms); best_mass = hm; best_held = held; best_max = mx;
-            }
-        };
-        const int64_t L = g.n_layers;
-        // share the layers in proportion to speed: the fallback beyond four GPUs, and the only placement a
-        // model too small to hold four stages has (see the ns == 4 branch).
-        auto proportional = [&]() {
-            double total = 0;
-            for (const double c : layer_ms) total += 1.0 / c;
-            double acc = 0;
-            for (int i = 0; i + 1 < ns; ++i) {
-                acc += 1.0 / layer_ms[(size_t) i];
-                at[(size_t) i] = std::clamp<int64_t>((int64_t) std::llround(acc / total * (double) L),
-                                                     i == 0 ? 2 : at[(size_t) i - 1] + 1, L - (ns - 1 - i));
-            }
-            consider();
-        };
-        auto search = [&]() {
-        priced.clear();
-        if (ns == 2) {
-            for (int64_t k = 2; k < L; ++k) { at[0] = k; consider(); }
-            // a model with fewer than three layers enumerates nothing: keep the proportional guess rather than
-            // leave `best` empty (an empty split would read split_at[i] out of bounds at the stage lb/le loop)
-            if (best.empty()) proportional();
-        } else if (ns == 3) {
-            for (int64_t k1 = 2; k1 + 1 < L; ++k1)
-                for (int64_t k2 = k1 + 1; k2 < L; ++k2) { at[0] = k1; at[1] = k2; consider(); }
-            if (best.empty()) proportional();
-        } else if (ns == 4) {
-            // ---- EVERY FOUR-WAY PLACEMENT IS TRIED.  This branch used to share the layers in proportion to
-            // speed and score that ONE candidate, and that formula reads only `layer_ms` - never the free VRAM.
-            // So on a four-GPU rig cache capacity did not influence the placement AT ALL, and the card with
-            // the most room left could be handed the fewest layers: on the 3060/3060/5060/5060 box CUDA1 ended
-            // up with 1,841 MiB no cache could use while CUDA2 ran 15 layers it could only hold a third of.
-            // All C(L-3,3) placements - 15,180 at 48 layers - are now scored.
-            //
-            // A STAGE'S FILL DEPENDS ONLY ON ITS OWN RANGE AND ITS OWN FREE VRAM.  `predict` hands each ranked
-            // pair to the one stage that owns its layer and each stage stops at its first pair that does not
-            // fit, so the four fills are independent and a placement's held mass is a SUM over its four
-            // ranges.  That is what makes this affordable: each distinct range is walked once and memoised,
-            // 1,121 walks instead of 15,180 - measured at 14 ms against 740 ms, for the same answer.
-            // `le` runs to L inclusive, so a row is L+1 wide - keying on a stride of L would put the last
-            // stage's [lb, L) one past the end of the vector.
-            //
-            // NOTE: on v0.1.39 the search only runs under `--layer-split auto`, where every card still holds
-            // the whole model's dense weights, so `cap[i]` is already net of them and the stage's room is what
-            // `predict` subtracts - the session.  (On the branch this came from the carve reached `auto` too,
-            // and each stage's own weight bytes were taken off here as well.)
-            const size_t stride = (size_t) L + 1;
-            std::vector<double> held_mass_at((size_t) ns * (size_t) L * stride, -1.0);
-            std::vector<int64_t> held_at(held_mass_at.size(), 0);
-            std::vector<int64_t> used_at(held_mass_at.size(), 0);   // the fill's byte total, for the startability gate
-            auto range_hold = [&](int i, int64_t lb, int64_t le) -> size_t {
-                const size_t key = ((size_t) i * (size_t) L + (size_t) lb) * stride + (size_t) le;
-                if (held_mass_at[key] < 0.0) {
-                    // one stage's own carve, exactly as `predict` prices it
-                    const int64_t room = stage_left(i, lb, le);
-                    double hm = 0;
-                    int64_t used = 0, cnt = 0;
-                    for (size_t r = 0; r < profile.size(); ++r) {
-                        const int64_t l = profile[r].first;
-                        if (l < lb || l >= le) continue;
-                        if (used + cost(l) > room) break;   // the fill stops exactly where predict's does
-                        used += cost(l);
-                        hm += mass[r];
-                        ++cnt;
-                    }
-                    held_mass_at[key] = hm;
-                    held_at[key] = cnt;
-                    used_at[key] = used;
-                }
-                return key;
-            };
-            const double denom = std::max(total_mass, 1e-9);
-            for (int64_t k1 = 2; k1 + 2 < L; ++k1)
-                for (int64_t k2 = k1 + 1; k2 + 1 < L; ++k2)
-                    for (int64_t k3 = k2 + 1; k3 < L; ++k3) {
-                        const size_t a = range_hold(0, 0, k1), b = range_hold(1, k1, k2);
-                        const size_t c = range_hold(2, k2, k3), d = range_hold(3, k3, L);
-                        const double hm = held_mass_at[a] + held_mass_at[b] + held_mass_at[c] + held_mass_at[d];
-                        const double ms = miss_ms * (1.0 - hm / denom) +
-                                          (double) k1 * layer_ms[0] + (double) (k2 - k1) * layer_ms[1] +
-                                          (double) (k3 - k2) * layer_ms[2] + (double) (L - k3) * layer_ms[3];
-                        if (min_stage_layers > 1 &&
-                            strata::program::split_rules::smallest_stage({k1, k2, k3}, L) < min_stage_layers) continue;
-                        if (!stage_floors.empty() && strata::program::split_rules::below_floors({k1, k2, k3}, L, stage_floors)) continue;
-                        ++tried;
-                        const double mx = stage_max({k1, k2, k3});
-                        if (!(ms < best_ms - tie_eps || (ms <= best_ms + tie_eps && mx < best_max - tie_eps))) continue;
-                        if (gate_on) {   // the same startability gate as `consider`, over the memoised fills
-                            const int64_t lbs[4] = {0, k1, k2, k3};
-                            const int64_t les[4] = {k1, k2, k3, L};
-                            std::vector<PartStat> parts((size_t) ns);
-                            for (int i = 0; i < ns; ++i) {
-                                const size_t key = i == 0 ? a : i == 1 ? b : i == 2 ? c : d;
-                                parts[i].lb = lbs[i];
-                                parts[i].le = les[i];
-                                parts[i].used = used_at[key];
-                                parts[i].cnt = held_at[key];
-                                parts[i].cap = stage_left(i, lbs[i], les[i]);
-                            }
-                            if (!can_start(parts)) continue;
-                        }
-                        best = {k1, k2, k3};
-                        best_ms = std::min(ms, best_ms);
-                        best_max = mx;
-                        best_mass = hm / denom;
-                        best_held = held_at[a] + held_at[b] + held_at[c] + held_at[d];
-                    }
-            // Four stages into fewer than five layers: nothing was enumerated, so keep the old guess rather
-            // than leave `best` empty - an empty split would leave every stage's lb/le unset.
-            if (best.empty()) proportional();
-        } else {
-            // Beyond four GPUs the placements outnumber any budget worth spending at startup (C(46,4) is
-            // 163,185 at five).  Nothing on this rig reaches it.
-            proportional();
-        }
-        };
-        search();
-        // ---- #1616: a stage with one or two layers holds a handful of expert slots (a 12 GB 3060: 512), and the
-        // prompt chunk of every card is clamped to what the smallest cache can lend.  When the pick has such a
-        // stage, look again among placements that give every stage at least kMinStageLayers layers; keep the new
-        // pick if there is one, and say so.  Recommend, never force: with none startable the first pick stays.
-        if (!best.empty() && strata::program::split_rules::restriction_possible(g.n_layers, ns) &&
-            strata::program::split_rules::has_tiny_stage(best, g.n_layers)) {
-            const std::vector<int64_t> first = best;
-            const double first_ms = best_ms;
-            auto fmt = [](const std::vector<int64_t>& v) {
-                std::string s;
-                for (const int64_t k : v) s += (s.empty() ? "" : ",") + std::to_string(k);
-                return s;
-            };
-            // ---- #2644 (two GPUs): first a placement in which each stage owns at least its share of the layers by its room for
-            // experts.  The three-layer rule below lands on its own edge when the card that is predicted slower has little
-            // room (4060 Ti 16 GB + 3060 12 GB: K=3, the 3060 idle, -44% prefill).  The rooms are read at the even split
-            // (a session and a later stage's weights depend on the range).
-            bool share_pick = false;
-            if (ns == 2) {
-                std::vector<int64_t> rooms((size_t) ns);
-                for (int i = 0; i < ns; ++i)
-                    rooms[(size_t) i] = stage_left(i, g.n_layers * i / ns, g.n_layers * (i + 1) / ns);
-                const std::vector<int64_t> floors = strata::program::split_rules::share_floors(rooms, g.n_layers);
-                if (strata::program::split_rules::floors_exceed_minimum(floors)) {
-                    best.clear();
-                    best_ms = 1e30; best_max = 1e30; best_mass = 0; best_held = 0;
-                    stage_floors = floors;
-                    search();
-                    stage_floors.clear();
-                    share_pick = !best.empty();
-                    if (share_pick)
-                        std::fprintf(stderr, "strata generate: layer split auto: K=%s would give a stage fewer than %lld layers "
-                                             "(a tiny expert cache there clamps the prompt chunk of every card, #1616) and "
-                                             "leave that card idle; chose K=%s instead, which gives each card at least its "
-                                             "share of the layers by its room for experts (%.1f ms per decode window, not %.1f; "
-                                             "--layer-split N sets it by hand, #2644)\n", fmt(first).c_str(),
-                                     (long long) strata::program::split_rules::kMinStageLayers, fmt(best).c_str(), best_ms,
-                                     first_ms);
-                }
-            }
-            if (!share_pick) {
-                best.clear();
-                best_ms = 1e30; best_max = 1e30; best_mass = 0; best_held = 0;
-                min_stage_layers = strata::program::split_rules::kMinStageLayers;
-                search();
-                min_stage_layers = 1;
-                if (best.empty()) {
-                    best = first; best_ms = first_ms;
-                    std::fprintf(stderr, "strata generate: layer split auto: K=%s gives a stage fewer than %lld layers (a "
-                                         "tiny expert cache clamps the prompt chunk, #1616), but no placement with at least "
-                                         "that many layers can start; keeping it\n", fmt(first).c_str(),
-                                 (long long) strata::program::split_rules::kMinStageLayers);
-                } else {
-                    std::fprintf(stderr, "strata generate: layer split auto: K=%s would give a stage fewer than %lld layers "
-                                         "(a tiny expert cache there clamps the prompt chunk of every card, #1616); chose "
-                                         "K=%s instead (%.1f ms per decode window, not %.1f)\n", fmt(first).c_str(),
-                                 (long long) strata::program::split_rules::kMinStageLayers, fmt(best).c_str(), best_ms,
-                                 first_ms);
-                }
-            }
-        }
-        // ---- no startable placement: fall back to proportional, and if that too is impossible, say what is short
         auto split_diagnosis = [&](const std::vector<int64_t>& at) {
             const int64_t c = 512;
             for (int i = 0; i < ns; ++i) {
@@ -2286,16 +1983,11 @@ int Model::load() {
             std::fprintf(stderr, "strata generate: to make room: a smaller --max-context, --prefill 512, a smaller "
                                  "--vram-reserve-mib, an explicit --layer-split, or close other programs using the GPU\n");
         };
-        if (best.empty()) {
-            // recommend, never force: with nothing startable on paper the search runs again without the gate, so the
-            // run is as it was before the gate, and what is short is said
-            std::fprintf(stderr, "strata generate: layer split auto: no placement can start the prompt path on the "
-                                 "figures here; choosing by decode speed alone\n");
-            gate_on = false;
-            search();
-            if (!best.empty()) split_diagnosis(best);
-        }
-        if (best.empty()) {
+        problem.can_start = can_start;
+        const char* const log_prefix = "strata generate: layer split auto: ";
+        const strata::core::SplitPlan plan = strata::core::plan_layer_split(problem, log_prefix);
+        if (plan.start_unchecked && !plan.cuts.empty()) split_diagnosis(plan.cuts);
+        if (plan.cuts.empty()) {
             std::fprintf(stderr, "strata generate: --layer-split auto: no valid split for %d GPUs (this model has %lld layers)\n",
                          ns, (long long) g.n_layers);
             return 2;
@@ -2304,45 +1996,8 @@ int Model::load() {
             std::fprintf(stderr, "strata generate: %s\n", err.c_str());
             return 1;
         }
-        split_at = best;
-        std::string ks;
-        for (const int64_t k : split_at) ks += (ks.empty() ? "" : ",") + std::to_string(k);
-        std::fprintf(stderr, "strata generate: layer split auto: K=%s - predicted %.1f ms per decode window; the caches "
-                             "hold %lld of %zu profiled pairs (~%.1f%% of the routed mass), best of %lld placements\n",
-                     ks.c_str(), best_ms, (long long) best_held, profile.size(), 100.0 * best_mass, (long long) tried);
-        // #1428: a near tie on a mixed pair.  The model prices a decode window only (the prompt path is not in it), and on
-        // cards of different speed or link the winner can flip within a few percent of error: say which other split is
-        // almost as good, so the user can try it.  Recommend, never force: this only prints.
-        {
-            const double lo = *std::min_element(layer_ms.begin(), layer_ms.end());
-            const double hi = *std::max_element(layer_ms.begin(), layer_ms.end());
-            const double llo = *std::min_element(link_scale.begin(), link_scale.end());
-            const double lhi = *std::max_element(link_scale.begin(), link_scale.end());
-            const bool mixed = hi > lo * 1.10 || lhi > llo * 1.10;
-            const double near_pct = std::getenv("STRATA_SPLIT_NEAR_TIE_PCT") ? std::atof(std::getenv("STRATA_SPLIT_NEAR_TIE_PCT")) : 4.0;
-            if (mixed && near_pct > 0 && ns <= 3 && best_ms > 0 && !priced.empty()) {
-                const std::vector<int64_t>* alt = nullptr;
-                double alt_ms = 1e30;
-                for (const auto& pc : priced) {
-                    if (pc.first > best_ms * (1.0 + near_pct / 100.0) || pc.first >= alt_ms) continue;
-                    int64_t dist = 0;   // how far the other split's boundaries lie from the chosen one's
-                    for (size_t i = 0; i < pc.second.size() && i < best.size(); ++i)
-                        dist = std::max<int64_t>(dist, std::llabs(pc.second[i] - best[i]));
-                    if (dist < 3) continue;   // the neighbour one layer over is not a different split
-                    if (gate_on && !can_start(parts_of(pc.second))) continue;
-                    alt = &pc.second;
-                    alt_ms = pc.first;
-                }
-                if (alt != nullptr) {
-                    std::string as;
-                    for (const int64_t k : *alt) as += (as.empty() ? "" : ",") + std::to_string(k);
-                    std::fprintf(stderr, "strata generate: layer split auto: NEAR TIE - K=%s is predicted %.1f ms per decode "
-                                         "window, within %.1f%% of K=%s (%.1f ms); the cards differ, so the prediction may not "
-                                         "rank them (it prices decode, not the prompt). To try the other: --layer-split %s\n",
-                                 as.c_str(), alt_ms, 100.0 * (alt_ms / best_ms - 1.0), ks.c_str(), best_ms, as.c_str());
-                }
-            }
-        }
+        split_at = plan.cuts;
+        strata::core::print_layer_split(plan, profile.size(), log_prefix);
     }
     for (size_t i = 0; i < split_at.size(); ++i)
         if (split_at[i] >= g.n_layers) {

@@ -2,9 +2,11 @@
 // (paged_engine.hpp).
 #include "strata/models/qwen38/paged_engine.hpp"
 
+#include "strata/base/gpu/links.hpp"
 #include "strata/base/gpu/memory_info.hpp"
 #include "strata/base/gpu/runtime.hpp"
 #include "strata/base/platform/env.hpp"
+#include "strata/common/experts/card_rules.hpp"
 #include "strata/common/experts/expert_pages.hpp"
 #include "strata/common/experts/expert_swaps.hpp"
 #include "strata/common/experts/ram_experts.hpp"
@@ -52,14 +54,16 @@ constexpr int64_t kDefaultSsdPauseMib = 8192;
 constexpr int kDefaultLookahead = 3;
 /// The most evicted experts put back in one step of the serve loop, so that a request waits little for it.
 constexpr int kRefillBatch = 16;
+/// The time the experts put back into the GPU's pool in one step of the serve loop may take on its link: a slow link
+/// puts back fewer (get_refill_batch).
+constexpr double kRefillBudgetMs = 10.0;
+/// The bytes each way that measure the GPU's link to RAM at start.
+constexpr size_t kLinkProbeBytes = 64ull << 20;
 /// Between two chunks of a prompt, the conversations that decode take steps for this share of the time the chunk
 /// took, so that a long prompt does not stop them (the old engine's STRATA_BATCH_DECODE_SHARE default).
 constexpr double kDecodeShare = 0.5;
 /// With drafting, the verify windows' graphs kept for the most recent row layouts (the old engine's --batch-mtp).
 constexpr size_t kWindowGraphs = 64;
-/// How many times faster than reading it from the SSD again copying an evicted expert back from the GPU must be for
-/// --copy-back auto to copy it: when the two are close, dropping wins, as the expert may not be needed for a while.
-constexpr double kCopyBackFactor = 2.0;
 /// The step in which the pools take memory and give it back (PagePoolConfig::chunk_bytes).  An expert may not cross a
 /// chunk's end, so each chunk ends in a run too short for any expert: 0.36% of the Strix Halo's GPU pool in chunks of
 /// this size (docs/MEMORY_MANAGER_PLAN.md, M2f).
@@ -145,10 +149,11 @@ struct Paused {
 class PagedEngine {
 public:
     /// `ram`: the RAM's pool (experts and paused conversations); `copy_back`: an expert the GPU's pool evicts is
-    /// copied to it.  `slots`: the batch slots (--batch; 0: one conversation at a time).  `drafter`: null when
-    /// drafting is off.
+    /// copied to it; `link`: the GPU's link to RAM, which paces the experts put back into its pool.  `slots`: the
+    /// batch slots (--batch; 0: one conversation at a time).  `drafter`: null when drafting is off.
     PagedEngine(Model& m, Conversation& conv, strata::core::ExpertPages& experts, strata::core::RamExperts& ram,
-                bool copy_back, ConversationDrafter* drafter, const PagedSettings& settings, int slots);
+                bool copy_back, const strata::core::LinkSpeed& link, ConversationDrafter* drafter,
+                const PagedSettings& settings, int slots);
     /// Deletes the paused conversations' files.
     ~PagedEngine();
 
@@ -302,6 +307,7 @@ private:
     /// decode_step refills experts too, until none are wanted: a pool grew, or is filling after the start
     /// (ExpertPages::open)
     bool refilling_ = true;
+    int refill_batch_;                 ///< the most experts one refill puts into the GPU's pool (kRefillBudgetMs)
     std::vector<float> seen_;          ///< `m_.drive.d.usage` when adapt_experts last decayed it
     int64_t swapped_ = 0;              ///< the experts adapt_experts moved into the GPU's pool, since the last report
     double adapt_ms_ = 0;              ///< the time those took
@@ -505,7 +511,7 @@ bool open_ram(Model& m, const strata::core::ExpertPages& experts, const PagedSet
         ssd = std::max(ssd, ram.time_ssd_reads(round));
         back = std::max(back, ram.time_copy_in(m.xcache.device_slot(0), ram.ring_bytes()));
     }
-    copy_back = s.copy_back == "on" || (s.copy_back == "auto" && back >= kCopyBackFactor * ssd);
+    copy_back = s.copy_back == "on" || (s.copy_back == "auto" && strata::core::is_copy_back_worth(back, ssd));
     std::fprintf(stderr, "strata-q38: the RAM's page pool: %.2f GiB%s, %.2f GiB of experts read in %.1f s (%.1f GB/s); "
                          "the other experts are read from the SSD without the file cache.  An expert the GPU evicts "
                          "is %s (copying it back: %.1f GB/s, reading the SSD: %.1f GB/s; --copy-back %s)\n",
@@ -604,7 +610,9 @@ int run_paged_engine(int argc, char** argv) {
     Model m(o);
     m.mtp.set_kv_in_pages(true);
     strata::core::ExpertPages experts;
+    strata::core::LinkSpeed link;   // measured before the pools take the memory its copies need
     m.open_expert_pages = [&](int64_t max_experts, std::string& err) {
+        link = strata::core::measure_host_link(m.primary_device, kLinkProbeBytes);
         return open_pages(m, experts, settings.tokens_min, settings.gpu_mib, max_experts, err);
     };
     if (const int status = m.load(); status != 0) return status;
@@ -637,17 +645,21 @@ int run_paged_engine(int argc, char** argv) {
         conv.ver.set_batch_graph_limit(kWindowGraphs);
     if (drafting && !settings.drafter)   // loaded for the pool's layout of the drafter's K/V, switched on later
         m.unload_drafter();
-    PagedEngine engine(m, conv, experts, ram, copy_back, drafting ? &drafter : nullptr, settings, slots);
+    std::fprintf(stderr, "strata-q38: the GPU's link to RAM: %.1f GB/s to the GPU, %.1f GB/s back, %.3f ms a round "
+                         "trip\n", link.to_gbps, link.from_gbps, link.latency_ms);
+    PagedEngine engine(m, conv, experts, ram, copy_back, link, drafting ? &drafter : nullptr, settings, slots);
     return engine.init() ? engine.serve() : 1;
 }
 
 namespace {
 
 PagedEngine::PagedEngine(Model& m, Conversation& conv, strata::core::ExpertPages& experts,
-                         strata::core::RamExperts& ram, bool copy_back, ConversationDrafter* drafter,
-                         const PagedSettings& settings, int slots)
+                         strata::core::RamExperts& ram, bool copy_back, const strata::core::LinkSpeed& link,
+                         ConversationDrafter* drafter, const PagedSettings& settings, int slots)
     : m_(m), conv_(conv), experts_(experts), ram_(ram), drafter_(drafter), settings_(settings),
-      step_(get_step_model(), m.o.eos_ids) {
+      step_(get_step_model(), m.o.eos_ids),
+      refill_batch_(strata::core::get_refill_batch(link, strata::kernels::cpu::expert_layout().max_blob,
+                                                   kRefillBudgetMs, kRefillBatch)) {
     apply_step_settings();
     for (int i = 0; i <= slots; ++i) {
         held_.push_back(std::make_unique<Held>());
@@ -1246,7 +1258,7 @@ bool PagedEngine::adapt_experts() {
 bool PagedEngine::refill_experts() {
     std::string err;
     uint64_t wait_ms = 0;
-    int loaded = experts_.is_refill_wanted() ? experts_.refill(kRefillBatch, wait_ms, err) : 0;
+    int loaded = experts_.is_refill_wanted() ? experts_.refill(refill_batch_, wait_ms, err) : 0;
     if (loaded == 0 && ram_.pages().is_refill_wanted()) {   // the GPU's first: its experts are the hotter ones
         uint64_t ram_wait_ms = 0;
         loaded = ram_.pages().refill(kRefillBatch, ram_wait_ms, err);

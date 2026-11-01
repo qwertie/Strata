@@ -8,9 +8,12 @@ Scenarios (the engine's --serve protocol unless said otherwise):
   q38state  Qwen3.8: prefix reuse, parking, SAVE / RESTORE, and a RESTORE of --other (the build before's file)
   q36       Qwen3.6: the same for its engine (strata-q36)
   multi     Qwen3.8: a 2,000-token prompt, a 128-token answer, a second turn; the startup lines appended
+  cutmove   strata-q38: a 96-token story; with --move-cut the first card's memory is halved after 24 tokens and set
+            back after 48 (the layer cut moves while it decodes); the answers to those changes go to FILE.settings
   ds        DeepSeek V4.1: greedy and seeded answers, a 128-token one for the speed
   server    the HTTP server on port 8091 with this engine (Qwen3.8): two greedy chats and their speed
 FILE gets the engine's stdout (or the server's answers), FILE.stderr its stderr; FILE ends with "exit <code>".
+FILE.gpu.csv and FILE.sys.csv get what the cards and the PC were doing, once a second (Sampler).
 --cards are the cards the engine sees, numbered as nvidia-smi numbers them. --env adds the check's settings.
 """
 from __future__ import annotations
@@ -27,12 +30,13 @@ import sys
 import threading
 import time
 import urllib.request
+import zlib
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "tools"))
 from dsv41.smoke import tokenizer  # noqa: E402
-from report import startup_lines  # noqa: E402
+from report import GPU_FIELDS, startup_lines  # noqa: E402
 
 #: Never 8080, where the owner's own server runs
 PORT = 8091
@@ -42,7 +46,7 @@ QWEN_USER, QWEN_ANSWER = "<|im_start|>user\n", "<|im_end|>\n<|im_start|>assistan
 
 def main() -> int:
     ap = argparse.ArgumentParser()
-    ap.add_argument("scenario", choices=["q38", "q38state", "q36", "multi", "ds", "server"])
+    ap.add_argument("scenario", choices=["q38", "q38state", "q36", "multi", "cutmove", "ds", "server"])
     ap.add_argument("--exe", required=True)
     ap.add_argument("--out", required=True)
     ap.add_argument("--data", required=True)
@@ -51,10 +55,15 @@ def main() -> int:
     ap.add_argument("--env", action="append", default=[])
     ap.add_argument("--deepseek")
     ap.add_argument("--other")
+    ap.add_argument("--move-cut", action="store_true")
     a = ap.parse_args()
     env = dict(e.split("=", 1) for e in a.env)
-    if a.scenario == "server":
-        return serve(a, env)
+    with Sampler(a.out):
+        return serve(a, env) if a.scenario == "server" else run_engine(a, env)
+
+
+def run_engine(a, env: dict[str, str]) -> int:
+    """Runs a scenario of the engine's --serve protocol. Returns 0 if the engine got through it and exited with 0."""
     if a.cards:
         env.update(CUDA_DEVICE_ORDER="PCI_BUS_ID", CUDA_VISIBLE_DEVICES=a.cards)
     e = Engine([a.exe, "--serve", *model_args(a), *a.args.split()], env, a.out)
@@ -108,19 +117,54 @@ class Engine:
         if ends:
             self.until(*ends)
 
-    def gen(self, head: str, ids: list[int]) -> list[int]:
-        """Sends `GEN <head> <ids>` and returns the prompt followed by the answer's tokens."""
-        self.note(f">>> GEN {head} <{len(ids)} ids>")
+    def gen(self, head: str, ids: list[int], changes: dict[int, str] | None = None) -> list[int]:
+        """Sends `GEN <head> <ids>` and returns the prompt followed by the answer's tokens.  `changes`: after how many
+        tokens to send which CHANGE_SETTINGS fields; their answers go to the .settings file, not the output."""
+        self.note(f">>> GEN {head} {describe(ids)}")
         self.p.stdin.write(f"GEN {head} {','.join(map(str, ids))}\n")
         self.p.stdin.flush()
-        got = []
-        while (line := self.until("T ", "DONE", "ERR")).startswith("T "):
+        got, changes, answering = [], dict(changes or {}), False
+        while True:
+            line = self.lines.get(timeout=900)
+            if line is None:
+                raise SystemExit("the engine ended early")
+            # the answer to a change comes between two tokens, and tokens decoded before it may come first
+            if answering and not line.startswith("T "):
+                self.note_settings(line)
+                answering = not line.startswith(("END_MEMORY", "ERR"))
+                continue
+            self.out.write(line)
+            if line.startswith(("DONE", "ERR")):
+                self.out.flush()
+                return ids + got
+            if not line.startswith("T "):
+                continue
             got.append(int(line.split()[1]))
-        return ids + got
+            if (fields := changes.pop(len(got), None)) is not None:
+                self.note_settings(f">>> after {len(got)} tokens: CHANGE_SETTINGS {fields}\n")
+                self.p.stdin.write(f"CHANGE_SETTINGS {fields}\n")
+                self.p.stdin.flush()
+                answering = True
+
+    def note_settings(self, text: str):
+        """Appends `text` to FILE.settings, which keeps the answers to CHANGE_SETTINGS out of the compared output."""
+        with open(self.err_path.removesuffix(".stderr") + ".settings", "a", encoding="utf-8") as f:
+            f.write(text)
+
+    def ask_quietly(self, cmd: str, end: str) -> list[str]:
+        """Sends `cmd` and returns its answer's lines up to `end` (or ERR) without copying them to the output."""
+        self.p.stdin.write(cmd + "\n")
+        self.p.stdin.flush()
+        lines = []
+        while (line := self.lines.get(timeout=900)) is not None:
+            lines.append(line)
+            if line.startswith((end, "ERR")):
+                return lines
+        raise SystemExit("the engine ended early")
 
     def bgen(self, slot: int, max_new: int, ids: list[int]) -> list[int]:
         """Sends a BGEN, waits for its slot to end, and returns the prompt followed by the answer's tokens."""
-        self.note(f">>> BGEN {slot} {max_new} <{len(ids)} ids>")
+        self.note(f">>> BGEN {slot} {max_new} {describe(ids)}")
         self.p.stdin.write(f"BGEN {slot} {max_new} {','.join(map(str, ids))}\n")
         self.p.stdin.flush()
         got = []
@@ -264,6 +308,18 @@ def multi(e: Engine, a):
     e.gen("128", x + chat("<|im_end|>\n" + QWEN_USER + "Now name three open questions it leaves." + QWEN_ANSWER))
 
 
+def cutmove(e: Engine, a):
+    tok = tokenizer(Path(a.data) / "packs/iq3_s")
+    story = tok.encode(QWEN_USER + "Write a long, detailed story about a lighthouse keeper who counts ships." +
+                       QWEN_ANSWER, parse_special=True)
+    changes = {}
+    if a.move_cut:
+        report = "".join(e.ask_quietly("GET_MEMORY_USE", "END_MEMORY"))
+        mib = int(re.search(r"memory_mib\.gpu0=(\d+)", report)[1])
+        changes = {24: f"memory_mib.gpu0={mib // 2}", 48: f"memory_mib.gpu0={mib}"}
+    e.gen("96", story, changes)
+
+
 def ds(e: Engine, a):
     tok = tokenizer(Path(a.data) / DS_PACK)
     chat = lambda text: tok.encode(  # noqa: E731
@@ -276,7 +332,7 @@ def ds(e: Engine, a):
     e.gen("128", code)
 
 
-SCENARIOS = {"q38": q38, "q38state": q38state, "q36": q36, "multi": multi, "ds": ds}
+SCENARIOS = {"q38": q38, "q38state": q38state, "q36": q36, "multi": multi, "cutmove": cutmove, "ds": ds}
 
 
 def looks(e: Engine, cmds: list[str]):
@@ -286,6 +342,59 @@ def looks(e: Engine, cmds: list[str]):
 
 def ids(v: list[int]) -> str:
     return ",".join(map(str, v))
+
+
+def describe(prompt: list[int]) -> str:
+    """Gets a prompt's length and a digest of it for the output, so that report.py compares an answer only between
+    runs that sent the same prompt."""
+    return f"<{len(prompt)} ids {zlib.crc32(ids(prompt).encode()):08x}>"
+
+
+class Sampler:
+    """Records once a second, while a check runs: each card's clocks, temperature, power, load, memory, PCIe link
+    and throttle reasons (nvidia-smi into FILE.gpu.csv, the columns of report.GPU_FIELDS) and the PC's CPU load, free
+    RAM, page file use and disk reads (FILE.sys.csv)."""
+
+    def __init__(self, out: str):
+        self.out = out
+        self.stop = threading.Event()
+        self.smi: subprocess.Popen | None = None
+
+    def __enter__(self):
+        # drivers since 535 call the last column clocks_event_reasons; some still take the old name
+        for reasons in ("clocks_throttle_reasons.active", "clocks_event_reasons.active"):
+            if not shutil.which("nvidia-smi"):
+                break
+            fields = ",".join(GPU_FIELDS[:-1] + (reasons,))
+            self.smi = subprocess.Popen(["nvidia-smi", f"--query-gpu={fields}", "--format=csv,noheader,nounits",
+                                         "-lms", "1000", "-f", self.out + ".gpu.csv"], stdout=subprocess.DEVNULL,
+                                        stderr=subprocess.DEVNULL)
+            try:
+                self.smi.wait(2)               # it exits at once on a column it does not know
+            except subprocess.TimeoutExpired:
+                break
+        threading.Thread(target=self.sample_pc, daemon=True).start()
+        return self
+
+    def __exit__(self, *_):
+        self.stop.set()
+        if self.smi and self.smi.poll() is None:
+            self.smi.terminate()
+
+    def sample_pc(self):
+        import psutil
+        read = lambda: getattr(psutil.disk_io_counters(), "read_bytes", 0)  # noqa: E731  (None without counters)
+        start, last = time.time(), read()
+        psutil.cpu_percent()
+        with open(self.out + ".sys.csv", "w", encoding="utf-8", newline="\n") as f:
+            f.write("seconds,cpu_pct,ram_free_gb,pagefile_pct,disk_read_mbs\n")
+            while not self.stop.wait(1):
+                now = read()
+                f.write(f"{time.time() - start:.0f},{psutil.cpu_percent():.0f},"
+                        f"{psutil.virtual_memory().available / 2**30:.1f},{psutil.swap_memory().percent:.0f},"
+                        f"{(now - last) / 2**20:.0f}\n")
+                f.flush()
+                last = now
 
 
 def serve(a, env: dict[str, str]) -> int:

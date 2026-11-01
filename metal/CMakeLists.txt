@@ -129,5 +129,6 @@ target_compile_definitions(strata_metal_kernels PRIVATE
 target_link_libraries(strata_metal_kernels PUBLIC strata_metal_host mtl_rt)
 
 add_executable(strata ${S}/program/generate.cpp ${S}/models/qwen38/model.cpp ${S}/models/qwen38/conversation.cpp
-               ${S}/models/qwen38/options.cpp)   # the loader, the conversation and the options it calls
+               ${S}/models/qwen38/options.cpp ${S}/common/experts/layer_split.cpp)   # the loader, the conversation and
+               # the options it calls, and the layer split's planner
 target_link_libraries(strata PRIVATE strata_metal_kernels strata_metal_host strata_metal_kernels)

@@ -3,8 +3,8 @@
 The Qwen3.8-Flash-Next engine. Headers: `include/strata/models/qwen38/`.
 
 `model.cpp` is the model loader (`Model::load`, from `strata`'s main(), step M2c of
-[docs/MEMORY_MANAGER_PLAN.md](../../../docs/MEMORY_MANAGER_PLAN.md)); `split_rules.hpp` and `batch_groups.hpp` (with
-their tests) came from `src/program/` with it. `options.cpp` is the command line, `conversation.cpp` one sequence's
+[docs/MEMORY_MANAGER_PLAN.md](../../../docs/MEMORY_MANAGER_PLAN.md)); `batch_groups.hpp` (with
+its test) came from `src/program/` with it. `options.cpp` is the command line, `conversation.cpp` one sequence's
 prompt path and verify windows (M2c2). `conversation_pages.cpp` keeps a conversation's state in a page pool,
 `conversation_drafter.cpp` has the MTP drafter guess for each conversation from its own pages (M4), and
 `paged_engine.cpp` is `strata-q38`, the engine built on them (M2d; several conversations at once through the

@@ -1,4 +1,4 @@
-// include/strata/models/qwen38/split_rules.hpp - rules for the automatic layer split that do not need a GPU to check.
+// include/strata/common/experts/split_rules.hpp - rules for the automatic layer split that do not need a GPU to check.
 //
 // A stage that owns one or two layers holds a handful of expert slots (a 12 GB 3060 with one layer held 512), and
 // the prompt chunk of the whole pipeline is clamped to what the smallest cache can lend (#448): 576 -> 347 tok/s in
