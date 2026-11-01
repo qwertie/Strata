@@ -749,6 +749,9 @@ public:
     /// expert bytes outside it; switches either way (startup only, nothing reading).  Returns whether unbuffered.
     bool recheck_unbuffered(std::string& why);
     bool unbuffered() const { return !direct_.empty(); }
+    /// strata-q38 (RamExperts): reads the experts straight from the drive from now on, whatever the RAM; false (and
+    /// `why`) when the files cannot be opened so.
+    bool read_unbuffered(std::string& why) { return unbuffered() || open_direct(why); }
     /// MODEL-UPDATE round 2 (Linux, opt-in STRATA_PROMPT_DIRECT=1): with the file tier read through the file cache (the
     /// decode's choice: re-routed experts come back from it), the prompt path's batched stager reads (copy_blobs) go
     /// unbuffered instead - the same bytes, read in merged O_DIRECT requests.  False when not opened (and why).

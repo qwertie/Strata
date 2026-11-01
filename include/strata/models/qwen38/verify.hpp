@@ -224,6 +224,9 @@ public:
     bool commit_slot_prefixes(const int* keep, std::string& err);
     /// --batch-mtp: slot rotation makes many row layouts, so bound the captured batch graph pairs (LRU). 0 = unbounded.
     void set_batch_graph_limit(size_t n) { batch_graph_limit_ = n; }
+    /// Frees every captured batch window graph; they are captured again when used.  For a slot whose state the
+    /// captured graphs point at moved (strata-q38: a paused conversation came back in other page-pool pages).
+    bool drop_batch_graphs(std::string& err);
 
     // ---- The stages of a layer split as a PIPELINE.  A batch window over the slot GROUP
     // [base, base + S) is launched on ONE stage with its commit right behind it on the stage's stream (a batch window

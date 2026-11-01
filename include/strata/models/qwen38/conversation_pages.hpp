@@ -36,7 +36,8 @@ public:
                            std::string& err);
     /// Gives the conversation `id` of `pool` (a pool made with get_layout's regions; it must outlive this object) its
     /// fixed region and points `ss` at it: `ss.gdn_state`, and each QSA state's K/V and pooled keys as units
-    /// (QsaState::units).  The drafter's units, when the pool has them, are for MtpDrafter::use_kv_units.
+    /// (QsaState::units, device tables made at the first init and kept).  The drafter's units, when the pool has
+    /// them, are for MtpDrafter::use_kv_units.
     bool init(const strata::core::ModelGeometry& g, strata::core::SessionState& ss, strata::core::PagePool& pool,
               strata::core::ConversationId id, std::string& err);
     /// Tells whether init has given the conversation its pages.
@@ -47,6 +48,14 @@ public:
     bool reserve(int64_t tokens, std::string& err);
     /// Gives back the growing pages past the first `tokens` tokens (0: a new conversation); the fixed region stays.
     void truncate(int64_t tokens);
+    /// Gives back every page, the fixed region's too, once they are copied elsewhere (a paused conversation); `init`
+    /// gives the conversation its pages again, keeping the device tables the kernels read.
+    void release();
+    /// Gets the tokens the pool counts for a conversation whose positions below `tokens` are written: the blocks
+    /// `reserve(tokens)` takes, as tokens.
+    int64_t get_pool_tokens(int64_t tokens) const;
+    /// Gets the conversation's id in its pool.
+    strata::core::ConversationId id() const { return id_; }
     /// Gets the bytes of the pool's pages the conversation holds (0 before init).
     uint64_t bytes() const;
     /// Gets the device table of the drafter's units (MtpDrafter::use_kv_units); null when the pool has none.

@@ -3673,6 +3673,13 @@ bool Verifier::evict_batch_graph(const std::vector<int>& keep, bool& evicted, st
     return true;
 }
 
+bool Verifier::drop_batch_graphs(std::string& err) {
+    for (bool evicted = true; evicted;)
+        if (!evict_batch_graph({}, evicted, err))
+            return false;
+    return true;
+}
+
 bool Verifier::instantiate_evicting(cudaGraphExec_t& ex, cudaGraph_t graph, const std::vector<int>& key,
                                    const char* what, std::string& err) {
     // #997: every layout of active slots keeps its own graph pair (20-30 MiB each on an L40S), and with an expert cache

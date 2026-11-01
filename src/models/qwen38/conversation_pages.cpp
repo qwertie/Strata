@@ -70,13 +70,13 @@ bool ConversationPages::init(const strata::core::ModelGeometry& g, strata::core:
     ss.gdn_state = (float*) pool.page_address(pool.conversation_blocks(id, 0).at(0));
     idx_block_ = s.idx_block;
     max_blocks_ = ss.max_cells / s.idx_block + 2;
-    for (int64_t* t : tables_)   // (an init that failed before)
-        (void) cudaFree(t);
-    tables_.assign(unit_bytes_.size(), nullptr);
+    tables_.resize(unit_bytes_.size(), nullptr);
     runs_in_table_.assign(unit_bytes_.size(), 0);
     for (size_t j = 0; j < tables_.size(); ++j) {
-        if (cudaMalloc((void**) &tables_[j], (size_t) max_blocks_ * sizeof(int64_t)) != cudaSuccess) {
+        if (tables_[j] == nullptr &&
+            cudaMalloc((void**) &tables_[j], (size_t) max_blocks_ * sizeof(int64_t)) != cudaSuccess) {
             (void) cudaGetLastError();
+            tables_[j] = nullptr;
             err = "the page pool: no room for the K/V's unit tables";
             return false;
         }
@@ -95,8 +95,7 @@ bool ConversationPages::init(const strata::core::ModelGeometry& g, strata::core:
 }
 
 bool ConversationPages::reserve(int64_t tokens, std::string& err) {
-    // blocks up to the last position's, and the spare one after it that the indexer writes ahead
-    const int64_t need = std::min((std::max<int64_t>(tokens, 1) - 1) / idx_block_ + 2, max_blocks_) * idx_block_;
+    const int64_t need = get_pool_tokens(tokens);
     if (need <= reserved_)
         return true;
     if (const std::string why = pool_->grow_conversation(id_, need); !why.empty()) {
@@ -137,6 +136,17 @@ void ConversationPages::truncate(int64_t tokens) {
     reserved_ = keep;
     for (size_t j = 0; j < tables_.size(); ++j)
         runs_in_table_[j] = pool_->conversation_blocks(id_, 1 + j).size();
+}
+
+void ConversationPages::release() {
+    pool_->remove_conversation(id_);
+    pool_ = nullptr;
+    reserved_ = 0;
+}
+
+int64_t ConversationPages::get_pool_tokens(int64_t tokens) const {
+    // blocks up to the last position's, and the spare one after it that the indexer writes ahead
+    return std::min((std::max<int64_t>(tokens, 1) - 1) / idx_block_ + 2, max_blocks_) * idx_block_;
 }
 
 uint64_t ConversationPages::bytes() const {

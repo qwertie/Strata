@@ -592,6 +592,7 @@ if(STRATA_ENABLE_CUDA OR STRATA_ENABLE_HIP)
   add_library(strata_engine STATIC src/base/gpu/vmm.cpp
     src/common/state/conversation_memory.cpp src/common/state/conversation_file.cpp
     src/common/experts/expert_profile.cpp src/common/experts/ram_tier.cpp src/common/experts/expert_pages.cpp
+    src/common/experts/ram_experts.cpp src/common/state/pool_copy.cpp
     src/core/expert_source.cpp src/core/remote_experts.cpp src/core/remote_expert_opt.cu src/core/expert_cache.cpp
     src/core/peer_experts.cpp src/core/arch_defaults.cpp src/core/nv_defaults.cpp
     src/models/qwen38/layer.cpp src/models/qwen38/session.cpp src/models/qwen38/native_head.cpp
@@ -606,6 +607,16 @@ if(STRATA_ENABLE_CUDA OR STRATA_ENABLE_HIP)
     target_link_libraries(host_graph_launch_test PRIVATE CUDA::cudart Threads::Threads)
     add_test(NAME host_graph_launch_test COMMAND host_graph_launch_test)
     set_tests_properties(host_graph_launch_test PROPERTIES TIMEOUT 30)
+  endif()
+  if(STRATA_BUILD_TESTS)
+    # the memory manager's RAM tier (docs/MEMORY_MANAGER_PLAN.md M5): on host memory, through the runtime's copies
+    foreach(_t common/state/pool_copy common/experts/ram_experts)
+      get_filename_component(_n ${_t} NAME)
+      add_executable(${_n}_test src/${_t}_test.cpp)
+      target_link_libraries(${_n}_test PRIVATE strata_engine)
+      add_test(NAME ${_n}_test COMMAND ${_n}_test)
+      set_tests_properties(${_n}_test PROPERTIES TIMEOUT 60)
+    endforeach()
   endif()
   if(STRATA_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/core/exchange_storage_test.cpp")
     add_executable(exchange_storage_test tests/core/exchange_storage_test.cpp)

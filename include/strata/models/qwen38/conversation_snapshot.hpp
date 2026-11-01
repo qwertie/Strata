@@ -84,6 +84,14 @@ bool conversation_checkpoint_restore(const ConversationCheckpoint& checkpoint, S
 // `queued`: the copies are only queued (the private copy stream), and the caller synchronizes the device after too.
 bool conversation_checkpoint_copy(const SessionState& from, SessionState& to, const std::vector<int32_t>& ids,
                                   const ModelGeometry& g, std::string& error, bool queued = false);
+/// strata-q38's pausing (docs/MEMORY_MANAGER_PLAN.md, M5): copies the running state that a session carved with
+/// session_set_pool_state keeps itself, beside its page-pool pages (describe_conversation's first region: the PLE
+/// history, then per QSA layer the indexer's tail, dead key and block position), to `out`.  Synchronizes the device.
+bool conversation_unpaged_save(const SessionState& session, const ModelGeometry& g, std::vector<uint8_t>& out,
+                               std::string& error);
+/// Puts what conversation_unpaged_save copied back into `session`, whose conversation holds the tokens `ids`.
+bool conversation_unpaged_restore(const std::vector<uint8_t>& saved, SessionState& session, const ModelGeometry& g,
+                                  const std::vector<int32_t>& ids, std::string& error);
 
 struct ConversationView {
     const std::vector<int32_t>& ids;

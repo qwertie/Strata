@@ -11,11 +11,17 @@ What is here so far is the model-neutral host code, which needs no GPU:
 - `exchange_storage.hpp`: the adaptive tier's exchange of experts between the RAM copy and the GPU cache.
 - `hit_hook.hpp`: the seam between Qwen3.8's host loop and the VRAM tier.
 - `uma_cache.hpp`: the GPU cache's size on a GPU that shares the system RAM.
-- `expert_pages`: the GPU cache in the pages of the page pool (`src/common/state/page_pool.cpp`) that the GPU's
-  conversations share; the page size per model, experts leaving for a growing conversation and coming back
-  (strata-q38, docs/MEMORY_MANAGER_PLAN.md step M2e).
+- `expert_pages`: experts in the pages of a page pool (`src/common/state/page_pool.cpp`) that conversations share: a
+  GPU's cache or the RAM's copy; the page size per model, experts leaving for a growing conversation and coming back
+  (strata-q38, docs/MEMORY_MANAGER_PLAN.md steps M2e and M5).
+- `ram_experts`: the RAM's page pool as an expert source (step M5): at start the experts the GPU's pool does not hold,
+  then copies of the GPU's while room allows; an expert the GPU evicts copied back, and the paused conversations. The
+  rest are read from the SSD without the file cache, and an expert decoding reads there takes the place of the least
+  recently used one of its size (else it goes to a staging ring). It calls the runtime through
+  `src/base/gpu/runtime.hpp`.
 
-The SYCL build uses these files too; it has no copies of them.
+The SYCL build compiles `expert_profile` and `ram_tier` too, without copies of them; `expert_pages` and `ram_experts`
+are for strata-q38, which the SYCL build does not make.
 
 Still in `src/core/`: the GPU cache (`expert_cache`) and the expert sources with their prefetch and the adaptive tier's
 copies (`expert_source`, `foresight_swap.hpp`). They call the CUDA runtime directly (streams, events, page-locked and

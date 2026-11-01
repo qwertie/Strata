@@ -28,4 +28,22 @@ bool gpu_memset_async(void* p, int value, size_t bytes, void* stream) {
     return cudaMemsetAsync(p, value, bytes, (cudaStream_t) stream) == cudaSuccess;
 }
 
+bool gpu_copy(void* dst, const void* src, size_t bytes) {
+    return cudaMemcpy(dst, src, bytes, cudaMemcpyDefault) == cudaSuccess;
+}
+
+void* gpu_host_alloc_mapped(size_t bytes, void** device_view) {
+    void* p = nullptr;
+    if (cudaHostAlloc(&p, bytes, cudaHostAllocMapped | cudaHostAllocPortable) != cudaSuccess) {
+        (void) cudaGetLastError();
+        return nullptr;
+    }
+    if (cudaHostGetDevicePointer(device_view, p, 0) == cudaSuccess)
+        return p;
+    (void) cudaFreeHost(p);
+    return nullptr;
+}
+
+void gpu_host_free(void* p) { (void) cudaFreeHost(p); }
+
 }  // namespace strata::core

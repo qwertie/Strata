@@ -15,5 +15,12 @@ void gpu_free(void* p);
 bool gpu_copy_2d_async(void* dst, size_t dst_pitch, const void* src, size_t src_pitch, size_t width, size_t height,
                        void* stream);
 bool gpu_memset_async(void* p, int value, size_t bytes, void* stream);
+/// Copies `bytes` between any two memories and waits for the copy; false when the runtime refuses it.
+bool gpu_copy(void* dst, const void* src, size_t bytes);
+/// Allocates `bytes` of page-locked host memory that the current device reads in place: `device_view` gets the
+/// device's address of it.  nullptr when the runtime cannot lock that much.
+void* gpu_host_alloc_mapped(size_t bytes, void** device_view);
+/// Frees memory that gpu_host_alloc_mapped gave.
+void gpu_host_free(void* p);
 
 }  // namespace strata::core

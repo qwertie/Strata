@@ -29,35 +29,50 @@ uint64_t choose_expert_page_bytes(const std::vector<uint64_t>& blob_bytes) {
 
 bool ExpertPages::open(ExpertCache& cache, const StateLayout& layout, PagePoolConfig config,
                        const std::vector<uint64_t>& blob_bytes, int64_t n_expert, int64_t max_experts,
-                       const std::vector<int32_t>& ranked_layers, std::string& err) {
+                       const std::vector<ExpertKey>& ranking, std::string& err) {
     const uint64_t page = (uint64_t) cache.slot_bytes(), pages = (uint64_t) cache.slots();
     if (!cache.valid() || cache.slot_offsets() != nullptr || cache.resident() != 0 || page == 0) {
         err = "the expert pages need an open, empty cache of uniform slots";
         return false;
     }
+    config.page_bytes = page;
+    if (!open(cache.device_slot(0), pages, layout, config, blob_bytes, n_expert, max_experts, ranking, err))
+        return false;
+    cache_ = &cache;
+    cache.set_admitter([this](int64_t layer, int64_t expert) { return admit(layer, expert); });
+    return true;
+}
+
+bool ExpertPages::open(uint8_t* arena, uint64_t pages, const StateLayout& layout, PagePoolConfig config,
+                       const std::vector<uint64_t>& blob_bytes, int64_t n_expert, int64_t max_experts,
+                       const std::vector<ExpertKey>& ranking, std::string& err) {
+    const uint64_t page = config.page_bytes;
     // The whole arena is one chunk: nothing gives part of it back yet, and an expert may not cross a chunk's end, so
     // chunks would leave a run too short for any expert at each end (0.36% of the Strix Halo's 15.5 GiB pool in 256
     // MiB chunks).  Giving memory back while running (MEMORY_MANAGER_PLAN.md step M6) has to choose chunks again.
-    config.page_bytes = page;
     config.chunk_bytes = pages * page;
-    cache_ = &cache;
+    arena_ = arena;
     n_expert_ = n_expert;
     max_experts_ = max_experts;
     pages_.clear();
     for (const uint64_t b : blob_bytes)
         pages_.push_back((uint32_t) ((b + page - 1) / page));
     rank_.assign(blob_bytes.size() * (size_t) n_expert, -1);
+    ranked_ = ranking;
     config.expert_ranking.clear();
-    for (size_t i = 0; i < ranked_layers.size() && (int64_t) i < max_experts; ++i)
-        config.expert_ranking.push_back(pages_.at((size_t) ranked_layers[i]));
+    for (size_t i = 0; i < ranking.size(); ++i) {
+        rank_.at(index_of(ranking[i])) = (int32_t) i;
+        if ((int64_t) i < max_experts)
+            config.expert_ranking.push_back(pages_.at((size_t) ranking[i].layer));
+    }
     PagePoolHooks hooks;
     hooks.alloc = [this, chunk = config.chunk_bytes, pages, page](size_t) -> void* {
         if ((chunks_given_ + 1) * chunk > pages * page)
             return nullptr;
-        return cache_->device_slot((int32_t) (chunks_given_++ * chunk / page));
+        return arena_ + chunks_given_++ * chunk;
     };
     hooks.free = [this](void*) { --chunks_given_; };
-    hooks.evicted = [this](ExpertKey key, PageId) { on_evicted(key); };
+    hooks.evicted = [this](ExpertKey key, PageId first) { on_evicted(key, first); };
     now_ = hooks.now;
     t0_ = std::max<uint64_t>(now_(), rank_.size() + 1);
     try {
@@ -70,7 +85,6 @@ bool ExpertPages::open(ExpertCache& cache, const StateLayout& layout, PagePoolCo
         err = "the page pool: " + r.refusal;
         return false;
     }
-    cache.set_admitter([this](int64_t layer, int64_t expert) { return admit(layer, expert); });
     return true;
 }
 
@@ -83,7 +97,7 @@ int ExpertPages::refill(int max, uint64_t& wait_ms, std::string& err) {
     int loaded = 0;
     while (loaded < max && !evicted_.empty()) {
         const ExpertKey key = ranked_[(size_t) *evicted_.begin()];
-        const int32_t slot = cache_->admit(key.layer, key.expert);
+        const int32_t slot = cache_ != nullptr ? cache_->admit(key.layer, key.expert) : admit(key.layer, key.expert);
         if (slot == kNotResident) {
             const uint64_t opening = pool_->get_next_opening();
             if (opening > 0)
@@ -100,15 +114,13 @@ int ExpertPages::refill(int max, uint64_t& wait_ms, std::string& err) {
     return loaded;
 }
 
-/// Gets pages for an expert the cache admits (ExpertCache::set_admitter): a new one ranks after those admitted
-/// before it, an evicted one comes back with its rank.
-int32_t ExpertPages::admit(int64_t layer, int64_t expert) {
+int32_t ExpertPages::admit(int64_t layer, int64_t expert, uint64_t used_at) {
     const ExpertKey key{(int32_t) layer, (int32_t) expert};
     int32_t& rank = rank_[index_of(key)];
-    if (rank < 0 && (int64_t) ranked_.size() >= max_experts_)
+    const int32_t r = rank >= 0 ? rank : (int32_t) ranked_.size();   // an expert outside the ranking ranks after it
+    if (r >= max_experts_)
         return kNotResident;
-    const int32_t r = rank >= 0 ? rank : (int32_t) ranked_.size();
-    const PageId page = pool_->add_expert(key, pages_[(size_t) layer], get_used_at(r));
+    const PageId page = pool_->add_expert(key, pages_[(size_t) layer], used_at != 0 ? used_at : get_used_at(r));
     if (page == no_page)
         return kNotResident;
     if (rank < 0) {
@@ -120,9 +132,12 @@ int32_t ExpertPages::admit(int64_t layer, int64_t expert) {
     return (int32_t) page;
 }
 
-/// Forgets an expert whose pages the pool gave to another use, and keeps it for `refill`.
-void ExpertPages::on_evicted(ExpertKey key) {
-    cache_->evict(key.layer, key.expert);
+/// Forgets an expert whose pages (from `first`) the pool gives to another use, and keeps it for `refill`.
+void ExpertPages::on_evicted(ExpertKey key, PageId first) {
+    if (hooks_.leaving)
+        hooks_.leaving(key, arena_ + (uint64_t) first * pool_->page_bytes());
+    if (cache_ != nullptr)
+        cache_->evict(key.layer, key.expert);
     evicted_.insert(rank_[index_of(key)]);
     if (hooks_.moved)
         hooks_.moved(key, kNotResident);

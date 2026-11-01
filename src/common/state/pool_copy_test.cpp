@@ -1,0 +1,86 @@
+// A conversation's pages copied between two page pools on host memory and through a file (pool_copy.hpp): the bytes
+// arrive in the other pool's blocks, a place with fewer blocks takes the first ones, and one with more is refused.
+#include "strata/common/state/pool_copy.hpp"
+
+#include <cstdio>
+#include <cstdlib>
+#include <filesystem>
+#include <memory>
+#include <vector>
+
+using namespace strata::core;
+
+namespace {
+int checks = 0;
+void check(bool value, const char* description) {
+    ++checks;
+    if (!value) {
+        std::fprintf(stderr, "FAIL: %s\n", description);
+        std::exit(1);
+    }
+}
+
+/// A pool of 64 pages of 64 bytes on host memory, for a conversation of a 100-byte state and 16 bytes a token.
+struct Pool {
+    std::vector<std::unique_ptr<uint8_t[]>> chunks;
+    std::unique_ptr<PagePool> pool;
+    Pool() {
+        StateLayout layout;
+        layout.add(RegionKind::fixed, 100);
+        layout.add(RegionKind::per_token, 8, 2);
+        PagePoolConfig config;
+        config.page_bytes = 64;
+        config.chunk_bytes = 64 * 64;
+        PagePoolHooks hooks;
+        hooks.alloc = [this](size_t bytes) { return chunks.emplace_back(new uint8_t[bytes]()).get(); };
+        hooks.free = [](void*) {};
+        pool = std::make_unique<PagePool>(layout, config, hooks);
+        pool->resize(config.chunk_bytes);
+    }
+    /// Gets each byte of conversation `id`'s blocks, region by region.
+    std::vector<uint8_t> get_bytes(ConversationId id) const {
+        std::vector<uint8_t> bytes;
+        for (size_t r = 0; r < pool->layout().regions.size(); ++r)
+            for (const PageId p : pool->conversation_blocks(id, r))
+                bytes.insert(bytes.end(), pool->page_address(p), pool->page_address(p) + pool->block_bytes(r));
+        return bytes;
+    }
+};
+}  // namespace
+
+int main() {
+    Pool a, b, c;
+    check(a.pool->grow_conversation(1, 40).empty() && b.pool->grow_conversation(7, 40).empty() &&
+              c.pool->grow_conversation(3, 12).empty(),
+          "the conversations get their pages");
+    uint8_t n = 1;
+    for (size_t r = 0; r < 2; ++r)
+        for (const PageId p : a.pool->conversation_blocks(1, r))
+            for (uint64_t i = 0; i < a.pool->block_bytes(r); ++i)
+                a.pool->page_address(p)[i] = n++;
+    std::string err;
+    check(copy_conversation(*a.pool, 1, *b.pool, 7, err) && b.get_bytes(7) == a.get_bytes(1),
+          "a copy into as many blocks has every byte");
+    check(copy_conversation(*a.pool, 1, *c.pool, 3, err), "a copy into fewer blocks is done");
+    const std::vector<uint8_t> want = a.get_bytes(1), got = c.get_bytes(3);
+    const size_t fixed = a.pool->block_bytes(0);
+    check(std::equal(got.begin(), got.begin() + (long) fixed, want.begin()) &&
+              std::equal(got.begin() + (long) fixed, got.end(), want.begin() + (long) fixed),
+          "a copy into fewer blocks takes the fixed region and the first blocks");
+    check(!copy_conversation(*c.pool, 3, *a.pool, 1, err), "a copy into more blocks is refused");
+
+    const std::string path = (std::filesystem::temp_directory_path() / "pool_copy_test.bin").string();
+    Pool d, e;
+    check(save_conversation(*a.pool, 1, path, err), "the file is written");
+    check(d.pool->grow_conversation(5, 40).empty() && load_conversation(path, *d.pool, 5, err) &&
+              d.get_bytes(5) == a.get_bytes(1),
+          "the file gives back every byte");
+    check(e.pool->grow_conversation(5, 12).empty() && load_conversation(path, *e.pool, 5, err) &&
+              e.get_bytes(5) == c.get_bytes(3),
+          "a place with fewer blocks reads the first ones");
+    std::filesystem::remove(path);
+    err.clear();
+    check(!load_conversation(path, *d.pool, 5, err) && !err.empty(), "a missing file is refused");
+    std::printf("pool_copy_test: %d checks passed\n", checks);
+    return 0;
+}

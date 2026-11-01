@@ -91,5 +91,9 @@ GPU runtime and its test (`page_pool_test.cpp`) runs on host memory.
 
 The pool is not thread-safe: the engine's step loop is its only caller.
 
+`pool_copy` (step M5) pauses and resumes a conversation: its blocks copied from one pool to another of the same layout
+and page size (a GPU's and the RAM's), or to a file on the SSD and back. A place with fewer blocks (the conversation's
+tokens without the cells its guesses had) takes the first ones. Its test (`pool_copy_test.cpp`) runs on host memory.
+
 See [docs/ARCHITECTURE.md](../../../docs/ARCHITECTURE.md) for the layers and
 [docs/REFACTOR_PLAN.md](../../../docs/REFACTOR_PLAN.md) for the steps.

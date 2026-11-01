@@ -4458,6 +4458,11 @@ void Model::finish_expert_tiers() {
     }
 }
 
+void Model::use_expert_source(strata::core::ExpertSource& source) {
+    srcp = drive.d.src = &source;
+    drive.d.lookahead = nullptr;
+}
+
 void Model::turn_off_adapt_async(const char* why) {
     std::fprintf(stderr, "strata generate: --adapt-async 1 is off (%s): the blocking adaptive tier\n", why);
     o.adapt_async = 0;

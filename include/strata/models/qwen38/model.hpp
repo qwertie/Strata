@@ -141,6 +141,10 @@ public:
     /// Settles the expert tiers once the RAM copy is decided: the asynchronous adaptive tier off without one, and the
     /// mapped view of the experts closed when they are read unbuffered.
     void finish_expert_tiers();
+    /// strata-q38: makes `source` the one the CPU pool and the prompt path read experts from (it outlives the model),
+    /// in place of the files or the arena, and stops the file tier's routing-aware prefetch.  Before the prompt path
+    /// is made.
+    void use_expert_source(strata::core::ExpertSource& source);
     /// Turns --adapt-async off and says why.
     void turn_off_adapt_async(const char* why);
 

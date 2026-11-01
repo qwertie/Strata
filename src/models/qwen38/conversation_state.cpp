@@ -106,6 +106,17 @@ bool put_running_state(const StateBuffers& from, SessionState& ss, const std::ve
     return true;
 }
 
+/// Describes the running state a session carved with session_set_pool_state keeps itself: describe_running_state's
+/// regions with an empty GDN region (the GDN state is in the page pool).
+bool describe_unpaged_state(const SessionState& ss, const ModelGeometry& g, StateLayout& layout, std::string& error) {
+    ConversationStateSizes z;
+    if (!conversation_session_sizes(g, ss, z, error))
+        return false;
+    z.gdn = 0;
+    layout = describe_running_state(ss, z);
+    return true;
+}
+
 bool image_keys(const std::vector<ConversationImageKey>& images, size_t tokens) {
     int64_t previous = -1;
     for (const auto& image : images) {
@@ -280,6 +291,31 @@ bool conversation_checkpoint_copy(const SessionState& from, SessionState& to, co
         owned_qsa(from) != owned_qsa(to) || (from.ple_hist != nullptr) != (to.ple_hist != nullptr))
         return fail(error, "direct copy between differently carved sessions");
     return put_running_state(get_running_state(from), to, ids, g, zf, error, queued);
+}
+
+bool conversation_unpaged_save(const SessionState& ss, const ModelGeometry& g, std::vector<uint8_t>& out,
+                               std::string& error) {
+    StateLayout layout;
+    if (!describe_unpaged_state(ss, g, layout, error) || !sync(error))
+        return false;
+    out.resize(layout.bytes_for(0));
+    return copy_running_state(layout, get_running_state(ss), get_host_image(layout, 0, out.data()), error);
+}
+
+bool conversation_unpaged_restore(const std::vector<uint8_t>& saved, SessionState& ss, const ModelGeometry& g,
+                                  const std::vector<int32_t>& ids, std::string& error) {
+    StateLayout layout;
+    if (!describe_unpaged_state(ss, g, layout, error))
+        return false;
+    if (saved.size() != layout.bytes_for(0))
+        return fail(error, "the saved running state has the wrong size");
+    auto& from = const_cast<std::vector<uint8_t>&>(saved);   // only read: StateBuffers serves as a target too
+    if (!sync(error) ||
+        !copy_running_state(layout, get_host_image(layout, 0, from.data()), get_running_state(ss), error))
+        return false;
+    ss.ple_prev[0] = ids.size() >= 2 ? ids[ids.size() - 2] : -1;
+    ss.ple_prev[1] = ids.empty() ? -1 : ids.back();
+    return true;
 }
 
 bool conversation_snapshot_bytes(const ConversationView& view, const SessionState& ss,
