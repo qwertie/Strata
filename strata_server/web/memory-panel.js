@@ -79,10 +79,11 @@ export function drawMemoryPanel(element, view, onChange) {
 
 /**
  * The GET /v1/memory answer as the panel reads it (the fields memory_view and StrataEngine.memory describe).
- * `can_change`: the engine changes its settings while it runs; `config`: a run config exists to save defaults to.
+ * `can_change`: the engine changes its settings while it runs; `config`: a run config exists to save defaults to;
+ * `shortfall` (POST /v1/memory's answer): what the change got less of than asked, in the engine's words.
  * @typedef {{available: boolean, reason?: string, busy?: boolean, error?: string | null, can_change?: boolean,
  *   config?: boolean, memories: MemoryUse[], settings: Record<string, number>,
- *   conversations?: HeldConversation[]}} MemoryView
+ *   conversations?: HeldConversation[], shortfall?: string}} MemoryView
  * `setting`: the size of the engine's page pool there now, which `memory_mib.<id>` changes; `smallest`, `largest`:
  * the sizes it accepts now.  Bytes.
  * @typedef {{id: string, name: string | null, total: number | null, free: number | null, unified: boolean,
@@ -268,8 +269,10 @@ async function change(element, panel, set, undo, save = panel.save) {
     try {
       localStorage.setItem(CHANGED_KEY, "1");
     } catch { /* no storage (a private window): the hint stays */ }
-    panel.notice = {text: save === "default" ? "Changed, and saved as the default." : "Changed for this session.",
-                    error: false, until: Date.now() + UNDO_MS, ...(undo ? {undo: {set: undo, save}} : {})};
+    const done = save === "default" ? "Changed, and saved as the default." : "Changed for this session.";
+    const shortfall = answer.view?.shortfall;
+    panel.notice = {text: shortfall ? `${done} But it got less than asked: ${shortfall}.` : done, error: !!shortfall,
+                    until: shortfall ? Infinity : Date.now() + UNDO_MS, ...(undo ? {undo: {set: undo, save}} : {})};
   } else
     panel.notice = {text: answer.error || "The engine changed nothing.", error: true, until: Infinity};
   render(element, panel);

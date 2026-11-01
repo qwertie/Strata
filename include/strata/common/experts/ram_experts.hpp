@@ -52,6 +52,10 @@ public:
     bool is_page_locked() const { return page_locked_; }
     /// Gets the bytes of the staging ring (outside the pool).
     uint64_t ring_bytes() const { return ring_slots_ * slot_bytes_; }
+    /// Gets the RAM the GPU maps: the pool and the staging ring when they are page-locked, else 0.
+    uint64_t get_mapped_bytes() const {
+        return page_locked_ ? pages_.pool().report().total.bytes + ring_bytes() : 0;
+    }
     /// Times reading a staging ring's worth of experts (one of every layer in turn) from the SSD, in GB/s; each
     /// `round` reads other experts, so that no read finds the drive's own cache warm.
     double time_ssd_reads(int round);

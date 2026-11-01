@@ -64,6 +64,12 @@ class MemorySettings(FakeEngineCase):
         self.assertEqual(got["settings"]["memory_mib.gpu0"], 3000)
         self.assertEqual(self.sent(), ["CHANGE_SETTINGS memory_mib.gpu0=3000 drafter=on memory_mib.gpu1=100"])
 
+    def test_a_change_that_got_less_than_asked(self):
+        self.start()
+        status, got = self.post({"set": {"memory_mib.ram": 9000}})
+        self.assertEqual((status, got.get("shortfall")), (200, "the RAM's pool: out of memory"), got)
+        self.assertNotIn("shortfall", self.get("/v1/memory"))   # it was this change's
+
     def test_the_engine_refuses(self):
         self.start(config=True)
         before = self.cfg_path.read_bytes()

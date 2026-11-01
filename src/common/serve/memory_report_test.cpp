@@ -76,6 +76,11 @@ int main() {
               "MEMORY gpu1 experts=9 pool_pages=1000 allocated_pages=973 fragmented_pages=2 setting=512 smallest=256 "
               "largest=2048 name=card\nSETTINGS\nEND_MEMORY\n",
           "a pool's setting and its range, before the name");
+    budget.at("ram").mapped = 7;
+    budget.shortfall = "the GPU's pool: out of memory";
+    check(format_memory_report(budget, {}) == "MEMORY ram paused_count=0 paused_budget=5 mapped=7\nSETTINGS\n"
+                                              "SHORTFALL the GPU's pool: out of memory\nEND_MEMORY\n",
+          "the GPU-mapped bytes, and a change's shortfall before the end");
     using Values = std::vector<std::pair<std::string, std::string>>;
     Values values;
     std::string err;

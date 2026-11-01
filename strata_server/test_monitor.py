@@ -313,6 +313,13 @@ class Monitor(unittest.TestCase):
         with mock.patch("strata_common.telemetry.read_shared_gpu_memory", return_value=split):
             gpu = self.request("/v1/memory")[1]["memories"][0]
         self.assertEqual((gpu["in_share"], gpu["other"]), (800, 100))   # at most what the share holds
+        # the engine's page-locked RAM, which the GPU maps, is in its borrowed use but drawn as the engine's RAM
+        memory = self.engine.memory()
+        memory["memories"][1].update(mapped=200, uses={"experts": 200})
+        self.engine.memory = lambda: memory
+        with mock.patch("strata_common.telemetry.read_shared_gpu_memory", return_value=split):
+            gpu, ram = self.request("/v1/memory")[1]["memories"]
+        self.assertEqual((gpu["borrowed"], ram["gpu_borrowed"], ram["other"]), (50, 50, 1750))
 
     def test_context_needs_the_key(self):
         self.svc.api_key = "k"
@@ -391,7 +398,7 @@ class EngineConversations(unittest.TestCase):
         got = engine.memory()
         self.assertEqual(engine.proc.stdin.getvalue(), "GET_MEMORY_USE\n")
         none = {"allocated_pct": None, "fragmented_pct": None,   # no page pool: the old engines
-                "setting": None, "smallest": None, "largest": None}
+                "setting": None, "smallest": None, "largest": None, "mapped": None}
         self.assertEqual(got, {"memories": [
             {"id": "gpu0", "name": "Radeon 8060S", "total": 1000, "free": 300, "unified": True, "paused_count": None,
              "paused_budget": None, **none, "uses": {"weights": 100, "experts": 450}},
@@ -414,6 +421,10 @@ class EngineConversations(unittest.TestCase):
         got = engine.change_settings({"rows": 4, "drafter": "on"})
         self.assertEqual(engine.proc.stdin.getvalue(), "CHANGE_SETTINGS rows=4 drafter=on\n")
         self.assertEqual((got["memories"][0]["setting"], got["settings"]), (100, {"rows": 4}))
+        self.assertNotIn("shortfall", got)
+        got = self.bare(["MEMORY ram setting=300 mapped=300", "SETTINGS", "SHORTFALL the RAM's pool: out of memory",
+                         "END_MEMORY"]).change_settings({"memory_mib.ram": 1})
+        self.assertEqual((got["memories"][0]["mapped"], got["shortfall"]), (300, "the RAM's pool: out of memory"))
         with self.assertRaises(SettingsRefused) as refused:
             self.bare(["ERR the GPU's pool would keep 2.00 GiB"]).change_settings({"memory_mib.gpu0": 2048})
         self.assertEqual(str(refused.exception), "the GPU's pool would keep 2.00 GiB")

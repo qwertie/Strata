@@ -5,10 +5,11 @@
 //   GET_MEMORY_USE
 //     MEMORY <id> [total=<B>] [free=<B>] [unified=1] [<use>=<B> ...] [paused_count=<n>] [paused_budget=<B>]
 //            [pool_pages=<n> allocated_pages=<n> fragmented_pages=<n>] [setting=<B> smallest=<B> largest=<B>]
-//            [name=<text>]                                                                one line per memory, then
+//            [mapped=<B>] [name=<text>]                                                   one line per memory, then
 //     [CONVERSATION <id> <place> <state> <tokens> <capacity> <bytes> <used>]     with per_conversation: one per
 //                                                                                conversation (LIST_CONVERSATIONS')
 //     SETTINGS [context=<tokens>] [concurrent=<n>] [rows=<n>] [lookahead=<n>] [tokens_min=<tokens>]
+//     [SHORTFALL <text>]                                                         CHANGE_SETTINGS' answer only
 //     END_MEMORY
 //
 // id: `gpu<N>` (the runtime's device number), `ram` or `ssd`.  total, free: the memory's size and what is free in it
@@ -19,14 +20,18 @@
 // parked conversations there; paused_budget: the most they may take.  pool_pages: the pages of a page pool there
 // (strata-q38's), of which allocated_pages hold experts or conversations and fragmented_pages are free in runs
 // shorter than the smallest expert, which no expert can use.  setting: the bytes the engine's pool there takes now
-// (its `memory_mib.<id>` setting), and smallest, largest: the range CHANGE_SETTINGS accepts for it now.  name: the
-// device's name, to the end of the line.  settings: the context in tokens, the conversations decoded at once, the
-// rows one step computes, the most guesses one conversation adds in a step, the conversation tokens kept free of
-// experts, and what else the engine can change.  A value the engine does not know is left out, not guessed.  The
-// command changes nothing.
+// (its `memory_mib.<id>` setting), and smallest, largest: the range CHANGE_SETTINGS accepts for it now.  mapped: the
+// bytes of it that are page-locked for the GPUs to read (strata-q38's RAM pool); Windows counts them in a GPU's shared
+// use too, so a reader takes them off that.  name: the device's name, to the end of the line.  settings: the context
+// in tokens, the conversations decoded at once, the rows one step computes, the most guesses one conversation adds in
+// a step, the conversation tokens kept free of experts, and what else the engine can change.  A value the engine does
+// not know is left out, not guessed.  The command changes nothing.
 //
 //   CHANGE_SETTINGS <name>=<value> [...]      -> the GET_MEMORY_USE answer once changed, or ERR <why>, changing
 //                                                nothing of the line
+//
+// A change the engine accepted can still get less than asked (a memory had less to give than it said); the answer
+// then has a SHORTFALL line saying what, and its MEMORY lines show the sizes reached.
 //
 // The names are those of SETTINGS, and `memory_mib.<id>` for a memory's `setting` in MiB; what each takes is the
 // engine's (strata-q38's: paged_engine.hpp).
@@ -57,6 +62,7 @@ struct Memory {
     uint64_t pool_pages = 0, allocated_pages = 0, fragmented_pages = 0;
     /// The bytes the engine's pool here takes (0: no setting to change), and the least and most it may be set to now.
     uint64_t setting = 0, smallest = 0, largest = 0;
+    uint64_t mapped = 0;   ///< the bytes of it the GPUs map (page-locked); 0: none or not said
 
     /// Adds `bytes` to use `use`; a zero adds nothing.
     void add(const std::string& use, uint64_t bytes) {
@@ -76,6 +82,8 @@ struct MemoryReport {
     std::vector<std::pair<std::string, int64_t>> settings;   ///< SETTINGS' keys, in order
     /// Each conversation the engine holds gets a CONVERSATION line (what it takes, conversation by conversation).
     bool per_conversation = false;
+    /// CHANGE_SETTINGS' answer: what the change got less of than asked, in words (a SHORTFALL line); empty: nothing.
+    std::string shortfall;
 
     /// Gets the memory named `id`, adding an empty one at the end when there is none.
     Memory& at(const std::string& id) {
@@ -121,6 +129,7 @@ inline std::string format_memory_report(MemoryReport report, const std::vector<c
             put("smallest", m.smallest);
             put("largest", m.largest);
         }
+        if (m.mapped > 0) put("mapped", m.mapped);
         if (!m.name.empty()) s += " name=" + m.name;
         s += '\n';
     }
@@ -130,7 +139,10 @@ inline std::string format_memory_report(MemoryReport report, const std::vector<c
     s += "SETTINGS";
     for (const auto& [key, v] : report.settings)
         s += " " + key + "=" + std::to_string(v);
-    s += "\nEND_MEMORY\n";
+    s += '\n';
+    if (!report.shortfall.empty())
+        s += "SHORTFALL " + report.shortfall + '\n';
+    s += "END_MEMORY\n";
     return s;
 }
 

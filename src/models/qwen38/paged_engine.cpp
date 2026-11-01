@@ -4,6 +4,7 @@
 
 #include "strata/base/gpu/memory_info.hpp"
 #include "strata/base/gpu/runtime.hpp"
+#include "strata/base/platform/env.hpp"
 #include "strata/common/experts/expert_pages.hpp"
 #include "strata/common/experts/expert_swaps.hpp"
 #include "strata/common/experts/ram_experts.hpp"
@@ -32,6 +33,7 @@
 #include <filesystem>
 #include <functional>
 #include <memory>
+#include <numeric>
 #include <optional>
 #include <string>
 #include <vector>
@@ -45,6 +47,9 @@ using Clock = std::chrono::steady_clock;
 constexpr int64_t kDefaultTokensMin = 8192;
 /// The SSD space paused conversations may take when --ssd-pause-mib is not given.
 constexpr int64_t kDefaultSsdPauseMib = 8192;
+/// The lookahead when --mtp is given and --lookahead is not: on the Strix Halo one conversation decoded fastest with 3
+/// guesses a step (4 rows) or 2, and several conversations with 8 rows (docs/DETAILS.md, rows per step).
+constexpr int kDefaultLookahead = 3;
 /// The most evicted experts put back in one step of the serve loop, so that a request waits little for it.
 constexpr int kRefillBatch = 16;
 /// Between two chunks of a prompt, the conversations that decode take steps for this share of the time the chunk
@@ -59,6 +64,12 @@ constexpr double kCopyBackFactor = 2.0;
 /// chunk's end, so each chunk ends in a run too short for any expert: 0.36% of the Strix Halo's GPU pool in chunks of
 /// this size (docs/MEMORY_MANAGER_PLAN.md, M2f).
 constexpr uint64_t kChunkBytes = 256ull << 20;
+/// The share of Windows' commit limit (RAM and page file) that the pools' default sizes leave uncommitted, and the
+/// least they leave: the engine's other allocations and the other programs need it.  On the Strix Halo the GPU's
+/// memory counts in the commit charge too (8 GiB of hipMalloc raised it by 8.3 GiB), and pools sized to the commit
+/// left less 4 GiB took Windows to its limit.
+constexpr double kCommitMarginShare = 0.10;
+constexpr uint64_t kCommitMarginMin = 8ull << 30;
 
 /// Gets the milliseconds from `t0` to now.
 double get_ms_since(Clock::time_point t0) {
@@ -70,7 +81,7 @@ struct PagedSettings {
     int64_t tokens_min = kDefaultTokensMin;        ///< --tokens-min
     int64_t tokens_max = -1;                       ///< --tokens-max; -1: --max-context
     int64_t gpu_mib = -1;                          ///< --gpu-mib; -1: what the GPU has free less what it keeps
-    int64_t ram_mib = -1;                          ///< --ram-mib; -1: what the RAM has free less the headroom
+    int64_t ram_mib = -1;                          ///< --ram-mib; -1: get_ram_room
     int64_t ssd_pause_mib = kDefaultSsdPauseMib;   ///< --ssd-pause-mib
     std::string pause_dir;                         ///< --pause-dir; empty: the temporary folder's strata-q38
     std::string copy_back = "auto";                ///< --copy-back
@@ -150,9 +161,9 @@ public:
 private:
     /// Changes the settings CHANGE_SETTINGS names (memory_report.hpp): the pools' sizes, the token limits, the SSD's
     /// budget, the drafter, the conversations at once, the rows and the lookahead.  Gets why not, having changed
-    /// nothing, or an empty string.  A memory that gives less than asked (a failed allocation) is said on stderr only:
-    /// the change is made as far as it goes, and the report shows the sizes it reached.
-    std::string change_settings(const SettingValues& values);
+    /// nothing, or an empty string.  When a memory gives less than asked (a failed allocation), the change is made as
+    /// far as it goes, the report shows the sizes it reached, and `shortfall` says what was missing.
+    std::string change_settings(const SettingValues& values, std::string& shortfall);
     /// Takes or gives back chunks of the GPU's pool so that it holds `bytes`.  When the conversations' pages do not fit
     /// the smaller pool, conversations are paused until they do: those that do not decode first (those in the chunks
     /// it gives back before the others), then batch slots' decoding ones in those chunks, the lowest priority first,
@@ -288,12 +299,20 @@ private:
     const Held* reading_ = nullptr;    ///< the conversation whose prompt read_prompt reads, which make_room keeps
     bool residency_changed_ = false;   ///< `m_.host_res` changed since the device's table was uploaded
     int64_t steps_ = 0;                ///< the decode steps so far (adapt_experts' rounds)
-    bool grew_ = false;                ///< a pool grew: decode_step refills experts too, until none are wanted
+    /// decode_step refills experts too, until none are wanted: a pool grew, or is filling after the start
+    /// (ExpertPages::open)
+    bool refilling_ = true;
     std::vector<float> seen_;          ///< `m_.drive.d.usage` when adapt_experts last decayed it
     int64_t swapped_ = 0;              ///< the experts adapt_experts moved into the GPU's pool, since the last report
     double adapt_ms_ = 0;              ///< the time those took
     int64_t copied_back_ = 0;          ///< the experts the GPU's pool evicted that were copied to RAM, since then
     double copy_back_ms_ = 0;          ///< the time the copies back took (all evictions', failed copies too)
+    /// `m_.drive.d.usage` before the step that runs now: the experts whose count grows were routed to in the step
+    std::vector<float> routed_before_;
+    int step_rows_ = 0;                ///< the rows the last step ran
+    /// Since the last report: the decode steps that routed on the CPU's side (not every expert on the GPU), their
+    /// rows, and the experts they routed to, each counted once a step (docs/DETAILS.md, rows and guesses)
+    int64_t routed_steps_ = 0, routed_rows_ = 0, routed_experts_ = 0;
 };
 
 /// Removes strata-q38's own options from `argv` (the rest is `strata`'s command line).  -1: go on, else exit status.
@@ -303,7 +322,7 @@ int take_own_options(int& argc, char** argv, PagedSettings& s) {
         int64_t* value;
         std::string* text = nullptr;   ///< instead of `value`, for a word
     };
-    int64_t rows = s.step.rows, lookahead = s.step.lookahead, concurrent = -1;
+    int64_t rows = s.step.rows, lookahead = -1, concurrent = -1;   // -1: chosen once the options are read
     std::string drafter = "on";
     const Own own[] = {{"--tokens-min", &s.tokens_min},       {"--tokens-max", &s.tokens_max},
                        {"--gpu-mib", &s.gpu_mib},             {"--ram-mib", &s.ram_mib},
@@ -352,7 +371,9 @@ std::vector<uint64_t> get_blob_bytes(const Model& m) {
     return blobs;
 }
 
-uint64_t get_gpu_room(const Model& m, bool within_share);
+uint64_t get_gpu_room(const Model& m, uint64_t mapped);
+uint64_t get_ram_room(uint64_t headroom);
+uint64_t get_commit_room();
 
 /// Opens `m`'s expert cache in the pages of the GPU's page pool, for at most `max_experts` experts
 /// (Model::open_expert_pages).  The pool takes `gpu_mib` (-1: what get_gpu_room gives, but no more than those
@@ -375,7 +396,7 @@ bool open_pages(Model& m, strata::core::ExpertPages& experts, int64_t tokens_min
         most += strata::core::choose_block_pages(r, page) * page;
     for (size_t i = 0; i < m.profile.size() && (int64_t) i < max_experts; ++i)
         most += (blobs[(size_t) m.profile[i].first] + page - 1) / page * page;
-    const uint64_t room = get_gpu_room(m, true);
+    const uint64_t room = get_gpu_room(m, 0);
     const uint64_t pool_b = gpu_mib >= 0 ? std::min((uint64_t) gpu_mib << 20, room) : std::min(room, most);
     const uint64_t chunk = std::max<uint64_t>(std::min(kChunkBytes, pool_b) / page, 1) * page;
     m.xcache.set_expert_bytes((int64_t) strata::kernels::cpu::expert_layout().max_blob);
@@ -403,25 +424,49 @@ bool open_pages(Model& m, strata::core::ExpertPages& experts, int64_t tokens_min
 }
 
 /// Gets the GPU memory a pool may take besides what it holds: what is free less --vram-reserve-mib and the prompt
-/// path's own buffers, and the drafter's head when there is a drafter.  `within_share`: on Windows, for a GPU whose
-/// memory is the system RAM, no more than is free of the share the BIOS gives it.  That holds only before the RAM's
-/// page-locked pool is made, which Windows counts in the share's use too (on the Strix Halo 81 GiB used of a 63.8 GiB
-/// share, with a 21.75 GiB RAM pool); what a pool takes beyond the share the server counts against the RAM.
-uint64_t get_gpu_room(const Model& m, bool within_share) {
+/// path's own buffers, and the drafter's head when there is a drafter.  On Windows, for a GPU whose memory is the
+/// system RAM, what is free is what is free of the share the BIOS gives it (get_share_room, `mapped` the RAM's
+/// page-locked pool), not the runtime's free memory: that is the share and what the GPU may borrow beyond it, and HIP
+/// takes page-locked host memory off it twice (on the Strix Halo, 8 GiB of hipHostMalloc took 16 GiB off it).  Its
+/// memory counts in Windows' commit charge, so no more than get_commit_room either.
+uint64_t get_gpu_room(const Model& m, uint64_t mapped) {
     const uint64_t keep = ((uint64_t) m.o.vram_reserve_mib << 20) +
         strata::prefill::Prefill::bytes_needed_owned(m.g, m.ss, m.o.prefill_chunk, m.srcp != nullptr) +
         (!m.o.mtp.empty() ? m.mtp.bind_bytes(m.native_head.row_bytes(), m.n_vocab) : 0);
-    uint64_t free_b = strata::core::device_free_bytes();
-    if (uint64_t room = 0; within_share && strata::core::get_share_room(m.primary_device, room))
-        free_b = std::min(free_b, room);
+    uint64_t free_b = 0;
+    if (strata::core::get_share_room(m.primary_device, mapped, free_b))
+        free_b = std::min(free_b, get_commit_room());
+    else
+        free_b = strata::core::device_free_bytes();
     return free_b > keep ? free_b - keep : 0;
+}
+
+/// Gets the RAM a pool may take by default besides what the pools hold: what is available less `headroom`, and no more
+/// than get_commit_room.
+uint64_t get_ram_room(uint64_t headroom) {
+    strata::core::detail::HostMemory hm;
+    if (!strata::core::detail::host_available_memory(hm))
+        return 0;
+    return std::min(hm.available > headroom ? hm.available - headroom : 0, get_commit_room());
+}
+
+/// Gets how much more may be committed while a tenth of Windows' commit limit, at least 8 GiB, stays uncommitted
+/// (kCommitMarginShare, kCommitMarginMin); UINT64_MAX where the commit charge is not reported (elsewhere than
+/// Windows).
+uint64_t get_commit_room() {
+    strata::core::detail::HostMemory hm;
+    if (!strata::core::detail::host_available_memory(hm) || hm.commit == ~uint64_t{0})
+        return UINT64_MAX;
+    const uint64_t share = hm.commit_limit == ~uint64_t{0} ? 0 : (uint64_t) (kCommitMarginShare * hm.commit_limit);
+    const uint64_t margin = std::max(kCommitMarginMin, share);
+    return hm.commit > margin ? hm.commit - margin : 0;
 }
 
 /// Opens the RAM's page pool `ram` beside the GPU's `experts` and gets whether an expert the GPU's pool evicts is
 /// copied back to it (`copy_back`, by --copy-back and the two speeds measured here).  The pool takes --ram-mib, by
-/// default what the RAM and the commit limit have free less the resident headroom, but no more than every expert and
-/// the staging ring take.  It holds first the experts of the profile the GPU's pool does not, in the profile's order,
-/// then copies of the GPU's, then the experts outside the profile, as far as they fit.
+/// default get_ram_room (the RAM free less the resident headroom, within the commit margin), but no more than every
+/// expert and the staging ring take.  It holds first the experts of the profile the GPU's pool does not, in the
+/// profile's order, then copies of the GPU's, then the experts outside the profile, as far as they fit.
 bool open_ram(Model& m, const strata::core::ExpertPages& experts, const PagedSettings& s, strata::core::RamExperts& ram,
               bool& copy_back, std::string& err) {
     using strata::core::ExpertKey;
@@ -443,12 +488,9 @@ bool open_ram(Model& m, const strata::core::ExpertPages& experts, const PagedSet
         }
     const int ring = strata::kernels::kVerifyMaxT * (int) m.K;   // the experts of one layer of a step
     uint64_t bytes = (uint64_t) s.ram_mib << 20;
-    if (s.ram_mib < 0) {
-        strata::core::detail::HostMemory hm;
-        const uint64_t free_b = strata::core::detail::host_available_memory(hm) ? std::min(hm.available, hm.commit) : 0;
-        bytes = std::min(free_b > m.o.resident_headroom ? free_b - m.o.resident_headroom : 0,
+    if (s.ram_mib < 0)
+        bytes = std::min(get_ram_room(m.o.resident_headroom),
                          every + (uint64_t) ring * *std::max_element(blobs.begin(), blobs.end()));
-    }
     strata::core::PagePoolConfig config;
     config.page_bytes = experts.pool().page_bytes();
     config.chunk_bytes = kChunkBytes / config.page_bytes * config.page_bytes;
@@ -506,6 +548,12 @@ int run_paged_engine(int argc, char** argv) {
     std::setvbuf(stdout, nullptr, _IONBF, 0);   // each protocol line reaches the server as it is printed
     PagedSettings settings;
     if (const int status = take_own_options(argc, argv, settings); status >= 0) return status;
+#if defined(STRATA_USE_HIP) && defined(_WIN32)
+    // ROCclr on Windows keeps freed memory in its resource cache and gives none of it back (on the Strix Halo, 8 GiB
+    // freed with hipHostFree or hipFree stayed taken from Windows' RAM), so the pools could not shrink; an explicit
+    // setting wins
+    strata::platform::set_env("GPU_RESOURCE_CACHE_SIZE", "0", false);
+#endif
     prepare_process(argc, argv);
     prime_gpu_queues();
     Options o;
@@ -515,6 +563,8 @@ int run_paged_engine(int argc, char** argv) {
     const int slots = std::max(o.batch, 0);
     if (settings.step.concurrent < 0 || settings.step.concurrent > std::max(slots, 1))
         settings.step.concurrent = std::max(slots, 1);
+    if (settings.step.lookahead < 0)
+        settings.step.lookahead = o.mtp.empty() ? 0 : kDefaultLookahead;
     if (const std::string why = get_step_settings_problem(settings.step); !why.empty()) {
         std::fprintf(stderr, "strata-q38: %s\n", why.c_str());
         return 2;
@@ -687,7 +737,9 @@ int PagedEngine::serve() {
     hooks.stop_slot = [this](int slot) { stop_slot(slot); };
     hooks.list_conversations = [this] { return list_conversations(); };
     hooks.describe_memory = [this] { return describe_memory(); };
-    hooks.change_settings = [this](const SettingValues& values) { return change_settings(values); };
+    hooks.change_settings = [this](const SettingValues& values, std::string& shortfall) {
+        return change_settings(values, shortfall);
+    };
     strata::serve::Loop loop(input_, hooks);
     std::string line;
     while (loop.next(line)) {
@@ -876,10 +928,19 @@ bool PagedEngine::decode_step() {
     std::vector<strata::spec::Decoding*> active;
     for (Held* h : going)
         active.push_back(&h->dec);
+    const std::vector<float>& usage = m_.drive.d.usage;
+    routed_before_.assign(usage.begin(), usage.end());
     std::string err;
     if (!step_.run(active, err)) {
         std::printf("ERR %s\n", err.c_str());
         return false;
+    }
+    if (const int64_t routed = std::inner_product(usage.begin(), usage.end(), routed_before_.begin(), (int64_t) 0,
+                                                  std::plus<>(), std::greater<>());
+        routed > 0) {
+        routed_experts_ += routed;
+        routed_rows_ += step_rows_;
+        ++routed_steps_;
     }
     for (Held* h : going) {
         const strata::spec::Decoding& d = h->dec;
@@ -896,6 +957,12 @@ bool PagedEngine::decode_step() {
             std::fprintf(stderr, "strata-q38: %lld of %lld guesses right (%.0f%%) over %lld tokens\n",
                          (long long) d.guessed_right, (long long) d.guessed,
                          100.0 * (double) d.guessed_right / (double) d.guessed, (long long) d.produced);
+        if (routed_steps_ > 0) {
+            std::fprintf(stderr, "strata-q38: %lld decode steps of %lld rows in all routed to %lld experts (each "
+                                 "counted once a step)\n",
+                         (long long) routed_steps_, (long long) routed_rows_, (long long) routed_experts_);
+            routed_steps_ = routed_rows_ = routed_experts_ = 0;
+        }
         if (swapped_ > 0 || copy_back_ms_ > 0) {
             std::fprintf(stderr, "strata-q38: %lld experts moved into the GPU's pool (%.0f ms in all); %lld it evicted "
                                  "copied back to RAM (%.1f ms, all evictions)\n",
@@ -912,9 +979,9 @@ bool PagedEngine::decode_step() {
             std::printf("BDONE %d %lld %s %.1f\n", h->slot, (long long) d.produced, d.finish, get_ms_since(h->t0));
     }
     strata::core::progress_beat();
-    if (grew_ && !experts_.is_refill_wanted() && !ram_.pages().is_refill_wanted())
-        grew_ = false;
-    return adapt_experts() && (!grew_ || refill_experts());
+    if (refilling_ && !experts_.is_refill_wanted() && !ram_.pages().is_refill_wanted())
+        refilling_ = false;
+    return adapt_experts() && (!refilling_ || refill_experts());
 }
 
 bool PagedEngine::preempt(size_t slot, int64_t priority) {
@@ -1275,6 +1342,7 @@ strata::serve::MemoryReport PagedEngine::describe_memory() const {
     ram.allocated_pages = rr.allocated.pages;
     ram.fragmented_pages = rr.fragmented.pages;
     ram.setting = rr.total.bytes + ram_.ring_bytes();
+    ram.mapped = ram_.get_mapped_bytes();
     ram.smallest = get_smallest_ram();
     ram.largest = get_largest_ram();
     uint64_t on_ssd = 0;   // the experts neither pool holds
@@ -1306,7 +1374,7 @@ strata::serve::MemoryReport PagedEngine::describe_memory() const {
     return report;
 }
 
-std::string PagedEngine::change_settings(const SettingValues& values) {
+std::string PagedEngine::change_settings(const SettingValues& values, std::string& shortfall) {
     PagedSettings s = settings_;
     const std::string gpu_name = "memory_mib.gpu" + std::to_string(m_.primary_device);
     std::optional<uint64_t> gpu_bytes, ram_bytes;
@@ -1368,6 +1436,8 @@ std::string PagedEngine::change_settings(const SettingValues& values) {
                "; the GPU's pool would keep " + gib(gpu_bytes.value_or(gpu_now));
     if (gpu_bytes && *gpu_bytes > get_largest_gpu())
         return "the GPU has room for " + gib(get_largest_gpu()) + " of pool, not " + gib(*gpu_bytes);
+    // (each range takes all of get_commit_room: on the Strix Halo, where the GPU's memory is commit too, one change
+    // that grows both pools to their largest can take the commit margin)
     if (ram_bytes && (*ram_bytes < get_smallest_ram() || *ram_bytes > get_largest_ram()))
         return "the RAM's pool may be " + gib(get_smallest_ram()) + " to " + gib(get_largest_ram()) + ", not " +
                gib(*ram_bytes);
@@ -1382,10 +1452,9 @@ std::string PagedEngine::change_settings(const SettingValues& values) {
     settings_.ssd_pause_mib = s.ssd_pause_mib;
     trim_ssd();
     settings_.step = s.step;
-    std::string short_of;   // what a memory could not give
-    const auto note = [&short_of](const char* what, const std::string& why) {
+    const auto note = [&shortfall](const char* what, const std::string& why) {
         if (!why.empty())
-            short_of += (short_of.empty() ? "" : "; ") + (what + why);
+            shortfall += (shortfall.empty() ? "" : "; ") + (what + why);
     };
     const uint64_t ram_now = ram_.pages().pool().report().total.bytes + ram_.ring_bytes();
     const auto resize = [&](bool shrink) {
@@ -1401,9 +1470,8 @@ std::string PagedEngine::change_settings(const SettingValues& values) {
     if (s.tokens_min != min_first)
         note("", set_token_limits(s.tokens_min, s.tokens_max));
     apply_step_settings();
-    // the report the loop answers with shows what the memories gave; the shortfall is said here
-    if (!short_of.empty())
-        std::fprintf(stderr, "strata-q38: CHANGE_SETTINGS changed less than asked: %s\n", short_of.c_str());
+    if (!shortfall.empty())
+        std::fprintf(stderr, "strata-q38: CHANGE_SETTINGS changed less than asked: %s\n", shortfall.c_str());
     return {};
 }
 
@@ -1440,7 +1508,7 @@ std::string PagedEngine::resize_gpu(uint64_t bytes) {
         end_preempted((size_t) slot->slot);
         pause_or_forget(*slot);
     }
-    grew_ = grew_ || pool.report().total.pages > before.total.pages;
+    refilling_ = refilling_ || pool.report().total.pages > before.total.pages;
     std::string err;
     for (const std::unique_ptr<Held>& h : held_)   // a shrink moved conversation blocks
         if (h->pages.is_ready() && (!h->pages.refresh(h->ss, err) || !note_gdn_place(*h, err)))
@@ -1467,7 +1535,7 @@ std::string PagedEngine::resize_ram(uint64_t bytes) {
             return r.refusal;
         move_to_ssd(p);
     }
-    grew_ = grew_ || ram_.pages().pool().report().total.pages > before.total.pages;
+    refilling_ = refilling_ || ram_.pages().pool().report().total.pages > before.total.pages;
     trim_ram();
     report_resize("RAM", before, ram_.pages().pool().report(), t0);
     return {};
@@ -1534,7 +1602,8 @@ uint64_t PagedEngine::get_smallest_gpu(int64_t tokens_min) const {
 
 uint64_t PagedEngine::get_largest_gpu() const {
     const strata::core::PagePool& pool = experts_.pool();
-    return (pool.report().total.bytes + get_gpu_room(m_, false)) / pool.chunk_bytes() * pool.chunk_bytes();
+    const uint64_t chunk = pool.chunk_bytes();
+    return (pool.report().total.bytes + get_gpu_room(m_, ram_.get_mapped_bytes())) / chunk * chunk;
 }
 
 uint64_t PagedEngine::get_smallest_ram() const {
@@ -1542,12 +1611,9 @@ uint64_t PagedEngine::get_smallest_ram() const {
 }
 
 uint64_t PagedEngine::get_largest_ram() const {
-    strata::core::detail::HostMemory hm;
-    const uint64_t free_b = strata::core::detail::host_available_memory(hm) ? std::min(hm.available, hm.commit) : 0;
     const strata::core::PagePool& pool = ram_.pages().pool();
     const uint64_t chunk = pool.chunk_bytes();
-    return (pool.report().total.bytes + (free_b > m_.o.resident_headroom ? free_b - m_.o.resident_headroom : 0)) /
-               chunk * chunk + ram_.ring_bytes();
+    return (pool.report().total.bytes + get_ram_room(m_.o.resident_headroom)) / chunk * chunk + ram_.ring_bytes();
 }
 
 strata::spec::StepModel PagedEngine::get_step_model() {
@@ -1564,7 +1630,7 @@ strata::spec::StepModel PagedEngine::get_step_model() {
         int sessions[strata::kernels::kVerifyMaxT] = {};
         int32_t tokens[strata::kernels::kVerifyMaxT] = {};
         int64_t pos[strata::kernels::kVerifyMaxT] = {};
-        const int S = (int) rows.size();
+        const int S = step_rows_ = (int) rows.size();
         if (S > strata::kernels::kVerifyMaxT) {
             err = "a step of " + std::to_string(S) + " rows exceeds the verify window";
             return false;

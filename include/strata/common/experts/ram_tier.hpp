@@ -42,6 +42,7 @@ struct HostMemory {
     uint64_t available = 0;
     uint64_t cgroup_limit = ~uint64_t{0};
     uint64_t commit = ~uint64_t{0};   ///< available Windows commit capacity; ~0 when not reported
+    uint64_t commit_limit = ~uint64_t{0};   ///< Windows' commit limit (RAM and page file); ~0 when not reported
 };
 
 /// Linux reads `meminfo`, `self_cgroup` and the cgroup tree under `cgroup_root` (the parameters are for tests; the

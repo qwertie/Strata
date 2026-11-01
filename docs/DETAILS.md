@@ -786,7 +786,11 @@ For a GPU whose memory is the system RAM, where the division can be read: `total
 `runtime_total` and `runtime_free` are what the runtime reported, `in_share` is what the engine holds in the share
 (on Linux, estimated as the engine's uses, at most what the share holds), `borrowed` is what is held beyond it in RAM
 and `borrow_limit` the most that may be, `borrowed_by` says whose: `engine` (Windows) or `device` (every program,
-Linux). The RAM's `gpu_borrowed` is the sum of the GPUs' `borrowed`, and its `other` leaves it out.
+Linux). The RAM's `gpu_borrowed` is the sum of the GPUs' `borrowed`, and its `other` leaves it out. RAM that the engine
+page-locks for the GPU to read (strata-q38's RAM pool, the RAM's `mapped`) is counted by Windows as the GPU's shared use
+and by Linux in the GTT; it is drawn once, as the engine's RAM, and taken off `borrowed`. On the Strix Halo (a 63.8 GiB
+share, Windows 11) strata-q38 at start held 58.3 GiB in the share and Windows counted 22.1 GiB of shared use, of which
+20.9 GiB was its page-locked RAM pool.
 
 The engine's command (include/strata/common/serve/memory_report.hpp; the engine's `READY` line says `memory`):
 
@@ -795,6 +799,11 @@ The engine's command (include/strata/common/serve/memory_report.hpp; the engine'
   [lookahead=<n>]` and `END_MEMORY`. `id` is `gpu<N>`, `ram` or `ssd`; sizes are in bytes. The uses are `weights`,
   `experts`, `conversations` (the sessions of the conversations the engine runs, each allocated for its whole context),
   `paused` (parked conversations, from `LIST_CONVERSATIONS`), `drafter`, `scratch` and `engram`.
+- `CHANGE_SETTINGS <name>=<value> ...` (strata-q38, whose `READY` says `settings`) changes settings while the engine
+  runs and answers as `GET_MEMORY_USE` does, or `ERR <why>` with nothing changed. When a memory had less to give than
+  the engine expected, the answer has a `SHORTFALL <what>` line before `END_MEMORY` and shows the sizes reached; the
+  server's `POST /v1/memory` returns it as `"shortfall"`, and the panel says it. strata-q38's `ram` line has
+  `mapped=<B>`: its page-locked RAM pool, which the GPU reads in place.
 
 What each engine says:
 
@@ -804,6 +813,68 @@ What each engine says:
 | RAM | the expert arena, the K/V streamed to RAM, the parked conversations and their budget | the experts of the hybrid mode | the experts copied into RAM and the RAM store; the CPU lane's experts when they are not read from the files; the parked conversations |
 | SSD | (nothing) | (nothing) | the CPU lane's experts read from the model's files, the Engram table, the parked conversations and the slot folder's cap |
 | Settings | context, conversations at once (`--batch`), lookahead (the verify window less one: the `spec` of its `INFO` line - 1) | context, conversations at once, lookahead (`--mtp`) | context, lookahead (`--dspark-block`, or 0 without DSpark) |
+
+### Rows per step, lookahead and conversations at once (strata-q38)
+
+strata-q38 decodes each step as one pass of up to 8 rows ("rows per step"). Each conversation that decodes gets a row
+for its next token; the rows left over go to the drafter's guesses, shared evenly, at most "lookahead" per
+conversation ([MEMORY_MANAGER_PLAN.md](MEMORY_MANAGER_PLAN.md#how-rows-are-shared-the-owners-rule)). Both, and the
+conversations at once, change while the engine runs (the Memory panel, `CHANGE_SETTINGS`).
+
+Measured on the Strix Halo (Radeon 8060S, Windows 11), Qwen3.8 IQ3_S, 204,800 context, int8 K/V, the MTP drafter
+(`--spec-min-p 0.5`), temperature 0, 160 tokens per conversation, 2026-11-01. Three prompts: a story, a Python module
+and a travel question ("chat"). One engine start per memory case, the settings changed live between runs, three rounds
+with the order reversed every other round, medians (`tools/measure_rows.py`). The memory cases: **GPU**, a 48 GiB GPU
+pool, every expert on the GPU; **RAM**, a 16 GiB GPU pool and a 32 GiB RAM pool, two thirds of the experts read by the
+GPU from RAM; **SSD**, a 16 GiB GPU pool and a 4 GiB RAM pool, about 26 GiB of experts read from the SSD.
+
+One conversation, tokens/s for story / code / chat. "1x4" is one conversation and 4 rows, so 3 guesses a step:
+
+| Rows (lookahead) | GPU | RAM | SSD |
+|---|---|---|---|
+| 1 (no guesses) | 21.2 / 20.3 / 21.2 | 13.4 / 13.0 / 13.0 | 11.7 / 8.7 / 8.8 |
+| 3 (2) | 31.3 / 39.3 / 30.6 | 20.5 / 22.5 / 20.1 | 11.7 / 7.7 / 11.5 |
+| 4 (3) | 32.4 / 39.3 / 30.9 | 20.2 / 21.9 / 20.6 | 14.1 / 7.2 / 11.6 |
+| 8 (7) | 29.3 / 40.0 / 29.1 | 18.8 / 24.3 / 18.8 | 13.6 / 6.5 / 11.6 |
+
+Of the guesses, 70-72% were kept with 2 a step, 62-64% with 3 and 50-51% with 7.
+
+Several conversations at once, tokens/s of all together (each: story, code, chat):
+
+| Conversations x rows | GPU | RAM | SSD |
+|---|---|---|---|
+| 2 x 2 (no guesses) | 33.1 (16.6, 16.5) | 20.4 (10.2, 10.1) | 12.7 (6.4, 6.3) |
+| 2 x 6 | 48.3 (20.0, 28.3) | 31.9 (13.8, 18.2) | 15.7 (6.7, 9.1) |
+| 3 x 3 (no guesses) | 40.8 (13.7, 13.6, 13.6) | 24.9 (8.3, 8.3, 8.3) | 13.5 (4.5, 4.5, 4.5) |
+| 3 x 8 | 52.0 (14.9, 21.0, 16.2) | 32.9 (9.5, 13.1, 9.9) | 14.2 (4.1, 5.4, 4.2) |
+
+**Guesses touch fewer experts than other conversations' tokens.** A row of one token routes to 480 experts (48 layers
+of 10). A step of three conversations' tokens routed to 462 different experts a row, a step of one token and its
+guesses to 353 (2 guesses), 330 (3) and 295 (7): a guess shares about a quarter to two fifths of its experts with the
+rows before it, as the same text routes alike. Three conversations with 8 rows (6.3 rows a step, guesses among them)
+routed to 337 a row. The counts were the same in the three memory cases (they are the CPU's view of the routing).
+Where experts are read from RAM or the SSD, a guess so costs fewer reads than another conversation's token, but it
+is also less often kept.
+
+What follows:
+
+- Guesses pay most on one conversation: 1.5 to 1.9 times the speed on the GPU and in RAM with 2 or 3 a step. On
+  the SSD they helped the story (+21% with 3) and the chat (+32%) and slowed the code (-17%).
+- 3 guesses a step were as fast as 2 and faster than 7 for prose; 7 helped only the code (+2% on the GPU, +11% in
+  RAM).
+- With several conversations, 8 rows beat one row each: three conversations +27% on the GPU, +32% in RAM, +5% on the
+  SSD; two +46%, +56%, +24%. Each conversation is slower than alone (story 14.9 against 32.4 tok/s on the GPU), the
+  total higher (52.0 against 32.4).
+
+The defaults chosen from this: rows per step 8; lookahead 3 when the engine has the drafter (`--mtp`; before, it was 0
+unless `--lookahead` was given, so no guesses), which gives one conversation the 4 rows that measured best and several
+conversations the 8; conversations at once, all the batch slots. Two more defaults were checked and kept: the
+conversation token minimum (8,192 tokens, about 0.24 GiB of the pool) made no measurable difference to a new 4,000-token
+prompt with three idle conversations in a 16 GiB GPU pool (prompt 8.5 s against 8.7 s without it and 8.7 s with 32,768,
+four alternating runs, medians); and copying an evicted expert back to RAM (`--copy-back auto`, chosen when the copy
+measures at least twice as fast as an SSD read: 35-41 GB/s against 2.4-2.5 GB/s here) took at most 40 ms in the three
+rounds of any configuration above, as the RAM pool seldom had room for a colder expert. The NVIDIA test PC's numbers are
+to come: `tools/nvidia_session/README.md` says how to repeat the measurement there.
 
 ---
 

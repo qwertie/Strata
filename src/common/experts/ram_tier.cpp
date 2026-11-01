@@ -315,6 +315,7 @@ bool host_available_memory(HostMemory& m, const std::string& meminfo, const std:
     if (!GlobalMemoryStatusEx(&status)) return false;
     m.available = (uint64_t) status.ullAvailPhys;
     m.commit = (uint64_t) status.ullAvailPageFile;
+    m.commit_limit = (uint64_t) status.ullTotalPageFile;
     return m.available > 0;
 #elif defined(__linux__)
     // MemAvailable includes reclaimable page cache, unlike _SC_AVPHYS_PAGES.

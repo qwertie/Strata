@@ -118,6 +118,16 @@ test('dragging a divider previews the new size and changes nothing until it is r
   assert.match(element.innerHTML, /mem-notice" role="status">Changed for this session\. <button[^>]*data-undo>Undo/);
 });
 
+test('a change that got less than asked says what it lacked and still offers Undo', async () => {
+  const { onChange } = recorder({ ok: true, view: { ...live, shortfall: "the RAM's pool: out of memory" } });
+  const { element, fire } = mount(live, onChange);
+  fire('keydown', { target: onDivider('gpu0'), key: 'ArrowRight' });
+  fire('keydown', { target: onDivider('gpu0'), key: 'Enter' });
+  await settle();
+  assert.match(element.innerHTML, new RegExp('mem-notice mem-error" role="status">Changed for this session\\. ' +
+    'But it got less than asked: the RAM&#39;s pool: out of memory\\. <button[^>]*data-undo>Undo'));
+});
+
 test('"Save as default" goes with the change, and Undo sends the size back the same way', async () => {
   const { calls, onChange } = recorder(), { element, fire } = mount(live, onChange);
   assert.match(element.innerHTML, /<option value="session" selected>This session<\/option><option value="default">/);

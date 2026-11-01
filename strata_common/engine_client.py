@@ -1127,30 +1127,36 @@ class StrataEngine:
         """GET /v1/memory: `GET_MEMORY_USE` (an engine whose READY says "memory";
         include/strata/common/serve/memory_report.hpp) - what the engine holds in each memory and its settings:
         {"memories": [{"id", "name", "total", "free", "unified", "uses": {use: bytes}, "paused_count",
-        "paused_budget", "allocated_pct", "fragmented_pct", "setting", "smallest", "largest"}],
+        "paused_budget", "allocated_pct", "fragmented_pct", "setting", "smallest", "largest", "mapped"}],
         "settings": {key: number}}, and "conversations" (list_conversations' entries) from an engine that lists them
         there (strata-q38).  allocated_pct and fragmented_pct: the shares, in percent, of a page pool's pages that are
         allocated, and that are free in runs too short for any expert (strata-q38's pool).  setting: the pool's size
         in bytes now (what CHANGE_SETTINGS' memory_mib.<id> sets); smallest and largest: the range of sizes it
-        accepts now.  A value the engine did not say is None (uses: absent).  The same turn rules as
-        list_conversations."""
+        accepts now.  mapped: the bytes of it the GPUs map (page-locked), which Windows counts in a GPU's shared use
+        too.  A value the engine did not say is None (uses: absent).  The same turn rules as list_conversations."""
         return self._ask_memory_report("GET_MEMORY_USE")
 
     def change_settings(self, values: dict) -> dict:
         """POST /v1/memory: `CHANGE_SETTINGS k=v ...` (an engine whose READY says "settings") changes `values` live
         ({setting: value as the engine spells it}) and returns the engine's report after the change, as memory()
-        gives it.  Raises SettingsRefused with the engine's reason when it changed nothing.  The same turn rules as
+        gives it, with "shortfall": what the change got less of than asked, in the engine's words, when it did.
+        Raises SettingsRefused with the engine's reason when it changed nothing.  The same turn rules as
         list_conversations."""
         return self._ask_memory_report("CHANGE_SETTINGS " + " ".join(f"{k}={v}" for k, v in values.items()),
                                        SettingsRefused)
 
     def _ask_memory_report(self, command: str, refused: type[Exception] | None = None) -> dict:
         """Sends `command` and parses its GET_MEMORY_USE-style answer for memory() and change_settings()."""
-        memories, settings, held = [], {}, []
-        for f in self._ask(command, "MEMORY", end="END_MEMORY", also=("SETTINGS", "CONVERSATION"), refused=refused):
-            # MEMORY <id> [key=value ...] [name=<text to the end>]  /  CONVERSATION ...  /  SETTINGS [key=value ...]
+        memories, settings, held, shortfall = [], {}, [], None
+        for f in self._ask(command, "MEMORY", end="END_MEMORY", also=("SETTINGS", "CONVERSATION", "SHORTFALL"),
+                           refused=refused):
+            # MEMORY <id> [key=value ...] [name=<text to the end>]  /  CONVERSATION ...  /  SETTINGS [key=value ...]  /
+            # SHORTFALL <text>
             if f[0] == "CONVERSATION":
                 held.append(parse_conversation_line(f))
+                continue
+            if f[0] == "SHORTFALL":
+                shortfall = " ".join(f[1:])
                 continue
             at = next((i for i, x in enumerate(f) if x.startswith("name=")), len(f))
             keys = {k: int(v) for k, _, v in (x.partition("=") for x in f[1 if f[0] == "SETTINGS" else 2:at])}
@@ -1165,8 +1171,10 @@ class StrataEngine:
                              "paused_count": keys.pop("paused_count", None),
                              "paused_budget": keys.pop("paused_budget", None),
                              "allocated_pct": share["allocated"], "fragmented_pct": share["fragmented"],
-                             **{k: keys.pop(k, None) for k in ("setting", "smallest", "largest")}, "uses": keys})
-        return {"memories": memories, "settings": settings, **({"conversations": held} if held else {})}
+                             **{k: keys.pop(k, None) for k in ("setting", "smallest", "largest", "mapped")},
+                             "uses": keys})
+        return {"memories": memories, "settings": settings, **({"conversations": held} if held else {}),
+                **({"shortfall": shortfall} if shortfall else {})}
 
     @staticmethod
     def sampling_keys(sampling: dict) -> str:

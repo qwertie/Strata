@@ -91,3 +91,24 @@ Send back `tools\nvidia_session\results\<time>.zip` (the summary is `summary.txt
 the commits that changed engine code, to bisect a DIFF by building them one at a time.
 
 To clean up: `git worktree remove --force C:\sn\before`, the same for `C:\sn\after`, then delete `C:\sn`.
+
+## Rows per step (the memory manager's M7)
+
+On the `memory-manager` branch, `tools\measure_rows.py` measures strata-q38's decode speed by conversations at once and
+rows per step, with story, code and chat prompts, the drafter's guesses kept, and the experts each step routes to
+(docs/DETAILS.md, "Rows per step, lookahead and conversations at once", has the Strix Halo's numbers). It is not part
+of `run.ps1`. To repeat it on this PC, build `strata-q38` in a CUDA build folder (`cmake --build <folder> --target
+strata-q38`), then run it three times, once for each place the experts live, on the RTX 3080 (`--gpu` takes its
+number in nvidia-smi's order). `strata-iq3_s.json` is the run config setup wrote:
+
+```powershell
+$q38 = "<folder>\strata-q38.exe"
+.venv\Scripts\python tools\measure_rows.py --config strata-iq3_s.json --exe $q38 --case card --out results\rows-card -- --gpu 1
+.venv\Scripts\python tools\measure_rows.py --config strata-iq3_s.json --exe $q38 --case ram --out results\rows-ram -- --gpu 1 --gpu-mib 8192
+.venv\Scripts\python tools\measure_rows.py --config strata-iq3_s.json --exe $q38 --case ssd --out results\rows-ssd -- --gpu 1 --gpu-mib 8192 --ram-mib 4096
+.venv\Scripts\python tools\measure_rows.py --report results\rows-card.json results\rows-ram.json results\rows-ssd.json
+```
+
+`card` keeps the engine's own sizes (as many experts on the card as fit; the rest in RAM), `ram` puts most of them
+in RAM, and `ssd` reads most of them from the SSD. Each takes one engine start, a warm-up and three rounds: about 15
+minutes, and more for `ssd`. Send back the `results\rows-*` files (the JSON, the engine's `.out` and `.out.stderr`).

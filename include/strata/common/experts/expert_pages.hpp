@@ -69,7 +69,8 @@ public:
     /// `blob_bytes[l]` bytes, `n_expert` per layer; at most `max_experts` experts are admitted.  `ranking` is the
     /// experts hottest first (the expert profile's order): their ranks, and the pool gives each expert size room for
     /// the ones of the first `max_experts` that fit (PagePoolConfig::expert_ranking).  From then on the cache's
-    /// `admit` takes pages from the pool.
+    /// `admit` takes pages from the pool.  The cache's own fill takes the arena's slots; the experts of those first
+    /// `max_experts` that it leaves out wait for `refill` (is_refill_wanted).
     bool open(ExpertCache& cache, ChunkMemory memory, uint64_t bytes, const StateLayout& layout,
               PagePoolConfig config, const std::vector<uint64_t>& blob_bytes, int64_t n_expert, int64_t max_experts,
               const std::vector<ExpertKey>& ranking, std::string& err);
@@ -118,6 +119,7 @@ private:
     uint8_t* alloc_chunk(uint64_t bytes);
     void free_chunk(uint8_t* chunk);
     void on_evicted(ExpertKey key, PageId first);
+    void want_missing();
     size_t index_of(ExpertKey key) const { return (size_t) key.layer * (size_t) n_expert_ + (size_t) key.expert; }
     /// Gets the clock time that stands for the last use of the expert of rank `rank`.
     uint64_t get_used_at(int32_t rank) const { return t0_ - (uint64_t) rank; }
@@ -134,7 +136,7 @@ private:
     uint64_t t0_ = 0;                    ///< the clock time given to the hottest expert's last use
     std::vector<int32_t> rank_;          ///< per expert, its rank; -1 while it has none
     std::vector<ExpertKey> ranked_;      ///< the experts in rank order
-    std::set<int32_t> evicted_;          ///< the ranks of the experts a conversation evicted
+    std::set<int32_t> evicted_;          ///< the ranks of the experts `refill` brings in: evicted, or not yet in
     /// The pool's free pages when `refill` last found no room and no page about to open; refills wait until that
     /// changes.  UINT64_MAX: not waiting.
     uint64_t blocked_at_free_ = UINT64_MAX;

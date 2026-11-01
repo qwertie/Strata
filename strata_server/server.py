@@ -1966,7 +1966,9 @@ class Service:
         use there that the engine did not name (other programs, buffers it does not count).  A GPU whose memory is
         system RAM (`unified`) is shown as the BIOS divides it, where read_shared_gpu_memory can read that: its total
         and free are the BIOS share's, and what it borrows beyond the share counts against the RAM (the RAM's
-        `gpu_borrowed`).  While a request has the engine's turn: the last answer, marked busy."""
+        `gpu_borrowed`).  The engine's RAM the GPU maps (the RAM's `mapped`: strata-q38's page-locked pool) is in the
+        GPU's borrowed use too, as Windows and Linux count it, and is not borrowed again: the RAM's bar has it as the
+        engine's.  While a request has the engine's turn: the last answer, marked busy."""
         from strata_base.memory import read_ram
         from strata_common.telemetry import read_shared_gpu_memory
         eng, ram = self.engine, read_ram()
@@ -1994,16 +1996,20 @@ class Service:
             error = str(e)
         memories = [dict(m) for m in self.memory_last["memories"]]
         borrowed = 0                             # what GPUs whose memory is system RAM hold beyond their BIOS share
+        mapped = next((m.get("mapped") or 0 for m in memories if m["id"] == "ram"), 0)   # left to take off "borrowed"
         for m in memories:
             split = m["unified"] and read_shared_gpu_memory(m["name"], int(m["id"][3:]),
                                                             getattr(getattr(eng, "proc", None), "pid", None))
             if split:
-                used = sum(m["uses"].values())
+                used, beyond = sum(m["uses"].values()), split["borrowed"]
+                if beyond is not None:
+                    own = min(mapped, beyond)
+                    beyond, mapped = beyond - own, mapped - own
                 m.update(runtime_total=m["total"], runtime_free=m["free"], total=split["share"],
-                         free=max(0, split["share"] - split["share_used"]), borrowed=split["borrowed"],
+                         free=max(0, split["share"] - split["share_used"]), borrowed=beyond,
                          borrow_limit=split["borrow_limit"], borrowed_by=split["borrowed_by"],
                          in_share=min(used, split["share_used"]) if split["in_share"] is None else split["in_share"])
-                borrowed += split["borrowed"] or 0
+                borrowed += beyond or 0
         for m in memories:
             if m["id"] == "ram":
                 if m["total"] is None:
@@ -2018,7 +2024,8 @@ class Service:
         """POST /v1/memory (the Memory panel's controls): `{"set": {setting: value}, "save": "session" | "default"}`
         changes the settings live (StrataEngine.change_settings) and, with "default", saves them to the run config's
         "args" too (runconfig.apply_live).  -> (HTTP status, body): memory_view's body with "changed" (the settings
-        sent) and "saved"; 409 when the engine refused (nothing saved) or cannot change settings live."""
+        sent), "saved" and, when the engine got less than asked, "shortfall" (its words); 409 when the engine refused
+        (nothing saved) or cannot change settings live."""
         def fail(status, kind, message):
             return status, {"error": {"type": kind, "message": message}}
         try:
@@ -2056,7 +2063,9 @@ class Service:
             if changed:
                 print(f"[strata] the Memory panel saved {', '.join(changed)} as defaults in "
                       f"{Path(self.config_path).name} (the earlier file: {bak.name})", flush=True)
-        return 200, {**self.memory_view(answered), "changed": list(values), "saved": save == "default"}
+        shortfall = answered.pop("shortfall", None)   # (this answer's: not kept in memory_last)
+        return 200, {**self.memory_view(answered), "changed": list(values), "saved": save == "default",
+                     **({"shortfall": shortfall} if shortfall else {})}
 
     def _context_entries(self, held: list[dict]) -> list[dict]:
         """The engine's list as the Context view names it.  `main` is the engine's own session: with --batch, where a

@@ -49,7 +49,8 @@ if "--fake-stage-plan" in args:
           "36-47 (CUDA3), one hand-off per window", file=sys.stderr, flush=True)
 LISTS = "--lists" in args   # READY ... conversations: it answers LIST_CONVERSATIONS and GET_CONTEXT_WINDOWS
 PREEMPT = "--preempt" in args   # READY ... preempt: a BGEN of a higher priority= ends a busy slot's request
-# READY ... memory settings: it answers GET_MEMORY_USE and CHANGE_SETTINGS (a GPU pool under 1000 MiB is refused)
+# READY ... memory settings: it answers GET_MEMORY_USE and CHANGE_SETTINGS (a GPU pool under 1000 MiB is refused; a
+# RAM size gets a SHORTFALL)
 SETTINGS = "--settings" in args
 print("READY 4096 stop" + (" conversations" if LISTS else "") + (" preempt" if PREEMPT else "") +
       (" memory settings" if SETTINGS else ""), flush=True)
@@ -252,6 +253,8 @@ while True:
         print(f"MEMORY gpu0 total={8000 << 20} free={1000 << 20} experts={pool_mib << 20} setting={pool_mib << 20} "
               f"smallest={1000 << 20} largest={7000 << 20} name=card", flush=True)
         print(f"SETTINGS rows={rows} memory_mib.gpu0={pool_mib}", flush=True)
+        if "memory_mib.ram" in new:
+            print("SHORTFALL the RAM's pool: out of memory", flush=True)
         print("END_MEMORY", flush=True)
         continue
     if line:

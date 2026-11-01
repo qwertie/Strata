@@ -76,9 +76,11 @@ struct EngineHooks {
     /// of list_conversations are added to it.
     std::function<MemoryReport()> describe_memory;
     /// Changes the settings `values` names (CHANGE_SETTINGS' fields, in order) all at once; gets why not (having
-    /// changed none of them), or an empty string.  The loop then answers with describe_memory's report.  Empty: the
-    /// engine changes nothing while it runs, and CHANGE_SETTINGS lines go to it as commands.
-    std::function<std::string(const std::vector<std::pair<std::string, std::string>>& values)> change_settings;
+    /// changed none of them), or an empty string.  `shortfall` gets what an accepted change got less of than asked
+    /// (MemoryReport::shortfall).  The loop then answers with describe_memory's report.  Empty: the engine changes
+    /// nothing while it runs, and CHANGE_SETTINGS lines go to it as commands.
+    std::function<std::string(const std::vector<std::pair<std::string, std::string>>& values, std::string& shortfall)>
+        change_settings;
 };
 
 /// The engine's command loop: `while (loop.next(line))` gets the commands the engine handles itself (requests,

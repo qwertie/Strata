@@ -49,6 +49,7 @@ bool ExpertPages::open(ExpertCache& cache, ChunkMemory memory, uint64_t bytes, c
                    max_experts, ranking, err))
         return false;
     cache.set_admitter([this](int64_t layer, int64_t expert) { return admit(layer, expert); });
+    want_missing();   // the cache's own fill takes its slots, the arena; `refill` fills the other chunks
     return true;
 }
 
@@ -61,13 +62,17 @@ bool ExpertPages::open(ChunkMemory memory, uint64_t bytes, const StateLayout& la
 PoolResize ExpertPages::resize(uint64_t bytes) {
     const uint64_t had = pool_->report().total.pages;
     PoolResize r = pool_->resize(bytes);
-    if (pool_->report().total.pages > had) {   // the experts that did not fit before may come in now
-        for (int32_t rank = 0; rank < (int32_t) ranked_.size() && rank < max_experts_; ++rank)
-            if (pool_->find_expert(ranked_[(size_t) rank]) == no_page)
-                evicted_.insert(rank);
-        blocked_at_free_ = UINT64_MAX;
-    }
+    if (pool_->report().total.pages > had)   // the experts that did not fit before may come in now
+        want_missing();
     return r;
+}
+
+/// Marks the experts of the first max_experts_ ranks that the pool does not hold for `refill` to bring in.
+void ExpertPages::want_missing() {
+    for (int32_t rank = 0; rank < (int32_t) ranked_.size() && rank < max_experts_; ++rank)
+        if (pool_->find_expert(ranked_[(size_t) rank]) == no_page)
+            evicted_.insert(rank);
+    blocked_at_free_ = UINT64_MAX;
 }
 
 int32_t ExpertPages::get_slot(PageId page) const {

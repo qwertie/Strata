@@ -151,10 +151,11 @@ bool Loop::next(std::string& line) {
             core::answer_conversation_command(line, hooks_.list_conversations());
             continue;
         }
+        std::string shortfall;
         if (hooks_.change_settings && hooks_.describe_memory && line.rfind("CHANGE_SETTINGS", 0) == 0) {
             std::vector<std::pair<std::string, std::string>> values;
             std::string why;
-            if (!parse_settings_line(line, values, why) || !(why = hooks_.change_settings(values)).empty()) {
+            if (!parse_settings_line(line, values, why) || !(why = hooks_.change_settings(values, shortfall)).empty()) {
                 std::printf("ERR %s\n", why.c_str());
                 std::fflush(stdout);
                 continue;
@@ -162,9 +163,10 @@ bool Loop::next(std::string& line) {
         } else if (!hooks_.describe_memory || line != "GET_MEMORY_USE") {
             return true;
         }
+        MemoryReport report = hooks_.describe_memory();
+        report.shortfall = shortfall;
         const std::string s = format_memory_report(
-            hooks_.describe_memory(),
-            hooks_.list_conversations ? hooks_.list_conversations() : std::vector<core::HeldConversation>{});
+            report, hooks_.list_conversations ? hooks_.list_conversations() : std::vector<core::HeldConversation>{});
         std::fwrite(s.data(), 1, s.size(), stdout);
         std::fflush(stdout);
     }

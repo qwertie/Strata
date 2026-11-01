@@ -29,15 +29,16 @@ namespace strata::qwen38 {
 
 /// Runs strata-q38 with `strata`'s command line, plus `--tokens-min N`: the conversation tokens whose pages the
 /// experts leave free (default 8192); `--rows N`: the most rows one step computes (default 8, at least the
-/// conversations at once); `--lookahead N`: the most guesses a conversation adds to a step (0, the default: no
-/// drafting; more needs --mtp, whose drafter stops guessing below --spec-min-p); `--drafter on|off`: with a
+/// conversations at once); `--lookahead N`: the most guesses a conversation adds to a step (default 3 with --mtp,
+/// whose drafter stops guessing below --spec-min-p, and 0, no drafting, without it); `--drafter on|off`: with a
 /// lookahead, whether the drafter starts loaded (off: loaded for the conversations' layout, then given back, until
 /// CHANGE_SETTINGS turns it on).  `--batch N` is the batch slots, and `--concurrent N` how many of them decode at once
 /// (default all).  `--expert-cache N` is the most experts the GPU holds, as many as N slots of the largest expert
 /// hold; `auto`, as many as fit.  `--gpu-mib N`: the GPU's pool (default: what is free less --vram-reserve-mib and the
 /// prompt path's buffers, but no more than those experts and a conversation at --max-context take).  The RAM:
-/// `--ram-mib N`, the RAM's pool (default: what the RAM and the commit limit have free, less
-/// the resident headroom, but no more than every expert takes; `--resident-budget-gib N` stands for it);
+/// `--ram-mib N`, the RAM's pool (default: what the RAM has free less the resident headroom, but no more than every
+/// expert takes, and like the GPU's default leaving a tenth of Windows' commit limit, at least 8 GiB, uncommitted;
+/// `--resident-budget-gib N` stands for it);
 /// `--tokens-max N`, the tokens the conversations paused in RAM may hold (as many pages as one conversation of N
 /// takes; default --max-context); `--ssd-pause-mib N`, the SSD space paused conversations may take (default 8192);
 /// `--pause-dir DIR`, where their files go (default the temporary folder's strata-q38); `--copy-back auto|on|off`,
