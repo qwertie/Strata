@@ -1013,6 +1013,7 @@ async function api(req, res, path, method, url) {
    if(picked.unavailable){const u=chooserUnavailable(picked);return error(res,501,u.message,{code:u.code});};
    if(picked.cancelled)return json(res,200,{cancelled:true});
    return json(res,200,{path:picked.path,preview:await native.localPreview(picked.path)});}
+  if(path==='/api/native/memory'&&method==='GET')return json(res,200,await native.memory(url.searchParams.get('instance')));
   if(path==='/api/native/benchmark'&&method==='GET')return json(res,200,native.benchmarkReport());
   /* The auto-tuner's saved tunings (Strata Control's presets, shared with the Terminal). Starting a tune or a re-check is POST /api/native/operations with kind autotune / recheck. */
   if(path==='/api/native/tune/status'&&method==='GET')return json(res,200,await native.tuneStatus({model:url.searchParams.get('model'),resourceProfile:url.searchParams.get('resourceProfile')||undefined,vision:url.searchParams.get('vision')||undefined}));

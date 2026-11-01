@@ -4,6 +4,7 @@ import { scopedMonitor, instanceLabel, deviceLabel } from '../lib/runtime-models
 /** The original Strata dashboard, adapted to the current shell and device inventory. */
 import { useRef, useState, type ReactNode } from 'react';
 import { flushSync } from 'react-dom';
+import { MemoryPanel } from '../components/MemoryPanel';
 import { SnapshotDialog } from '../components/SnapshotDialog';
 import { requestSummary } from '../lib/monitor-summary';
 import { monitorPng } from '../lib/snapshot';
@@ -186,6 +187,7 @@ function LegacyMonitorScreen({ native }: {
         {tr(data.totals.requests > 0 ? <p className="small muted monitor-request-totals">{requestSummary({ requests: data.totals.requests, output: outputSpeed, reading: promptSpeed, reused: data.totals.cachedTokens }, { number, tokens })}</p> : null)}
       </section>
     </div>
+    {tr(native && selectedInstance ? <MemoryPanel instanceId={selectedInstance.id}/> : null)}
     <section className="st-card monitor-cache" data-snapshot-skip><div className="section-toolbar"><h2 className="h4">{tr("Conversation cache")}</h2>{tr(lastReused ? <span className="small muted">{tr("{0} of {1} requests reused prompt tokens", [number(cache?.requestsReused ?? reused.filter(r => (r.cachedTokens ?? 0) > 0).length),number(cache?.requests ?? requests.length)])}</span> : null)}</div>
       {tr(cache?.enabled ? <div className="monitor-cache-bars"><div><div className="monitor-bar-reading"><span>{tr("Parked conversations")}</span><span className="muted num">{tr(number(cache.parked))} / {tr(number(cache.slots))}</span></div><ReadingBar label={tr("Parked conversations")} value={percent(cache.parked, cache.slots)}/></div><div><div className="monitor-bar-reading"><span>{tr("Their memory (RAM)")}</span><span className="muted num">{tr(number(cache.memoryGb, 1))} / {tr(number(cache.budgetGb, 1))}{tr(" GB")}</span></div><ReadingBar label={tr("Conversation cache memory")} value={percent(cache.memoryGb, cache.budgetGb)}/></div></div> : null)}
       <dl className="monitor-cache-facts"><div><dt>{tr("Last request")}</dt><dd>{tr(lastCacheText)}</dd></div><div><dt>{tr("Reused since start")}</dt><dd>{tr(hasReading(reusedTotal) ? `${tokens(data.totals.cachedTokens)} tokens` : '—')}</dd></div>{tr(cache?.enabled ? <><div><dt>{tr("Parked / restored")}</dt><dd>{tr(number(cache.parks))} / {tr(number(cache.restores))}{tr(cache.evictions ? ` · ${number(cache.evictions)} evicted` : '')}</dd></div>{tr(cache.lastEvent ? <div><dt>{tr("Last switch")}</dt><dd>{tr(cache.lastEvent === 'parked' ? 'Parked' : 'Restored')} {tr(tokens(cache.lastTokens))}{tr(" tokens")}{tr(cache.lastAt ? ` · ${new Date(cache.lastAt * 1000).toLocaleTimeString(localeTag())}` : '')}</dd></div> : null)}</> : null)}</dl>

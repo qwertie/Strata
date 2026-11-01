@@ -280,10 +280,16 @@ class Monitor(unittest.TestCase):
         self.assertEqual((again["busy"], again["at"], again["memories"]), (True, body["at"], body["memories"]))
         web = Path(__file__).parent / "web"            # the Memory panel draws it
         html, js = (web / "index.html").read_text(encoding="utf-8"), (web / "app.js").read_text(encoding="utf-8")
-        for el in ("mem-card", "mem-sum", "mem-bars", "mem-settings"):
+        for el in ("mem-card", "mem-panel"):
             self.assertIn(f'id="{el}"', html)
             self.assertIn(f'"{el}"', js)
         self.assertIn('"v1/memory"', js)
+        self.assertIn('import("./memory-panel.js")', js)  # shared with the desktop app (apps/host, MemoryPanel.tsx)
+        self.assertIn('href="web/memory-panel.css"', html)
+        for name, text in (("memory-panel.js", "export function drawMemoryPanel"), ("memory-panel.css", ".mem-bar ")):
+            code, body = self.request("/web/" + name)
+            self.assertEqual(code, 200)
+            self.assertIn(text, body)
 
     def test_memory_of_a_gpu_whose_memory_is_system_ram(self):
         """Strix Halo: the GPU's bar is its BIOS share, and what it borrows beyond the share counts against the RAM."""

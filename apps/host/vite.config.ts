@@ -1,4 +1,4 @@
-import { defineConfig } from 'vite';
+import { defineConfig, searchForWorkspaceRoot } from 'vite';
 import react from '@vitejs/plugin-react';
 
 /**
@@ -25,6 +25,8 @@ export default defineConfig({
   server: {
     port: 5199,
     strictPort: true,
+    // the Memory panel's module and styles are the server's web page's own (src/components/MemoryPanel.tsx)
+    fs: { allow: [searchForWorkspaceRoot(process.cwd()), '../../strata_server/web'] },
     proxy: {
       '/api': {
         target: process.env.STRATA_HOST ?? 'http://127.0.0.1:8791',

@@ -449,58 +449,16 @@ function renderMcp() {
 }
 
 // ------------------------------------------------------------------ Memory (GET /v1/memory)
-// What the engine holds in each memory (each GPU, the RAM, the SSD) and its settings, read-only
-// (docs/MEMORY_MANAGER_PLAN.md, step M0).  A GPU whose memory is system RAM (Strix Halo) is drawn as the BIOS divides
-// it: its bar is the BIOS share, with the engine's uses drawn scaled to what the engine holds in the share (`in_share`;
-// the engine cannot know which allocation landed where; the legend keeps the engine's numbers), and what it borrows
-// beyond the share is one segment of the RAM's bar.  A bar is as wide as its memory's share of MEM_FULL_BAR (one of
-// unknown size fills it), so a card is seen beside the RAM without becoming a sliver.
-const MEM_USES = {weights: "Weights", experts: "Experts", conversations: "Conversations",
-                  paused: "Paused conversations", drafter: "Drafter", scratch: "Scratch", engram: "Engram",
-                  borrowed: "GPU (borrowed from RAM)", other: "Other", free: "Free"};
-const MEM_FULL_BAR = 32 * 1073741824;   // bytes (32 GiB) at which a memory's bar fills the width
-const MEM_SETTINGS = {context: "Context", concurrent: "Conversations at once", lookahead: "Lookahead"};
+// The Memory panel (memory-panel.js, shared with the desktop app), refreshed every third Monitor tick.
 async function loadMemory() {
-  let m;
+  let m, panel;
   try {
     const r = await fetch("v1/memory", {headers: headers()});
     if (!r.ok) return;
-    m = await r.json();
+    [m, panel] = await Promise.all([r.json(), import("./memory-panel.js")]);
   } catch (e) { return; /* an older server: no Memory panel */ }
-  renderMemory(m);
-}
-function renderMemory(m) {
   $("mem-card").hidden = !m.available;
-  if (!m.available) return;
-  const bars = m.memories.map((x) => {
-    const named = Object.values(x.uses).reduce((a, b) => a + b, 0);
-    const scale = x.in_share == null || !named ? 1 : Math.min(1, x.in_share / named);
-    const parts = Object.entries(x.uses).map(([use, bytes]) => ({use, bytes, drawn: bytes * scale}));
-    if (x.gpu_borrowed) parts.push({use: "borrowed", bytes: x.gpu_borrowed});
-    if (x.other) parts.push({use: "other", bytes: x.other});
-    if (x.free != null) parts.push({use: "free", bytes: x.free});
-    // a memory of unknown size (the SSD) is drawn against what it holds plus the room left in its paused budget
-    const used = parts.reduce((a, p) => a + (p.drawn ?? p.bytes), 0);
-    const total = x.total || Math.max(used, used - (x.uses.paused || 0) + (x.paused_budget || 0));
-    const name = x.id === "ram" ? "System RAM" : x.id === "ssd" ? "SSD" : x.name || x.id.toUpperCase();
-    const label = "borrowed" in x ? `${name} — BIOS share ${gb(x.total)} GiB` :
-      x.gpu_borrowed ? `${name} ${gb(x.total)} GiB (GPU borrows ${gb(x.gpu_borrowed)} GiB)` : name;
-    const facts = [x.total && label === name ? `${gb(x.total)} GiB` : "", x.paused_count == null ? "" :
-      `${fmt(x.paused_count)} paused` + (x.paused_budget ? ` (budget ${gb(x.paused_budget, 2)} GiB)` : "")]
-      .filter(Boolean).join(" · ");
-    const title = (p) => esc(MEM_USES[p.use] || p.use);
-    const seg = (p) => `<span class="mem-seg" data-use="${esc(p.use)}" style="width:` +
-      `${total ? (100 * (p.drawn ?? p.bytes)) / total : 0}%" title="${title(p)}: ${gb(p.bytes, 2)} GiB"></span>`;
-    const key = (p) => `<span><i class="mem-key" data-use="${esc(p.use)}"></i>${title(p)} ${gb(p.bytes, 2)} GiB</span>`;
-    return `<div class="mem-row"><div class="bar-row"><span>${esc(label)}</span><span class="muted">${esc(facts)}` +
-      `</span></div><div class="mem-bar" style="width:${x.total ? 100 * Math.min(x.total / MEM_FULL_BAR, 1) : 100}%">` +
-      `${parts.map(seg).join("")}</div>` +
-      `<div class="mem-legend muted small">${parts.map(key).join("")}</div></div>`;
-  });
-  $("mem-bars").innerHTML = bars.join("");
-  $("mem-sum").textContent = m.busy ? "a request has the engine: the last reading" : m.error || "";
-  $("mem-settings").textContent = Object.entries(m.settings).map(([k, v]) =>
-    `${MEM_SETTINGS[k] || k}: ${fmt(v)}${k === "context" ? " tokens" : ""}`).join(" · ");
+  if (m.available) panel.drawMemoryPanel($("mem-panel"), m);
 }
 
 // ------------------------------------------------------------------ Model settings (GET / POST /config, #564)

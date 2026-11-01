@@ -8,6 +8,7 @@
 <link rel="stylesheet" href="web/tokens.css">
 <link rel="stylesheet" href="web/components.css">
 <link rel="stylesheet" href="web/app.css">
+<link rel="stylesheet" href="web/memory-panel.css">
 <script>
   // the theme before the first paint: the saved choice, else the system's
   try {
@@ -164,9 +165,8 @@
       </div>
 
       <div class="st-card mem-card" id="mem-card" hidden>
-        <div class="req-head"><span class="card-title">Memory</span><span class="muted small" id="mem-sum"></span></div>
-        <div class="mem-bars" id="mem-bars"></div>
-        <p class="muted small" id="mem-settings"></p>
+        <span class="card-title">Memory</span>
+        <div id="mem-panel"></div>
       </div>
 
       <div class="st-card mcp-card" id="mcp-card" hidden>

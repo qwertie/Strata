@@ -15,6 +15,7 @@
     "verbatimModuleSyntax": true,
     "useDefineForClassFields": true,
     "resolveJsonModule": true,
+    "allowJs": true,
     "allowImportingTsExtensions": true,
     "types": ["vite/client", "node"]
   },

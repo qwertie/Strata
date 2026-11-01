@@ -1,0 +1,27 @@
+/* strata_server/web/memory-panel.css - the Memory panel's styles (memory-panel.js), for the web page and the desktop
+   app alike: both define the design kit's --st-* tokens. */
+.mem-bars { display: flex; flex-direction: column; gap: var(--st-s-4); }
+.mem-head { display: flex; justify-content: space-between; gap: var(--st-s-2); margin-bottom: 4px;
+            font-size: var(--st-fs-sm); font-weight: var(--st-fw-medium); font-variant-numeric: tabular-nums; }
+.mem-facts, .mem-legend, .mem-note { color: var(--st-ink-muted); }
+.mem-bar { display: flex; height: 14px; border-radius: var(--st-r-pill); overflow: hidden;
+           background: var(--st-surface-2); border: 1px solid var(--st-line-soft); }
+.mem-legend { display: flex; flex-wrap: wrap; gap: 2px var(--st-s-4); margin-top: 4px; font-size: var(--st-fs-xs); }
+.mem-key { display: inline-block; width: 9px; height: 9px; border-radius: 2px; margin-right: 5px; }
+.mem-seg, .mem-key { background-color: var(--st-ink-muted); }
+.mem-bars [data-use="experts"] { background-color: var(--st-accent); }
+.mem-bars [data-use="conversations"] { background-color: var(--st-info); }
+.mem-bars [data-use="paused"] { background-color: var(--st-warn); }
+.mem-bars [data-use="drafter"] { background-color: var(--st-danger); }
+.mem-bars [data-use="weights"], .mem-bars [data-use="engram"] { background-color: var(--st-ink-soft); }
+.mem-bars [data-use="free"], .mem-bars [data-use="pool_free"] { background-color: transparent; }
+.mem-bars [data-use="pool_free"] { box-shadow: inset 0 0 0 1px var(--st-line); }
+.mem-bars [data-use="borrowed"] {   /* the RAM a GPU whose memory is system RAM holds beyond its BIOS share */
+  background-image: repeating-linear-gradient(135deg, transparent 0 3px, rgba(0, 0, 0, .35) 3px 5px);
+}
+.mem-conversations { width: 100%; margin-top: var(--st-s-4); border-collapse: collapse; font-size: var(--st-fs-sm); }
+.mem-conversations th { text-align: left; font-weight: var(--st-fw-medium); color: var(--st-ink-muted); }
+.mem-conversations th, .mem-conversations td { padding: 3px var(--st-s-2) 3px 0;
+                                               border-bottom: 1px solid var(--st-line-soft); }
+.mem-conversations .mem-num { text-align: right; font-variant-numeric: tabular-nums; }
+.mem-note { margin: var(--st-s-3) 0 0; font-size: var(--st-fs-xs); }

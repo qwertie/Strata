@@ -2,7 +2,7 @@
 .monitor-dashboard { --st-chart-decode: var(--st-accent); --st-chart-prefill: color-mix(in srgb,var(--st-accent) 65%,black); padding: 0; }
 .monitor-state { display: flex; flex-direction: column; gap: 14px; }
 .monitor-state__head { display: flex; align-items: center; flex-wrap: wrap; gap: 12px 18px; }
-.monitor-state h2, .monitor-context h2, .monitor-requests h2, .monitor-cache h2, .monitor-mcp h2 { margin: 0; }
+.monitor-state h2, .monitor-context h2, .monitor-requests h2, .monitor-cache h2, .monitor-memory h2, .monitor-mcp h2 { margin: 0; }
 .monitor-state__badges { display: flex; flex-wrap: wrap; gap: 7px; }
 .monitor-state__badges .st-badge { opacity: .38; transition: opacity var(--st-dur); }
 .monitor-state__badges .st-badge[data-active='true'] { opacity: 1; }
@@ -46,7 +46,7 @@
 .monitor-request-table .st-table .num { text-align: right; }
 .monitor-request-source { display: block; margin-top: 3px; }
 .monitor-request-totals { margin: auto 0 0; padding-top: 10px; }
-.monitor-cache { display: flex; flex-direction: column; gap: 16px; }
+.monitor-cache, .monitor-memory { display: flex; flex-direction: column; gap: 16px; }
 .monitor-cache p { margin: 0; }
 .monitor-cache .section-toolbar { flex-wrap: wrap; gap: 10px; }
 .monitor-cache-bars { display: grid; grid-template-columns: 1fr 1fr; gap: 24px; }
