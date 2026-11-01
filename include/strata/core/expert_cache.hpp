@@ -134,6 +134,12 @@ public:
     void set_admitter(std::function<int32_t(int64_t layer, int64_t expert)> admitter) {
         admitter_ = std::move(admitter);
     }
+    /// strata-q38: lets device_slot, the fills and slot_tail take slots up to `slots` (exclusive), past the arena:
+    /// an admitter whose pages are also in memory it allocated above the arena, at whole slots from its start
+    /// (ExpertPages).  Slots past the arena are the admitter's to keep valid.
+    void set_slot_reach(int64_t slots) { reach_ = slots; }
+    /// Gets the slots device_slot takes: the arena's, or set_slot_reach's when that is more (uniform slots only).
+    int64_t get_reach() const { return reach_ > slots_ && off_.empty() ? reach_ : slots_; }
     /// With an admitter: forgets an expert's slot (its bytes stay until the slot is reused).
     void evict(int64_t layer, int64_t expert) {
         if (slot_of(layer, expert) == kNotResident)
@@ -213,7 +219,7 @@ public:
     /// STRATA_MMQ_DIRECT: the address `blob` bytes into slot `s` when the slot has room for `need` more bytes there
     /// (null otherwise, or for a bad slot).  Uniform slots too: their stride is the largest blob.
     uint8_t* slot_tail(int32_t s, uint64_t blob, uint64_t need) const {
-        if (s < 0 || s >= slots_ || base_ == nullptr) return nullptr;
+        if (s < 0 || s >= get_reach() || base_ == nullptr) return nullptr;
         return slot_room(s) >= blob + need ? base_ + slot_offset(s) + blob : nullptr;
     }
 
@@ -235,6 +241,7 @@ private:
     int64_t span_req_ = 0;              ///< the bytes an expert may take from its slot on, asked for (set_expert_bytes)
     int64_t span_ = 0;                  ///< ...in force: span_req_, or the slot (blob_) when that is 0
     std::function<int32_t(int64_t, int64_t)> admitter_;   ///< set_admitter (empty: admit takes the next free slot)
+    int64_t reach_ = 0;                 ///< set_slot_reach (0: the arena's slots only)
     int64_t seg_ = 0;                   ///< #533: the segment size used (a multiple of the driver's granularity)
     uint64_t reserved_ = 0;             ///< #533: the reserved address range's size
     std::vector<unsigned long long> segs_;   ///< #533: each segment's physical handle (0: unmapped)

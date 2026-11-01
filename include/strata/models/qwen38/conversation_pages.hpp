@@ -46,6 +46,9 @@ public:
     /// them), zeroes the new pages and writes their units' addresses into the QSA states' tables.  Call before each
     /// append; false when the pool has no room.
     bool reserve(int64_t tokens, std::string& err);
+    /// Points `ss` and the device tables at the pages the pool holds the conversation in now, after a shrink of the
+    /// pool moved them (PagePool::resize); the bytes moved with them.
+    bool refresh(strata::core::SessionState& ss, std::string& err);
     /// Gives back the growing pages past the first `tokens` tokens (0: a new conversation); the fixed region stays.
     void truncate(int64_t tokens);
     /// Gives back every page, the fixed region's too, once they are copied elsewhere (a paused conversation); `init`
@@ -62,6 +65,8 @@ public:
     const int64_t* get_drafter_units() const { return has_drafter_ ? tables_.back() : nullptr; }
 
 private:
+    bool write_tables(bool zero_new, std::string& err);
+
     strata::core::PagePool* pool_ = nullptr;
     strata::core::ConversationId id_ = 0;
     std::vector<uint64_t> unit_bytes_;           ///< per table, the bytes of one block's unit

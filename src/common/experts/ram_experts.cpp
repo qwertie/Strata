@@ -6,6 +6,7 @@
 #include <algorithm>
 #include <chrono>
 #include <cstring>
+#include <iterator>
 
 namespace strata::core {
 namespace {
@@ -25,10 +26,7 @@ double get_seconds_since(std::chrono::steady_clock::time_point t0) {
 }  // namespace
 
 RamExperts::~RamExperts() {
-    if (device_view_ != nullptr)
-        gpu_host_free(host_);
-    else
-        delete[] host_;
+    free(ring_);
 }
 
 bool RamExperts::open(ExpertSource& files, uint64_t bytes, int ring, const StateLayout& layout, PagePoolConfig config,
@@ -41,22 +39,25 @@ bool RamExperts::open(ExpertSource& files, uint64_t bytes, int ring, const State
     slot_bytes_ = (*std::max_element(blob_bytes.begin(), blob_bytes.end()) + 4095) / 4096 * 4096;
     ring_slots_ = (size_t) std::max(ring, 1);
     ring_owner_.assign(ring_slots_, -1);
-    const uint64_t pages = bytes > ring_bytes() ? (bytes - ring_bytes()) / config.page_bytes : 0;
-    const uint64_t total = pages * config.page_bytes + ring_bytes();
-    void* view = nullptr;
-    host_ = (uint8_t*) gpu_host_alloc_mapped((size_t) total, &view);
-    if (host_ != nullptr)
-        device_view_ = (uint8_t*) view;
-    else   // pageable memory: the CPU reads it, the GPU does not
-        host_ = new (std::nothrow) uint8_t[(size_t) total];
-    if (host_ == nullptr || pages == 0) {
-        err = "the RAM's page pool: no room for " + std::to_string(total >> 20) + " MiB";
+    const uint64_t pool = bytes > ring_bytes() ? (bytes - ring_bytes()) / config.page_bytes * config.page_bytes : 0;
+    config.chunk_bytes = std::max(std::min(config.chunk_bytes, pool) / config.page_bytes, (uint64_t) 1) *
+                         config.page_bytes;
+    ring_ = alloc(ring_bytes());
+    ChunkMemory memory;
+    memory.alloc = [this](uint64_t n) { return alloc(n); };
+    memory.free = [this](uint8_t* p) { free(p); };
+    memory.copy = [](uint8_t* to, const uint8_t* from, uint64_t n) {
+        std::memcpy(to, from, (size_t) n);
+        return true;
+    };
+    // every expert may come in (the pool's room decides how many)
+    if (ring_ == nullptr || pool == 0 ||
+        !pages_.open(std::move(memory), pool, layout, config, blob_bytes, n_expert, (int64_t) first_page_.size(),
+                     ranking, err)) {
+        err = "the RAM's page pool: no room for " + std::to_string(bytes >> 20) + " MiB" +
+              (err.empty() ? "" : " (" + err + ")");
         return false;
     }
-    ring_ = host_ + pages * config.page_bytes;
-    // every expert may come in (the pool's room decides how many)
-    if (!pages_.open(host_, pages, layout, config, blob_bytes, n_expert, (int64_t) first_page_.size(), ranking, err))
-        return false;
     ExpertPages::Hooks hooks;
     hooks.load = [this](ExpertKey key, int32_t first, std::string& e) {
         Reads one;
@@ -136,9 +137,11 @@ const uint8_t* RamExperts::blob(int64_t layer, int64_t expert) {
 
 const uint8_t* RamExperts::device_alias(int64_t layer, int64_t expert) const {
     const int32_t first = first_page_[index_of(layer, expert)];
-    if (device_view_ == nullptr || first == kNotResident)
+    if (!page_locked_ || first == kNotResident)
         return nullptr;
-    return device_view_ + (get_page(first) - host_);
+    const uint8_t* page = get_page(first);
+    const auto chunk = std::prev(views_.upper_bound(page));
+    return chunk->second + (page - chunk->first);
 }
 
 bool RamExperts::copy_blob(int64_t layer, int64_t expert, uint8_t* dst) {
@@ -166,6 +169,34 @@ void RamExperts::prefetch(int64_t layer, const int64_t* experts, int64_t n) {
 
 void RamExperts::begin_layer(int64_t, const int32_t*, int64_t) {
     layer_t0_ = pages_.get_time();
+}
+
+/// Gets `bytes` of the pool's kind of memory (page-locked, else pageable: the CPU reads it, the GPU does not); null
+/// when there is not that much.
+uint8_t* RamExperts::alloc(uint64_t bytes) {
+    if (page_locked_) {
+        void* view = nullptr;
+        if (auto* p = (uint8_t*) gpu_host_alloc_mapped((size_t) bytes, &view)) {
+            views_[p] = (uint8_t*) view;
+            return p;
+        }
+        if (!views_.empty())
+            return nullptr;
+        page_locked_ = false;
+    }
+    return new (std::nothrow) uint8_t[(size_t) bytes];
+}
+
+/// Gives back what alloc gave.
+void RamExperts::free(uint8_t* p) {
+    if (p == nullptr)
+        return;
+    if (page_locked_) {
+        views_.erase(p);
+        gpu_host_free(p);
+    } else {
+        delete[] p;
+    }
 }
 
 /// Reads `reads` from the SSD (nothing: true), at most `most` bytes of experts (or one expert) a read.

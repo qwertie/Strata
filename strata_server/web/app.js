@@ -448,8 +448,9 @@ function renderMcp() {
   }).join("");
 }
 
-// ------------------------------------------------------------------ Memory (GET /v1/memory)
-// The Memory panel (memory-panel.js, shared with the desktop app), refreshed every third Monitor tick.
+// ------------------------------------------------------------------ Memory (GET / POST /v1/memory)
+// The Memory panel (memory-panel.js, shared with the desktop app), refreshed every third Monitor tick; its changes go
+// to POST /v1/memory.
 async function loadMemory() {
   let m, panel;
   try {
@@ -458,7 +459,14 @@ async function loadMemory() {
     [m, panel] = await Promise.all([r.json(), import("./memory-panel.js")]);
   } catch (e) { return; /* an older server: no Memory panel */ }
   $("mem-card").hidden = !m.available;
-  if (m.available) panel.drawMemoryPanel($("mem-panel"), m);
+  if (m.available) panel.drawMemoryPanel($("mem-panel"), m, changeMemory);
+}
+
+/** Sends the Memory panel's change to the server (memory-panel.js ChangeSettings). */
+async function changeMemory(set, save) {
+  const r = await fetch("v1/memory", {method: "POST", headers: headers(true), body: JSON.stringify({set, save})});
+  const b = await r.json().catch(() => ({}));
+  return r.ok ? {ok: true, view: b} : {ok: false, error: (b.error || {}).message || `HTTP ${r.status}`};
 }
 
 // ------------------------------------------------------------------ Model settings (GET / POST /config, #564)

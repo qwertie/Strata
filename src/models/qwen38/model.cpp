@@ -2659,19 +2659,11 @@ int Model::load() {
             std::fprintf(stderr, "strata generate: --mtp is ignored without --spec T (T >= 2)\n");
             o.mtp.clear();
         }
-        if (!o.mtp.empty()) mtp.set_prompt_len((int64_t) o.tokens.size());
-        mtp.set_hnorm_per_stream(o.mtp_hnorm_stream);   // --mtp-hnorm stream (opt-in), before any capture
-        mtp.set_q4(o.mtp_q4 == "all" || o.mtp_q4 == "proj", o.mtp_q4 == "all" || o.mtp_q4 == "head");   // before load
-        if (!o.mtp_draft_vocab.empty()) mtp.set_draft_vocab(o.mtp_draft_vocab);
         // the draft layer is the canonical model's MTP head (512 experts) even when the target is pruned,
         // so it always sees the canonical geometry; `static` because MtpDrafter keeps a reference
         // with a layer split across GPUs the drafter reads the last stage's residual: it lives on that device
         const strata::core::OnDevice on_mtp(last_st && !mtp_first ? last_st->dev : -1);
-        // --pipeline-windows 2: 8 rows (the chain runs on past the window in flight: its drafts, its bonus token and
-        // the next window's drafts), and the round/step graphs carry the forcing kernel
-        const int mtp_t = o.pipeline_windows >= 2 ? strata::kernels::kVerifyMaxT : o.spec;
-        if (o.pipeline_windows >= 2) mtp.set_force_capture(true);
-        if (!o.mtp.empty() && !mtp.load(o.mtp, draft_geometry, last_st && !mtp_first ? last_st->ss : ss, mtp_t, err, o.mtp_window)) { std::fprintf(stderr, "strata generate: %s%s\n", err.c_str(), vram_free_note().c_str()); return 1; }
+        if (!o.mtp.empty() && !load_drafter_on(last_st && !mtp_first ? last_st->ss : ss, err)) { std::fprintf(stderr, "strata generate: %s%s\n", err.c_str(), vram_free_note().c_str()); return 1; }
         mtp.set_ple_session(&ss);
 #if defined(STRATA_HAVE_DFLASH2)
         if (o.draft == "dflash2") {
@@ -4262,6 +4254,33 @@ cudaError_t Model::put_residency(int32_t* dst) const {
     // (the current device's legacy stream, stream 0 - nothing else; HIP has no cudaStreamLegacy name, #550).
     const cudaError_t e = cudaMemcpy(dst, host_res.data(), host_res.size() * sizeof(int32_t), cudaMemcpyHostToDevice);
     return e != cudaSuccess ? e : cudaStreamSynchronize(nullptr);
+}
+
+void Model::unload_drafter() {
+    // MtpDrafter gives its memory back only in its destructor, and a new one is the unloaded state
+    mtp.~MtpDrafter();
+    new (&mtp) strata::core::MtpDrafter();
+}
+
+bool Model::load_drafter(std::string& err) {
+    if (!load_drafter_on(ss, err))
+        return false;
+    mtp.set_ple_session(&ss);
+    return true;
+}
+
+/// Sets the MTP drafter's options from --mtp-* and loads it from --mtp, its K/V (unless in pages) beside session
+/// `on`'s (load and load_drafter).
+bool Model::load_drafter_on(strata::core::SessionState& on, std::string& err) {
+    mtp.set_prompt_len((int64_t) o.tokens.size());
+    mtp.set_hnorm_per_stream(o.mtp_hnorm_stream);   // --mtp-hnorm stream (opt-in), before any capture
+    mtp.set_q4(o.mtp_q4 == "all" || o.mtp_q4 == "proj", o.mtp_q4 == "all" || o.mtp_q4 == "head");   // before load
+    if (!o.mtp_draft_vocab.empty()) mtp.set_draft_vocab(o.mtp_draft_vocab);
+    // --pipeline-windows 2: 8 rows (the chain runs on past the window in flight: its drafts, its bonus token and
+    // the next window's drafts), and the round/step graphs carry the forcing kernel
+    const int mtp_t = o.pipeline_windows >= 2 ? strata::kernels::kVerifyMaxT : o.spec;
+    if (o.pipeline_windows >= 2) mtp.set_force_capture(true);
+    return mtp.load(o.mtp, draft_geometry, on, mtp_t, err, o.mtp_window);
 }
 
 strata::core::VerifyHits Model::get_verify_hits() const {

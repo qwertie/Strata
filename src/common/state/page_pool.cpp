@@ -189,6 +189,11 @@ PageId PagePool::use_expert(ExpertKey key) {
     return first;
 }
 
+PageId PagePool::find_expert(ExpertKey key) const {
+    const auto it = experts_.find(key);
+    return it == experts_.end() ? no_page : it->second;
+}
+
 void PagePool::remove_expert(ExpertKey key) {
     open_due();
     if (const auto it = experts_.find(key); it != experts_.end())

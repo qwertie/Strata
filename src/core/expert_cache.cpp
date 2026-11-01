@@ -515,7 +515,7 @@ int32_t ExpertCache::admit(int64_t layer, int64_t expert) {
 }
 
 uint8_t* ExpertCache::device_slot(int32_t slot) const {
-    if (slot < 0 || slot >= slots_) return nullptr;
+    if (slot < 0 || slot >= get_reach()) return nullptr;
     if (!off_.empty()) return base_ + off_[(size_t) slot];
     return base_ + (size_t) slot * (size_t) blob_;
 }
@@ -525,7 +525,7 @@ bool ExpertCache::fill_slot(int32_t slot, const uint8_t* host_blob, void* stream
     uint8_t* dst = device_slot(slot);
     if (dst == nullptr) {
         err = "ExpertCache::fill_slot: slot " + std::to_string(slot) + " is outside 0.." +
-              std::to_string(slots_ - 1);
+              std::to_string(get_reach() - 1);
         return false;
     }
     if (host_blob == nullptr) {

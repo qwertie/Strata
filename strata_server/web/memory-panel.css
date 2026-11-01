@@ -3,9 +3,10 @@
 .mem-bars { display: flex; flex-direction: column; gap: var(--st-s-4); }
 .mem-head { display: flex; justify-content: space-between; gap: var(--st-s-2); margin-bottom: 4px;
             font-size: var(--st-fs-sm); font-weight: var(--st-fw-medium); font-variant-numeric: tabular-nums; }
-.mem-facts, .mem-legend, .mem-note { color: var(--st-ink-muted); }
-.mem-bar { display: flex; height: 14px; border-radius: var(--st-r-pill); overflow: hidden;
-           background: var(--st-surface-2); border: 1px solid var(--st-line-soft); }
+.mem-facts, .mem-legend, .mem-note, .mem-hint, .mem-preview { color: var(--st-ink-muted); }
+.mem-bar { position: relative; height: 14px; }
+.mem-segs { display: flex; height: 100%; border-radius: var(--st-r-pill); overflow: hidden;
+            background: var(--st-surface-2); border: 1px solid var(--st-line-soft); }
 .mem-legend { display: flex; flex-wrap: wrap; gap: 2px var(--st-s-4); margin-top: 4px; font-size: var(--st-fs-xs); }
 .mem-key { display: inline-block; width: 9px; height: 9px; border-radius: 2px; margin-right: 5px; }
 .mem-seg, .mem-key { background-color: var(--st-ink-muted); }
@@ -24,4 +25,18 @@
 .mem-conversations th, .mem-conversations td { padding: 3px var(--st-s-2) 3px 0;
                                                border-bottom: 1px solid var(--st-line-soft); }
 .mem-conversations .mem-num { text-align: right; font-variant-numeric: tabular-nums; }
-.mem-note { margin: var(--st-s-3) 0 0; font-size: var(--st-fs-xs); }
+.mem-note, .mem-hint, .mem-notice { margin: var(--st-s-3) 0 0; font-size: var(--st-fs-xs); }
+/* a divider the reader drags (M6): the end of the engine's pool, or of the SSD's room for paused conversations */
+.mem-divider { position: absolute; top: -5px; bottom: -5px; width: 8px; margin-left: -4px; border-radius: 3px;
+               background: var(--st-ink); border: 2px solid var(--st-surface); cursor: ew-resize; touch-action: none;
+               background-image: repeating-linear-gradient(transparent 0 3px, var(--st-surface) 3px 4px); }
+.mem-change { position: absolute; top: 1px; bottom: 1px; background: var(--st-accent); opacity: .35;
+              pointer-events: none; }
+.mem-preview { margin: 2px 0 0; font-size: var(--st-fs-xs); font-variant-numeric: tabular-nums; }
+.mem-divider.mem-refused, .mem-change.mem-refused { background-color: var(--st-danger); }
+.mem-preview.mem-refused, .mem-notice.mem-error { color: var(--st-danger-text); }
+.mem-controls { display: flex; flex-wrap: wrap; align-items: center; gap: var(--st-s-2) var(--st-s-4);
+                margin-top: var(--st-s-4); font-size: var(--st-fs-sm); }
+.mem-input { width: auto; max-width: 8em; height: auto; min-height: 0; padding: 2px 6px; }
+.mem-undo { margin-left: var(--st-s-2); font: inherit; color: var(--st-accent-text); background: none; border: 0;
+            padding: 0; text-decoration: underline; cursor: pointer; }

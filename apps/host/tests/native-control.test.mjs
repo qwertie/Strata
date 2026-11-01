@@ -43,3 +43,19 @@ test('a model the person pointed at their own GGUF folder keeps that folder for 
  const call=f.rpcCalls.filter(c=>c.name==='strata_install').pop();assert.equal(call.arguments.gguf_dir,own);assert.equal(call.arguments.data_dir,undefined,'the person\'s folder is not the data folder');
  await f.control.plan({family:'qwen',model:'IQ3_S',context:131072});const other=f.rpcCalls.filter(c=>c.name==='strata_install').pop();assert.equal(other.arguments.gguf_dir,undefined,'a model Strata downloaded itself keeps its normal folders');
 }finally{await f.cleanup();}});
+test('while the model runs an engine that changes its settings, parallel and the draft layer go through its server, not the run config (M6)',async()=>{
+ const f=nativeFixture();try{
+  await f.control.refresh(true);const done=await finishJob(f.control,f.control.operation('load',{model:'iq2_xs',gpus:[0]}).id);assert.equal(done.state,'done',done.error);
+  const posts=[];let canChange=true,refuse=false;
+  f.setMemoryServer(async options=>{if(options.method!=='POST')return Response.json({available:true,can_change:canChange,settings:{slots:4,drafter:1}});posts.push(JSON.parse(options.body));return refuse?Response.json({error:{type:'refused',message:'rows must be at least 2'}},{status:409}):Response.json({available:true,changed:['concurrent']});});
+  const file=()=>JSON.parse(readFileSync(join(f.repo,'strata-iq2_xs.json'))),before=file(),values=f.control.settings('iq2_xs').values;
+  const saved=await f.control.saveThroughServer('iq2_xs',{values:{...values,parallel:2,mtp:false,idle_unload_s:60}});
+  assert.deepEqual(posts,[{set:{concurrent:2,drafter:false},save:'default'}]);assert.deepEqual(saved.live,['parallel','mtp']);assert.equal(saved.values.parallel,2);
+  assert.equal(file().parallel,before.parallel);assert.equal(file().mtp,before.mtp);assert.equal(file().idle_unload_s,60);
+  // more requests at once than the engine has slots needs a restart: the run config takes it, as before
+  posts.length=0;assert.deepEqual((await f.control.saveThroughServer('iq2_xs',{values:{...values,parallel:6}})).live,[]);assert.deepEqual(posts,[]);assert.equal(file().parallel,6);
+  refuse=true;await assert.rejects(f.control.saveThroughServer('iq2_xs',{values:{...values,parallel:3}}),/did not change parallel: rows must be at least 2/);
+  // an engine that cannot change its settings while it runs: the app writes them, as before
+  canChange=false;posts.length=0;await f.control.saveThroughServer('iq2_xs',{values:{...values,parallel:3}});assert.deepEqual(posts,[]);assert.equal(file().parallel,3);
+ }finally{await f.cleanup();}
+});

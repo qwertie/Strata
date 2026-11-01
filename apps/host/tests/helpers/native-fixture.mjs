@@ -28,8 +28,9 @@ export function nativeFixture({modelsDirectory,tuneHandler,engineStatus}={}){
   else queueMicrotask(()=>{if(command==='git')child.stdout.emit('data',Buffer.from(args[0]==='describe'?'v0.1.40\n':args[0]==='status'?' M local.py\n':'https://github.com/Niko1221/Strata\n'));if(command==='git'||args[0]==='-c'&&!programWait){child.exitCode=0;child.emit('exit',0);}});
   return child;
  };
- let benchmarkWait=false,healthWait=false,releaseHealth=null;
+ let benchmarkWait=false,healthWait=false,releaseHealth=null,memoryServer=null;
  const fetcher=async(url,options)=>{
+  if(url.endsWith('/v1/memory')&&memoryServer)return memoryServer(options);
   if(url.endsWith('/health')&&healthWait)await new Promise(resolve=>releaseHealth=resolve);
   if(url.includes('/metrics'))return Response.json({engine:{max_context:32768},live:{state:'idle'},hardware:{cpu:12,ram_used:48*1024**3,ram_total:128*1024**3},requests:[{time:Date.now()/1000,decode_tok_s:41,prompt_tokens:120,reused:20,prompt_ms:100,output_tokens:80,duration_s:2}],history:{tok_s:[40,41]}});
   if(url.endsWith('/mcp'))return Response.json({tools:1,servers:[{name:'files',status:'ready',tools:[{name:'read_file'}]}]});
@@ -37,6 +38,6 @@ export function nativeFixture({modelsDirectory,tuneHandler,engineStatus}={}){
   return Response.json({status:'ok'});
  };
  const control=createNativeControl({directory,defaultRepo:repo,spawnProcess,fetcher,modelsDirectory,requests:()=>requests});
- return {control,repo,directory,catalog,installed,requests,calls,rpcCalls,children,setExternal:value=>external=value,setHardware:value=>hardware=value,setBenchmarkWait:value=>benchmarkWait=value,setProgramWait:value=>programWait=value,setHealthWait:value=>healthWait=value,hasPendingHealth:()=>!!releaseHealth,releaseHealth:()=>{healthWait=false;releaseHealth?.();releaseHealth=null;},cleanup:async()=>{await control.close();rmSync(root,{recursive:true,force:true});}};
+ return {control,repo,directory,catalog,installed,requests,calls,rpcCalls,children,setExternal:value=>external=value,setHardware:value=>hardware=value,setBenchmarkWait:value=>benchmarkWait=value,setMemoryServer:value=>memoryServer=value,setProgramWait:value=>programWait=value,setHealthWait:value=>healthWait=value,hasPendingHealth:()=>!!releaseHealth,releaseHealth:()=>{healthWait=false;releaseHealth?.();releaseHealth=null;},cleanup:async()=>{await control.close();rmSync(root,{recursive:true,force:true});}};
 }
 export async function finishJob(control,id){for(let n=0;n<400;n++){const job=control.state().jobs.find(j=>j.id===id);if(job.state!=='running')return job;await new Promise(r=>setTimeout(r,10));}throw new Error('Fixture operation timed out');}

@@ -1896,19 +1896,21 @@ class Service:
         return record
 
     CONTEXT_WAIT_S = 2.0      # how long GET /api/context waits for the engine's turn before it answers with what it has
+    SETTINGS_WAIT_S = 30.0    # how long POST /v1/memory waits for the engine's turn before it answers 503
     PREVIEW_TOKENS = 24       # the start of each conversation's first user message in the list
 
     @contextlib.contextmanager
-    def _engine_turn(self):
+    def _engine_turn(self, wait: float | None = None):
         """The engine's turn for a command between requests: True once this holds the FIFO and, with --batch, the
         control lines (parallel requests do not hold the FIFO; a request alone or an admission holds the lines - the
-        slots may go on decoding); False when a request kept them CONTEXT_WAIT_S."""
-        if not self.fifo.acquire(timeout=self.CONTEXT_WAIT_S):
+        slots may go on decoding); False when a request kept them `wait` seconds (default CONTEXT_WAIT_S)."""
+        wait = self.CONTEXT_WAIT_S if wait is None else wait
+        if not self.fifo.acquire(timeout=wait):
             yield False
             return
         ctl = getattr(self.engine, "ctl", None) if getattr(self.engine, "batch", 0) else None
         try:
-            if ctl is not None and not ctl.acquire(timeout=self.CONTEXT_WAIT_S):
+            if ctl is not None and not ctl.acquire(timeout=wait):
                 yield False
                 return
             try:
@@ -1954,9 +1956,12 @@ class Service:
         return {"available": True, **base, "busy": busy, "error": error, "at": got and got["at"],
                 "entries": got["entries"] if got else []}
 
-    def memory_view(self) -> dict:
+    def memory_view(self, answered: dict | None = None) -> dict:
         """GET /v1/memory (the web page's Memory panel): what the engine holds in each memory and its settings
-        (StrataEngine.memory), and the machine's own view - its RAM and what the hardware sampler reads of the GPUs.
+        (StrataEngine.memory), and the machine's own view - its RAM and what the hardware sampler reads of the GPUs;
+        "can_change": the engine changes settings live (POST /v1/memory), "defaults": the run config's values for
+        them (runconfig.read_live_defaults), "config": there is a run config to save defaults to.  `answered`: the
+        engine's report, read already (POST /v1/memory's change_settings), so the engine is not asked again.
         The engine's `ram` gets the machine's size and free RAM, and each memory with a size gets "other": what is in
         use there that the engine did not name (other programs, buffers it does not count).  A GPU whose memory is
         system RAM (`unified`) is shown as the BIOS divides it, where read_shared_gpu_memory can read that: its total
@@ -1970,17 +1975,21 @@ class Service:
         gpus = now.get("gpus") or ([{"index": int(getattr(self, "gpu_index", 0) or 0),
                                      "name": tel["static"].get("gpu_name"), "mem_used": now.get("gpu_mem_used"),
                                      "mem_total": now.get("gpu_mem_total")}] if now.get("gpu_mem_total") else [])
-        base = {"loaded": self.loaded(), "machine": {"ram_total": ram.total, "ram_free": ram.available, "gpus": gpus}}
+        base = {"loaded": self.loaded(), "machine": {"ram_total": ram.total, "ram_free": ram.available, "gpus": gpus},
+                "can_change": self.loaded() and getattr(eng, "can_change_settings", False),
+                "defaults": runconfig.read_live_defaults(self.config_path), "config": bool(self.config_path)}
         if not self.loaded():
             return {"available": False, "reason": "unloaded", **base}
         if not getattr(eng, "can_report_memory", False):
             return {"available": False, "reason": "engine", **base}
         busy, error = False, None
         try:
-            with self._engine_turn() as turn:
-                busy = not turn
-                if turn:
-                    self.memory_last = {"at": time.time(), **eng.memory()}
+            if answered is None:
+                with self._engine_turn() as turn:
+                    busy = not turn
+                    answered = eng.memory() if turn else None
+            if answered is not None:
+                self.memory_last = {"at": time.time(), **answered}
         except engine_client.EngineDied as e:
             error = str(e)
         memories = [dict(m) for m in self.memory_last["memories"]]
@@ -2004,6 +2013,50 @@ class Service:
                 named = min(sum(m["uses"].values()), m.get("in_share", math.inf)) + m.get("gpu_borrowed", 0)
                 m["other"] = max(0, m["total"] - m["free"] - named)
         return {"available": True, **base, "busy": busy, "error": error, **self.memory_last, "memories": memories}
+
+    def change_memory_settings(self, raw: bytes) -> tuple[int, dict]:
+        """POST /v1/memory (the Memory panel's controls): `{"set": {setting: value}, "save": "session" | "default"}`
+        changes the settings live (StrataEngine.change_settings) and, with "default", saves them to the run config's
+        "args" too (runconfig.apply_live).  -> (HTTP status, body): memory_view's body with "changed" (the settings
+        sent) and "saved"; 409 when the engine refused (nothing saved) or cannot change settings live."""
+        def fail(status, kind, message):
+            return status, {"error": {"type": kind, "message": message}}
+        try:
+            req = json.loads(raw or b"{}")
+            save = req.get("save", "session") if isinstance(req, dict) else None
+            if save not in ("session", "default"):
+                raise ValueError('send {"set": {...}, "save": "session" or "default"}')
+            if save == "default" and not self.config_path:
+                raise ValueError("this server was started without a run config: there is no default to save to")
+            values = runconfig.check_live(req.get("set"), save == "default")
+        except ValueError as e:                        # (a JSONDecodeError is one)
+            return fail(400, "invalid_request_error", str(e))
+        if not self.loaded():
+            return fail(503, "unavailable", "no model is loaded")
+        if not getattr(self.engine, "can_change_settings", False):
+            return fail(409, "unsupported", "this engine cannot change its memory settings while it runs")
+        try:
+            with self._engine_turn(self.SETTINGS_WAIT_S) as turn:
+                answered = self.engine.change_settings(values) if turn else None
+        except engine_client.SettingsRefused as e:
+            return fail(409, "refused", str(e))
+        except engine_client.EngineDied as e:
+            return fail(503, "unavailable", str(e))
+        if answered is None:
+            return fail(503, "unavailable", "a request kept the engine busy; try again when it has finished")
+        if save == "default":
+            try:
+                with self.config_lock:
+                    new, changed = runconfig.apply_live(runconfig.load(self.config_path), values)
+                    if changed:
+                        bak = runconfig.save(self.config_path, new)
+            except (OSError, ValueError) as e:
+                return fail(500, "server_error",
+                            f"changed for this session, but the run config cannot be written: {e}")
+            if changed:
+                print(f"[strata] the Memory panel saved {', '.join(changed)} as defaults in "
+                      f"{Path(self.config_path).name} (the earlier file: {bak.name})", flush=True)
+        return 200, {**self.memory_view(answered), "changed": list(values), "saved": save == "default"}
 
     def _context_entries(self, held: list[dict]) -> list[dict]:
         """The engine's list as the Context view names it.  `main` is the engine's own session: with --batch, where a
@@ -4191,6 +4244,11 @@ def make_handler(svc: Service):
                 return
             if path == "/config":
                 self._config_post()
+                return
+            if path == "/v1/memory":                       # the Memory panel's controls (MEMORY_MANAGER_PLAN.md, M6)
+                body = self._body()
+                if self._own_page("memory settings can be changed"):
+                    self._json(*svc.change_memory_settings(body))
                 return
             if path in ("/unload", "/load") and not self._control_body():
                 return

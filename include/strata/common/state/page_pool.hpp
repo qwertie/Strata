@@ -152,6 +152,8 @@ public:
     PageId add_expert(ExpertKey key, uint32_t pages, uint64_t used_at = clock_now);
     /// Counts a use of an expert for eviction and gets its first page; no_page when the pool does not hold it.
     PageId use_expert(ExpertKey key);
+    /// Gets an expert's first page without counting a use; no_page when the pool does not hold it.
+    PageId find_expert(ExpertKey key) const;
     /// Frees an expert's pages at its owner's request (without calling `evicted`).
     void remove_expert(ExpertKey key);
     /// Gives the pages of expert `out` to expert `in`, which must take as many pages and not be in the pool, at its
@@ -169,6 +171,11 @@ public:
     uint8_t* page_address(PageId page) const;
     /// Gets the size of each page.
     uint64_t page_bytes() const { return config_.page_bytes; }
+    /// Gets the size of each chunk: the steps in which resize takes and gives back memory.
+    uint64_t chunk_bytes() const { return config_.chunk_bytes; }
+    /// Gets the token limits (set_token_limits).
+    int64_t tokens_min() const { return config_.tokens_min; }
+    int64_t tokens_max() const { return config_.tokens_max; }
     /// Gets the bytes of one block of a region: its consecutive pages (all of a fixed region's).
     uint64_t block_bytes(size_t region) const { return block_pages_[region] * config_.page_bytes; }
     /// Gets the regions every conversation of the pool has.

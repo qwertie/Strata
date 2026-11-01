@@ -119,6 +119,12 @@ public:
     /// nothing needs a host step inside it (`dumping_layers`: --dump-layers asks for one per layer).  Call once,
     /// after load().  Returns 0, otherwise the exit status for main() (the reason has been printed).
     int build_hit_tables(bool dumping_layers);
+    /// strata-q38's drafter switch: gives back the MTP drafter's weights and buffers.  ConversationDrafter::init binds
+    /// a drafter loaded again (load_drafter).
+    void unload_drafter();
+    /// Loads the MTP drafter from --mtp again after unload_drafter, on one GPU, as load() did; false (and `err`) when
+    /// it could not.
+    bool load_drafter(std::string& err);
     /// Copies `host_res` to the device table `dst` (CUDA0's or a stage's) and waits for the copy.
     cudaError_t put_residency(int32_t* dst) const;
     /// Gets what a verify window on CUDA0 knows of the expert cache: the residency tables and the slots.
@@ -250,6 +256,7 @@ public:
     bool graph_hits = false;
 
 private:
+    bool load_drafter_on(strata::core::SessionState& on, std::string& err);
     strata::core::NativeEmbed native_embed;   ///< the native pack's embedding table, which set_native_embed points to
     std::vector<float> ple_emb_host;          ///< the per-layer embedding row `ss.ple` stages on the host
 };

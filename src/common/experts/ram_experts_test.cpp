@@ -112,9 +112,35 @@ int main() {
     check(ram.pages().replace(2, gone, in, err) && ram.holds(2, in) && !ram.holds(2, gone) && ssd.reads == before + 1 &&
               is_expert(ram.blob(2, in), 2, in),
           "an expert replaced in place leaves, and the other takes its pages with its own bytes");
-    for (int64_t l = 0; l < 3; ++l)
-        for (int64_t e = 0; e < kExperts; ++e)
-            check(!ram.holds(l, e) || is_expert(ram.blob(l, e), l, e), "every expert in the pool has its bytes");
+    const auto check_bytes = [&] {
+        for (int64_t l = 0; l < 3; ++l)
+            for (int64_t e = 0; e < kExperts; ++e)
+                check(!ram.holds(l, e) || is_expert(ram.blob(l, e), l, e), "every expert in the pool has its bytes");
+    };
+    check_bytes();
+
+    // a second chunk: the experts that did not fit come in; a paused conversation in it moves when it is given back
+    check(ram.resize(ram.ring_bytes() + 24 * kPage).refusal.empty() && pool.report().total.pages == 24,
+          "growing adds a chunk");
+    while (ram.pages().is_refill_wanted() && ram.pages().refill(16, wait_ms, err) > 0) {
+    }
+    check(pool.report().experts.pages > 12, "the experts that did not fit come in");
+    check(pool.grow_conversation(9, 8).empty(), "a conversation takes pages in the larger pool");
+    std::vector<uint8_t*> blocks;
+    for (size_t r = 0; r < 2; ++r)
+        for (const PageId p : pool.conversation_blocks(9, r))
+            blocks.push_back(pool.page_address(p));
+    for (size_t i = 0; i < blocks.size(); ++i)
+        std::memset(blocks[i], (int) (i + 1), kPage);
+    pool.set_paused(9, true);
+    check(ram.resize(ram.ring_bytes() + 12 * kPage).refusal.empty() && pool.report().total.pages == 12,
+          "shrinking gives the chunk back");
+    size_t i = 0;
+    for (size_t r = 0; r < 2; ++r)
+        for (const PageId p : pool.conversation_blocks(9, r))
+            check(p < 12 && pool.page_address(p)[0] == (uint8_t) ++i && pool.page_address(p)[kPage - 1] == (uint8_t) i,
+                  "the conversation's pages keep their bytes in the first chunk");
+    check_bytes();
     std::printf("ram_experts_test: %d checks passed\n", checks);
     return 0;
 }

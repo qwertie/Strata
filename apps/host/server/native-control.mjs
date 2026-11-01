@@ -351,10 +351,36 @@ return {summary:result.summary??'Deleted',removed:result.plan?.gb??null};}
  /** Gets the Monitor's Memory panel reading (MemoryPanel.tsx): a ready model's GET /v1/memory (strata_server memory_view). A
     server without it (an older Control) answers as one whose engine reports no memory. */
  async function memory(id){
-  const instance=resolveInstance(id);
-  const response=await fetcher(`http://127.0.0.1:${instance.port}/v1/memory`,{headers:{authorization:`Bearer ${instance.key}`},signal:AbortSignal.timeout(5000)});
+  const response=await fetchMemory(resolveInstance(id));
   return response.ok?await response.json():{available:false,reason:'engine'};
  }
+ /** Sends a change of a ready model's engine settings, {set, save} (the Memory panel's, or saveThroughServer's), to its
+    server's POST /v1/memory. -> {status, body}: the server's answer (200: the new reading; 409: refused, body.error.message says why). */
+ async function changeMemory(id,change){
+  const response=await fetchMemory(resolveInstance(id),{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(change),signal:AbortSignal.timeout(40000)});
+  return {status:response.status,body:await response.json().catch(()=>({}))};
+ }
+ /** Saves a model's settings like save, with the running engine's server as the only writer of the settings that engine
+    changes while it runs (docs/MEMORY_MANAGER_PLAN.md, M6): when a ready instance of the model reports can_change
+    (GET /v1/memory), a changed `parallel` within the engine's batch slots (as `concurrent`) and a changed `mtp` of an
+    engine that loaded a drafter (as `drafter`) go to that server with save "default", which applies them now and writes
+    them into the run config's arguments; the run config keeps its own `parallel` and `mtp`. Every other setting, and
+    every setting of an engine that cannot change them, is written by save as before. -> save's answer, plus `live`: the
+    settings the server changed. */
+ async function saveThroughServer(model,body){
+  const values=body?.values??{},{config}=record(model);
+  const instance=[...instances.values()].find(i=>i.model===model&&i.status==='ready');
+  const view=instance?await fetchMemory(instance).then(r=>r.ok?r.json():null,()=>null):null;
+  const fits={parallel:v=>Number.isInteger(v)&&v<=(view.settings?.slots??0),mtp:v=>typeof v==='boolean'&&view.settings?.drafter!=null};
+  const live=Object.keys(fits).filter(key=>view?.can_change&&values[key]!=null&&values[key]!==(config[key]??null)&&fits[key](values[key]));
+  const saved=save(model,{...body,values:Object.fromEntries(Object.entries(values).filter(([key])=>!live.includes(key)))});
+  if(!live.length)return {...saved,live};
+  const answer=await changeMemory(instance.id,{set:Object.fromEntries(live.map(key=>[key==='parallel'?'concurrent':'drafter',values[key]])),save:'default'});
+  if(answer.status!==200)throw new Error(`The other settings are saved, but the running model did not change ${live.join(' and ')}: ${answer.body.error?.message??`HTTP ${answer.status}`}`);
+  return {...saved,values:{...saved.values,...Object.fromEntries(live.map(key=>[key,values[key]]))},live};
+ }
+ /** Fetches a ready instance's /v1/memory with its key (memory, changeMemory, saveThroughServer). */
+ function fetchMemory(instance,init={}){return fetcher(`http://127.0.0.1:${instance.port}/v1/memory`,{signal:AbortSignal.timeout(5000),...init,headers:{...init.headers,authorization:`Bearer ${instance.key}`}});}
  function resolveInstance(id){const aliases=[...instances.values()].filter(i=>i.aliases?.includes(id));if(aliases.length>1&&!instances.has(id)&&![...instances.values()].some(i=>i.apiModelId===id))throw new Error('This alias matches more than one instance. Choose its exact model ID.');const i=instances.get(id)??[...instances.values()].find(i=>i.apiModelId===id)??aliases[0]??(!id&&instances.size===1?[...instances.values()][0]:undefined);if(!i)throw new Error('Choose a loaded model ID.');if(i.status!=='ready')throw new Error('This model is not ready.');return i;}
  async function program(job,args){if(packaged)return componentProgram(job,args);if(externalRunning().length)throw new Error('Stop the native server running outside this UI before changing engine files.');if(instances.size)throw new Error('Unload native models before changing engine files.');const folder=repo();let {command,args:prefix}=python(),argv;
   if(job.kind==='calibrate'||job.kind==='tune'){if(!state().capabilities.calibration)throw new Error('This installation calibrates NVIDIA GPUs only. Use the short benchmark on other devices.');const model=args.model??snapshot.installed?.models?.[0]?.model;const chosen=record(model);if(!chosen.entry.ready)throw new Error('Prepare this model before calibrating.');command=venvPython(folder);prefix=[];if(!existsSync(command))throw new Error('Prepare the Python environment first.');argv=['-c','import sys; from pathlib import Path; import setup; sys.exit(0 if setup.calibrate_config(Path(sys.argv[1])) else 1)',chosen.path];}
@@ -539,5 +565,5 @@ return {summary:result.summary??'Deleted',removed:result.plan?.gb??null};}
  // Remove nonserializable process references from public jobs.
  const publicState=()=>{const value=state();value.jobs=value.jobs.map(({process,engineAbort,rawResult,...job})=>job);return value;};
  async function localPreview(path){if(!packaged)throw new Error('Checking local model files is part of the Strata app.');if(typeof path!=='string'||!path.trim()||[...path].some(c=>c.charCodeAt(0)<32))throw new Error('Choose a folder.');return control.importPlan(path.trim());}
- return {state:publicState,tuneStatus,tuneEffective,tuneOff,tunePresets:{list:()=>autotuner.list(),action:(kind,id,extra)=>autotuner.action(kind,id,extra),undoFor:async args=>autotuner.undoFor(tuneConfig(args).path)},refresh,localPreview,configure,setDownloadDirectory,planModelsFolder,startModelsFolder,interruptedMove,finishInterruptedMove,leaveInterruptedMove,plan,settings,save,settingsFile,openSettingsFile,operation,cancel,unload,resolveInstance,memory,poll,logs:()=>logs.slice(),benchmarkReport:()=>readJson(join(directory,'native-benchmark.json'),null),setDefault(id){defaultId=resolveInstance(id).id;emit();return publicState();},hasLive:()=>[...instances.values()].some(i=>i.status==='ready'),readyInstances:()=>[...instances.values()].filter(i=>i.status==='ready'),defaultInstanceId:()=>defaultId,close};
+ return {state:publicState,tuneStatus,tuneEffective,tuneOff,tunePresets:{list:()=>autotuner.list(),action:(kind,id,extra)=>autotuner.action(kind,id,extra),undoFor:async args=>autotuner.undoFor(tuneConfig(args).path)},refresh,localPreview,configure,setDownloadDirectory,planModelsFolder,startModelsFolder,interruptedMove,finishInterruptedMove,leaveInterruptedMove,plan,settings,save,saveThroughServer,settingsFile,openSettingsFile,operation,cancel,unload,resolveInstance,memory,changeMemory,poll,logs:()=>logs.slice(),benchmarkReport:()=>readJson(join(directory,'native-benchmark.json'),null),setDefault(id){defaultId=resolveInstance(id).id;emit();return publicState();},hasLive:()=>[...instances.values()].some(i=>i.status==='ready'),readyInstances:()=>[...instances.values()].filter(i=>i.status==='ready'),defaultInstanceId:()=>defaultId,close};
 }

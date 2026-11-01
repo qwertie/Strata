@@ -2,12 +2,14 @@
 // from too: a GPU's expert cache, or the RAM's copy of the experts (docs/MEMORY_MANAGER_PLAN.md, steps M2e, M2f and
 // M5).
 //
-// For a GPU, the cache's arena is opened as uniform slots of one page each, and the pool is made over that arena, so
-// a page's number is a slot's: the kernels find an expert at the arena plus its first page times the page size, as in
-// any cache of uniform slots, and an expert takes several consecutive pages (ExpertCache::set_expert_bytes).  Experts
-// come in through ExpertCache::admit, in the expert profile's order, and leave when a growing conversation takes
-// their pages.  The RAM's pool (RamExperts) is made over page-locked host memory the same way, without a cache.
-// Before an expert's pages go to another use, the `leaving` hook may copy it elsewhere (a GPU's expert back to RAM).
+// For a GPU, the cache's arena is opened as uniform slots of one page each and is the pool's first chunk; the other
+// chunks are allocated above it at whole pages from its start, so that every page is a slot: the kernels find an
+// expert at the arena plus its slot times the page size, as in any cache of uniform slots, and an expert takes
+// several consecutive pages (ExpertCache::set_expert_bytes).  Experts come in through ExpertCache::admit, in the
+// expert profile's order, and leave when a growing conversation takes their pages or a shrink gives back their
+// chunk.  The RAM's pool (RamExperts) is made of page-locked host memory the same way, without a cache, its slots
+// the pool's page numbers.  Before an expert's pages go to another use, the `leaving` hook may copy it elsewhere (a
+// GPU's expert back to RAM).
 #pragma once
 
 #include "strata/common/state/page_pool.hpp"
@@ -15,6 +17,7 @@
 
 #include <cstdint>
 #include <functional>
+#include <map>
 #include <memory>
 #include <set>
 #include <string>
@@ -29,6 +32,17 @@ namespace strata::core {
 /// tables can count; when the divisor is not, the multiple of 256 bytes from 16 KiB to 512 KiB that wastes the least
 /// of the pages the experts take.
 uint64_t choose_expert_page_bytes(const std::vector<uint64_t>& blob_bytes);
+
+/// The memory a pool's chunks come from (a GPU's, or page-locked RAM), given by the engine.
+struct ChunkMemory {
+    /// Gets `bytes` of the memory; null when it has not that much.
+    std::function<uint8_t*(uint64_t bytes)> alloc;
+    /// Gives back what `alloc` gave.
+    std::function<void(uint8_t*)> free;
+    /// Copies `bytes` inside the memory and waits for the copy (a shrink moves conversation pages out of a chunk);
+    /// false when it failed.
+    std::function<bool(uint8_t* to, const uint8_t* from, uint64_t bytes)> copy;
+};
 
 /// Experts in the pages of a page pool made over one arena: a GPU's expert cache (whose slots are the pages) or host
 /// memory.  The pool's conversations take the least recently used experts' pages as they grow, and `refill` puts
@@ -49,20 +63,26 @@ public:
         std::function<void(ExpertKey key, const uint8_t* bytes)> leaving;
     };
 
-    /// Makes the pool over `cache`'s arena (open, with uniform slots of the page size and no expert yet), with the
-    /// conversations' `layout` and `config`'s limits; `config`'s page and chunk sizes are taken from the cache.  The
-    /// experts of layer l are `blob_bytes[l]` bytes, `n_expert` per layer; at most `max_experts` experts are
-    /// admitted.  `ranking` is the experts hottest first (the expert profile's order): their ranks, and the pool
-    /// gives each expert size room for the ones of the first `max_experts` that fit (PagePoolConfig::expert_ranking).
-    /// From then on the cache's `admit` takes pages from the pool.
-    bool open(ExpertCache& cache, const StateLayout& layout, PagePoolConfig config,
+    /// Makes the pool over `cache`'s arena (open, with uniform slots of the page size and no expert yet), which is
+    /// its first chunk, and chunks of `memory` up to `bytes` (whole chunks), with the conversations' `layout` and
+    /// `config`'s limits; `config`'s page and chunk sizes are taken from the cache.  The experts of layer l are
+    /// `blob_bytes[l]` bytes, `n_expert` per layer; at most `max_experts` experts are admitted.  `ranking` is the
+    /// experts hottest first (the expert profile's order): their ranks, and the pool gives each expert size room for
+    /// the ones of the first `max_experts` that fit (PagePoolConfig::expert_ranking).  From then on the cache's
+    /// `admit` takes pages from the pool.
+    bool open(ExpertCache& cache, ChunkMemory memory, uint64_t bytes, const StateLayout& layout,
+              PagePoolConfig config, const std::vector<uint64_t>& blob_bytes, int64_t n_expert, int64_t max_experts,
+              const std::vector<ExpertKey>& ranking, std::string& err);
+    /// The same in chunks of `config.chunk_bytes` of `memory` only, without a cache: `admit` gives experts their
+    /// pages, and a slot is a page's number.
+    bool open(ChunkMemory memory, uint64_t bytes, const StateLayout& layout, PagePoolConfig config,
               const std::vector<uint64_t>& blob_bytes, int64_t n_expert, int64_t max_experts,
               const std::vector<ExpertKey>& ranking, std::string& err);
-    /// The same over `pages` pages of `config.page_bytes` from `arena` (any memory), without a cache: `admit` gives
-    /// experts their pages.
-    bool open(uint8_t* arena, uint64_t pages, const StateLayout& layout, PagePoolConfig config,
-              const std::vector<uint64_t>& blob_bytes, int64_t n_expert, int64_t max_experts,
-              const std::vector<ExpertKey>& ranking, std::string& err);
+    /// Takes or gives back chunks so that the pool holds `bytes` (PagePool::resize, whose refusal it gets).  After a
+    /// growth, `refill` brings in the experts of the first `max_experts` that the pool lacks.
+    PoolResize resize(uint64_t bytes);
+    /// Gets the slot of a pool's page: what the cache's residency and the kernels use.
+    int32_t get_slot(PageId page) const;
     void set_hooks(Hooks hooks) { hooks_ = std::move(hooks); }
     /// Gets the page pool that the experts share with the memory's conversations.
     PagePool& pool() { return *pool_; }
@@ -92,13 +112,20 @@ public:
     int refill(int max, uint64_t& wait_ms, std::string& err);
 
 private:
+    bool open_pool(ChunkMemory memory, uint64_t bytes, const StateLayout& layout, PagePoolConfig config,
+                   const std::vector<uint64_t>& blob_bytes, int64_t n_expert, int64_t max_experts,
+                   const std::vector<ExpertKey>& ranking, std::string& err);
+    uint8_t* alloc_chunk(uint64_t bytes);
+    void free_chunk(uint8_t* chunk);
     void on_evicted(ExpertKey key, PageId first);
     size_t index_of(ExpertKey key) const { return (size_t) key.layer * (size_t) n_expert_ + (size_t) key.expert; }
     /// Gets the clock time that stands for the last use of the expert of rank `rank`.
     uint64_t get_used_at(int32_t rank) const { return t0_ - (uint64_t) rank; }
 
     ExpertCache* cache_ = nullptr;       ///< the GPU's cache whose slots are the pages; null for host memory
-    uint8_t* arena_ = nullptr;
+    uint8_t* arena_ = nullptr;           ///< the cache's arena: its first chunk, and slot 0's address
+    ChunkMemory memory_;
+    std::map<uint8_t*, uint8_t*> raw_;   ///< each chunk `memory_` gave, by its start: the allocation it starts in
     std::unique_ptr<PagePool> pool_;
     Hooks hooks_;
     std::function<uint64_t()> now_;      ///< the pool's clock
@@ -108,7 +135,6 @@ private:
     std::vector<int32_t> rank_;          ///< per expert, its rank; -1 while it has none
     std::vector<ExpertKey> ranked_;      ///< the experts in rank order
     std::set<int32_t> evicted_;          ///< the ranks of the experts a conversation evicted
-    uint64_t chunks_given_ = 0;          ///< the pool's chunks, carved in order from the arena
     /// The pool's free pages when `refill` last found no room and no page about to open; refills wait until that
     /// changes.  UINT64_MAX: not waiting.
     uint64_t blocked_at_free_ = UINT64_MAX;

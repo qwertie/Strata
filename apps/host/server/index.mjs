@@ -1014,6 +1014,7 @@ async function api(req, res, path, method, url) {
    if(picked.cancelled)return json(res,200,{cancelled:true});
    return json(res,200,{path:picked.path,preview:await native.localPreview(picked.path)});}
   if(path==='/api/native/memory'&&method==='GET')return json(res,200,await native.memory(url.searchParams.get('instance')));
+  if(path==='/api/native/memory'&&method==='POST'){const {status,body}=await native.changeMemory(url.searchParams.get('instance'),await readBody(req));return status===200?json(res,200,body):error(res,status,body.error?.message??`The model's server answered ${status}.`);}
   if(path==='/api/native/benchmark'&&method==='GET')return json(res,200,native.benchmarkReport());
   /* The auto-tuner's saved tunings (Strata Control's presets, shared with the Terminal). Starting a tune or a re-check is POST /api/native/operations with kind autotune / recheck. */
   if(path==='/api/native/tune/status'&&method==='GET')return json(res,200,await native.tuneStatus({model:url.searchParams.get('model'),resourceProfile:url.searchParams.get('resourceProfile')||undefined,vision:url.searchParams.get('vision')||undefined}));
@@ -1030,7 +1031,7 @@ async function api(req, res, path, method, url) {
   const nativeSettings=/^\/api\/native\/models\/([a-z0-9_.-]+)\/settings$/.exec(path);
   /* Expert mode shows what will actually run: the saved tuning's values come with the settings (null when none applies or unreadable). */
   if(nativeSettings&&method==='GET'){const settings=native.settings(nativeSettings[1]);let tuned=null;try{const t=await native.tuneEffective({model:nativeSettings[1],resourceProfile:url.searchParams.get('resourceProfile')||undefined,vision:url.searchParams.get('vision')||undefined});tuned=t.applied?t:null;}catch{tuned=null;}return json(res,200,{...settings,tuned});}
-  if(nativeSettings&&method==='PATCH')return json(res,200,native.save(nativeSettings[1],await readBody(req)));
+  if(nativeSettings&&method==='PATCH')return json(res,200,await native.saveThroughServer(nativeSettings[1],await readBody(req)));
   const nativeSettingsFile=/^\/api\/native\/models\/([a-z0-9_.-]+)\/settings-file$/.exec(path);
   if(nativeSettingsFile&&method==='GET')return json(res,200,native.settingsFile(nativeSettingsFile[1]));
   if(nativeSettingsFile&&method==='POST')return json(res,200,await native.openSettingsFile(nativeSettingsFile[1]));

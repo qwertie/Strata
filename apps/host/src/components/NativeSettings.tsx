@@ -56,13 +56,17 @@ export function NativeSettings({ model }: {
             const input = await api.patch<{
                 values: Record<string, any>;
                 mcp: Record<string, any>;
+                live: string[];
             }>(`/api/native/models/${model}/settings`, { values: parsed, mcp: tools });
             const result = nativeSettingsResponse(input);
             setValues(result.values);
             setMcp(JSON.stringify(result.mcp, null, 2));
             setText(JSON.stringify(result.values, null, 2));
             setOriginal(JSON.stringify({ values: result.values, mcp: result.mcp }));
-            setNotice('Saved. Load the model again to apply these settings. A backup of the previous configuration was kept.');
+            setNotice(input.live.length
+                ? `Saved. The running model changed ${input.live.join(' and ')} now; the other settings apply when ` +
+                  'it loads again. A backup of the previous configuration was kept.'
+                : 'Saved. Load the model again to apply these settings. A backup of the previous configuration was kept.');
             await refreshNative(true);
         }
         catch (e) {

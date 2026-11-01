@@ -1,7 +1,8 @@
-// strata_server/web/memory-panel.js - the Memory panel (docs/MEMORY_MANAGER_PLAN.md, steps M0 and M0b): what the
+// strata_server/web/memory-panel.js - the Memory panel (docs/MEMORY_MANAGER_PLAN.md, steps M0, M0b and M6): what the
 // engine holds in each memory (each GPU, the RAM, the SSD), the conversations it holds and its settings, drawn from
-// GET /v1/memory (strata_server/server.py memory_view).  Read-only for now; step M6 adds dividers between a bar's
-// segments (`.mem-seg`) to drag.  No framework: the web page (app.js) imports this file as it is, and the desktop app
+// GET /v1/memory (strata_server/server.py memory_view).  An engine that changes its settings while it runs
+// (`can_change`) gets dividers to drag on the bars and controls for its other settings; the caller sends the changes
+// (POST /v1/memory).  No framework: the web page (app.js) imports this file as it is, and the desktop app
 // (apps/host/src/components/MemoryPanel.tsx) wraps it.  Its styles are memory-panel.css beside it.
 //
 // A GPU whose memory is system RAM (Strix Halo) is drawn as the BIOS divides it: its bar is the BIOS share, with the
@@ -14,46 +15,296 @@
 const USES = {weights: "Weights", experts: "Experts", conversations: "Conversations", pool_free: "Free in the pool",
               paused: "Paused conversations", drafter: "Drafter", scratch: "Scratch", engram: "Engram",
               borrowed: "GPU (borrowed from RAM)", other: "Other", free: "Free"};
+/** The uses that are the engine's page pool on a GPU or in RAM, whose end is the divider that sets the pool's size. */
+const POOL_USES = ["experts", "conversations", "paused", "pool_free"];
 /** Size in bytes (32 GiB) at which a memory's bar fills the width. */
 const FULL_BAR = 32 * 1073741824;
-/** Names shown for the engine's settings (keys of the view's `settings`); others show as the engine names them. */
+/** Bytes in a MiB, the unit the memory settings are sent in. */
+const MIB = 1048576;
+/** How far one arrow key moves a divider, in bytes (with Shift held: four times as far). */
+const KEY_STEP = 256 * MIB;
+/** How long a change's Undo (and its message) stays, in milliseconds. */
+const UNDO_MS = 8000;
+/** localStorage key set once the reader has changed a size; the hint under the panel then stays away. */
+const CHANGED_KEY = "strata.memoryPanel.changed";
+/** Names shown for the engine's settings (keys of the view's `settings`); others show as the engine names them.
+ * @type {Record<string, string>} */
 const SETTINGS = {context: "Context", concurrent: "Conversations at once", rows: "Rows per step",
-                  lookahead: "Lookahead"};
+                  lookahead: "Lookahead", tokens_min: "Conversation tokens, minimum",
+                  tokens_max: "Conversation tokens, maximum", ssd_pause_mib: "SSD for paused conversations (MiB)",
+                  drafter: "Drafter", slots: "Batch slots"};
+/** Settings the engine reports that the panel shows elsewhere (the bars) or not at all. */
+const UNLISTED = /^memory_mib\.|^token_bytes$|^conversation_bytes$/;
+/**
+ * The number settings the panel's controls change, with the range each accepts given the reading's settings `s`
+ * (the engine checks them again).
+ * @type {[key: string, smallest: (s: Record<string, number>) => number,
+ *   largest: (s: Record<string, number>) => number][]}
+ */
+const CONTROLS = [["concurrent", () => 1, (s) => s.slots ?? 8],
+                  ["rows", (s) => s.concurrent ?? 1, () => 8],
+                  ["lookahead", () => 0, (s) => s.drafter ? (s.rows ?? 1) - 1 : 0],
+                  ["tokens_min", () => 0, (s) => s.tokens_max ?? Infinity],
+                  ["tokens_max", (s) => s.tokens_min ?? 0, () => Infinity]];
 /** HTML entities for the characters esc replaces. @type {Record<string, string>} */
 const ESCAPES = {"&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"};
 /** Names shown for where a conversation is held (its `place`). */
 const PLACES = {vram: "GPU", ram: "RAM", ssd: "SSD"};
+/** What each element the panel is drawn into shows besides the reading. @type {WeakMap<HTMLElement, Panel>} */
+const panels = new WeakMap();
 
 /**
  * Draws a GET /v1/memory answer whose `available` is true into `element`, replacing what it held: a bar per memory
- * with its legend, a table of the conversations the engine holds, and a line with the engine's settings that says
- * whether the reading is an old one.
+ * with its legend, a table of the conversations the engine holds, and the engine's settings with a line that says
+ * whether the reading is an old one.  Called again with each new reading; while the reader drags a divider, types in
+ * a control or waits for a change, the new reading is drawn afterwards.
  * @param {HTMLElement} element
  * @param {MemoryView} view
+ * @param {ChangeSettings} [onChange] sends a change to the server; without it the settings are only shown.
  */
-export function drawMemoryPanel(element, view) {
-  const note = [Object.entries(view.settings).map(([k, v]) =>
-    `${SETTINGS[k] || k}: ${fmt(v)}${k === "context" ? " tokens" : ""}`).join(" · "),
-    view.busy ? "a request has the engine: the last reading" : view.error || ""].filter(Boolean).join(" · ");
-  element.innerHTML = `<div class="mem-bars">${view.memories.map(drawBar).join("")}</div>` +
-    drawConversations(view.conversations || []) + (note ? `<p class="mem-note">${esc(note)}</p>` : "");
+export function drawMemoryPanel(element, view, onChange) {
+  let panel = panels.get(element);
+  if (!panel) {
+    panel = {view, dividers: {}, drag: null, busy: false, save: "session", notice: null};
+    panels.set(element, panel);
+    listen(element, panel);
+  }
+  Object.assign(panel, {view, onChange});
+  const active = element.ownerDocument.activeElement, inside = !!active && element.contains(active);
+  if (panel.drag?.x0 === null && !inside)
+    panel.drag = null;    // a keyboard drag the reader left by moving the focus away; it would stop all redraws
+  if (!panel.drag && !panel.busy && !(inside && /^(INPUT|SELECT)$/.test(active.tagName)))
+    render(element, panel);
 }
 
 /**
  * The GET /v1/memory answer as the panel reads it (the fields memory_view and StrataEngine.memory describe).
- * @typedef {{available: boolean, reason?: string, busy?: boolean, error?: string | null,
- *   memories: MemoryUse[], settings: Record<string, number>, conversations?: HeldConversation[]}} MemoryView
+ * `can_change`: the engine changes its settings while it runs; `config`: a run config exists to save defaults to.
+ * @typedef {{available: boolean, reason?: string, busy?: boolean, error?: string | null, can_change?: boolean,
+ *   config?: boolean, memories: MemoryUse[], settings: Record<string, number>,
+ *   conversations?: HeldConversation[]}} MemoryView
+ * `setting`: the size of the engine's page pool there now, which `memory_mib.<id>` changes; `smallest`, `largest`:
+ * the sizes it accepts now.  Bytes.
  * @typedef {{id: string, name: string | null, total: number | null, free: number | null, unified: boolean,
  *   uses: Record<string, number>, paused_count: number | null, paused_budget: number | null, other?: number,
  *   in_share?: number, borrowed?: number | null, gpu_borrowed?: number, allocated_pct?: number | null,
- *   fragmented_pct?: number | null}} MemoryUse
+ *   fragmented_pct?: number | null, setting?: number | null, smallest?: number | null,
+ *   largest?: number | null}} MemoryUse
  * @typedef {{id: string, place: string, state: string, count: number, capacity: number, bytes: number,
  *   used: number}} HeldConversation
+ * @typedef {Record<string, number | boolean>} SettingsChange  POST /v1/memory's "set": MiB for the sizes.
+ * @callback ChangeSettings  Sends a change to the engine's server (POST /v1/memory) and says how it went: `view` is
+ *   the reading after it, `error` the server's reason for not changing anything (a refusal, 409).
+ * @param {SettingsChange} set
+ * @param {"session" | "default"} save  "default" also writes the change into the run config.
+ * @returns {Promise<{ok: boolean, view?: MemoryView, error?: string}>}
  */
 
-/** Gets the markup of one memory's row: its name and size, its bar and the bar's legend.
+/**
+ * What a drawn panel shows besides its reading.  `dividers`: by memory id, those drawn last; `busy`: a change is
+ * on its way; `save`: the reader's choice where changes go.
+ * @typedef {{view: MemoryView, onChange?: ChangeSettings, dividers: Record<string, Divider>, drag: Drag | null,
+ *   busy: boolean, save: "session" | "default", notice: Notice | null}} Panel
+ * A boundary of a bar that can be dragged.  `key`: the setting it changes; `from`: the size now; `start`: where the
+ * segment it ends begins on the bar; `scale`: drawn bytes per byte of the engine's; `total`: the drawn bytes the
+ * bar's width stands for.  Bytes.
+ * @typedef {{key: string, from: number, smallest: number, largest: number, start: number, scale: number,
+ *   total: number}} Divider
+ * A divider being moved.  `value`: the size it would set (bytes); `x0`: the pointer's x where the drag started (null
+ * for the keyboard); `perPx`: bytes per pixel of the bar.
+ * @typedef {{id: string, value: number, x0: number | null, perPx: number}} Drag
+ * A line under the panel.  `until`: the time (ms) it goes away; `undo`: the change that undoes the last one.
+ * @typedef {{text: string, error: boolean, until: number,
+ *   undo?: {set: SettingsChange, save: "session" | "default"}}} Notice
+ */
+
+/** Draws the panel's reading and its state into `element`.
+ * @param {HTMLElement} element
+ * @param {Panel} panel */
+function render(element, panel) {
+  const {view, drag} = panel, editable = !!(view.can_change && panel.onChange);
+  if (!view.config)
+    panel.save = "session";
+  panel.dividers = editable ? Object.fromEntries(view.memories.map((x) => [x.id, findDivider(x)]).filter(([, d]) => d))
+    : {};
+  const listed = Object.entries(view.settings).filter(([k]) => !UNLISTED.test(k) &&
+    !(editable && (k === "drafter" || CONTROLS.some(([key]) => key === k))));
+  const note = [listed.map(([k, v]) => `${SETTINGS[k] || k}: ${k === "drafter" ? (v ? "on" : "off") : fmt(v)}` +
+      (k === "context" ? " tokens" : "")).join(" · "),
+    view.can_change === false ? "these change when the model starts again" : "",
+    view.busy ? "a request has the engine: the last reading" : view.error || ""].filter(Boolean).join(" · ");
+  const notice = panel.notice && panel.notice.until > Date.now() ? panel.notice : null;
+  const hint = Object.keys(panel.dividers).length && !hasChanged() ?
+    `<p class="mem-hint">Drag the dividers to change sizes</p>` : "";
+  element.innerHTML = `<div class="mem-bars">${view.memories.map((x) =>
+      drawBar(x, panel.dividers[x.id], drag?.id === x.id ? drag : null)).join("")}</div>` +
+    drawConversations(view.conversations || []) + (editable ? drawControls(panel) : "") + hint +
+    (notice ? `<p class="mem-notice${notice.error ? " mem-error" : ""}" role="status">${esc(notice.text)}` +
+      (notice.undo && !panel.busy ? ` <button type="button" class="mem-undo" data-undo>Undo</button>` : "") + "</p>"
+      : "") +
+    (note ? `<p class="mem-note">${esc(note)}</p>` : "");
+  if (drag)
+    /** @type {HTMLElement | null} */ (element.querySelector(`[data-divider="${drag.id}"]`))?.focus();
+}
+
+/** Makes `element` answer the reader: dragging a divider (pointer or keys), the controls and Undo.
+ * @param {HTMLElement} element
+ * @param {Panel} panel */
+function listen(element, panel) {
+  const redraw = () => render(element, panel);
+  element.addEventListener("pointerdown", (e) => {
+    const hit = findHit(e);
+    if (!hit || e.button !== 0 || panel.busy)
+      return;
+    e.preventDefault();
+    element.setPointerCapture(e.pointerId);
+    const {id, d, target} = hit, bar = /** @type {HTMLElement} */ (target.parentElement);
+    panel.drag = {id, value: d.from, x0: e.clientX, perPx: d.total / d.scale / bar.getBoundingClientRect().width};
+    redraw();
+  });
+  element.addEventListener("pointermove", (e) => {
+    const drag = panel.drag;
+    if (drag?.x0 == null)
+      return;
+    const value = panel.dividers[drag.id].from + (e.clientX - drag.x0) * drag.perPx;
+    drag.value = Math.max(0, mib(value) * MIB);
+    redraw();
+  });
+  element.addEventListener("pointerup", () => {
+    if (panel.drag?.x0 != null)
+      finishDrag(element, panel);
+  });
+  element.addEventListener("pointercancel", () => {
+    panel.drag = null;
+    redraw();
+  });
+  element.addEventListener("keydown", (e) => {
+    const hit = findHit(e);
+    if (!hit || panel.busy)
+      return;
+    const step = {ArrowLeft: -1, ArrowDown: -1, ArrowRight: 1, ArrowUp: 1}[e.key];
+    if (step) {
+      panel.drag ??= {id: hit.id, value: hit.d.from, x0: null, perPx: 0};
+      panel.drag.value = Math.max(0, panel.drag.value + step * KEY_STEP * (e.shiftKey ? 4 : 1));
+    } else if (e.key === "Escape" && panel.drag)
+      panel.drag = null;
+    else if (e.key === "Enter" && panel.drag)
+      return void finishDrag(element, panel);
+    else
+      return;
+    e.preventDefault();
+    redraw();
+  });
+  element.addEventListener("change", (e) => {
+    const target = /** @type {HTMLInputElement} */ (e.target);
+    if (target.matches("[data-save]"))
+      panel.save = target.value === "default" ? "default" : "session";
+    else if (target.matches("[data-setting]"))
+      changeControl(element, panel, target);
+  });
+  element.addEventListener("click", (e) => {
+    const undo = panel.notice?.undo;
+    if (undo && /** @type {HTMLElement} */ (e.target).closest("[data-undo]"))
+      void change(element, panel, undo.set, null, undo.save);
+  });
+
+  /** Gets the divider an event happened on (its element, its memory's id and its Divider), or null. */
+  function findHit(/** @type {Event} */ e) {
+    const target = /** @type {HTMLElement | null} */ (/** @type {HTMLElement} */ (e.target).closest("[data-divider]"));
+    const id = target?.dataset.divider ?? "", d = panel.dividers[id];
+    return target && d ? {target, id, d} : null;
+  }
+}
+
+/** Ends the drag that has the divider at its new size: sends the change, unless it is outside the range the engine
+ *  accepts (said instead) or where it started.
+ * @param {HTMLElement} element
+ * @param {Panel} panel */
+function finishDrag(element, panel) {
+  const {id, value} = /** @type {Drag} */ (panel.drag), d = panel.dividers[id], refusal = findRefusal(d, value);
+  panel.drag = null;
+  if (refusal)
+    panel.notice = {text: `Nothing changed: ${refusal}.`, error: true, until: Infinity};
+  if (refusal || mib(value) === mib(d.from))
+    render(element, panel);
+  else
+    void change(element, panel, {[d.key]: mib(value)}, {[d.key]: mib(d.from)});
+}
+
+/** Sends a control's new value, or says why it is out of range.
+ * @param {HTMLElement} element
+ * @param {Panel} panel
+ * @param {HTMLInputElement} input */
+function changeControl(element, panel, input) {
+  const key = input.dataset.setting ?? "", s = panel.view.settings;
+  if (key === "drafter")
+    return void change(element, panel, {drafter: input.checked}, {drafter: !input.checked});
+  const [, smallest, largest] = /** @type {(typeof CONTROLS)[number]} */ (CONTROLS.find(([k]) => k === key));
+  const n = Number(input.value), lo = smallest(s), hi = largest(s);
+  if (Number.isInteger(n) && n >= lo && n <= hi)
+    return void change(element, panel, {[key]: n}, {[key]: s[key]});
+  panel.notice = {text: `${SETTINGS[key]}: choose a whole number ` +
+    (hi === Infinity ? `of at least ${fmt(lo)}.` : `from ${fmt(lo)} to ${fmt(hi)}.`), error: true, until: Infinity};
+  render(element, panel);
+}
+
+/** Sends a change through the caller's onChange and shows the answer: the new reading with an Undo for a while, or
+ *  the server's reason for changing nothing.
+ * @param {HTMLElement} element
+ * @param {Panel} panel
+ * @param {SettingsChange} set
+ * @param {SettingsChange | null} undo  the change back, offered as Undo; null for an Undo itself.
+ * @param {"session" | "default"} save */
+async function change(element, panel, set, undo, save = panel.save) {
+  panel.busy = true;
+  panel.notice = {text: "Changing…", error: false, until: Infinity};
+  render(element, panel);
+  const answer = await /** @type {ChangeSettings} */ (panel.onChange)(set, save)
+    .catch((/** @type {Error} */ e) => ({ok: false, error: e.message, view: undefined}));
+  panel.busy = false;
+  if (answer.ok) {
+    if (answer.view)
+      panel.view = answer.view;
+    try {
+      localStorage.setItem(CHANGED_KEY, "1");
+    } catch { /* no storage (a private window): the hint stays */ }
+    panel.notice = {text: save === "default" ? "Changed, and saved as the default." : "Changed for this session.",
+                    error: false, until: Date.now() + UNDO_MS, ...(undo ? {undo: {set: undo, save}} : {})};
+  } else
+    panel.notice = {text: answer.error || "The engine changed nothing.", error: true, until: Infinity};
+  render(element, panel);
+}
+
+/** Gets whether the reader has changed a size before (in this browser), which retires the hint. */
+function hasChanged() {
+  try {
+    return !!localStorage.getItem(CHANGED_KEY);
+  } catch {
+    return false;
+  }
+}
+
+/** Gets the markup of the controls for the settings that are not sizes, and of the choice where changes go.
+ * @param {Panel} panel */
+function drawControls(panel) {
+  const s = panel.view.settings, off = panel.busy ? " disabled" : "";
+  const fields = CONTROLS.filter(([key]) => s[key] != null).map(([key, smallest, largest]) =>
+    `<label>${esc(SETTINGS[key])} <input class="st-input mem-input" type="number" step="1" data-setting="${key}" ` +
+    `value="${s[key]}" min="${smallest(s)}"${largest(s) < Infinity ? ` max="${largest(s)}"` : ""}${off}></label>`);
+  if (s.drafter != null)
+    fields.push(`<label><input type="checkbox" data-setting="drafter"${s.drafter ? " checked" : ""}${off}> ` +
+      `${SETTINGS.drafter}</label>`);
+  const option = (/** @type {string} */ value, /** @type {string} */ text) =>
+    `<option value="${value}"${panel.save === value ? " selected" : ""}>${text}</option>`;
+  return `<div class="mem-controls">${fields.join("")}<label>Changes apply <select class="st-input mem-input" ` +
+    `data-save${off}>${option("session", "This session")}` +
+    `${panel.view.config ? option("default", "Save as default") : ""}</select></label></div>`;
+}
+
+/** Lays a memory's bar out: its segments (`drawn`: their bytes as drawn, when scaled) and the drawn bytes the bar's
+ *  width stands for.  `scale`: drawn bytes per byte the engine named.
  * @param {MemoryUse} x */
-function drawBar(x) {
+function layOut(x) {
   const named = Object.values(x.uses).reduce((a, b) => a + b, 0);
   const scale = x.in_share == null || !named ? 1 : Math.min(1, x.in_share / named);
   /** @type {{use: string, bytes: number, drawn?: number}[]} */
@@ -67,6 +318,39 @@ function drawBar(x) {
   // a memory of unknown size (the SSD) is drawn against what it holds plus the room left in its paused budget
   const used = parts.reduce((a, p) => a + (p.drawn ?? p.bytes), 0);
   const total = x.total || Math.max(used, used - (x.uses.paused || 0) + (x.paused_budget || 0));
+  return {parts, scale, total};
+}
+
+/** Gets the divider of a memory's bar: the end of the engine's page pool on a GPU or in RAM (`memory_mib.<id>`), the
+ *  end of the room for paused conversations on the SSD (`ssd_pause_mib`); null for a memory without one.
+ * @param {MemoryUse} x
+ * @returns {Divider | null} */
+function findDivider(x) {
+  const {parts, scale, total} = layOut(x), ssd = x.id === "ssd";
+  const from = ssd ? x.paused_budget : x.setting, first = parts.findIndex((p) => ssd ? p.use === "paused" :
+    POOL_USES.includes(p.use));
+  if (from == null || !total || (first < 0 && !ssd))
+    return null;
+  const start = (first < 0 ? parts : parts.slice(0, first)).reduce((a, p) => a + (p.drawn ?? p.bytes), 0);
+  return {key: ssd ? "ssd_pause_mib" : `memory_mib.${x.id}`, from, smallest: x.smallest ?? 0,
+          largest: x.largest ?? Infinity, start, scale, total};
+}
+
+/** Gets why the engine would refuse a divider's size, or "" when it accepts it.
+ * @param {Divider} d
+ * @param {number} value  bytes */
+function findRefusal(d, value) {
+  return value < d.smallest ? `at least ${size(d.smallest)} is needed here now (the biggest active conversation ` +
+    `and the minimum conversation tokens)` : value > d.largest ? `at most ${size(d.largest)} is free for it` : "";
+}
+
+/** Gets the markup of one memory's row: its name and size, its bar (with its divider, moved by `drag`) and the
+ *  bar's legend.
+ * @param {MemoryUse} x
+ * @param {Divider | undefined} divider
+ * @param {Drag | null} drag */
+function drawBar(x, divider, drag) {
+  const {parts, total} = layOut(x);
   const name = x.id === "ram" ? "System RAM" : x.id === "ssd" ? "SSD" : x.name || x.id.toUpperCase();
   const label = "borrowed" in x ? `${name} — BIOS share ${gb(x.total)} GiB` :
     x.gpu_borrowed ? `${name} ${gb(x.total)} GiB (GPU borrows ${gb(x.gpu_borrowed)} GiB)` : name;
@@ -83,7 +367,35 @@ function drawBar(x) {
     `<span><i class="mem-key" data-use="${esc(p.use)}"></i>${title(p)} ${size(p.bytes)}</span>`;
   return `<div class="mem-row"><div class="mem-head"><span>${esc(label)}</span><span class="mem-facts">${esc(facts)}` +
     `</span></div><div class="mem-bar" style="width:${x.total ? 100 * Math.min(x.total / FULL_BAR, 1) : 100}%">` +
-    `${parts.map(seg).join("")}</div><div class="mem-legend">${parts.map(key).join("")}</div></div>`;
+    `<div class="mem-segs">${parts.map(seg).join("")}</div>${divider ? drawDivider(x.id, divider, drag) : ""}</div>` +
+    `<div class="mem-legend">${parts.map(key).join("")}</div>` +
+    `${divider && drag ? drawPreview(divider, drag) : ""}</div>`;
+}
+
+/** Gets the markup of a bar's divider, where `drag` has moved it (with the stretch it moved over shaded).
+ * @param {string} id  the memory's
+ * @param {Divider} d
+ * @param {Drag | null} drag */
+function drawDivider(id, d, drag) {
+  const value = drag ? drag.value : d.from, refused = drag && findRefusal(d, value) ? " mem-refused" : "";
+  const at = (/** @type {number} */ b) => Math.min(100, Math.max(0, (100 * (d.start + b * d.scale)) / d.total));
+  const what = id === "ssd" ? "the SSD space paused conversations may take" :
+    `the memory the engine's pool takes ${id === "ram" ? "in the RAM" : "on this GPU"}`;
+  const moved = drag && value !== d.from ? `<span class="mem-change${refused}" style="left:` +
+    `${Math.min(at(d.from), at(value))}%;width:${Math.abs(at(value) - at(d.from))}%"></span>` : "";
+  return `${moved}<span class="mem-divider${refused}" data-divider="${esc(id)}" tabindex="0" role="slider" ` +
+    `aria-label="${esc(what)}" aria-valuetext="${size(value)}" title="Drag to change ${esc(what)} ` +
+    `(${size(d.from)} now). Arrow keys move it too; Enter applies, Escape cancels." style="left:${at(value)}%"></span>`;
+}
+
+/** Gets the markup of the line under a bar whose divider is being moved: the size before and after, or in red why
+ *  the engine would refuse it.
+ * @param {Divider} d
+ * @param {Drag} drag */
+function drawPreview(d, drag) {
+  const refusal = findRefusal(d, drag.value);
+  return `<p class="mem-preview${refusal ? " mem-refused" : ""}">${size(d.from)} → ${size(drag.value)}` +
+    (refusal ? `: ${esc(refusal)}; releasing here changes nothing` : ": release to apply, Escape cancels") + "</p>";
 }
 
 /** Gets the markup of the table of conversations the engine holds; none for an empty list or an engine that does
@@ -114,6 +426,11 @@ function fmt(n, d = 0) {
 /** Formats bytes as binary GB (GiB, as Windows shows them) without the unit. @param {number | null} b */
 function gb(b, d = 1) {
   return b == null ? "–" : fmt(b / 1073741824, d);
+}
+
+/** Converts bytes to whole MiB. @param {number} b */
+function mib(b) {
+  return Math.round(b / MIB);
 }
 
 /** Formats bytes with their unit: MiB below 1 GiB (a conversation, the scratch), else GiB. @param {number} b */

@@ -1,4 +1,5 @@
-// --serve's GET_MEMORY_USE (memory_report.hpp): the lines strata_common/engine_client.py reads.
+// --serve's GET_MEMORY_USE and CHANGE_SETTINGS (memory_report.hpp): the lines strata_common/engine_client.py
+// reads and writes.
 #include "strata/common/serve/memory_report.hpp"
 
 #include <cstdio>
@@ -68,6 +69,21 @@ int main() {
     budget.at("ram").paused_budget = 5;
     check(format_memory_report(budget, {}) == "MEMORY ram paused_count=0 paused_budget=5\nSETTINGS\nEND_MEMORY\n",
           "a budget with nothing parked");
+    card.setting = 512;
+    card.smallest = 256;
+    card.largest = 2048;
+    check(format_memory_report(pool, {}) ==
+              "MEMORY gpu1 experts=9 pool_pages=1000 allocated_pages=973 fragmented_pages=2 setting=512 smallest=256 "
+              "largest=2048 name=card\nSETTINGS\nEND_MEMORY\n",
+          "a pool's setting and its range, before the name");
+    using Values = std::vector<std::pair<std::string, std::string>>;
+    Values values;
+    std::string err;
+    check(parse_settings_line("CHANGE_SETTINGS memory_mib.gpu0=4096  drafter=off", values, err) &&
+              values == Values{{"memory_mib.gpu0", "4096"}, {"drafter", "off"}},
+          "CHANGE_SETTINGS' fields, in order");
+    check(!parse_settings_line("CHANGE_SETTINGS rows", values, err) && !err.empty(), "a field without a value");
+    check(!parse_settings_line("CHANGE_SETTINGS", values, err) && !err.empty(), "no field");
     std::printf("memory_report_test: %d checks passed\n", checks);
     return 0;
 }

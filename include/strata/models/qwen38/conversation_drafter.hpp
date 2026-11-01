@@ -28,7 +28,7 @@ public:
     ConversationDrafter& operator=(const ConversationDrafter&) = delete;
 
     /// Binds `m`'s drafter (Model::mtp, loaded with set_kv_in_pages) to the model's head and readies it for
-    /// `sessions` conversations; the guesses keep to --spec-min-p.
+    /// `sessions` conversations; the guesses keep to --spec-min-p.  Called again for a drafter loaded again.
     bool init(Model& m, int sessions, std::string& err);
     /// Writes the drafter's K/V of the prompt cells [cell0, cell0 + n) of a conversation (its `pages` and session
     /// `ss`) from the prompt path `sp`'s final residual rows `R_rows`: cell i pairs row i with `next[i]`, the token

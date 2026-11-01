@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 from pathlib import Path
 
@@ -44,6 +45,16 @@ EDITABLE = [
 ]
 SPEC = {k: kind for k, kind, _ in EDITABLE}
 
+# The settings the Memory panel changes live (POST /v1/memory sends them to the engine as CHANGE_SETTINGS), each with
+# the engine flag in "args" that holds its default.  Not in EDITABLE: the memory endpoint is their one writer.  A GPU
+# other than the first (memory_mib.gpu<N>) can be changed live, but has no flag to save it to.
+LIVE_FLAGS = {"memory_mib.gpu0": "--gpu-mib", "memory_mib.ram": "--ram-mib", "tokens_min": "--tokens-min",
+              "tokens_max": "--tokens-max", "ssd_pause_mib": "--ssd-pause-mib", "rows": "--rows",
+              "lookahead": "--lookahead", "concurrent": "--concurrent", "drafter": "--drafter"}
+# The numeric live settings whose range is not "at least 0": (least, most); the engine checks the rest (concurrent
+# against its batch slots, lookahead against rows).
+_LIVE_RANGE = {"rows": (1, 8), "concurrent": (1, None)}
+
 
 def _arg(cfg: dict, flag: str):
     a = cfg.get("args") if isinstance(cfg.get("args"), list) else []
@@ -73,6 +84,48 @@ def view(cfg: dict, path: str | Path) -> dict:
                     **({"choices": kind[1]} if k == "enum" else {})})
     return {"file": Path(path).name, "keys": out,
             "note": "Saved to the run config; used from the next start of the model."}
+
+
+def check_live(changes, to_default: bool) -> dict:
+    """Checks POST /v1/memory's "set" ({setting: value}): gets the values as CHANGE_SETTINGS spells them (whole
+    numbers; drafter "on" or "off"), or raises a ValueError naming the first bad setting or value.  `to_default`:
+    the values are to be saved to the run config too, so only settings with a flag there are accepted."""
+    if not isinstance(changes, dict) or not changes:
+        raise ValueError('send {"set": {"<setting>": <value>, ...}}')
+    out = {}
+    for key, v in changes.items():
+        if key not in LIVE_FLAGS and not re.fullmatch(r"memory_mib\.gpu[0-9]+", key):
+            raise ValueError(f"{key!r} is not a memory setting (expected memory_mib.gpu<N> or one of "
+                             f"{', '.join(LIVE_FLAGS)})")
+        if to_default and key not in LIVE_FLAGS:
+            raise ValueError(f"{key} has no default in the run config; change it for this session only")
+        if key == "drafter":
+            if not isinstance(v, bool) and v not in ("on", "off"):
+                raise ValueError(f'drafter: expected true, false, "on" or "off", not {v!r}')
+            out[key] = "on" if v in (True, "on") else "off"
+        else:
+            out[key] = _number(key, v, True, *_LIVE_RANGE.get(key, (0, None)))
+    return out
+
+
+def read_live_defaults(path: str | Path | None) -> dict:
+    """Gets the defaults the run config at `path` holds for LIVE_FLAGS' settings ({setting: value}; None: not set,
+    or no readable run config).  For GET /v1/memory."""
+    try:
+        cfg = load(path) if path else {}
+    except (OSError, ValueError):
+        cfg = {}
+    return {key: _arg(cfg, flag) for key, flag in LIVE_FLAGS.items()}
+
+
+def apply_live(cfg: dict, values: dict) -> tuple[dict, list[str]]:
+    """Gets the config with check_live's `values` written as their engine flags in "args" (as the person's, as
+    apply does), and the settings whose default changed."""
+    new = json.loads(json.dumps(cfg))                  # a deep copy: the caller's dict is left alone
+    changed = [key for key, v in values.items() if _arg(new, LIVE_FLAGS[key]) != v]
+    for key in changed:
+        _set_arg(new, LIVE_FLAGS[key], values[key])
+    return new, changed
 
 
 def _number(key, v, whole=False, lo=0.0, hi=None, lo_open=False):
@@ -147,30 +200,35 @@ def apply(cfg: dict, changes: dict) -> tuple[dict, list[str]]:
             else:
                 new.pop("sampling", None)
         elif isinstance(kind, tuple) and kind[0] == "arg":
-            a = list(new.get("args") or [])
-            flag = kind[1]
-            if flag in a[:-1]:
-                i = a.index(flag)
-                if v is None:
-                    del a[i:i + 2]
-                else:
-                    a[i + 1] = str(v)
-            elif v is not None:
-                a += [flag, str(v)]
-            new["args"] = a
-            mine = user_args.set_flag(user_args.capture(new), flag, v)   # a value set here is the person's: it survives setup and the app
-            if mine:
-                new[user_args.USER_KEY] = mine
-            else:
-                new.pop(user_args.USER_KEY, None)
-            if user_args.WRITTEN_KEY in new:
-                new[user_args.WRITTEN_KEY] = list(a)
+            _set_arg(new, kind[1], v)
         elif v is None:
             new.pop(key, None)
         else:
             new[key] = v
         changed.append(key)
     return new, changed
+
+
+def _set_arg(cfg: dict, flag: str, v) -> None:
+    """Sets engine option `flag` to `v` (None: removes it) in cfg's "args", in place, as the person's own (user_args),
+    so that it survives setup and the app writing "args" again."""
+    a = list(cfg.get("args") or [])
+    if flag in a[:-1]:
+        i = a.index(flag)
+        if v is None:
+            del a[i:i + 2]
+        else:
+            a[i + 1] = str(v)
+    elif v is not None:
+        a += [flag, str(v)]
+    cfg["args"] = a
+    mine = user_args.set_flag(user_args.capture(cfg), flag, v)
+    if mine:
+        cfg[user_args.USER_KEY] = mine
+    else:
+        cfg.pop(user_args.USER_KEY, None)
+    if user_args.WRITTEN_KEY in cfg:
+        cfg[user_args.WRITTEN_KEY] = list(a)
 
 
 def save(path: str | Path, cfg: dict) -> Path:

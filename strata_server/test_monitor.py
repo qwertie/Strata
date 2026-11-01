@@ -390,7 +390,8 @@ class EngineConversations(unittest.TestCase):
                             "MEMORY ssd engram=70", "SETTINGS context=32768 concurrent=1", "END_MEMORY"])
         got = engine.memory()
         self.assertEqual(engine.proc.stdin.getvalue(), "GET_MEMORY_USE\n")
-        none = {"allocated_pct": None, "fragmented_pct": None}   # no page pool: the old engines
+        none = {"allocated_pct": None, "fragmented_pct": None,   # no page pool: the old engines
+                "setting": None, "smallest": None, "largest": None}
         self.assertEqual(got, {"memories": [
             {"id": "gpu0", "name": "Radeon 8060S", "total": 1000, "free": 300, "unified": True, "paused_count": None,
              "paused_budget": None, **none, "uses": {"weights": 100, "experts": 450}},
@@ -398,13 +399,24 @@ class EngineConversations(unittest.TestCase):
              "paused_budget": 800, **none, "uses": {"paused": 300}},
             {"id": "ssd", "name": None, "total": None, "free": None, "unified": False, "paused_count": None,
              "paused_budget": None, **none, "uses": {"engram": 70}}], "settings": {"context": 32768, "concurrent": 1}})
-        pool = self.bare(["MEMORY gpu0 experts=9 pool_pages=800 allocated_pages=780 fragmented_pages=3 name=card",
-                          "SETTINGS", "END_MEMORY"]).memory()["memories"][0]
+        pool = self.bare(["MEMORY gpu0 experts=9 pool_pages=800 allocated_pages=780 fragmented_pages=3 setting=500 "
+                          "smallest=200 largest=900 name=card", "SETTINGS", "END_MEMORY"]).memory()["memories"][0]
         self.assertEqual((pool["allocated_pct"], pool["fragmented_pct"], pool["uses"]), (97.5, 0.38, {"experts": 9}))
+        self.assertEqual((pool["setting"], pool["smallest"], pool["largest"]), (500, 200, 900))
         self.assertEqual(self.bare(["SETTINGS", "END_MEMORY"]).memory(), {"memories": [], "settings": {}})
         got = self.bare(["CONVERSATION slot0 vram decoding 3 4096 1000 900", "SETTINGS rows=8", "END_MEMORY"]).memory()
         self.assertEqual(got["conversations"], [{"id": "slot0", "place": "vram", "state": "decoding", "count": 3,
                                                  "capacity": 4096, "bytes": 1000, "used": 900, "preview": []}])
+
+    def test_change_settings(self):
+        from strata_common.engine_client import SettingsRefused
+        engine = self.bare(["MEMORY gpu0 setting=100", "SETTINGS rows=4", "END_MEMORY"])
+        got = engine.change_settings({"rows": 4, "drafter": "on"})
+        self.assertEqual(engine.proc.stdin.getvalue(), "CHANGE_SETTINGS rows=4 drafter=on\n")
+        self.assertEqual((got["memories"][0]["setting"], got["settings"]), (100, {"rows": 4}))
+        with self.assertRaises(SettingsRefused) as refused:
+            self.bare(["ERR the GPU's pool would keep 2.00 GiB"]).change_settings({"memory_mib.gpu0": 2048})
+        self.assertEqual(str(refused.exception), "the GPU's pool would keep 2.00 GiB")
 
     def test_an_engine_that_refuses_or_ends(self):
         from strata_common.engine_client import EngineDied

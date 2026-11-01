@@ -103,6 +103,18 @@ bool ConversationPages::reserve(int64_t tokens, std::string& err) {
         return false;
     }
     reserved_ = need;
+    return write_tables(true, err);
+}
+
+bool ConversationPages::refresh(strata::core::SessionState& ss, std::string& err) {
+    ss.gdn_state = (float*) pool_->page_address(pool_->conversation_blocks(id_, 0).at(0));
+    std::fill(runs_in_table_.begin(), runs_in_table_.end(), 0);
+    return write_tables(false, err);
+}
+
+/// Writes the units of the pool's blocks that the device tables lack (runs_in_table_ on), zeroing the new blocks'
+/// pages first with `zero_new`.
+bool ConversationPages::write_tables(bool zero_new, std::string& err) {
     bool added = false;
     for (size_t j = 0; j < tables_.size(); ++j) {
         const std::vector<strata::core::PageId>& runs = pool_->conversation_blocks(id_, 1 + j);
@@ -111,7 +123,7 @@ bool ConversationPages::reserve(int64_t tokens, std::string& err) {
         std::vector<uint8_t*> at;
         for (const strata::core::PageId p : runs)
             at.push_back(pool_->page_address(p));
-        for (size_t i = runs_in_table_[j]; i < at.size(); ++i)
+        for (size_t i = runs_in_table_[j]; zero_new && i < at.size(); ++i)
             cudaMemset(at[i], 0, run_bytes_[j]);
         const uint64_t per_run = run_bytes_[j] / unit_bytes_[j];
         const int64_t blocks = std::min((int64_t) (at.size() * per_run), max_blocks_);

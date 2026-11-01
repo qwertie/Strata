@@ -1,10 +1,11 @@
 // strata/common/serve/memory_report.hpp - --serve's GET_MEMORY_USE: what the engine holds in each memory (each GPU,
 // the RAM, the SSD), for the server's GET /v1/memory and the web page's Memory panel (docs/MEMORY_MANAGER_PLAN.md,
-// step M0).
+// step M0); and CHANGE_SETTINGS, which changes the settings it reports while the engine runs (step M6).
 //
 //   GET_MEMORY_USE
 //     MEMORY <id> [total=<B>] [free=<B>] [unified=1] [<use>=<B> ...] [paused_count=<n>] [paused_budget=<B>]
-//            [pool_pages=<n> allocated_pages=<n> fragmented_pages=<n>] [name=<text>]   one line per memory, then
+//            [pool_pages=<n> allocated_pages=<n> fragmented_pages=<n>] [setting=<B> smallest=<B> largest=<B>]
+//            [name=<text>]                                                                one line per memory, then
 //     [CONVERSATION <id> <place> <state> <tokens> <capacity> <bytes> <used>]     with per_conversation: one per
 //                                                                                conversation (LIST_CONVERSATIONS')
 //     SETTINGS [context=<tokens>] [concurrent=<n>] [rows=<n>] [lookahead=<n>] [tokens_min=<tokens>]
@@ -17,10 +18,18 @@
 // `paused` (parked conversations), `drafter`, `scratch`, `engram` (DeepSeek's n-gram table).  paused_count: the
 // parked conversations there; paused_budget: the most they may take.  pool_pages: the pages of a page pool there
 // (strata-q38's), of which allocated_pages hold experts or conversations and fragmented_pages are free in runs
-// shorter than the smallest expert, which no expert can use.  name: the device's name, to the end of the line.
-// settings: the context in tokens, the conversations decoded at once, the rows one step computes, the most guesses
-// one conversation adds in a step and the conversation tokens kept free of experts.  A value the engine does not know
-// is left out, not guessed.  The command changes nothing.
+// shorter than the smallest expert, which no expert can use.  setting: the bytes the engine's pool there takes now
+// (its `memory_mib.<id>` setting), and smallest, largest: the range CHANGE_SETTINGS accepts for it now.  name: the
+// device's name, to the end of the line.  settings: the context in tokens, the conversations decoded at once, the
+// rows one step computes, the most guesses one conversation adds in a step, the conversation tokens kept free of
+// experts, and what else the engine can change.  A value the engine does not know is left out, not guessed.  The
+// command changes nothing.
+//
+//   CHANGE_SETTINGS <name>=<value> [...]      -> the GET_MEMORY_USE answer once changed, or ERR <why>, changing
+//                                                nothing of the line
+//
+// The names are those of SETTINGS, and `memory_mib.<id>` for a memory's `setting` in MiB; what each takes is the
+// engine's (strata-q38's: paged_engine.hpp).
 #pragma once
 
 #include "strata/common/state/token_listing.hpp"
@@ -46,6 +55,8 @@ struct Memory {
     /// The pages of the page pool here (0: none; the old engines'), how many are allocated, and how many are free in
     /// runs too short for any expert (PagePoolReport::allocated, fragmented).
     uint64_t pool_pages = 0, allocated_pages = 0, fragmented_pages = 0;
+    /// The bytes the engine's pool here takes (0: no setting to change), and the least and most it may be set to now.
+    uint64_t setting = 0, smallest = 0, largest = 0;
 
     /// Adds `bytes` to use `use`; a zero adds nothing.
     void add(const std::string& use, uint64_t bytes) {
@@ -105,6 +116,11 @@ inline std::string format_memory_report(MemoryReport report, const std::vector<c
             put("allocated_pages", m.allocated_pages);
             put("fragmented_pages", m.fragmented_pages);
         }
+        if (m.setting > 0) {
+            put("setting", m.setting);
+            put("smallest", m.smallest);
+            put("largest", m.largest);
+        }
         if (!m.name.empty()) s += " name=" + m.name;
         s += '\n';
     }
@@ -116,6 +132,29 @@ inline std::string format_memory_report(MemoryReport report, const std::vector<c
         s += " " + key + "=" + std::to_string(v);
     s += "\nEND_MEMORY\n";
     return s;
+}
+
+/// Reads a `CHANGE_SETTINGS <name>=<value> ...` line into `values`, in order; false (and `err`) when a field has no
+/// `=` or there is none.
+inline bool parse_settings_line(const std::string& line, std::vector<std::pair<std::string, std::string>>& values,
+                                std::string& err) {
+    values.clear();
+    for (size_t at = line.find(' '); at != std::string::npos;) {
+        const size_t from = at + 1;
+        at = line.find(' ', from);
+        const std::string field = line.substr(from, at == std::string::npos ? std::string::npos : at - from);
+        if (field.empty())
+            continue;
+        const size_t eq = field.find('=');
+        if (eq == std::string::npos || eq == 0) {
+            err = "CHANGE_SETTINGS takes <name>=<value> fields, not \"" + field + "\"";
+            return false;
+        }
+        values.emplace_back(field.substr(0, eq), field.substr(eq + 1));
+    }
+    if (values.empty())
+        err = "CHANGE_SETTINGS names no setting";
+    return !values.empty();
 }
 
 }  // namespace strata::serve

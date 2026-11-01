@@ -215,6 +215,11 @@ class SessionRefused(ValueError):
         return self.STATUS[self.kind]
 
 
+class SettingsRefused(ValueError):
+    """The engine refused a CHANGE_SETTINGS (`ERR <why>`, e.g. a GPU pool too small for the biggest active
+    conversation) and changed none of it; the message is its why."""
+
+
 class EngineStuck(RuntimeError):
     """The engine process did not end after QUIT, terminate and kill: the server keeps it (and says so) rather than
     reporting its GPU and RAM as given back."""
@@ -669,6 +674,7 @@ class StrataEngine:
         self.can_list = False            # it answers LIST_CONVERSATIONS and GET_CONTEXT_WINDOWS (... conversations)
         self.can_report_memory = False   # it answers GET_MEMORY_USE (... memory)
         self.can_preempt = False         # a BGEN of a higher priority ends a busy slot's request (... preempt)
+        self.can_change_settings = False  # it answers CHANGE_SETTINGS (... settings)
         self.last = {}
         self.info = {}                   # INFO key=value facts (engine 0.1.8+): kv, expert slots, ... (Monitor tab)
         self.terminal_stages: list[dict] = []  # final layer ranges from this engine start's bounded stderr log
@@ -754,6 +760,7 @@ class StrataEngine:
                 self.can_list = "conversations" in f[2:]
                 self.can_report_memory = "memory" in f[2:]
                 self.can_preempt = "preempt" in f[2:]
+                self.can_change_settings = "settings" in f[2:]
                 break
         loading.set()
         if self.max_context <= 0:
@@ -1069,10 +1076,11 @@ class StrataEngine:
                 raise EngineDied("the engine did not answer the VRAM command")
 
     def _ask(self, command: str, kind: str, timeout: float = 30.0, end: str | None = None,
-             also: tuple[str, ...] = ()) -> list[list[str]]:
+             also: tuple[str, ...] = (), refused: type[Exception] | None = None) -> list[list[str]]:
         """Send `command` and return the fields of each `kind` line (and `also` line) of its answer, up to its `end`
         line (default END_<kind>S; other lines on the way - a NOTE, BSTAT - are passed over).  Raises EngineDied when
-        the engine ended, refused or said nothing."""
+        the engine ended, refused or said nothing; `refused`, when given, is raised with the engine's reason instead
+        for a refusal (an `ERR` line)."""
         if not self.alive():
             raise EngineDied("the engine is not running")
         self._send(command)
@@ -1089,7 +1097,8 @@ class StrataEngine:
             if f[:1] == [end]:
                 return out
             if f[:1] == ["ERR"]:
-                raise EngineDied(f"the engine refused {name}: {line[4:].strip()}")
+                why = line[4:].strip()
+                raise refused(why) if refused else EngineDied(f"the engine refused {name}: {why}")
             if f and (f[0] == kind or f[0] in also):
                 out.append(f)
 
@@ -1118,13 +1127,27 @@ class StrataEngine:
         """GET /v1/memory: `GET_MEMORY_USE` (an engine whose READY says "memory";
         include/strata/common/serve/memory_report.hpp) - what the engine holds in each memory and its settings:
         {"memories": [{"id", "name", "total", "free", "unified", "uses": {use: bytes}, "paused_count",
-        "paused_budget", "allocated_pct", "fragmented_pct"}], "settings": {key: number}}, and "conversations"
-        (list_conversations' entries) from an engine that lists them there (strata-q38).  allocated_pct and
-        fragmented_pct: the shares, in percent, of a page pool's pages that are allocated, and that are free in runs
-        too short for any expert (strata-q38's pool).  A value the engine did not say is None (uses: absent).  The same
-        turn rules as list_conversations."""
+        "paused_budget", "allocated_pct", "fragmented_pct", "setting", "smallest", "largest"}],
+        "settings": {key: number}}, and "conversations" (list_conversations' entries) from an engine that lists them
+        there (strata-q38).  allocated_pct and fragmented_pct: the shares, in percent, of a page pool's pages that are
+        allocated, and that are free in runs too short for any expert (strata-q38's pool).  setting: the pool's size
+        in bytes now (what CHANGE_SETTINGS' memory_mib.<id> sets); smallest and largest: the range of sizes it
+        accepts now.  A value the engine did not say is None (uses: absent).  The same turn rules as
+        list_conversations."""
+        return self._ask_memory_report("GET_MEMORY_USE")
+
+    def change_settings(self, values: dict) -> dict:
+        """POST /v1/memory: `CHANGE_SETTINGS k=v ...` (an engine whose READY says "settings") changes `values` live
+        ({setting: value as the engine spells it}) and returns the engine's report after the change, as memory()
+        gives it.  Raises SettingsRefused with the engine's reason when it changed nothing.  The same turn rules as
+        list_conversations."""
+        return self._ask_memory_report("CHANGE_SETTINGS " + " ".join(f"{k}={v}" for k, v in values.items()),
+                                       SettingsRefused)
+
+    def _ask_memory_report(self, command: str, refused: type[Exception] | None = None) -> dict:
+        """Sends `command` and parses its GET_MEMORY_USE-style answer for memory() and change_settings()."""
         memories, settings, held = [], {}, []
-        for f in self._ask("GET_MEMORY_USE", "MEMORY", end="END_MEMORY", also=("SETTINGS", "CONVERSATION")):
+        for f in self._ask(command, "MEMORY", end="END_MEMORY", also=("SETTINGS", "CONVERSATION"), refused=refused):
             # MEMORY <id> [key=value ...] [name=<text to the end>]  /  CONVERSATION ...  /  SETTINGS [key=value ...]
             if f[0] == "CONVERSATION":
                 held.append(parse_conversation_line(f))
@@ -1142,7 +1165,7 @@ class StrataEngine:
                              "paused_count": keys.pop("paused_count", None),
                              "paused_budget": keys.pop("paused_budget", None),
                              "allocated_pct": share["allocated"], "fragmented_pct": share["fragmented"],
-                             "uses": keys})
+                             **{k: keys.pop(k, None) for k in ("setting", "smallest", "largest")}, "uses": keys})
         return {"memories": memories, "settings": settings, **({"conversations": held} if held else {})}
 
     @staticmethod

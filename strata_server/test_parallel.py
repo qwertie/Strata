@@ -49,7 +49,11 @@ if "--fake-stage-plan" in args:
           "36-47 (CUDA3), one hand-off per window", file=sys.stderr, flush=True)
 LISTS = "--lists" in args   # READY ... conversations: it answers LIST_CONVERSATIONS and GET_CONTEXT_WINDOWS
 PREEMPT = "--preempt" in args   # READY ... preempt: a BGEN of a higher priority= ends a busy slot's request
-print("READY 4096 stop" + (" conversations" if LISTS else "") + (" preempt" if PREEMPT else ""), flush=True)
+# READY ... memory settings: it answers GET_MEMORY_USE and CHANGE_SETTINGS (a GPU pool under 1000 MiB is refused)
+SETTINGS = "--settings" in args
+print("READY 4096 stop" + (" conversations" if LISTS else "") + (" preempt" if PREEMPT else "") +
+      (" memory settings" if SETTINGS else ""), flush=True)
+pool_mib, rows = 2000, 4     # (--settings) the GPU pool's size and the rows setting
 priority = {}        # (--preempt) slot -> the priority of the request it decodes
 main_held, slot_held, parked = [], {}, []   # (--lists) what the sessions hold, the conversations parked
 LONG = list(b"LONGREPLY")
@@ -236,6 +240,19 @@ while True:
             for cid in f[1:]:
                 print(f"CONTEXT_WINDOW {cid} " + (f"{len(known[cid])}{ids(known[cid])}" if cid in known else "gone"), flush=True)
             print("END_CONTEXT_WINDOWS", flush=True)
+        continue
+    if SETTINGS and line.startswith(("GET_MEMORY_USE", "CHANGE_SETTINGS")):
+        new = dict(kv.split("=", 1) for kv in line.split()[1:])
+        if int(new.get("memory_mib.gpu0", 1000)) < 1000:
+            print("ERR the biggest active conversation needs 1000 MiB", flush=True)
+            continue
+        if log and new:
+            log.write(line + "\n"); log.flush()
+        pool_mib, rows = int(new.get("memory_mib.gpu0", pool_mib)), int(new.get("rows", rows))
+        print(f"MEMORY gpu0 total={8000 << 20} free={1000 << 20} experts={pool_mib << 20} setting={pool_mib << 20} "
+              f"smallest={1000 << 20} largest={7000 << 20} name=card", flush=True)
+        print(f"SETTINGS rows={rows} memory_mib.gpu0={pool_mib}", flush=True)
+        print("END_MEMORY", flush=True)
         continue
     if line:
         print("ERR unknown " + line[:20], flush=True)

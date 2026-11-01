@@ -2,11 +2,11 @@
 //
 // The server writes one command per line: requests (GEN, GENI, BGEN, BGENI: request.hpp), STOP (end the running
 // request), BSTOP <slot> (end a batch slot), BYIELD <slot> (a prompt read gives way to a shorter one),
-// LIST_CONVERSATIONS and GET_CONTEXT_WINDOWS (token_listing.hpp), GET_MEMORY_USE (memory_report.hpp), SAVE /
-// RESTORE, VRAM and QUIT.  `Input` reads them on a thread of its own, so that STOP, BSTOP and BYIELD reach a request
-// that is still running; `Loop` hands an engine the commands that are its own and answers the others itself.  Each
-// engine path (src/program/generate.cpp, src/models/qwen36/q36_engine.cu, src/models/deepseekv41/ds4_main.cpp) says
-// what it does through `EngineHooks`.
+// LIST_CONVERSATIONS and GET_CONTEXT_WINDOWS (token_listing.hpp), GET_MEMORY_USE and CHANGE_SETTINGS
+// (memory_report.hpp), SAVE / RESTORE, VRAM and QUIT.  `Input` reads them on a thread of its own, so that STOP, BSTOP
+// and BYIELD reach a request that is still running; `Loop` hands an engine the commands that are its own and answers
+// the others itself.  Each engine path (src/program/generate.cpp, src/models/qwen36/q36_engine.cu,
+// src/models/deepseekv41/ds4_main.cpp) says what it does through `EngineHooks`.
 #pragma once
 
 #include "strata/common/serve/memory_report.hpp"
@@ -75,6 +75,10 @@ struct EngineHooks {
     /// Describes the engine's memories and settings for GET_MEMORY_USE (memory_report.hpp); the parked conversations
     /// of list_conversations are added to it.
     std::function<MemoryReport()> describe_memory;
+    /// Changes the settings `values` names (CHANGE_SETTINGS' fields, in order) all at once; gets why not (having
+    /// changed none of them), or an empty string.  The loop then answers with describe_memory's report.  Empty: the
+    /// engine changes nothing while it runs, and CHANGE_SETTINGS lines go to it as commands.
+    std::function<std::string(const std::vector<std::pair<std::string, std::string>>& values)> change_settings;
 };
 
 /// The engine's command loop: `while (loop.next(line))` gets the commands the engine handles itself (requests,

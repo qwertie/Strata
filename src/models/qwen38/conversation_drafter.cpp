@@ -17,7 +17,7 @@ bool ConversationDrafter::init(Model& m, int sessions, std::string& err) {
     min_p_ = m.o.spec_min_p;
     row_floats_ = (uint64_t) m.g.hc * (uint64_t) m.g.n_embd;
     const int max_t = mtp_->max_t();
-    if (cudaMalloc((void**) &rows_, (size_t) max_t * row_floats_ * sizeof(float)) != cudaSuccess) {
+    if (rows_ == nullptr && cudaMalloc((void**) &rows_, (size_t) max_t * row_floats_ * sizeof(float)) != cudaSuccess) {
         (void) cudaGetLastError();
         err = "the drafter's residual rows do not fit";
         return false;

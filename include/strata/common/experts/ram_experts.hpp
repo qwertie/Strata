@@ -8,6 +8,7 @@
 #include "strata/core/expert_source.hpp"
 
 #include <cstdint>
+#include <map>
 #include <string>
 #include <vector>
 
@@ -30,12 +31,15 @@ public:
 
     /// Makes the pool in `bytes` of page-locked RAM, less a staging ring of `ring` buffers of the largest expert (as
     /// many as the experts a step's layer may read from the SSD), with the conversations' `layout` and `config`'s
-    /// limits; `config.page_bytes` is the GPU pool's, so that a conversation's blocks are alike in both.  Then reads
-    /// the experts of `ranking` into it, in order, as far as they fit.  The experts of layer l are `blob_bytes[l]`
-    /// bytes, `n_expert` per layer.  `files` reads the experts from the SSD and must outlive this object.
+    /// limits; `config.page_bytes` is the GPU pool's, so that a conversation's blocks are alike in both, and the pool
+    /// takes its memory in chunks of `config.chunk_bytes` (at most the pool).  Then reads the experts of `ranking`
+    /// into it, in order, as far as they fit.  The experts of layer l are `blob_bytes[l]` bytes, `n_expert` per layer.
+    /// `files` reads the experts from the SSD and must outlive this object.
     bool open(ExpertSource& files, uint64_t bytes, int ring, const StateLayout& layout, PagePoolConfig config,
               const std::vector<uint64_t>& blob_bytes, int64_t n_expert, const std::vector<ExpertKey>& ranking,
               std::string& err);
+    /// Takes or gives back chunks so that the pool and the staging ring hold `bytes` (ExpertPages::resize).
+    PoolResize resize(uint64_t bytes) { return pages_.resize(bytes > ring_bytes() ? bytes - ring_bytes() : 0); }
     /// Copies expert `key` in from `bytes` (any memory: a GPU's pages it is leaving) when the pool does not hold it
     /// and has room for it among colder experts of its size; tells whether it did.
     bool keep_copy(ExpertKey key, const uint8_t* bytes);
@@ -45,7 +49,7 @@ public:
     ExpertPages& pages() { return pages_; }
     const ExpertPages& pages() const { return pages_; }
     /// Tells whether the pool's memory is page-locked, which the GPU reads in place (device_alias).
-    bool is_page_locked() const { return device_view_ != nullptr; }
+    bool is_page_locked() const { return page_locked_; }
     /// Gets the bytes of the staging ring (outside the pool).
     uint64_t ring_bytes() const { return ring_slots_ * slot_bytes_; }
     /// Times reading a staging ring's worth of experts (one of every layer in turn) from the SSD, in GB/s; each
@@ -84,10 +88,14 @@ private:
     uint8_t* take_slot(int64_t layer, int64_t expert);
     const uint8_t* find_staged(int64_t layer, int64_t expert) const;
 
+    uint8_t* alloc(uint64_t bytes);
+    void free(uint8_t* p);
+
     ExpertSource* files_ = nullptr;
-    ExpertPages pages_;
-    uint8_t* host_ = nullptr;              ///< the pool's pages, then the staging ring
-    uint8_t* device_view_ = nullptr;       ///< `host_` as the GPU reads it; null when the memory is not page-locked
+    /// The memory is page-locked (the GPU reads it in place), else pageable: decided by the first allocation.
+    bool page_locked_ = true;
+    std::map<const uint8_t*, uint8_t*> views_;   ///< each page-locked allocation's start -> its address on the GPU
+    ExpertPages pages_;   ///< (after views_: destroying the pool gives its chunks back through them)
     std::vector<uint64_t> blob_bytes_;
     int64_t n_expert_ = 0;
     std::vector<int32_t> first_page_;      ///< per expert, its first page in the pool, or kNotResident
