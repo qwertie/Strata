@@ -10,6 +10,7 @@
 #include "strata/models/qwen38/model.hpp"
 
 #include <cstdint>
+#include <functional>
 #include <string>
 
 namespace strata::qwen38 {
@@ -39,8 +40,16 @@ public:
     bool decode(int32_t tok, int64_t pos, int32_t& next, std::string& err) {
         return run_window(1, &tok, pos, &next, err) && ver.commit(1, err);
     }
+    /// Runs one window whose rows belong to the sessions given to `ver.init_slots`: row t is `tokens[t]` at `pos[t]` of
+    /// session `sessions[t]` (Verifier::run_slot_rows), `out[t]` the pick after it.  The caller then commits
+    /// (`ver.commit_slots`, `ver.commit_slot_prefixes`).  For strata-q38's step over several conversations.
+    bool run_rows(const int* sessions, int S, const int32_t* tokens, const int64_t* pos, int32_t* out,
+                  std::string& err);
 
 private:
+    /// Runs `window` (a verify window through the CPU expert pool) and fails also when the pool failed during it.
+    bool run_through_pool(const std::function<bool()>& window, std::string& err);
+
     Model* m_ = nullptr;   ///< set by init_decode
 };
 

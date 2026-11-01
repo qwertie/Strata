@@ -26,11 +26,21 @@ bool Conversation::init_decode(Model& m, strata::core::SessionState& ss, int max
 }
 
 bool Conversation::run_window(int T, const int32_t* tokens, int64_t pos0, int32_t* out, std::string& err) {
+    return run_through_pool([&] { return ver.run(T, tokens, pos0, &drive_pool_multi, &m_->drive, out, err); }, err);
+}
+
+bool Conversation::run_rows(const int* sessions, int S, const int32_t* tokens, const int64_t* pos, int32_t* out,
+                            std::string& err) {
+    return run_through_pool(
+        [&] { return ver.run_slot_rows(sessions, S, tokens, pos, &drive_pool_multi, &m_->drive, out, err); }, err);
+}
+
+bool Conversation::run_through_pool(const std::function<bool()>& window, std::string& err) {
     strata::core::ExpertDispatch& d = m_->drive.d;
     d.layers = 0;
     d.experts = 0;
     d.failed = false;
-    if (!ver.run(T, tokens, pos0, &drive_pool_multi, &m_->drive, out, err))
+    if (!window())
         return false;
     if (d.failed) {
         err = "the expert pool failed at layer " + std::to_string(d.fail_layer) + " expert " +

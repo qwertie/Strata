@@ -95,11 +95,15 @@ struct SessionState {
 /// [layer_lo, layer_hi) carves only that range's per-layer state (a split stage runs a slice of the model);
 /// the default full range is byte-identical to the old whole-model carve.  Pure arithmetic - safe to call for
 /// a candidate range before anything is allocated, which is how the layer-split search prices a placement.
+///
+/// `with_rope` false: without the RoPE table, for a session that borrows another's (session_init's `rope_from`).
 uint64_t session_bytes(const ModelGeometry& g, int64_t max_cells, int64_t k, int64_t layer_lo = 0,
-                       int64_t layer_hi = -1);
+                       int64_t layer_hi = -1, bool with_rope = true);
 /// Carves `base` (DEVICE memory) into `s`.  Returns the bytes used.  Same range convention as `session_bytes`.
+/// `rope_from` (null: the session has a table of its own) is the QSA state whose RoPE table the session reads: one of
+/// the same context.
 uint64_t session_init(const ModelGeometry& g, int64_t max_cells, int64_t k, void* base, SessionState& s,
-                      int64_t layer_lo = 0, int64_t layer_hi = -1);
+                      int64_t layer_lo = 0, int64_t layer_hi = -1, const QsaState* rope_from = nullptr);
 /// The page pool holds a conversation's state (strata-q38): sessions are sized and carved without the GDN layers'
 /// recurrent state (`gdn_state` stays null for the pool's owner to set) and without the QSA layers' K/V
 /// (qsa_set_kv_units).  Set before sizing and initializing a session.

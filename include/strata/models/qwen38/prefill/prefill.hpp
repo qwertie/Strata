@@ -78,6 +78,9 @@ public:
               core::ExpertSource* src, const core::ExpertCache* cache, const int32_t* host_res, int64_t chunk,
               void* stream, std::string& err, void* borrow = nullptr, uint64_t borrow_bytes = 0,
               bool borrow_spill = false);
+    /// Reads the next prompts into `ss` instead of `init`'s session; `ss` is carved like it (the same layers and
+    /// context).  strata-q38 reads each conversation's prompt into the conversation's own session.  Not on Metal.
+    void set_session(core::SessionState& ss);
 
     /// With borrowed buffers: lay them out again for chunks of `chunk` tokens (at most `init`'s) in `borrow` - a
     /// request lends only the slots its prompt needs.  The stream must be idle (between prompts).

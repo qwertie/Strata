@@ -6,7 +6,8 @@ The Qwen3.8-Flash-Next engine. Headers: `include/strata/models/qwen38/`.
 [docs/MEMORY_MANAGER_PLAN.md](../../../docs/MEMORY_MANAGER_PLAN.md)); `split_rules.hpp` and `batch_groups.hpp` (with
 their tests) came from `src/program/` with it. `options.cpp` is the command line, `conversation.cpp` one sequence's
 prompt path and verify windows (M2c2). `conversation_pages.cpp` keeps a conversation's state in a page pool and
-`paged_engine.cpp` is `strata-q38`, the engine built on them (M2d). `ngram/` reads the per-layer-embedding n-gram
+`paged_engine.cpp` is `strata-q38`, the engine built on them (M2d; several conversations at once through the
+shared step, M3). `ngram/` reads the per-layer-embedding n-gram
 table; `plan/` is the memory planner. The files at the top came from `src/core/`: the layer, the session, the MTP
 draft layer, the verify window, the native dense weights and head, the DFlash2 drafter (with its parity test and
 benches), the conversation snapshots (until **A5** makes them model-neutral), and the batch-window and drafting

@@ -71,6 +71,13 @@ inline bool parse_ids(const std::string& field, std::vector<int32_t>& out) {
 inline void put(const std::string& s) { std::fwrite(s.data(), 1, s.size(), stdout); }
 }  // namespace token_listing_detail
 
+/// Gets LIST_CONVERSATIONS' line for `c`, without its preview and its end of line:
+/// `CONVERSATION <id> <place> <state> <tokens> <capacity> <bytes> <used>`.
+inline std::string format_conversation_line(const HeldConversation& c) {
+    return "CONVERSATION " + c.id + " " + c.place + " " + c.state + " " + std::to_string(c.n) + " " +
+           std::to_string(c.capacity) + " " + std::to_string(c.bytes) + " " + std::to_string(c.used);
+}
+
 /// Answers `line` (is_conversation_command) from `held`.  A malformed command answers `ERR <why>`.
 inline void answer_conversation_command(const std::string& line, const std::vector<HeldConversation>& held) {
     namespace d = token_listing_detail;
@@ -90,8 +97,7 @@ inline void answer_conversation_command(const std::string& line, const std::vect
             }
         }
         for (const HeldConversation& c : held) {
-            std::string s = "CONVERSATION " + c.id + " " + c.place + " " + c.state + " " + std::to_string(c.n) + " " +
-                            std::to_string(c.capacity) + " " + std::to_string(c.bytes) + " " + std::to_string(c.used);
+            std::string s = format_conversation_line(c);
             if (!marker.empty() && want > 0) {
                 const int32_t* at = std::search(c.ids, c.ids + c.n, marker.begin(), marker.end());
                 if (at != c.ids + c.n) {

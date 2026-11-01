@@ -18,8 +18,8 @@
 
 namespace strata::qwen38 {
 
-/// One conversation's pages in a pool of the current GPU's memory (shared with the experts, ExpertPages);
-/// strata-q38 holds one conversation at a time.
+/// One conversation's pages in a pool of the current GPU's memory, which it shares with the experts (ExpertPages) and
+/// with strata-q38's other conversations.
 class ConversationPages {
 public:
     ConversationPages() = default;
@@ -31,24 +31,25 @@ public:
     /// units.  False (and `err`) when `ss` is not a whole-model session carved without its state.
     static bool get_layout(const strata::core::ModelGeometry& g, const strata::core::SessionState& ss,
                            strata::core::StateLayout& layout, std::string& err);
-    /// Gives the conversation its fixed region in `pool` (made with get_layout's regions; it must outlive this
-    /// object) and points `ss` at it: `ss.gdn_state`, and each QSA state's K/V and pooled keys as units
+    /// Gives the conversation `id` of `pool` (a pool made with get_layout's regions; it must outlive this object) its
+    /// fixed region and points `ss` at it: `ss.gdn_state`, and each QSA state's K/V and pooled keys as units
     /// (QsaState::units).
     bool init(const strata::core::ModelGeometry& g, strata::core::SessionState& ss, strata::core::PagePool& pool,
-              std::string& err);
+              strata::core::ConversationId id, std::string& err);
+    /// Tells whether init has given the conversation its pages.
+    bool is_ready() const { return pool_ != nullptr; }
     /// Gives the conversation the pages for appending positions below `tokens` (and the spare indexer block after
     /// them), zeroes the new pages and writes their units' addresses into the QSA states' tables.  Call before each
     /// append; false when the pool has no room.
     bool reserve(int64_t tokens, std::string& err);
     /// Gives back the growing pages past the first `tokens` tokens (0: a new conversation); the fixed region stays.
     void truncate(int64_t tokens);
-    /// Gets the pool's pages by use.
-    strata::core::PagePoolReport report() const { return pool_->report(); }
+    /// Gets the bytes of the pool's pages the conversation holds (0 before init).
+    uint64_t bytes() const;
 
 private:
-    static constexpr strata::core::ConversationId kId = 1;   ///< the one conversation's id in the pool
-
     strata::core::PagePool* pool_ = nullptr;
+    strata::core::ConversationId id_ = 0;
     strata::kernels::KvUnitLayout unit_;         ///< one indexer block of a QSA layer
     uint64_t page_bytes_ = 0;
     int64_t idx_block_ = 0;

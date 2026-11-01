@@ -47,21 +47,22 @@ bool ConversationPages::get_layout(const strata::core::ModelGeometry& g, const s
 }
 
 bool ConversationPages::init(const strata::core::ModelGeometry& g, strata::core::SessionState& ss,
-                             strata::core::PagePool& pool, std::string& err) {
+                             strata::core::PagePool& pool, strata::core::ConversationId id, std::string& err) {
     using namespace strata::core;
     const strata::kernels::QsaShapes s = qsa_shapes(g);
     const int64_t n_qsa = g.n_qsa_layers();
     unit_ = strata::kernels::kv_unit_layout(s, (strata::kernels::KvFormat) qsa_kv_format(ss.qsa_states[0]));
-    pool_ = &pool;
     page_bytes_ = pool.page_bytes();
-    if (const std::string why = pool_->grow_conversation(kId, 0); !why.empty()) {
+    if (const std::string why = pool.grow_conversation(id, 0); !why.empty()) {
         err = "the page pool: " + why;
         return false;
     }
-    const std::vector<PageId>& gdn = pool_->conversation_pages(kId, 0);
-    ss.gdn_state = (float*) pool_->page_address(gdn.at(0));
+    const std::vector<PageId>& gdn = pool.conversation_pages(id, 0);
+    ss.gdn_state = (float*) pool.page_address(gdn.at(0));
     idx_block_ = s.idx_block;
     max_blocks_ = ss.max_cells / s.idx_block + 2;
+    for (int64_t* t : tables_)   // (an init that failed before)
+        (void) cudaFree(t);
     tables_.assign((size_t) n_qsa, nullptr);
     pages_in_table_.assign((size_t) n_qsa, 0);
     for (int64_t j = 0; j < n_qsa; ++j) {
@@ -78,6 +79,8 @@ bool ConversationPages::init(const strata::core::ModelGeometry& g, strata::core:
         err = std::string("the page pool: ") + cudaGetErrorString(cudaGetLastError());
         return false;
     }
+    pool_ = &pool;
+    id_ = id;
     return true;
 }
 
@@ -86,7 +89,7 @@ bool ConversationPages::reserve(int64_t tokens, std::string& err) {
     const int64_t need = std::min((std::max<int64_t>(tokens, 1) - 1) / idx_block_ + 2, max_blocks_) * idx_block_;
     if (need <= reserved_)
         return true;
-    if (const std::string why = pool_->grow_conversation(kId, need); !why.empty()) {
+    if (const std::string why = pool_->grow_conversation(id_, need); !why.empty()) {
         err = "the conversation's memory is full: " + why;
         return false;
     }
@@ -94,7 +97,7 @@ bool ConversationPages::reserve(int64_t tokens, std::string& err) {
     const uint64_t per_page = page_bytes_ / unit_.bytes;
     bool added = false;
     for (size_t j = 0; j < tables_.size(); ++j) {
-        const std::vector<strata::core::PageId>& pages = pool_->conversation_pages(kId, 1 + j);
+        const std::vector<strata::core::PageId>& pages = pool_->conversation_pages(id_, 1 + j);
         if (pages.size() == pages_in_table_[j])
             continue;
         std::vector<uint8_t*> at;
@@ -120,10 +123,19 @@ bool ConversationPages::reserve(int64_t tokens, std::string& err) {
 
 void ConversationPages::truncate(int64_t tokens) {
     const int64_t keep = tokens > 0 ? std::min(((tokens - 1) / idx_block_ + 2) * idx_block_, reserved_) : 0;
-    pool_->truncate_conversation(kId, keep);
+    pool_->truncate_conversation(id_, keep);
     reserved_ = keep;
     for (size_t j = 0; j < tables_.size(); ++j)
-        pages_in_table_[j] = pool_->conversation_pages(kId, 1 + j).size();
+        pages_in_table_[j] = pool_->conversation_pages(id_, 1 + j).size();
+}
+
+uint64_t ConversationPages::bytes() const {
+    if (!is_ready())
+        return 0;
+    uint64_t pages = 0;
+    for (size_t r = 0; r <= tables_.size(); ++r)   // the fixed region, then each QSA layer's
+        pages += pool_->conversation_pages(id_, r).size();
+    return pages * page_bytes_;
 }
 
 }  // namespace strata::qwen38

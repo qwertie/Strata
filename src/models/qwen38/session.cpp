@@ -66,7 +66,8 @@ void session_set_pool_state(bool enabled) {
     qsa_set_kv_units(enabled);
 }
 
-uint64_t session_bytes(const ModelGeometry& g, int64_t max_cells, int64_t k, int64_t layer_lo, int64_t layer_hi) {
+uint64_t session_bytes(const ModelGeometry& g, int64_t max_cells, int64_t k, int64_t layer_lo, int64_t layer_hi,
+                       bool with_rope) {
     if (layer_hi < 0 || layer_hi > g.n_layers) layer_hi = g.n_layers;
     if (layer_lo < 0) layer_lo = 0;
     // QSA layers are `l % interval == interval-1`, so exactly `bound / interval` of them live below `bound`
@@ -79,7 +80,7 @@ uint64_t session_bytes(const ModelGeometry& g, int64_t max_cells, int64_t k, int
     if (!g_pool_state) n += (uint64_t) gdn_n * gdn_state_floats(g) * 4;
     // One QSA state carries the RoPE table; the others borrow it (P7: 64 MiB per layer at 262K).
     if (g.n_qsa_layers() > 0)
-        n += qsa_state_bytes(g, max_cells, true) + (uint64_t) (q_n - 1) * qsa_state_bytes(g, max_cells, false);
+        n += qsa_state_bytes(g, max_cells, with_rope) + (uint64_t) (q_n - 1) * qsa_state_bytes(g, max_cells, false);
     n += qsa_buffers_bytes(g, max_cells);
     n += moe_buffers_bytes(g, k);
     n += block_buffers_bytes(g);
@@ -88,7 +89,7 @@ uint64_t session_bytes(const ModelGeometry& g, int64_t max_cells, int64_t k, int
 }
 
 uint64_t session_init(const ModelGeometry& g, int64_t max_cells, int64_t k, void* base, SessionState& s,
-                      int64_t layer_lo, int64_t layer_hi) {
+                      int64_t layer_lo, int64_t layer_hi, const QsaState* rope_from) {
     if (layer_hi < 0 || layer_hi > g.n_layers) layer_hi = g.n_layers;
     if (layer_lo < 0) layer_lo = 0;
     uint8_t* p = (uint8_t*) base;
@@ -117,8 +118,10 @@ uint64_t session_init(const ModelGeometry& g, int64_t max_cells, int64_t k, void
     // pointers and `qsa_state_init` writes them - a contiguous array would need the arena to be laid out the
     // same way, which is a coupling with nothing to gain.  Only the range's ordinals are initialized; the
     // rest stay value-initialized nulls.  The FIRST ALLOCATED one (the session's primary, ordinal qsa_ord0)
-    // owns the RoPE table that the others - and the prefill staging identity, and the MTP drafter - borrow.
-    const uint64_t first = qsa_state_bytes(g, max_cells, true), rest = qsa_state_bytes(g, max_cells, false);
+    // owns the RoPE table (or borrows `rope_from`'s) that the others - and the prefill staging identity, and the MTP
+    // drafter - borrow.
+    const uint64_t first = qsa_state_bytes(g, max_cells, rope_from == nullptr);
+    const uint64_t rest = qsa_state_bytes(g, max_cells, false);
     s.qsa_state_arena = take(g.n_qsa_layers() > 0 ? first + (uint64_t) (s.qsa_alloc - 1) * rest : 0);
     s.qsa_states = new QsaState[(size_t) g.n_qsa_layers()]();
     s.qsa_buf_arena = take(qsa_buffers_bytes(g, max_cells));
@@ -128,7 +131,7 @@ uint64_t session_init(const ModelGeometry& g, int64_t max_cells, int64_t k, void
     // attention read null host pointers at the first request ("illegal memory access"), so the session fails here
     for (int64_t j = 0; j < s.qsa_alloc; ++j)
         if (qsa_state_init(g, max_cells, qp + (j == 0 ? 0 : first + (uint64_t) (j - 1) * rest),
-                           s.qsa_states[s.qsa_ord0 + j], j == 0 ? nullptr : &s.qsa_states[s.qsa_ord0]) == 0)
+                           s.qsa_states[s.qsa_ord0 + j], j == 0 ? rope_from : &s.qsa_states[s.qsa_ord0]) == 0)
             return 0;
     qsa_buffers_init(g, max_cells, s.qsa_buf_arena, s.qsa_bufs);
 

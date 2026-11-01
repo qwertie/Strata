@@ -609,6 +609,13 @@ def parse_stage_in_flight_sample(line: str) -> dict | None:
     return {"elapsed_us": elapsed_us, "in_flight_us": in_flight_us}
 
 
+def parse_conversation_line(f: list[str]) -> dict:
+    """Gets the fields of a `CONVERSATION <id> <place> <state> <tokens> <capacity> <bytes> <used> [<preview>]` line
+    (LIST_CONVERSATIONS', and GET_MEMORY_USE's from strata-q38) as StrataEngine.list_conversations gives them."""
+    return {"id": f[1], "place": f[2], "state": f[3], "count": int(f[4]), "capacity": int(f[5]), "bytes": int(f[6]),
+            "used": int(f[7]), "preview": [int(x) for x in f[8].split(",")] if len(f) > 8 else []}
+
+
 class StrataEngine:
     """The resident engine: `strata --serve` reads `GEN <max_new> <ids>` lines and streams `T <id>` lines, then
     `DONE ...`.  Requests are serialized by the service's FIFO, so one pipe is enough.
@@ -1084,10 +1091,7 @@ class StrataEngine:
         requests: the caller holds the service's FIFO and, with --batch, the control lines; the slots may decode
         meanwhile (the engine answers between their windows)."""
         command = "LIST_CONVERSATIONS" + (f" {','.join(map(str, marker))} {int(preview)}" if marker and preview else "")
-        # CONVERSATION <id> <place> <state> <tokens> <capacity> <bytes> <used> [<preview>]
-        return [{"id": f[1], "place": f[2], "state": f[3], "count": int(f[4]), "capacity": int(f[5]), "bytes": int(f[6]),
-                 "used": int(f[7]), "preview": [int(x) for x in f[8].split(",")] if len(f) > 8 else []}
-                for f in self._ask(command, "CONVERSATION")]
+        return [parse_conversation_line(f) for f in self._ask(command, "CONVERSATION")]
 
     def context_windows(self, ids) -> dict:
         """`GET_CONTEXT_WINDOWS`: the tokens of the conversations `ids` names (as list_conversations gives them), as
@@ -1102,11 +1106,15 @@ class StrataEngine:
         """GET /v1/memory: `GET_MEMORY_USE` (an engine whose READY says "memory";
         include/strata/common/serve/memory_report.hpp) - what the engine holds in each memory and its settings:
         {"memories": [{"id", "name", "total", "free", "unified", "uses": {use: bytes}, "paused_count",
-        "paused_budget"}], "settings": {key: number}}.  A value the engine did not say is None (uses: absent).  The same
-        turn rules as list_conversations."""
-        memories, settings = [], {}
-        for f in self._ask("GET_MEMORY_USE", "MEMORY", end="END_MEMORY", also=("SETTINGS",)):
-            # MEMORY <id> [key=value ...] [name=<text to the end>]  /  SETTINGS [key=value ...]
+        "paused_budget"}], "settings": {key: number}}, and "conversations" (list_conversations' entries) from an engine
+        that lists them there (strata-q38).  A value the engine did not say is None (uses: absent).  The same turn rules
+        as list_conversations."""
+        memories, settings, held = [], {}, []
+        for f in self._ask("GET_MEMORY_USE", "MEMORY", end="END_MEMORY", also=("SETTINGS", "CONVERSATION")):
+            # MEMORY <id> [key=value ...] [name=<text to the end>]  /  CONVERSATION ...  /  SETTINGS [key=value ...]
+            if f[0] == "CONVERSATION":
+                held.append(parse_conversation_line(f))
+                continue
             at = next((i for i, x in enumerate(f) if x.startswith("name=")), len(f))
             keys = {k: int(v) for k, _, v in (x.partition("=") for x in f[1 if f[0] == "SETTINGS" else 2:at])}
             if f[0] == "SETTINGS":
@@ -1116,7 +1124,7 @@ class StrataEngine:
                              "free": keys.pop("free", None), "unified": bool(keys.pop("unified", 0)),
                              "paused_count": keys.pop("paused_count", None),
                              "paused_budget": keys.pop("paused_budget", None), "uses": keys})
-        return {"memories": memories, "settings": settings}
+        return {"memories": memories, "settings": settings, **({"conversations": held} if held else {})}
 
     @staticmethod
     def sampling_keys(sampling: dict) -> str:

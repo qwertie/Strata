@@ -775,7 +775,7 @@ if(STRATA_ENABLE_CUDA OR STRATA_ENABLE_HIP)
               src/models/qwen38/options.cpp src/models/qwen38/conversation_pages.cpp
               src/models/qwen38/paged_engine.cpp)
   target_include_directories(strata_qwen38 PRIVATE ${_strata_gpu_include_directories})
-  target_link_libraries(strata_qwen38 PUBLIC strata_engine strata_prefill strata_serve strata_state
+  target_link_libraries(strata_qwen38 PUBLIC strata_engine strata_prefill strata_serve strata_spec strata_state
                         ${_strata_gpu_runtime_target})
 
   add_executable(strata src/program/generate.cpp)
@@ -1584,7 +1584,7 @@ endif()
 #     features, and the fallback exists for tests, exactly as P2.S3 specifies.
 # Plan v0.3 P6: speculation components that need no GPU.
 add_library(strata_spec STATIC src/common/spec/suffix_drafter.cpp src/common/spec/controller.cpp
-            src/common/spec/draft_policy.cpp src/common/spec/draft_source.cpp)
+            src/common/spec/draft_policy.cpp src/common/spec/draft_source.cpp src/common/spec/step.cpp)
 target_include_directories(strata_spec PUBLIC include)
 # The engine side of the server's line protocol (src/common/serve): no GPU.
 add_library(strata_serve STATIC src/common/serve/loop.cpp src/common/serve/request.cpp)
@@ -1624,6 +1624,9 @@ if(STRATA_BUILD_TESTS)
   add_executable(draft_policy_test src/common/spec/draft_policy_test.cpp)
   target_link_libraries(draft_policy_test PRIVATE strata_spec)
   add_test(NAME draft_policy_test COMMAND draft_policy_test)
+  add_executable(step_test src/common/spec/step_test.cpp)
+  target_link_libraries(step_test PRIVATE strata_spec)
+  add_test(NAME step_test COMMAND step_test)
   add_executable(spec_start_test src/common/spec/spec_start_test.cpp)
   target_include_directories(spec_start_test PRIVATE include)
   add_test(NAME spec_start_test COMMAND spec_start_test)

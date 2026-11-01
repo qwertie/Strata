@@ -392,6 +392,9 @@ class EngineConversations(unittest.TestCase):
             {"id": "ssd", "name": None, "total": None, "free": None, "unified": False, "paused_count": None,
              "paused_budget": None, "uses": {"engram": 70}}], "settings": {"context": 32768, "concurrent": 1}})
         self.assertEqual(self.bare(["SETTINGS", "END_MEMORY"]).memory(), {"memories": [], "settings": {}})
+        got = self.bare(["CONVERSATION slot0 vram decoding 3 4096 1000 900", "SETTINGS rows=8", "END_MEMORY"]).memory()
+        self.assertEqual(got["conversations"], [{"id": "slot0", "place": "vram", "state": "decoding", "count": 3,
+                                                 "capacity": 4096, "bytes": 1000, "used": 900, "preview": []}])
 
     def test_an_engine_that_refuses_or_ends(self):
         from strata_common.engine_client import EngineDied

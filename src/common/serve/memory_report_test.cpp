@@ -44,6 +44,14 @@ int main() {
               "SETTINGS context=32768 concurrent=1\n"
               "END_MEMORY\n",
           "the memories, the parked conversations by place, the settings");
+    r.per_conversation = true;
+    check(format_memory_report(r, {held[0]}) ==
+              "MEMORY gpu0 total=1000 free=300 unified=1 weights=100 experts=450 name=Radeon 8060S Graphics\n"
+              "MEMORY ram paused_count=0 paused_budget=800\n"
+              "CONVERSATION main vram holding 3 32768 9999 10\n"
+              "SETTINGS context=32768 concurrent=1\n"
+              "END_MEMORY\n",
+          "a line per conversation");
     check(format_memory_report(MemoryReport{}, {}) == "SETTINGS\nEND_MEMORY\n", "an engine that knows nothing");
     MemoryReport budget;
     budget.at("ram").paused_budget = 5;

@@ -5,17 +5,21 @@
 //   GET_MEMORY_USE
 //     MEMORY <id> [total=<B>] [free=<B>] [unified=1] [<use>=<B> ...] [paused_count=<n>] [paused_budget=<B>]
 //            [name=<text>]                                     one line per memory, then
-//     SETTINGS [context=<tokens>] [concurrent=<n>] [lookahead=<n>]
+//     [CONVERSATION <id> <place> <state> <tokens> <capacity> <bytes> <used>]     with per_conversation: one per
+//                                                                                conversation (LIST_CONVERSATIONS')
+//     SETTINGS [context=<tokens>] [concurrent=<n>] [rows=<n>] [lookahead=<n>] [tokens_min=<tokens>]
 //     END_MEMORY
 //
 // id: `gpu<N>` (the runtime's device number), `ram` or `ssd`.  total, free: the memory's size and what is free in it
 // now (the GPUs'; the server adds the machine's RAM).  unified=1: a GPU whose memory is the system RAM (an integrated
 // GPU such as Strix Halo's).  <use>: the bytes the engine holds there for one use - `weights` (the dense weights),
-// `experts`, `conversations` (the sessions of active conversations, each allocated for its whole context), `paused`
-// (parked conversations), `drafter`, `scratch`, `engram` (DeepSeek's n-gram table).  paused_count: the parked
-// conversations there; paused_budget: the most they may take.  name: the device's name, to the end of the line.
-// settings: the context in tokens, the conversations decoded at once and the most guesses one adds in a step.  A
-// value the engine does not know is left out, not guessed.  The command changes nothing.
+// `experts`, `conversations` (the conversations it holds: sessions allocated for their whole context, or pool pages),
+// `paused` (parked conversations), `drafter`, `scratch`, `engram` (DeepSeek's n-gram table).  paused_count: the
+// parked conversations there; paused_budget: the most they may take.  name: the device's name, to the end of the
+// line.
+// settings: the context in tokens, the conversations decoded at once, the rows one step computes, the most guesses
+// one conversation adds in a step and the conversation tokens kept free of experts.  A value the engine does not know
+// is left out, not guessed.  The command changes nothing.
 #pragma once
 
 #include "strata/common/state/token_listing.hpp"
@@ -55,6 +59,8 @@ struct Memory {
 struct MemoryReport {
     std::deque<Memory> memories;   ///< (a deque: at() keeps the references it gave out valid)
     std::vector<std::pair<std::string, int64_t>> settings;   ///< SETTINGS' keys, in order
+    /// Each conversation the engine holds gets a CONVERSATION line (what it takes, conversation by conversation).
+    bool per_conversation = false;
 
     /// Gets the memory named `id`, adding an empty one at the end when there is none.
     Memory& at(const std::string& id) {
@@ -93,6 +99,9 @@ inline std::string format_memory_report(MemoryReport report, const std::vector<c
         if (!m.name.empty()) s += " name=" + m.name;
         s += '\n';
     }
+    if (report.per_conversation)
+        for (const core::HeldConversation& c : held)
+            s += core::format_conversation_line(c) + '\n';
     s += "SETTINGS";
     for (const auto& [key, v] : report.settings)
         s += " " + key + "=" + std::to_string(v);
