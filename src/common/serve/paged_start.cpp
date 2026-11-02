@@ -79,17 +79,16 @@ int take_paged_options(int& argc, char** argv, const std::string& program, Paged
     return -1;
 }
 
-void set_paged_runtime_env(const PagedSettings& s, bool layer_split) {
+void set_paged_runtime_env(const PagedSettings& s, bool hops_possible) {
 #if defined(STRATA_USE_HIP) && defined(_WIN32)
     // ROCclr on Windows keeps freed memory in its resource cache and gives none of it back (on the Strix Halo, 8 GiB
     // freed with hipHostFree or hipFree stayed taken from Windows' RAM), so the pools could not shrink
     strata::platform::set_env("GPU_RESOURCE_CACHE_SIZE", "0", false);
 #endif
-    // a card computing another card's experts (--remote-experts) runs them on a stream of its own while that card's
-    // verify window spins on the GPU for them; the runtime spreads its streams over a few hardware queues (HIP 4 a
-    // priority, CUDA 8 connections), and a hop that landed behind a spinning kernel waited for ever (two stages on the
-    // Strix Halo's GPU, 2 of 2 runs; 0 of 1 with 16 queues, which a stream of the highest priority did not fix)
-    if (s.remote_experts != "off" && layer_split) {
+    // A hop needs a free queue beside the owner's spinning verify window. Extra queues are requested only for
+    // separate GPUs: same-GPU stages cannot hop (get_hop_refusal). Whether separate NVIDIA cards need the extra
+    // connections remains for the NVIDIA session's explicit-default-queues check to measure.
+    if (s.remote_experts != "off" && hops_possible) {
         strata::platform::set_env("GPU_MAX_HW_QUEUES", "16", false);
         strata::platform::set_env("CUDA_DEVICE_MAX_CONNECTIONS", "32", false);
     }

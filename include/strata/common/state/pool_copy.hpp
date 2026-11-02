@@ -8,8 +8,15 @@
 #include <cstddef>
 #include <cstdint>
 #include <string>
+#include <vector>
 
 namespace strata::core {
+
+/// Selects bytes within each block of a region; bytes == 0 selects the whole block.
+struct RegionRange {
+    size_t region = 0;
+    uint64_t offset = 0, bytes = 0;
+};
 
 /// The part of a pool's layout a copy takes: consecutive regions, after a share of a fixed region when `part` names
 /// one.  strata-q38's RAM pool has the whole model's regions, of which one card of a layer split holds its share of
@@ -20,12 +27,14 @@ struct RegionSpan {
     size_t part = SIZE_MAX;    ///< the fixed region whose share comes first; SIZE_MAX: none
     uint64_t offset = 0;       ///< where the share starts in the fixed region's block
     uint64_t bytes = 0;        ///< the share's size
+    /// Additional pieces before the consecutive regions, for layouts with several packed fixed ranges.
+    std::vector<RegionRange> ranges;
 };
 
 /// Copies conversation `from_id`'s blocks in pool `from` into conversation `to_id`'s in pool `to`: per piece of
-/// `to_span` (a share of a fixed region, then each region), as many of its first blocks as `to` holds, from the piece
-/// in the same place of `from_span`, which must hold them too.  The spans have as many pieces, of the same block sizes
-/// (a share's size), and the pools the same page size; either pool may be in a GPU's memory.  The copies are done on
+/// `to_span` (the fixed share, explicit ranges, then consecutive regions), as many first blocks as `to` holds, from
+/// the piece in the same place of `from_span`, which must hold them too. The spans have as many pieces, with matching
+/// block sizes (a share's size), and the pools the same page size; either pool may be in a GPU's memory. The copies are done on
 /// return.
 bool copy_conversation(const PagePool& from, ConversationId from_id, const PagePool& to, ConversationId to_id,
                        std::string& err, RegionSpan from_span = {}, RegionSpan to_span = {});

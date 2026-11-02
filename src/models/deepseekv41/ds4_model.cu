@@ -593,6 +593,7 @@ struct Layer {
     std::vector<int> host_list;
     std::string name;         // "layers.N." or, for the DSpark drafter's blocks, "mtp.N."
     int n_exp = 0, k_exp = 0; // routed experts, and how many a token takes (the drafter's: 128, 3)
+    size_t weight_bytes = 0;  ///< Dense allocations accounted to the stage that currently runs this layer.
     bool mtp = false;         // a DSpark block (index stage = il - n_layers)
     bool kv_src = false, ix_src = false, owns_k = false, cand_src = false, uses_cand = false;
     int src = -1;      // the kv source whose compressed KV this layer reads (index into Impl::srcs)
@@ -2184,6 +2185,17 @@ struct Model::Impl {
                     for (int j = 0; j < n[gi] && il < g.nl; ++j) L[(size_t) il++].grp = (int) gi;
                 for (; il < g.nl; ++il) L[(size_t) il].grp = (int) groups.size() - 1;
             }
+            if (o.plan_layers) {
+                std::vector<uint64_t> bytes;
+                for (int il = 0; il < g.nl; ++il)
+                    bytes.push_back(L[(size_t) il].blob);
+                std::vector<int64_t> cuts;
+                if (!o.plan_layers(g, bytes, cuts, err) || cuts.size() + 1 != groups.size())
+                    return false;
+                for (Layer& l : L)
+                    l.grp = l.mtp ? (int) groups.size() - 1 :
+                        (int) (std::upper_bound(cuts.begin(), cuts.end(), l.il) - cuts.begin());
+            }
             for (Layer& l : L) {
                 l.dev = groups[(size_t) l.grp].mem[0];
                 l.nm = l.mtp ? 1 : (int) groups[(size_t) l.grp].mem.size();   // (the drafter's blocks: on the lead alone)
@@ -3700,6 +3712,7 @@ struct Model::Impl {
           for (int mi = 0; mi < l0.nm; ++mi) {
             Layer& l = member(l0, mi);
             if (l.dev != di) continue;
+            const size_t before = d.weights;
             // (a group's member: its share of the heads (wq_b columns, the sinks), of wo_a's groups and wo_b's rows,
             // of the shared expert's FFN; the rest whole)
             const int nm = l0.nm, na = g.heads / std::max(1, l.ahn), ha = l.ah0 / std::max(1, l.ahn);
@@ -3764,6 +3777,7 @@ struct Model::Impl {
                     return false;
             }
             if (!dalloc(d, l.vram_tab, (size_t) l.n_exp, err, acct)) return false;
+            l.weight_bytes = d.weights - before;
           }
         if (d.grp == devs[(size_t) head_dev].grp) {   // the head: each member of its group a share of the columns
             const int hn = head_nm();
@@ -3859,7 +3873,7 @@ struct Model::Impl {
         size_t most = 0;
         for (Layer& l : L) {
             if (l.lay.fmt != gg::kFmtMXFP4 || l.nm > 1 || l.cpu_only) {
-                err = "experts in page pools need a GGUF pack whose experts the GPU computes, on one GPU";
+                err = "experts in page pools need a GGUF pack with GPU experts and no tensor parallelism";
                 return false;
             }
             l.by_heat = get_heat_order(l);
@@ -3879,9 +3893,9 @@ struct Model::Impl {
     }
     /// Makes the GPU compute the experts at device addresses `at` ([layer][expert]; null: the CPU lane's) from the
     /// next window on: their slots in by_heat's order, the decode's table (vram_tab) and the prompt's (slot_tab).
-    bool set_expert_addresses(const std::vector<const uint8_t*>& at, std::string& err) {
+    bool set_expert_addresses(const std::vector<const uint8_t*>& at, std::string& err, int stage) {
         for (Layer& l : L) {
-            if (l.slot_tab == nullptr)
+            if (l.slot_tab == nullptr || (stage >= 0 && l.dev != stage))
                 continue;
 
             const uint8_t* const* a = at.data() + (size_t) l.il * g.n_exp;
@@ -9607,8 +9621,33 @@ std::vector<std::string> Model::get_file_paths() const {
     return paths;
 }
 std::vector<int> Model::get_heat_order(int layer) const { return p_->get_heat_order(p_->L[(size_t) layer]); }
-bool Model::set_expert_addresses(const std::vector<const uint8_t*>& at, std::string& err) {
-    return p_->set_expert_addresses(at, err);
+bool Model::set_expert_addresses(const std::vector<const uint8_t*>& at, std::string& err, int stage) {
+    return p_->set_expert_addresses(at, err, stage);
+}
+
+std::vector<int64_t> Model::get_layer_cuts() const {
+    std::vector<int64_t> cuts;
+    for (int il = 1; il < p_->g.nl; ++il)
+        if (p_->L[(size_t) il].dev != p_->L[(size_t) il - 1].dev)
+            cuts.push_back(il);
+    return cuts;
+}
+
+bool Model::set_stage_layers(int stage, int lb, int le, std::string& err) {
+    Impl& p = *p_;
+    for (int il = lb; il < le; ++il)
+        if (p.devs[(size_t) p.L[(size_t) il].dev].id != p.devs[(size_t) stage].id) {
+            err = "the layer's dense weights are on another GPU";
+            return false;
+        }
+    for (int il = lb; il < le; ++il) {
+        Layer& layer = p.L[(size_t) il];
+        p.devs[(size_t) layer.dev].weights -= layer.weight_bytes;
+        p.devs[(size_t) stage].weights += layer.weight_bytes;
+        layer.dev = stage;
+        layer.grp = stage;
+    }
+    return true;
 }
 std::vector<float>& Model::get_usage() { return p_->usage; }
 uint64_t Model::get_weight_bytes(int dev) const { return p_->devs[(size_t) dev].weights; }
@@ -9631,17 +9670,15 @@ void Model::use_state_memory(int dev, uint8_t* fixed, uint8_t* drafter, const Co
     Impl& p = *p_;
     for (size_t s = 0; s < p.srcs.size(); ++s) {
         Src& src = p.srcs[s];
-        if (src.ckv[(size_t) dev])
-            src.ckv[(size_t) dev] = ckv[s];
-        if (src.ik[(size_t) dev])
-            src.ik[(size_t) dev] = ik[s];
+        src.ckv[(size_t) dev] = ckv[s];
+        src.ik[(size_t) dev] = ik[s];
         Layer& l = p.L[(size_t) src.layer];
         if (l.dev == dev && at.group[s] != kNoOffset) {
             l.c_kv = (float*) (fixed + at.group[s]);
             l.c_score = l.c_kv + (size_t) l.ratio * p.g.hd;
         }
     }
-    for (Layer& l : p.L)   // (not the head groups' members of --tp: strata-ds41 runs on one GPU until D9)
+    for (Layer& l : p.L)   // Paged stages are layer-parallel, with no tensor-parallel members.
         if (l.dev == dev)
             l.win = (l.mtp ? drafter : fixed) + at.ring[(size_t) l.il];
 }

@@ -300,6 +300,7 @@ function Invoke-Emulate {
 # computing experts of the first card's layers in one hop, and with its cut moved while it decodes, against one card;
 # tools\measure_rows.py on the bigger card.
 function Invoke-Memory {
+    Invoke-DeepSeekMemory
     if (-not (Test-Need memory @("$DataDir\models\IQ3_S", "$DataDir\packs\iq3_s"))) { return }
     $q38 = "`"--args=$Q38Memory`""
     Invoke-Pairs memory-q38-1card multi strata-q38.exe 86 "--cards $Big $q38"
@@ -324,6 +325,10 @@ function Invoke-Memory {
             # computes them in one hop, so that the GPUs still hold what one card does
             $hop = "`"--args=$Q38Memory $same --layer-split 24 --gpu-mib 512,8192 --remote-experts on`" $sameEnv"
             Invoke-Versus "memory-hop-$order" multi $oneSame "strata-q38.exe --cards $cards $hop"
+            $defaultQueues = '--env GPU_MAX_HW_QUEUES=4 --env CUDA_DEVICE_MAX_CONNECTIONS=8'
+            Invoke-Versus "memory-hop-default-queues-$order" multi (
+                "strata-q38.exe --cards $cards $hop --env GPU_MAX_HW_QUEUES=16 " +
+                '--env CUDA_DEVICE_MAX_CONNECTIONS=32') ("strata-q38.exe --cards $cards $hop $defaultQueues")
             # pools with room to spare (12 GiB on the bigger card, 5 GiB on the smaller), so that with the first
             # card's halved the cut moves and each of the profile's first 3000 experts still fits on a card
             $mib = ($order.ToCharArray() | ForEach-Object { if ($_ -eq 'B') { 12288 } else { 5120 } }) -join ','
@@ -350,6 +355,32 @@ function Invoke-Memory {
     }
     $null = Invoke-Step memory-rows-report ("`"$Py`" `"$Root\tools\measure_rows.py`" --report " +
         "`"$Results\rows-card.json`" `"$Results\rows-ram.json`" `"$Results\rows-ssd.json`"")
+}
+
+# D9's checks use only the build after: DeepSeek's paged engine did not exist at M7. Small, fixed expert sets leave
+# room for both cards to keep their layers' experts as the cut moves, without drafting or adaptive placement.
+function Invoke-DeepSeekMemory {
+    if ($null -eq $Small) {
+        return Add-Row memory-ds41 SKIP 'two NVIDIA cards needed'
+    }
+    $pack = "$DataDir\packs\deepseek-v4.1-flash-ist-das-2.00bpw"
+    if (-not (Test-Need memory-ds41 @($pack, $DeepSeekDir))) { return }
+    $base = "--deepseek `"$DeepSeekDir`" --env DS4_COMMIT_CAP_GB=30"
+    $fixed = '--dspark none --no-expert-cache --expert-cache 240 --ram-mib 8192 --remote-experts off'
+    $one = "strata-ds41.exe --cards $Big $base `"--args=$fixed --gpus 0 --gpu-mib 4096`""
+    foreach ($order in 'SB', 'BS') {
+        $cards = Get-CardList $order
+        $split = "strata-ds41.exe --cards $cards $base " +
+                 "`"--args=$fixed --gpus 0,1 --gpu-mib 2048,2048 --layer-split 20`""
+        Invoke-Versus "memory-ds41-2cards-$order" dsmemory $one $split
+        Invoke-Versus "memory-ds41-cut-move-$order" dscutmove $split "$split --move-cut"
+        $hopArgs = $fixed.Replace('--remote-experts off', '--remote-experts on')
+        $hop = "strata-ds41.exe --cards $cards $base " +
+               "`"--args=$hopArgs --gpus 0,1 --gpu-mib 256,4096 --layer-split 20`""
+        Invoke-Versus "memory-ds41-hop-default-queues-$order" dsmemory (
+            "$hop --env GPU_MAX_HW_QUEUES=16 --env CUDA_DEVICE_MAX_CONNECTIONS=32") (
+            "$hop --env GPU_MAX_HW_QUEUES=4 --env CUDA_DEVICE_MAX_CONNECTIONS=8")
+    }
 }
 
 # Runs one drive.py scenario with two engines of the build after, alternating, $Count times each, and judges the

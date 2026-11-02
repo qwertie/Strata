@@ -90,4 +90,33 @@ bool describe_conversation(const Geometry& g, int lb, int le, bool drafter, Stat
     return true;
 }
 
+strata::core::RegionSpan get_conversation_span(const Geometry& g, int lb, int le, bool drafter, bool whole) {
+    StateLayout layout;
+    ConversationRegions local, all;
+    std::string err;
+    describe_conversation(g, lb, le, drafter, layout, local, err);
+    describe_conversation(g, 0, g.nl, g.n_mtp > 0, layout, all, err);
+    const ConversationRegions& at = whole ? all : local;
+    strata::core::RegionSpan span;
+    span.count = 0;
+    const uint64_t ring = (uint64_t) g.win * kv_row_bytes(kKvFp8, g.hd);
+    for (int il = lb; il < le; ++il)
+        span.ranges.push_back({at.trunk, at.ring[(size_t) il], ring});
+    std::vector<KvSource> sources;
+    std::vector<int> source_of;
+    find_kv_sources(g, sources, source_of, err);
+    for (size_t s = 0; s < sources.size(); ++s)
+        if (local.group[s] != kNoOffset)
+            span.ranges.push_back({at.trunk, at.group[s], 2 * (uint64_t) sources[s].ratio * g.hd * sizeof(float)});
+    if (drafter && g.n_mtp > 0)
+        span.ranges.push_back({at.drafter, 0, (uint64_t) g.n_mtp * ring});
+    for (size_t s = 0; s < sources.size(); ++s) {
+        if (local.ckv[s] != kNoRegion)
+            span.ranges.push_back({at.ckv[s]});
+        if (local.ik[s] != kNoRegion)
+            span.ranges.push_back({at.ik[s]});
+    }
+    return span;
+}
+
 }  // namespace strata::ds4

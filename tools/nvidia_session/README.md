@@ -174,6 +174,24 @@ should now agree within about 10% (the first session's link lines read 3.4-6.8 G
 
 ## What the table says
 
+The `memory` phase also prepares D9's DeepSeek checks. They use the build after on both sides, reset
+the copied pack's profile before every start, disable drafting and adaptive placement, and cap the GPU and RAM pools.
+`DS4_COMMIT_CAP_GB=30` is explicit. They never use port 8080.
+
+| Check | What it compares | Required evidence |
+|---|---|---|
+| `memory-ds41-2cards-SB`, `-BS` | One card's 4 GiB pool against two 2 GiB pools, cut at 20, the same 240 experts | The same greedy tokens for a short prompt, its continuation and a chunked prompt; two pools in stderr |
+| `memory-ds41-cut-move-SB`, `-BS` | The split against itself, shrinking the first pool by half after 24 story tokens and restoring it after 48 | The same tokens, successful settings answers and a changed cut in stderr; a missing move fails the run |
+| `memory-ds41-hop-default-queues-SB`, `-BS` | Separate cards with hops on and pools of 256 and 4096 MiB, with 16 HIP queues / 32 CUDA connections against explicit runtime defaults of 4 / 8 | Both finish; stderr must show experts actually computed in hops before drawing conclusions about the queues |
+| `memory-hop-default-queues-SB`, `-BS` | Qwen3.8's existing hop check with the same two queue configurations | Both finish and compute experts in hops; compare tokens, speed and wait time |
+
+The queue checks are measurements to collect on real NVIDIA cards. No result is claimed here. A run without
+any experts computed in hops does not establish whether the extra queues are needed. DeepSeek supports fixed
+stages on distinct GPUs, but its expert hops and moving dense weights to another GPU are unfinished: its hop
+checks refuse, and its cut-move check on distinct GPUs reports no move. Those checks remain pending. The
+DeepSeek split check has not been run on real NVIDIA cards yet. Pool sizes may need adjustment to exercise a cut;
+keep the same fixed expert set fitting on both sides, and record any changes with the results.
+
 Each run's output is compared request by request (`report.py`), with times and memory-dependent numbers masked,
 two batch slots' lines compared slot by slot, and a continued conversation compared only between runs that sent it
 the same prompt. **PASS**: every run printed the same. **VARIES**: some runs printed something else, but a run of

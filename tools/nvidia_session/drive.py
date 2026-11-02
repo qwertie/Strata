@@ -11,6 +11,8 @@ Scenarios (the engine's --serve protocol unless said otherwise):
   cutmove   strata-q38: a 96-token story in a batch slot; with --move-cut the first card's memory is halved after 24
             tokens and set back after 48 (the layer cut moves between two steps); the answers go to FILE.settings
   ds        DeepSeek V4.1: greedy and seeded answers, a 128-token one for the speed
+  dsmemory  strata-ds41: greedy answers and a continuation, with fixed expert placement and no drafting
+  dscutmove strata-ds41: cutmove's 96-token story using the DeepSeek tokenizer and chat format
   server    the HTTP server on port 8091 with this engine (Qwen3.8): two greedy chats and their speed
   config    no engine start: FILE gets the run config (strata-<model>.json) that `server` uses, for
             tools/measure_rows.py
@@ -48,7 +50,8 @@ QWEN_USER, QWEN_ANSWER = "<|im_start|>user\n", "<|im_end|>\n<|im_start|>assistan
 
 def main() -> int:
     ap = argparse.ArgumentParser()
-    ap.add_argument("scenario", choices=["q38", "q38state", "q36", "multi", "cutmove", "ds", "server", "config"])
+    ap.add_argument("scenario", choices=["q38", "q38state", "q36", "multi", "cutmove", "ds", "dsmemory",
+                                        "dscutmove", "server", "config"])
     ap.add_argument("--exe", required=True)
     ap.add_argument("--out", required=True)
     ap.add_argument("--data", required=True)
@@ -78,7 +81,27 @@ def run_engine(a, env: dict[str, str]) -> int:
         e.send("QUIT")
     except (SystemExit, queue.Empty, OSError) as x:
         e.note(f"STOPPED: {x or 'no output for 15 minutes'}")
-    return e.finish(a.scenario == "multi")
+    code = e.finish(a.scenario == "multi")
+    if code == 0 and a.move_cut and a.scenario in ("cutmove", "dscutmove"):
+        if problem := get_cut_move_problem(Path(a.out)):
+            with open(a.out, "a", encoding="utf-8") as out:
+                out.write(f"STOPPED: {problem}\nexit 1\n")
+            return 1
+    return code
+
+
+def get_cut_move_problem(out: Path) -> str:
+    """Gets why a cut-move check did not exercise a successful move, even if generation completed."""
+    settings = out.with_suffix(out.suffix + ".settings")
+    if not settings.exists():
+        return "no settings answers recorded during decoding"
+    if re.search(r"\b(ERR|SHORTFALL)\b", settings.read_text(encoding="utf-8")):
+        return "a memory resize failed; see the settings answers"
+    stderr = out.with_suffix(out.suffix + ".stderr").read_text(encoding="utf-8", errors="replace")
+    moves = re.findall(r"layer cut moved: K=(\d+) -> K=(\d+)", stderr)
+    if not any(before != after for before, after in moves):
+        return "no layer cut moved; see stderr and the settings answers"
+    return ""
 
 
 class Engine:
@@ -213,8 +236,9 @@ def model_args(a) -> list[str]:
     if a.scenario == "q36":
         gguf = next((d / "models/qwen36-UD-Q4_K_XL").glob("*.gguf"))
         return ["--native", str(gguf), "--max-context", "32768", "--prefill", "auto", "--mtp", "2", "--batch", "2"]
-    if a.scenario == "ds":
-        return ["--pack", str(deepseek_pack(a)), "--max-context", "8192", "--eos", "1", "--dspark-conf", "0.65"]
+    if a.scenario in ("ds", "dsmemory", "dscutmove"):
+        return ["--pack", str(deepseek_pack(a)), "--max-context", "8192", "--eos", "1", "--dspark-conf", "0.65",
+                *(["--batch", "1"] if a.scenario == "dscutmove" else [])]
     more = {"q38": ["--batch", "2"], "q38state": ["--conversation-cache-mib", "4096"], "cutmove": ["--batch", "1"]}
     return qwen38_args(d) + more.get(a.scenario, [])
 
@@ -313,9 +337,11 @@ def multi(e: Engine, a):
 
 
 def cutmove(e: Engine, a):
-    tok = tokenizer(Path(a.data) / "packs/iq3_s")
-    story = tok.encode(QWEN_USER + "Write a long, detailed story about a lighthouse keeper who counts ships." +
-                       QWEN_ANSWER, parse_special=True)
+    deepseek = a.scenario == "dscutmove"
+    tok = tokenizer(Path(a.data) / (DS_PACK if deepseek else "packs/iq3_s"))
+    text = "Write a long, detailed story about a lighthouse keeper who counts ships."
+    prompt = render_deepseek_prompt(text) if deepseek else QWEN_USER + text + QWEN_ANSWER
+    story = tok.encode(prompt, parse_special=True)
     changes = {}
     if a.move_cut:
         report = "".join(e.ask_quietly("GET_MEMORY_USE", "END_MEMORY"))
@@ -324,10 +350,18 @@ def cutmove(e: Engine, a):
     e.bgen(0, 96, story, changes)
 
 
+def dsmemory(e: Engine, a):
+    """Checks greedy tokens on the window and chunked prompt paths, including a continued conversation."""
+    tok = tokenizer(Path(a.data) / DS_PACK)
+    chat = lambda text: tok.encode(render_deepseek_prompt(text), parse_special=True)  # noqa: E731
+    answer = e.gen("48 temperature=0", chat("Write an iterative Python Fibonacci function. Code only."))
+    e.gen("24 temperature=0", answer)
+    e.gen("32 temperature=0", chat("Summarize in one sentence: " + "The lighthouse keeper counts ships. " * 180))
+
+
 def ds(e: Engine, a):
     tok = tokenizer(Path(a.data) / DS_PACK)
-    chat = lambda text: tok.encode(  # noqa: E731
-        f"<｜begin▁of▁sentence｜><｜User｜>{text}<｜Assistant｜></think>", parse_special=True)
+    chat = lambda text: tok.encode(render_deepseek_prompt(text), parse_special=True)  # noqa: E731
     code = chat("Write a Python function that returns the n-th Fibonacci number iteratively. Code only.")
     e.gen("48", code)
     e.gen("32 temperature=0.8 top_p=0.9 top_k=30 min_p=0.05 seed=7",
@@ -336,7 +370,13 @@ def ds(e: Engine, a):
     e.gen("128", code)
 
 
-SCENARIOS = {"q38": q38, "q38state": q38state, "q36": q36, "multi": multi, "cutmove": cutmove, "ds": ds}
+def render_deepseek_prompt(text: str) -> str:
+    """Formats one user turn with reasoning closed, as the DeepSeek smoke checks do."""
+    return f"<｜begin▁of▁sentence｜><｜User｜>{text}<｜Assistant｜></think>"
+
+
+SCENARIOS = {"q38": q38, "q38state": q38state, "q36": q36, "multi": multi, "cutmove": cutmove, "ds": ds,
+             "dsmemory": dsmemory, "dscutmove": cutmove}
 
 
 def looks(e: Engine, cmds: list[str]):

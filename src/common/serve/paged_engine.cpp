@@ -439,7 +439,19 @@ bool PagedEngine::init() {
         for (size_t i = 0; i < held_.size(); ++i)
             held_[i]->parts.push_back(std::move(parts[i]));
     }
-    if (cards_.size() < 2 || settings_.remote_experts == "off" || facts_.split_ranking.empty())
+    if (cards_.size() < 2 || settings_.remote_experts == "off")
+        return true;
+    std::vector<int> devices;
+    for (const PagedCard& card : cards_)
+        devices.push_back(card.dev);
+    if (const std::string why = strata::core::get_hop_refusal(devices); !why.empty()) {
+        if (settings_.remote_experts == "on") {
+            say("--remote-experts on: %s; use --remote-experts auto or off\n", why.c_str());
+            return false;
+        }
+        return true;
+    }
+    if (facts_.split_ranking.empty())
         return true;
     for (PagedCard& card : cards_) {
         card.lent.assign((size_t) (facts_.n_layers * facts_.n_expert), strata::core::kNotResident);

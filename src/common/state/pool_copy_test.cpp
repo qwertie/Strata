@@ -127,6 +127,29 @@ int main() {
           "shares of different sizes are refused");
     std::filesystem::remove(path);
 
+    RegionSpan packed_from, packed_to;
+    packed_from.count = packed_to.count = 0;
+    packed_from.ranges = {{0, 4, 12}, {0, 50, 20}};
+    packed_to.ranges = {{0, 10, 12}, {0, 70, 20}};
+    check(copy_conversation(*a.pool, 1, *both.pool, 9, err, packed_from, packed_to),
+          "two packed ranges copy independently within one fixed region");
+    for (size_t i = 0; i < packed_from.ranges.size(); ++i) {
+        const auto& from = packed_from.ranges[i];
+        const auto& to = packed_to.ranges[i];
+        const uint8_t* src = a.pool->page_address(a.pool->conversation_blocks(1, 0)[0]) + from.offset;
+        const uint8_t* dst = both.pool->page_address(both.pool->conversation_blocks(9, 0)[0]) + to.offset;
+        check(std::equal(src, src + from.bytes, dst), "each packed range keeps its own bytes");
+    }
+    check(save_conversation(*both.pool, 9, path, err, packed_to) &&
+              load_conversation(path, *again.pool, 2, err, packed_from),
+          "packed ranges round-trip through a pause file");
+    packed_to.ranges = {{0, 120, 20}};
+    check(!copy_conversation(*a.pool, 1, *both.pool, 9, err, packed_from, packed_to),
+          "a packed range outside its block is refused");
+    packed_to.ranges = {{99, 0, 20}};
+    check(!save_conversation(*both.pool, 9, path, err, packed_to), "an absent region is refused");
+    std::filesystem::remove(path);
+
     const std::filesystem::path dir = std::filesystem::temp_directory_path() / "pool_copy_test";
     std::filesystem::create_directories(dir);
     const std::string mine = get_pause_file_prefix(dir.string()) + "1.bin";

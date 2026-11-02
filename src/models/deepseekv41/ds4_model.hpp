@@ -76,10 +76,13 @@ struct Options {
     bool verbose = false;
     /// strata-ds41 (the memory manager's pools): the routed experts are the caller's - the GPU computes those
     /// set_expert_addresses names, the CPU lane and the prompt path read the others from this pool (a RAM page pool
-    /// over the SSD) - instead of the old engine's VRAM slots, RAM store, files' mapping and moves.  A GGUF pack on
-    /// one GPU.  Null: the old engine's own.
+    /// over the SSD) - instead of the old engine's VRAM slots, RAM store, files' mapping and moves. Requires a GGUF
+    /// pack with layer-parallel stages. Null: the old engine's own.
 
     strata::core::ExpertSource* expert_pages = nullptr;
+    /// Chooses trunk cuts from the geometry and expert bytes before loading dense weights; false sets the error.
+    /// The paged engine supplies it; empty for the old engine.
+    std::function<bool(const Geometry&, const std::vector<uint64_t>&, std::vector<int64_t>&, std::string&)> plan_layers;
 };
 
 /// Where one trunk layer's routed experts lie in the model's files (Model::get_file_paths) and where each matrix goes
@@ -167,8 +170,13 @@ public:
     std::vector<int> get_heat_order(int layer) const;
     /// (Options::expert_pages) Makes the GPU compute the experts of every layer (get_expert_bytes') at device addresses
     /// `at` (layer * n_exp + expert, n_exp the trunk's; null: the CPU lane's) from the next feed on; false (and `err`)
-    /// when the tables could not be written.  The DSpark blocks' experts must all have an address when it drafts.
-    bool set_expert_addresses(const std::vector<const uint8_t*>& at, std::string& err);
+    /// when the tables could not be written. `stage` selects one device's layers, -1 all layers. The DSpark blocks'
+    /// experts must all have an address when it drafts.
+    bool set_expert_addresses(const std::vector<const uint8_t*>& at, std::string& err, int stage = -1);
+    /// Gets each stage's trunk interval, in device order.
+    std::vector<int64_t> get_layer_cuts() const;
+    /// Changes a stage's interval when its dense weights remain addressable on the same physical GPU.
+    bool set_stage_layers(int stage, int lb, int le, std::string& err);
     /// (Options::expert_pages) Gets each trunk expert's routings in windows since the caller last changed them (layer
     /// * n_exp + expert), counted once the caller sized it to that.
     std::vector<float>& get_usage();

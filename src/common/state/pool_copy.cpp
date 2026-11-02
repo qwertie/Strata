@@ -36,15 +36,27 @@ struct Piece {
     uint64_t offset = 0, bytes = 0;
 };
 
-/// Gets the pieces of `pool`'s layout that `span` names: its share of a fixed region, then its regions, as far as the
-/// layout has them.
-std::vector<Piece> get_pieces(const PagePool& pool, RegionSpan span) {
-    std::vector<Piece> pieces;
+/// Gets the validated pieces of `pool` selected by the legacy fixed share, explicit ranges and consecutive regions.
+bool get_pieces(const PagePool& pool, const RegionSpan& span, std::vector<Piece>& pieces, std::string& err) {
     if (span.part != SIZE_MAX)
         pieces.push_back({span.part, span.offset, span.bytes});
+    for (const RegionRange& range : span.ranges) {
+        if (range.region >= pool.layout().regions.size()) {
+            err = "a conversation span names a region outside its layout";
+            return false;
+        }
+        pieces.push_back({range.region, range.offset, range.bytes ? range.bytes : pool.block_bytes(range.region)});
+    }
     for (size_t r = span.first; r < pool.layout().regions.size() && r - span.first < span.count; ++r)
         pieces.push_back({r, 0, pool.block_bytes(r)});
-    return pieces;
+    for (const Piece& piece : pieces) {
+        if (piece.region >= pool.layout().regions.size() || piece.offset > pool.block_bytes(piece.region) ||
+            piece.bytes > pool.block_bytes(piece.region) - piece.offset) {
+            err = "a conversation span extends beyond a region's block";
+            return false;
+        }
+    }
+    return true;
 }
 
 /// Copies `bytes` of pages (in any memory) to the file `f` (`to_file`) or from it, through `bounce` a piece at a time.
@@ -62,7 +74,9 @@ bool copy_through(std::FILE* f, uint8_t* pages, uint64_t bytes, bool to_file, st
 
 bool copy_conversation(const PagePool& from, ConversationId from_id, const PagePool& to, ConversationId to_id,
                        std::string& err, RegionSpan from_span, RegionSpan to_span) {
-    const std::vector<Piece> src_pieces = get_pieces(from, from_span), dst_pieces = get_pieces(to, to_span);
+    std::vector<Piece> src_pieces, dst_pieces;
+    if (!get_pieces(from, from_span, src_pieces, err) || !get_pieces(to, to_span, dst_pieces, err))
+        return false;
     bool same = src_pieces.size() == dst_pieces.size() && from.page_bytes() == to.page_bytes();
     for (size_t i = 0; same && i < dst_pieces.size(); ++i)
         same = src_pieces[i].bytes == dst_pieces[i].bytes;
@@ -90,8 +104,10 @@ bool copy_conversation(const PagePool& from, ConversationId from_id, const PageP
 
 bool save_conversation(const PagePool& pool, ConversationId id, const std::string& path, std::string& err,
                        RegionSpan span) {
+    std::vector<Piece> pieces;
+    if (!get_pieces(pool, span, pieces, err))
+        return false;
     File f(std::fopen(path.c_str(), "wb"), &std::fclose);
-    const std::vector<Piece> pieces = get_pieces(pool, span);
     std::vector<uint64_t> head{pieces.size()};
     for (const Piece& c : pieces)
         head.insert(head.end(), {c.bytes, pool.conversation_blocks(id, c.region).size()});
@@ -117,8 +133,10 @@ bool save_conversation(const PagePool& pool, ConversationId id, const std::strin
 
 bool load_conversation(const std::string& path, const PagePool& pool, ConversationId id, std::string& err,
                        RegionSpan span) {
+    std::vector<Piece> pieces;
+    if (!get_pieces(pool, span, pieces, err))
+        return false;
     File f(std::fopen(path.c_str(), "rb"), &std::fclose);
-    const std::vector<Piece> pieces = get_pieces(pool, span);
     char magic[sizeof kMagic] = {};
     std::vector<uint64_t> head(1 + 2 * pieces.size());
     bool ok = f != nullptr && std::fread(magic, 1, sizeof magic, f.get()) == sizeof magic &&

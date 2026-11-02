@@ -5,6 +5,7 @@
 #pragma once
 
 #include "strata/common/state/state_layout.hpp"
+#include "strata/common/state/pool_copy.hpp"
 #include "strata/models/deepseekv41/geometry.hpp"
 
 #include <cstddef>
@@ -52,5 +53,8 @@ struct ConversationRegions {
 /// not one the old engine runs.
 bool describe_conversation(const Geometry& g, int lb, int le, bool drafter, strata::core::StateLayout& layout,
                            ConversationRegions& at, std::string& err);
+
+/// Selects a stage's state in its own layout or the whole model's layout (`whole`), in matching piece order.
+strata::core::RegionSpan get_conversation_span(const Geometry& g, int lb, int le, bool drafter, bool whole);
 
 }  // namespace strata::ds4

@@ -9,7 +9,9 @@
 #include <algorithm>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
 #include <map>
+#include <memory>
 #include <sstream>
 #include <string>
 
@@ -205,6 +207,58 @@ void pages_fixture() {
     check(pool.conversation_blocks(1, at.ckv[3]).size() == 103, "one block a page");
 }
 
+/// Checks every cut against one canonical copy, including sources whose rows appear on both stages.
+void copy_split_fixture() {
+    const Geometry g = get_geometry();
+    const uint64_t page = strata::core::choose_expert_page_bytes(kBlobBytes);
+    StateLayout whole;
+    ConversationRegions at;
+    std::string err;
+    check(describe_conversation(g, 0, g.nl, true, whole, at, err), "the canonical copy includes DSpark");
+    const auto make_pool = [&](const StateLayout& layout) {
+        strata::core::PagePoolConfig config;
+        config.page_bytes = page;
+        config.chunk_bytes = 128 * page;
+        strata::core::PagePoolHooks hooks;
+        hooks.alloc = [](size_t bytes) { return std::calloc(1, bytes); };
+        hooks.free = [](void* p) { std::free(p); };
+        auto pool = std::make_unique<PagePool>(layout, config, hooks);
+        check(pool->resize(config.chunk_bytes).refusal.empty() && pool->grow_conversation(1, 512).empty(),
+              "the test conversation fits");
+        return pool;
+    };
+    auto source = make_pool(whole);
+    for (size_t r = 0; r < whole.regions.size(); ++r)
+        for (const auto block : source->conversation_blocks(1, r))
+            for (uint64_t i = 0; i < source->block_bytes(r); ++i)
+                source->page_address(block)[i] = (uint8_t) (r * 17 + i % 251);
+    for (int cut = 1; cut < g.nl; ++cut) {
+        auto restored = make_pool(whole);
+        for (int stage = 0; stage < 2; ++stage) {
+            const int lb = stage == 0 ? 0 : cut, le = stage == 0 ? cut : g.nl;
+            StateLayout layout;
+            check(describe_conversation(g, lb, le, stage == 1, layout, at, err), "the stage has a layout");
+            auto pool = make_pool(layout);
+            const auto local = get_conversation_span(g, lb, le, stage == 1, false);
+            const auto canonical = get_conversation_span(g, lb, le, stage == 1, true);
+            check(strata::core::copy_conversation(*source, 1, *pool, 1, err, canonical, local) &&
+                      strata::core::copy_conversation(*pool, 1, *restored, 1, err, local, canonical),
+                  "a stage's packed state copies through the canonical layout");
+        }
+        for (size_t r = 0; r < whole.regions.size(); ++r) {
+            const uint64_t bytes = whole.regions[r].kind == RegionKind::fixed ? whole.regions[r].unit_bytes
+                                                                            : restored->block_bytes(r);
+            for (const auto block : restored->conversation_blocks(1, r)) {
+                const uint8_t* data = restored->page_address(block);
+                bool same = true;
+                for (uint64_t i = 0; same && i < bytes; ++i)
+                    same = data[i] == (uint8_t) (r * 17 + i % 251);
+                check(same, "every ring, compressor group, drafter ring and compressed row survives every cut");
+            }
+        }
+    }
+}
+
 }  // namespace
 
 int main() {
@@ -212,6 +266,7 @@ int main() {
     one_card_fixture();
     split_fixture();
     pages_fixture();
+    copy_split_fixture();
     std::printf("conversation_layout_test: %d checks passed\n", checks);
     return 0;
 }

@@ -182,7 +182,7 @@ private:
     std::vector<int32_t> picks_;       ///< the last step's token after each row, for the drafter
 };
 
-std::string get_hop_refusal(const PagedSettings& s, const Options& o);
+std::string get_split_hop_refusal(const Options& o);
 std::vector<uint64_t> get_blob_bytes(const Model& m);
 PagedCard& add_card(Model& m, Conversation& conv, PagedCards& cards, ModelCards& model_cards, GpuStage* stage);
 bool open_pages(Model& m, PagedCard& card, ModelCard& mc, int64_t tokens_min, int64_t gpu_mib, int64_t max_experts,
@@ -202,20 +202,19 @@ int run_paged_engine(int argc, char** argv) {
     PagedSettings settings;
     if (const int status = strata::serve::take_paged_options(argc, argv, kProgram, settings); status >= 0)
         return status;
-    const bool layer_split =
-        std::any_of(argv + 1, argv + argc, [](const char* a) { return std::strcmp(a, "--layer-split") == 0; });
-    strata::serve::set_paged_runtime_env(settings, layer_split);
     prepare_process(argc, argv);
-    prime_gpu_queues();
     Options o;
     bool have_tokens = false;
     if (const int status = parse_options(argc, argv, o, have_tokens); status >= 0) return status;
-    if (const int status = apply_device_defaults(o); status >= 0) return status;
-    if (const std::string why = get_hop_refusal(settings, o); !why.empty()) {
+    const std::string hop_refusal = get_split_hop_refusal(o);
+    if (settings.remote_experts == "on" && !hop_refusal.empty()) {
         std::fprintf(stderr, "%s: --remote-experts on: %s; use --remote-experts auto or off\n", kProgram.c_str(),
-                     why.c_str());
+                     hop_refusal.c_str());
         return 2;
     }
+    strata::serve::set_paged_runtime_env(settings, !o.layer_split.empty() && hop_refusal.empty());
+    prime_gpu_queues();
+    if (const int status = apply_device_defaults(o); status >= 0) return status;
     const int slots = std::max(o.batch, 0);
     if (settings.step.concurrent < 0 || settings.step.concurrent > std::max(slots, 1))
         settings.step.concurrent = std::max(slots, 1);
@@ -715,13 +714,13 @@ void PagedQwen::print_done(const strata::serve::RequestDone& d) const {
                 (long long) m_.o.prefill_chunk);
 }
 
-/// Gets why the cards of `o`'s layer split may not compute experts in hops (--remote-experts on in `s`), or an empty
+/// Gets why the cards of `o`'s layer split may not compute experts in hops, or an empty
 /// string: card 0 runs on GPU 0 (a layer split takes no other primary device) and the later cards on --split-device's
 /// GPUs, which without the option are GPUs of their own.
-std::string get_hop_refusal(const PagedSettings& s, const Options& o) {
+std::string get_split_hop_refusal(const Options& o) {
     std::vector<int64_t> stages;
     std::string err;
-    if (s.remote_experts != "on" || o.layer_split.empty() || o.split_device.empty() ||
+    if (o.layer_split.empty() || o.split_device.empty() ||
         !strata::serve::parse_i64_list(o.split_device.c_str(), stages, err))
         return {};
     std::vector<int> devices = {0};

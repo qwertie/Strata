@@ -90,9 +90,9 @@ int serve_paged_model(PagedModel& model, PagedCards& cards, strata::core::RamExp
 /// status.
 int take_paged_options(int& argc, char** argv, const std::string& program, PagedSettings& s);
 /// Sets the GPU runtime's environment for the engine, before the runtime starts (an explicit setting wins): on HIP on
-/// Windows, no resource cache, so that the pools can shrink; with a layer split whose cards may compute each other's
-/// experts (`s.remote_experts` not off), more hardware queues.
-void set_paged_runtime_env(const PagedSettings& s, bool layer_split);
+/// Windows, no resource cache, so that the pools can shrink; when `hops_possible` (stages on separate GPUs) and
+/// `s.remote_experts` is not off, more hardware queues.
+void set_paged_runtime_env(const PagedSettings& s, bool hops_possible);
 /// Measures `card`'s link to RAM (PagedCard::link, and refill_batch for experts of up to `expert_bytes`) and predicts
 /// its speed from its multiprocessors and clock (layer_ms); says the link on stderr after `program`.  Call before the
 /// card's pool takes the memory the measuring copies need.
