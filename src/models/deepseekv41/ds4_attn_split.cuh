@@ -39,7 +39,7 @@ __device__ __forceinline__ float wmax(float v) {
 // d = 512 only (a thread owns 2 output values, a lane 16 values of a row)
 template <int G, int R>
 __global__ void __launch_bounds__(256) attn_part(const float* __restrict__ q, const uint16_t* __restrict__ win,
-                                                 const uint8_t* __restrict__ ckv, size_t ckv_row_bytes, const int* __restrict__ sel,
+                                                 const KvRows ckv, const int* __restrict__ sel,
                                                  int sel_stride, AttnRows ar, int heads, float scale, float* __restrict__ part,
                                                  float* __restrict__ ml, int nsplit) {
     constexpr int D = 512;
@@ -84,7 +84,7 @@ __global__ void __launch_bounds__(256) attn_part(const float* __restrict__ q, co
 #pragma unroll
     for (int i = 0; i < RPW; ++i)
         if (rowoff[i] >= 0) {
-            const uint8_t* r = ckv + (size_t) rowoff[i] * ckv_row_bytes;
+            const uint8_t* r = ckv.row(rowoff[i]);
             cwv[i] = *(const uint2*) (r + lane * 8);
             sbv[i] = r[D / 2 + lane];
         }
@@ -194,11 +194,12 @@ struct AttnSplitScratch {
 
 // total_max = the largest nwin + nsel of the T queries
 template <int G, int R>
-void sparse_attn_split(const float* q, const uint16_t* win, const uint8_t* ckv, size_t ckv_row_bytes, const int* sel, int sel_stride,
+void sparse_attn_split(const float* q, const uint16_t* win, const KvRows& ckv, const int* sel, int sel_stride,
                        const AttnRows& ar, const float* sink, int heads, int T, float scale, float* out, const AttnSplitScratch& sc,
                        int total_max, cudaStream_t s) {
     const int nsplit = (total_max + R - 1) / R;
-    attn_part<G, R><<<dim3(heads / G, nsplit, T), 256, 0, s>>>(q, win, ckv, ckv_row_bytes, sel, sel_stride, ar, heads, scale, sc.part, sc.ml, sc.nsplit);
+    attn_part<G, R><<<dim3(heads / G, nsplit, T), 256, 0, s>>>(q, win, ckv, sel, sel_stride, ar, heads, scale, sc.part,
+                                                               sc.ml, sc.nsplit);
     attn_merge<<<dim3(heads, T), 256, 0, s>>>(sc.part, sc.ml, sink, heads, sc.nsplit, R, ar, out);
 }
 

@@ -1273,8 +1273,7 @@ void kv_finish(const float* x, int n, int d, int quant, uint16_t* bf, uint8_t* p
     dk::finish(const_cast<float*>(x), n, d, d, f, s);
     dk::Finish p;
     p.quant = quant;
-    p.pdst = pk;
-    p.pdst_stride = (long long) dk::kv_row_bytes(quant, d);
+    p.pdst = dk::make_kv_rows(pk, quant, d);
     dk::finish(const_cast<float*>(x), n, d, d, p, s);
 }
 
@@ -1316,6 +1315,10 @@ void test_kv_pack(cudaStream_t s) {
     CU(cudaMalloc(&i4, (size_t) NC * dk::kv_row_bytes(dk::kKvFp4p, IX)));
     kv_finish(d_xc, NC, HD, dk::kKvFp4, c16, c4, s);
     kv_finish(d_xi, NC, IX, dk::kKvFp4p, i16, i4, s);
+    const dk::KvRows rc16 = dk::make_kv_rows((uint8_t*) c16, dk::kKvBf16, HD),
+                     rc4 = dk::make_kv_rows(c4, dk::kKvFp4, HD),
+                     ri16 = dk::make_kv_rows((uint8_t*) i16, dk::kKvBf16, IX),
+                     ri4 = dk::make_kv_rows(i4, dk::kKvFp4p, IX);
     CU(cudaStreamSynchronize(s));
     kv_check_rows("kv pack: compressed KV (FP4 + E4M3 / 16)", dk::kKvFp4, host(c16, (size_t) NC * HD),
                   host(c4, (size_t) NC * dk::kv_row_bytes(dk::kKvFp4, HD)), NC, HD);
@@ -1437,13 +1440,13 @@ void test_kv_pack(cudaStream_t s) {
                     ar.nsel[t] = SEL - 31 * t;
                 }
             const size_t n = (size_t) T * NH * HD;
-            dk::sparse_attn(d_q, ext, c16, d_sel, SEL, ar, d_sink, NH, HD, T, scale, o1, s, dk::kKvBf16);
+            dk::sparse_attn(d_q, ext, rc16, d_sel, SEL, ar, d_sink, NH, HD, T, scale, o1, s, dk::kKvBf16);
             CU(cudaStreamSynchronize(s));
             const std::vector<float> want = host(o1, n);
             bool same = true;
             for (int g : {-1, 0, 1, 2, 4, 8}) {
                 CU(cudaMemset(o2, 0xff, n * 4));
-                dk::sparse_attn(d_q, ext, c4, d_sel, SEL, ar, d_sink, NH, HD, T, scale, o2, s, dk::kKvFp4, g, &scr);
+                dk::sparse_attn(d_q, ext, rc4, d_sel, SEL, ar, d_sink, NH, HD, T, scale, o2, s, dk::kKvFp4, g, &scr);
                 CU(cudaStreamSynchronize(s));
                 same = same && std::memcmp(want.data(), host(o2, n).data(), n * 4) == 0;
             }
@@ -1454,9 +1457,9 @@ void test_kv_pack(cudaStream_t s) {
                 CU(cudaEventRecord(e0, s));
                 for (int it = 0; it < sh.iters; ++it) {
                     if (ways[w] == 99)
-                        dk::sparse_attn(d_q, ext, c16, d_sel, SEL, ar, d_sink, NH, HD, T, scale, o1, s, dk::kKvBf16);
+                        dk::sparse_attn(d_q, ext, rc16, d_sel, SEL, ar, d_sink, NH, HD, T, scale, o1, s, dk::kKvBf16);
                     else
-                        dk::sparse_attn(d_q, ext, c4, d_sel, SEL, ar, d_sink, NH, HD, T, scale, o1, s, dk::kKvFp4,
+                        dk::sparse_attn(d_q, ext, rc4, d_sel, SEL, ar, d_sink, NH, HD, T, scale, o1, s, dk::kKvFp4,
                                         ways[w] == -2 ? 0 : ways[w], ways[w] == -2 ? nullptr : &scr);
                 }
                 CU(cudaEventRecord(e1, s));
@@ -1502,8 +1505,8 @@ void test_kv_pack(cudaStream_t s) {
             lim.n[t] = NC - 3 * t;
             lim.k[t] = 512;
         }
-        dk::index_score(d_q, d_w, i16, NH, IX, T, NC, nullptr, 0, 1, lim, o1, ss, s, dk::kKvBf16);
-        dk::index_score(d_q, d_w, i4, NH, IX, T, NC, nullptr, 0, 1, lim, o2, ss, s, dk::kKvFp4p);
+        dk::index_score(d_q, d_w, ri16, NH, IX, T, NC, nullptr, 0, 1, lim, o1, ss, s, dk::kKvBf16);
+        dk::index_score(d_q, d_w, ri4, NH, IX, T, NC, nullptr, 0, 1, lim, o2, ss, s, dk::kKvFp4p);
         CU(cudaStreamSynchronize(s));
         kv_same("kv pack: index scores", host(o1, (size_t) T * ss).data(), host(o2, (size_t) T * ss).data(),
                 (size_t) T * ss * 4);
@@ -1515,7 +1518,7 @@ void test_kv_pack(cudaStream_t s) {
             for (int f = 0; f < 2; ++f) {
                 CU(cudaEventRecord(e0, s));
                 for (int it = 0; it < 50; ++it)
-                    dk::index_score(d_q, d_w, f ? (const void*) i4 : (const void*) i16, NH, IX, T, NC, nullptr, 0, 1, lim,
+                    dk::index_score(d_q, d_w, f ? ri4 : ri16, NH, IX, T, NC, nullptr, 0, 1, lim,
                                     o1, ss, s, f ? dk::kKvFp4p : dk::kKvBf16);
                 CU(cudaEventRecord(e1, s));
                 CU(cudaEventSynchronize(e1));

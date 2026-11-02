@@ -656,8 +656,8 @@ struct Layer {
 struct Src {
     int layer = 0, ratio = 1;
     int64_t cap = 0;
-    // per device (nullptr where no layer reads it): rows of kKvFp4 (the compressed KV), kKvFp4p (the index keys)
-    std::vector<uint8_t*> ckv, ik;
+    // per device (empty where no layer reads it): rows of kKvFp4 (the compressed KV), kKvFp4p (the index keys)
+    std::vector<KvRows> ckv, ik;
     uint8_t *h_ckv = nullptr, *h_ik = nullptr;   // pinned: a window's new rows, on their way to the other devices
     cudaEvent_t ev_ckv = nullptr, ev_ik = nullptr;
     // threads: whether devices outside the source's group read it, and the host-mapped hand-off of a window's new rows
@@ -2236,18 +2236,18 @@ struct Model::Impl {
         }
         // which devices hold each source's compressed KV / index keys
         for (Src& s : srcs) {
-            s.ckv.assign(devs.size(), nullptr);
-            s.ik.assign(devs.size(), nullptr);
+            s.ckv.assign(devs.size(), make_kv_rows(nullptr, kKvFp4, g.hd));
+            s.ik.assign(devs.size(), make_kv_rows(nullptr, kKvFp4p, g.ix_hd));
         }
         for (const Layer& l0 : L)
             for (int m = 0; m < l0.nm; ++m) {
                 const Layer& l = member(l0, m);
                 if (l.src >= 0) {
-                    srcs[(size_t) l.src].ckv[(size_t) l.dev] = (uint8_t*) 1;
+                    srcs[(size_t) l.src].ckv[(size_t) l.dev].base = (uint8_t*) 1;
                     if (l0.grp != L[(size_t) srcs[(size_t) l.src].layer].grp) srcs[(size_t) l.src].remote = true;
                 }
                 if (l.ix_src && l.ik_src >= 0) {
-                    srcs[(size_t) l.ik_src].ik[(size_t) l.dev] = (uint8_t*) 1;
+                    srcs[(size_t) l.ik_src].ik[(size_t) l.dev].base = (uint8_t*) 1;
                     if (l0.grp != L[(size_t) srcs[(size_t) l.ik_src].layer].grp) srcs[(size_t) l.ik_src].remote = true;
                 }
             }
@@ -2312,9 +2312,9 @@ struct Model::Impl {
                     CK(cudaEventCreateWithFlags(&s.ev_ik, cudaEventDisableTiming));
                     CK(cudaSetDevice(d.id));
                 }
-                if (s.ckv[di] != nullptr && !dalloc(d, s.ckv[di], (size_t) s.cap * ckv_rb(), err, &d.caches))
+                if (s.ckv[di] && !dalloc(d, s.ckv[di].base, (size_t) s.cap * ckv_rb(), err, &d.caches))
                     return false;
-                if (s.ik[di] != nullptr && !dalloc(d, s.ik[di], (size_t) s.cap * ik_rb(), err, &d.caches))
+                if (s.ik[di] && !dalloc(d, s.ik[di].base, (size_t) s.cap * ik_rb(), err, &d.caches))
                     return false;
             }
         }
@@ -2327,7 +2327,7 @@ struct Model::Impl {
                 return false;
             const int sg = L[(size_t) sr.layer].grp;
             for (size_t di = 0; di < devs.size(); ++di)
-                if ((sr.ckv[di] != nullptr || sr.ik[di] != nullptr) && devs[di].grp != sg) sr.readers.push_back((int) di);
+                if ((sr.ckv[di] || sr.ik[di]) && devs[di].grp != sg) sr.readers.push_back((int) di);
         }
         for (Group& G : groups) {
             G.ar.nm = (int) G.mem.size();
@@ -5030,16 +5030,16 @@ struct Model::Impl {
             put(&rows, 8);
             if (rows == 0) continue;
             const int di = L[(size_t) s.layer].dev;
-            const uint8_t* ckv = s.ckv[(size_t) di];
-            const uint8_t* ik = s.ik[(size_t) di];   // (a pack whose sources are not index sources: none, zeros)
-            if (ckv == nullptr) {
+            const KvRows& ckv = s.ckv[(size_t) di];
+            const KvRows& ik = s.ik[(size_t) di];   // (a pack whose sources are not index sources: none, zeros)
+            if (!ckv) {
                 err = "source layer " + std::to_string(s.layer) + "'s rows are not on its device";
                 return 0;
             }
             const size_t cb = (size_t) rows * ckv_rb(), ib = (size_t) rows * ik_rb();
             cudaSetDevice(devs[(size_t) di].id);
-            if (cudaMemcpy(p + off, ckv, cb, cudaMemcpyDeviceToHost) != cudaSuccess ||
-                (ik != nullptr && cudaMemcpy(p + off + cb, ik, ib, cudaMemcpyDeviceToHost) != cudaSuccess)) {
+            if (!copy_rows_out(ckv, (int64_t) rows, p + off) ||
+                (ik && !copy_rows_out(ik, (int64_t) rows, p + off + cb))) {
                 err = "source layer " + std::to_string(s.layer) + "'s compressed KV: " + cudaGetErrorString(cudaGetLastError());
                 return 0;
             }
@@ -5190,14 +5190,13 @@ struct Model::Impl {
                 return false;
             }
             for (size_t di = 0; di < devs.size(); ++di) {
-                if (s.ckv[di] == nullptr && s.ik[di] == nullptr) continue;
+                if (!s.ckv[di] && !s.ik[di]) continue;
                 cudaSetDevice(devs[di].id);
-                if (s.ckv[di] != nullptr && cudaMemcpy(s.ckv[di], data + off, cb, cudaMemcpyHostToDevice) != cudaSuccess) {
+                if (s.ckv[di] && !copy_rows_in(s.ckv[di], (int64_t) rows, data + off)) {
                     err = "source layer " + std::to_string(s.layer) + "'s compressed KV: " + cudaGetErrorString(cudaGetLastError());
                     return false;
                 }
-                if (s.ik[di] != nullptr &&
-                    cudaMemcpy(s.ik[di], data + off + cb, ib, cudaMemcpyHostToDevice) != cudaSuccess) {
+                if (s.ik[di] && !copy_rows_in(s.ik[di], (int64_t) rows, data + off + cb)) {
                     err = "source layer " + std::to_string(s.layer) + "'s index keys: " + cudaGetErrorString(cudaGetLastError());
                     return false;
                 }
@@ -5273,6 +5272,19 @@ struct Model::Impl {
         slot_held = false;
         ok = true;
         return true;
+    }
+
+    // Copies the first n rows of `rows` to host memory `to`, block by block, and waits for them (slot_save).
+    static bool copy_rows_out(const KvRows& rows, int64_t n, uint8_t* to) {
+        return rows.for_each_run(0, n, [&](size_t off, size_t bytes, const uint8_t* at) {
+            return cudaMemcpy(to + off, at, bytes, cudaMemcpyDeviceToHost) == cudaSuccess;
+        });
+    }
+    // Copies the first n rows of `rows` from host memory `from`, block by block, and waits for them (slot_load).
+    static bool copy_rows_in(const KvRows& rows, int64_t n, const uint8_t* from) {
+        return rows.for_each_run(0, n, [&](size_t off, size_t bytes, uint8_t* at) {
+            return cudaMemcpy(at, from + off, bytes, cudaMemcpyHostToDevice) == cudaSuccess;
+        });
     }
 
     std::string slot_identity() const {
@@ -7053,7 +7065,7 @@ struct Model::Impl {
             }
             ext_to_ring(c.ext, l.win, p0, g.win, T, HD, s, nullptr);
         }
-        const uint8_t* ckv = nullptr;
+        KvRows ckv;
         const long long ss = (long long) o.max_context + 64;
         if (l.ratio > 0) {
             Src& sr = srcs[(size_t) l.src];
@@ -7096,8 +7108,8 @@ struct Model::Impl {
                     fi.pos_step = R;
                     fi.freqs = freqs;
                     fi.quant = 3;
-                    fi.pdst = ks.ik[(size_t) l.dev] + (size_t) g_first * ik_rb();
-                    fi.pdst_stride = (long long) ik_rb();
+                    fi.pdst = ks.ik[(size_t) l.dev];
+                    fi.pdst_row = g_first;
                     finish(c.ikr, ng, g.ix_hd, g.ix_hd, fi, s);
                 }
                 if (clen_max > 0 && !kv_only) {
@@ -7158,25 +7170,14 @@ struct Model::Impl {
                 fc.pos_step = R;
                 fc.freqs = freqs;
                 fc.quant = 2;
-                fc.pdst = sr.ckv[(size_t) l.dev] + (size_t) g_first * ckv_rb();
-                fc.pdst_stride = (long long) ckv_rb();
+                fc.pdst = sr.ckv[(size_t) l.dev];
+                fc.pdst_row = g_first;
                 finish(const_cast<float*>(latent), ng, HD, HD, fc, s);
                 if (mi == 0 && sr.remote) {   // the new rows for the other groups' readers (slot k % 2, once
                     const int slot = wp.k % 2;  // they took the chunk before last's)
                     if (wp.k >= 2)
                         for (int r : sr.readers) wait_flags(sr.x_ack + ((size_t) slot * devs.size() + r) * 32, 1, 32, wp.win - 2, s);
-                    Xfer x;
-                    x.src[0] = fc.pdst;
-                    x.dst[0] = sr.stage(slot);
-                    x.bytes[0] = (size_t) ng * ckv_rb();
-                    x.n = 1;
-                    if (l.owns_k && srcs[(size_t) l.ik_src].ik[(size_t) l.dev] != nullptr) {
-                        x.src[1] = srcs[(size_t) l.ik_src].ik[(size_t) l.dev] + (size_t) g_first * ik_rb();
-                        x.dst[1] = sr.stage(slot) + x_cap() * ckv_rb();
-                        x.bytes[1] = (size_t) ng * ik_rb();
-                        x.n = 2;
-                    }
-                    xfer_put(x, sr.flag(slot), wp.win, d.xcnt, s);
+                    put_new_rows(sr, l, g_first, ng, sr.stage(slot), sr.flag(slot), wp.win, d.xcnt, s);
                 }
             }
             ckv = sr.ckv[(size_t) l.dev];
@@ -7685,20 +7686,7 @@ struct Model::Impl {
                     got[(size_t) sidx] = 1;
                     Src& sr = srcs[(size_t) sidx];
                     if (L[(size_t) sr.layer].grp == L0.grp) continue;
-                    const int64_t g_first = p0 / sr.ratio;
-                    const int ng = (int) std::max<int64_t>(0, (p0 + T) / sr.ratio - g_first);
-                    Xfer x;
-                    if (ng > 0 && sr.ckv[(size_t) di] != nullptr) {
-                        x.src[x.n] = sr.stage(slot);
-                        x.dst[x.n] = sr.ckv[(size_t) di] + (size_t) g_first * ckv_rb();
-                        x.bytes[x.n++] = (size_t) ng * ckv_rb();
-                    }
-                    if (ng > 0 && sr.ik[(size_t) di] != nullptr) {
-                        x.src[x.n] = sr.stage(slot) + x_cap() * ckv_rb();
-                        x.dst[x.n] = sr.ik[(size_t) di] + (size_t) g_first * ik_rb();
-                        x.bytes[x.n++] = (size_t) ng * ik_rb();
-                    }
-                    if (x.n > 0) xfer_get(x, sr.flag(slot), wp.win, s);
+                    take_new_rows(sr, di, p0, T, sr.stage(slot), sr.flag(slot), wp.win, s);
                     set_flag(sr.x_ack + ((size_t) slot * devs.size() + di) * 32, wp.win, s);   // (taken, or none)
                 }
                 if (last_k && mi == 0 && g.n_mtp > 0) {   // the drafter's taps: the last chunk's last rows
@@ -8716,21 +8704,7 @@ struct Model::Impl {
                 got[(size_t) sidx] = 1;
                 Src& sr = srcs[(size_t) sidx];
                 if (L[(size_t) sr.layer].grp == L0.grp) continue;
-                const int64_t g_first = p0 / sr.ratio;
-                const int ng = (int) std::max<int64_t>(0, (p0 + T) / sr.ratio - g_first);
-                if (ng == 0) continue;
-                Xfer x;
-                if (sr.ckv[(size_t) di] != nullptr) {
-                    x.src[x.n] = sr.x_stage;
-                    x.dst[x.n] = sr.ckv[(size_t) di] + (size_t) g_first * ckv_rb();
-                    x.bytes[x.n++] = (size_t) ng * ckv_rb();
-                }
-                if (sr.ik[(size_t) di] != nullptr) {
-                    x.src[x.n] = sr.x_stage + x_cap() * ckv_rb();
-                    x.dst[x.n] = sr.ik[(size_t) di] + (size_t) g_first * ik_rb();
-                    x.bytes[x.n++] = (size_t) ng * ik_rb();
-                }
-                if (x.n > 0) xfer_get(x, sr.x_flag, wp.win, s);
+                take_new_rows(sr, di, p0, T, sr.x_stage, sr.x_flag, wp.win, s);
             }
             if (mi == 0 && !tap(d, il, T, err)) return false;
             if (!layer(L0, mi, p0, T, wp, err)) return false;
@@ -8742,25 +8716,77 @@ struct Model::Impl {
         return true;
     }
 
-    // a source's new cache rows (src on device `from`, bytes of them) to the same place of its other devices' copies,
-    // through pinned memory: the copy out on the source's stream, each copy in on its device's stream after it
-    bool replicate(std::vector<uint8_t*>& copies, uint8_t* stage, cudaEvent_t ev, const uint8_t* src, size_t at,
-                   size_t bytes, int from, std::string& err) {
+    // a source's new cache rows [r0, r0 + n) on device `from` to the same rows of its other devices' copies, through
+    // pinned memory: the copy out on the source's stream, each copy in on its device's stream after it
+    bool replicate(std::vector<KvRows>& copies, uint8_t* stage, cudaEvent_t ev, int64_t r0, int n, int from,
+                   std::string& err) {
         bool any = false;
-        for (size_t od = 0; od < devs.size(); ++od) any = any || (copies[od] != nullptr && (int) od != from);
+        for (size_t od = 0; od < devs.size(); ++od) any = any || (copies[od] && (int) od != from);
         if (!any) return true;
         Dev& d = devs[(size_t) from];
-        CK(cudaMemcpyAsync(stage, src, bytes, cudaMemcpyDeviceToHost, d.st));
+        if (!copies[(size_t) from].for_each_run(r0, n, [&](size_t off, size_t bytes, const uint8_t* at) {
+                CK(cudaMemcpyAsync(stage + off, at, bytes, cudaMemcpyDeviceToHost, d.st));
+                return true;
+            }))
+            return false;
         CK(cudaEventRecord(ev, d.st));
         for (size_t od = 0; od < devs.size(); ++od) {
-            if (copies[od] == nullptr || (int) od == from) continue;
+            if (!copies[od] || (int) od == from) continue;
             Dev& o2 = devs[od];
             cudaSetDevice(o2.id);
             CK(cudaStreamWaitEvent(o2.st, ev, 0));
-            CK(cudaMemcpyAsync(copies[od] + at, stage, bytes, cudaMemcpyHostToDevice, o2.st));
+            if (!copies[od].for_each_run(r0, n, [&](size_t off, size_t bytes, uint8_t* at) {
+                    CK(cudaMemcpyAsync(at, stage + off, bytes, cudaMemcpyHostToDevice, o2.st));
+                    return true;
+                }))
+                return false;
         }
         cudaSetDevice(d.id);
         return true;
+    }
+
+    // Queues the hand-off of the rows [g_first, g_first + ng) that layer l just wrote to source sr's compressed KV
+    // (and, when l owns them, to its index keys): copies them to host-mapped `stage` for the devices outside l's group,
+    // then sets *flag = seq.
+    void put_new_rows(const Src& sr, const Layer& l, int64_t g_first, int ng, uint8_t* stage, unsigned* flag,
+                      unsigned seq, unsigned* cnt, cudaStream_t s) {
+        std::vector<Xfer> xs;
+        add_row_copies(xs, sr.ckv[(size_t) l.dev], g_first, ng, stage, true);
+        if (l.owns_k && srcs[(size_t) l.ik_src].ik[(size_t) l.dev])
+            add_row_copies(xs, srcs[(size_t) l.ik_src].ik[(size_t) l.dev], g_first, ng, stage + x_cap() * ckv_rb(),
+                           true);
+        // (the flag goes with the last part: the parts before it are earlier on the same stream)
+        for (size_t i = 0; i < xs.size(); ++i)
+            xfer_put(xs[i], i + 1 == xs.size() ? flag : nullptr, seq, cnt, s);
+    }
+
+    // Queues device di's side of put_new_rows for the window or chunk of T tokens at p0: once *flag >= seq, copies
+    // the rows of sr that di keeps from `stage`.
+    void take_new_rows(const Src& sr, size_t di, int64_t p0, int T, uint8_t* stage, const unsigned* flag,
+                       unsigned seq, cudaStream_t s) {
+        const int64_t g_first = p0 / sr.ratio;
+        const int ng = (int) std::max<int64_t>(0, (p0 + T) / sr.ratio - g_first);
+        std::vector<Xfer> xs;
+        if (sr.ckv[di])
+            add_row_copies(xs, sr.ckv[di], g_first, ng, stage, false);
+        if (sr.ik[di])
+            add_row_copies(xs, sr.ik[di], g_first, ng, stage + x_cap() * ckv_rb(), false);
+        for (const Xfer& x : xs)
+            xfer_get(x, flag, seq, s);
+    }
+
+    // Appends to xs the copies of rows [r0, r0 + n) of `rows` to `stage` (out) or from it: one segment for each
+    // block's part of them, in a new Xfer when the last one is full.
+    static void add_row_copies(std::vector<Xfer>& xs, const KvRows& rows, int64_t r0, int n, uint8_t* stage, bool out) {
+        rows.for_each_run(r0, n, [&](size_t off, size_t bytes, uint8_t* at) {
+            if (xs.empty() || xs.back().n == 4)
+                xs.emplace_back();
+            Xfer& x = xs.back();
+            x.src[x.n] = out ? (const void*) at : stage + off;
+            x.dst[x.n] = out ? (void*) (stage + off) : at;
+            x.bytes[x.n++] = bytes;
+            return true;
+        });
     }
 
     // layer L0 for the window, as group member mi (its share of the heads, of the output projection and of the FFNs;
@@ -8846,7 +8872,7 @@ struct Model::Impl {
             ar.nwin[t] = g.win + t - first + 1;
             ar.nsel[t] = 0;
         }
-        const void* ckv = nullptr;
+        KvRows ckv;
         int ckv_fmt = kKvFp4;
         if (l.ratio > 0) {
             Src& sr = srcs[(size_t) l.src];
@@ -8892,11 +8918,10 @@ struct Model::Impl {
                     fi.pos_step = R;
                     fi.freqs = freqs;
                     fi.quant = 3;
-                    fi.pdst = ks.ik[(size_t) l.dev] + (size_t) g_first * ik_rb();
-                    fi.pdst_stride = (long long) ik_rb();
+                    fi.pdst = ks.ik[(size_t) l.dev];
+                    fi.pdst_row = g_first;
                     finish(d.ikr, ng, g.ix_hd, g.ix_hd, fi, s);
-                    if (!wp.par && !replicate(ks.ik, ks.h_ik, ks.ev_ik, fi.pdst, (size_t) g_first * ik_rb(),
-                                              (size_t) ng * ik_rb(), l.dev, err))
+                    if (!wp.par && !replicate(ks.ik, ks.h_ik, ks.ev_ik, g_first, ng, l.dev, err))
                         return false;
                 }
                 if (clen_max > 0) {
@@ -8954,32 +8979,19 @@ struct Model::Impl {
                 fc.pos_step = R;
                 fc.freqs = freqs;
                 fc.quant = 2;
-                fc.pdst = sr.ckv[(size_t) l.dev] + (size_t) g_first * ckv_rb();
-                fc.pdst_stride = (long long) ckv_rb();
+                fc.pdst = sr.ckv[(size_t) l.dev];
+                fc.pdst_row = g_first;
                 finish(d.latent, ng, HD, HD, fc, s);
-                if (!wp.par && !replicate(sr.ckv, sr.h_ckv, sr.ev_ckv, fc.pdst, (size_t) g_first * ckv_rb(),
-                                          (size_t) ng * ckv_rb(), l.dev, err))
+                if (!wp.par && !replicate(sr.ckv, sr.h_ckv, sr.ev_ckv, g_first, ng, l.dev, err))
                     return false;
-                if (wp.par && mi == 0 && sr.remote) {   // the new rows for the other groups' readers
-                    Xfer x;
-                    x.src[0] = fc.pdst;
-                    x.dst[0] = sr.x_stage;
-                    x.bytes[0] = (size_t) ng * ckv_rb();
-                    x.n = 1;
-                    if (l.owns_k && srcs[(size_t) l.ik_src].ik[(size_t) l.dev] != nullptr) {
-                        x.src[1] = srcs[(size_t) l.ik_src].ik[(size_t) l.dev] + (size_t) g_first * ik_rb();
-                        x.dst[1] = sr.x_stage + x_cap() * ckv_rb();
-                        x.bytes[1] = (size_t) ng * ik_rb();
-                        x.n = 2;
-                    }
-                    xfer_put(x, sr.x_flag, wp.win, d.xcnt, s);
-                }
+                if (wp.par && mi == 0 && sr.remote)   // the new rows for the other groups' readers
+                    put_new_rows(sr, l, g_first, ng, sr.x_stage, sr.x_flag, wp.win, d.xcnt, s);
             }
             for (int t = 0; t < T; ++t) ar.nsel[t] = lim.n[t] > 0 ? wp.topk[l.il][t] : 0;
             ckv = sr.ckv[(size_t) l.dev];
         }
         if (l.mtp) {   // the block's rows (BF16), after the ring's in ext, as every query's selection
-            ckv = d.ext + (size_t) g.win * HD;
+            ckv = make_kv_rows((uint8_t*) (d.ext + (size_t) g.win * HD), kKvBf16, HD);
             ckv_fmt = kKvBf16;
             iota_rows(d.topk, T, T, (int) topk_stride(), s);
         }

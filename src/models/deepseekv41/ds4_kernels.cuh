@@ -30,7 +30,7 @@ void embed(const uint16_t* rows_bf16, int T, float* h, int dim, int hc, cudaStre
 ///   quant 0 none, 1 FP8 E4M3 with a power-of-two scale per 32, 2 FP4 E2M1 with an E4M3 scale per 16, 3 FP4 with a
 ///         power-of-two scale per 32 (the reference kernels' act_quant / fp4_act_quant, inplace)
 /// and written back to x, or as BF16 to dst + v * dst_stride when dst is given, or packed (quant > 0: the cache format of
-/// that number, kv_row_bytes) to pdst + v * pdst_stride bytes when pdst is given (x then left as it was).
+/// that number, kv_row_bytes) to row pdst_row + v of pdst when pdst is given (x then left as it was).
 struct Finish {
     const float* w = nullptr;
     float eps = 1e-20f;
@@ -39,8 +39,8 @@ struct Finish {
     int quant = 0;
     uint16_t* dst = nullptr;
     long long dst_stride = 0;
-    uint8_t* pdst = nullptr;
-    long long pdst_stride = 0;
+    KvRows pdst;
+    int64_t pdst_row = 0;
 };
 void finish(float* x, int n_vec, int len, long long stride, const Finish& f, cudaStream_t s);
 
@@ -115,7 +115,7 @@ struct Rows {
 /// with candidates p = cand[t][i / blk] * blk + i % blk for i < lim.k[t] * blk; positions >= lim.n[t] (or past the
 /// query's candidates) -> -inf.  q rows heads * hd apart, w rows 64, cand rows cand_stride, out rows out_stride; the keys
 /// k rows of format kfmt (the cache's kKvFp4p, or kKvBf16).
-void index_score(const float* q, const float* w, const void* k, int heads, int hd, int T, int n, const int* cand,
+void index_score(const float* q, const float* w, const KvRows& k, int heads, int hd, int T, int n, const int* cand,
                  int cand_stride, int blk, const Rows& lim, float* out, long long out_stride, cudaStream_t s,
                  int kfmt = kKvFp4p);
 /// The top r.k[t] of vals[t][0, r.n[t]) (row t at vals + t * stride): their positions (unordered; with candidates
@@ -128,11 +128,11 @@ void cand_blocks(const float* score, long long stride, int T, const Rows& r, int
                  int* out, int out_stride, cudaStream_t s);
 
 /// Sparse attention, query t: heads x d values of q[t] against win rows win0[t] .. win0[t] + nwin[t] - 1 of the window
-/// buffer (d BF16 each) and the nsel[t] compressed rows ckv[sel[t][i]] (format ckv_fmt: the cache's kKvFp4, or kKvBf16);
-/// K = V, a learned sink logit per head.  The packed rows, the same bits either way: up to kAttnScratchT queries (with
-/// a scratch, heads_per_block 0; or -1, any T) decoded once a query into scr's BF16 rows for the BF16 rows' kernel;
-/// else a kernel that decodes each staged row once for heads_per_block heads of a query (1, 2, 4, 8; 0: as many as
-/// keep two blocks a multiprocessor).
+/// buffer (d BF16 each) and the nsel[t] compressed rows ckv.row(sel[t][i]) (format ckv_fmt: the cache's kKvFp4, or
+/// kKvBf16 back to back from ckv.base); K = V, a learned sink logit per head.  The packed rows, the same bits either
+/// way: up to kAttnScratchT queries (with a scratch, heads_per_block 0; or -1, any T) decoded once a query into scr's
+/// BF16 rows for the BF16 rows' kernel; else a kernel that decodes each staged row once for heads_per_block heads of a
+/// query (1, 2, 4, 8; 0: as many as keep two blocks a multiprocessor).
 struct AttnScratch {
     uint16_t* rows = nullptr;   // [max_t * cap][512] BF16
     int max_t = 0, cap = 0;     // queries, rows a query (at least the sel_stride)
@@ -145,7 +145,7 @@ struct AttnRows {
     int gen = 0, t0 = 0, win = 0, R = 0, kcap = 0;
     long long p0 = 0;
 };
-void sparse_attn(const float* q, const uint16_t* win, const void* ckv, const int* sel, int sel_stride,
+void sparse_attn(const float* q, const uint16_t* win, const KvRows& ckv, const int* sel, int sel_stride,
                  const AttnRows& a, const float* sink, int heads, int d, int T, float scale, float* out, cudaStream_t s,
                  int ckv_fmt = kKvFp4, int heads_per_block = 0, const AttnScratch* scr = nullptr);
 /// The window buffer: ext[r] = ring[(p0 - n + r) % n] for the n rows before p0 (zeros before position 0); afterwards

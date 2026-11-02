@@ -199,7 +199,7 @@ __global__ void __launch_bounds__(kThreads) finish_kernel(float* x, int len, lon
     }
     if (kPack) {   // the same roundings, written as their codes and each group's scale (the readers' q * s: r exactly)
         const int g = f.quant == 2 ? 16 : 32;
-        uint8_t* pr = f.pdst + (long long) blockIdx.x * f.pdst_stride;
+        uint8_t* pr = f.pdst.row(f.pdst_row + blockIdx.x);
 #pragma unroll
         for (int j = 0; j < kFinMax; ++j) {
             if (j >= nj) break;
@@ -620,7 +620,7 @@ __device__ __forceinline__ void rows_at(const Rows& r, int t, int& n, int& k) {
 // weighted sum
 template <int HD, int KF>
 __global__ void __launch_bounds__(kThreads) index_score_kernel(const float* __restrict__ q, const float* __restrict__ w,
-                                                               const uint8_t* __restrict__ kc, int heads, int n,
+                                                               const KvRows kc, int heads, int n,
                                                                const int* __restrict__ cand, int cand_stride, int blk,
                                                                Rows lim, float* __restrict__ out,
                                                                long long out_stride) {
@@ -646,7 +646,7 @@ __global__ void __launch_bounds__(kThreads) index_score_kernel(const float* __re
         o[i] = -INFINITY;
         return;
     }
-    const uint8_t* kr = kc + (size_t) p * kv_row_bytes(KF, HD);
+    const uint8_t* kr = kc.row(p);
     float acc[32];
 #pragma unroll
     for (int h = 0; h < 32; ++h) acc[h] = 0.0f;
@@ -974,7 +974,7 @@ __device__ __forceinline__ void unpack32(const uint8_t* rr, int part, uint4* dst
 // a few queries' attention (a decode step, a short window): the rows each query selects decoded once to BF16 rows -
 // out[t * cap + i] = ckv[sel[t][i]] for i < the query's n_sel - for the BF16 kernel reading them in place (once a
 // query, not once a head)
-__global__ void __launch_bounds__(kThreads) unpack_sel_kernel(const uint8_t* __restrict__ ckv,
+__global__ void __launch_bounds__(kThreads) unpack_sel_kernel(const KvRows ckv,
                                                               const int* __restrict__ sel, int sel_stride, AttnRows ar,
                                                               int cap, uint16_t* __restrict__ out) {
     const int t = blockIdx.y, i = blockIdx.x * kStage + (int) (threadIdx.x >> 4), part = threadIdx.x & 15;
@@ -987,13 +987,13 @@ __global__ void __launch_bounds__(kThreads) unpack_sel_kernel(const uint8_t* __r
     }
     if (i >= n_sel) return;
     const size_t r = (size_t) t * cap + i;
-    unpack32(ckv + (size_t) sel[(size_t) t * sel_stride + i] * kv_row_bytes(kKvFp4, 512), part, (uint4*) (out + r * 512 + part * 32));
+    unpack32(ckv.row(sel[(size_t) t * sel_stride + i]), part, (uint4*) (out + r * 512 + part * 32));
 }
 
 template <int G>
 __global__ void __launch_bounds__(kThreads) sparse_attn_packed_kernel(const float* __restrict__ q,
                                                                       const uint16_t* __restrict__ win,
-                                                                      const uint8_t* __restrict__ ckv,
+                                                                      const KvRows ckv,
                                                                       const int* __restrict__ sel, int sel_stride,
                                                                       AttnRows ar, const float* __restrict__ sink,
                                                                       int heads, float scale, float* __restrict__ out) {
@@ -1011,7 +1011,6 @@ __global__ void __launch_bounds__(kThreads) sparse_attn_packed_kernel(const floa
     }
     const uint16_t* wbase = win + (size_t) w0 * d;
     const int* sl = sel + (size_t) t * sel_stride;
-    const size_t crow = kv_row_bytes(kKvFp4, d);
     __shared__ __align__(16) uint16_t tile[kStage * d];
     __shared__ float sc[G][kAttTile];
     __shared__ const uint8_t* rows[kAttTile];
@@ -1049,7 +1048,7 @@ __global__ void __launch_bounds__(kThreads) sparse_attn_packed_kernel(const floa
         const int nt = min(kAttTile, total - t0);
         if (threadIdx.x < nt) {
             const int j = t0 + threadIdx.x;
-            rows[threadIdx.x] = j < n_win ? (const uint8_t*) (wbase + (size_t) j * d) : ckv + (size_t) sl[j - n_win] * crow;
+            rows[threadIdx.x] = j < n_win ? (const uint8_t*) (wbase + (size_t) j * d) : ckv.row(sl[j - n_win]);
         }
         __syncthreads();
         for (int s0 = 0; s0 < nt; s0 += kStage) {   // the dots
@@ -1914,9 +1913,10 @@ void finish(float* x, int n_vec, int len, long long stride, const Finish& f, cud
         return;
     }
     if (n_vec <= 0) return;
-    if (f.pdst != nullptr) {
-        if (f.quant < kKvFp8 || f.quant > kKvFp4p || len % 32 != 0) {
-            std::fprintf(stderr, "ds4 finish: packed rows of quant %d, %d values not covered\n", f.quant, len);
+    if (f.pdst) {
+        if (f.quant < kKvFp8 || f.quant > kKvFp4p || len % 32 != 0 || f.pdst.bytes != kv_row_bytes(f.quant, len)) {
+            std::fprintf(stderr, "ds4 finish: packed rows of quant %d, %d values (%u B) not covered\n", f.quant, len,
+                         f.pdst.bytes);
             return;
         }
         finish_kernel<true><<<n_vec, kThreads, 0, s>>>(x, len, stride, f);
@@ -1997,21 +1997,21 @@ void compress_win(const float* kv, const float* score, float* kv_state, float* s
     compress_kernel<<<1, 512, 0, s>>>(kv, score, kv_state, score_state, ratio, p0, T, d, w, eps, latent);
 }
 
-void index_score(const float* q, const float* w, const void* k, int heads, int hd, int T, int n, const int* cand,
+void index_score(const float* q, const float* w, const KvRows& k, int heads, int hd, int T, int n, const int* cand,
                  int cand_stride, int blk, const Rows& lim, float* out, long long out_stride, cudaStream_t s,
                  int kfmt) {
-    if (hd != 128 || heads > 32 || (kfmt != kKvFp4p && kfmt != kKvBf16)) {
-        std::fprintf(stderr, "ds4 index_score: %d heads of %d (keys %d) not covered\n", heads, hd, kfmt);
+    if (hd != 128 || heads > 32 || (kfmt != kKvFp4p && kfmt != kKvBf16) || (k && k.bytes != kv_row_bytes(kfmt, hd))) {
+        std::fprintf(stderr, "ds4 index_score: %d heads of %d (keys %d, %u B) not covered\n", heads, hd, kfmt, k.bytes);
         return;
     }
     if (n <= 0) return;
     const size_t smem = (size_t) (heads * hd + heads) * sizeof(float);
     const dim3 grid(cdiv(n, kThreads), T);
     if (kfmt == kKvFp4p)
-        index_score_kernel<128, kKvFp4p><<<grid, kThreads, smem, s>>>(q, w, (const uint8_t*) k, heads, n, cand,
+        index_score_kernel<128, kKvFp4p><<<grid, kThreads, smem, s>>>(q, w, k, heads, n, cand,
                                                                        cand_stride, blk, lim, out, out_stride);
     else
-        index_score_kernel<128, kKvBf16><<<grid, kThreads, smem, s>>>(q, w, (const uint8_t*) k, heads, n, cand,
+        index_score_kernel<128, kKvBf16><<<grid, kThreads, smem, s>>>(q, w, k, heads, n, cand,
                                                                        cand_stride, blk, lim, out, out_stride);
 }
 
@@ -2051,16 +2051,17 @@ static int sm_count() {
     return v;
 }
 
-void sparse_attn(const float* q, const uint16_t* win, const void* ckv, const int* sel, int sel_stride,
+void sparse_attn(const float* q, const uint16_t* win, const KvRows& ckv, const int* sel, int sel_stride,
                  const AttnRows& a, const float* sink, int heads, int d, int T, float scale, float* out, cudaStream_t s,
                  int ckv_fmt, int heads_per_block, const AttnScratch* scr) {
-    if (d != 512 || (ckv_fmt != kKvFp4 && ckv_fmt != kKvBf16)) {
-        std::fprintf(stderr, "ds4 sparse_attn: head dim %d (rows %d) not covered\n", d, ckv_fmt);
+    if (d != 512 || (ckv_fmt != kKvFp4 && ckv_fmt != kKvBf16) || (ckv && ckv.bytes != kv_row_bytes(ckv_fmt, d)) ||
+        (ckv_fmt == kKvBf16 && ckv.blocks != nullptr)) {
+        std::fprintf(stderr, "ds4 sparse_attn: head dim %d (rows %d, %u B) not covered\n", d, ckv_fmt, ckv.bytes);
         return;
     }
     if (ckv_fmt == kKvBf16) {
-        sparse_attn_kernel<false><<<dim3(heads, T), kThreads, 0, s>>>(q, win, (const uint16_t*) ckv, sel, sel_stride, a,
-                                                                       sink, heads, d, scale, out);
+        sparse_attn_kernel<false><<<dim3(heads, T), kThreads, 0, s>>>(q, win, (const uint16_t*) ckv.base, sel,
+                                                                       sel_stride, a, sink, heads, d, scale, out);
         return;
     }
     // a decode step / short verify window of packed rows: the split-KV kernel (Strata's CUDA lab, ds4_attn_split.cuh; 2.9x at
@@ -2072,8 +2073,8 @@ void sparse_attn(const float* q, const uint16_t* win, const void* ckv, const int
         if (total_max > 0 && total_max <= kSplitCap * kSplitR) {
             const attnsplit::AttnSplitScratch sc = split_scratch(s, heads);
             if (sc.part != nullptr) {
-                attnsplit::sparse_attn_split<kSplitG, kSplitR>(q, win, (const uint8_t*) ckv, kv_row_bytes(kKvFp4, d), sel,
-                                                               sel_stride, a, sink, heads, T, scale, out, sc, total_max, s);
+                attnsplit::sparse_attn_split<kSplitG, kSplitR>(q, win, ckv, sel, sel_stride, a, sink, heads, T, scale,
+                                                               out, sc, total_max, s);
                 return;
             }
         }
@@ -2082,7 +2083,7 @@ void sparse_attn(const float* q, const uint16_t* win, const void* ckv, const int
     // the BF16 rows' kernel itself (heads_per_block -1: this way at any T)
     const bool few = heads_per_block == -1 || (heads_per_block == 0 && T <= kAttnScratchT);
     if (few && scr != nullptr && scr->rows != nullptr && T <= scr->max_t && sel_stride <= scr->cap) {
-        unpack_sel_kernel<<<dim3(cdiv(sel_stride, kStage), T), kThreads, 0, s>>>((const uint8_t*) ckv, sel, sel_stride, a,
+        unpack_sel_kernel<<<dim3(cdiv(sel_stride, kStage), T), kThreads, 0, s>>>(ckv, sel, sel_stride, a,
                                                                                scr->cap, scr->rows);
 #if !defined(STRATA_USE_HIP)
         if (T == 1)   // (V100: the loads ahead pay for the decode's kernel at one query, not at more)
@@ -2102,7 +2103,7 @@ void sparse_attn(const float* q, const uint16_t* win, const void* ckv, const int
     }
     if (heads % G != 0) G = 1;
     const dim3 grid(heads / G, T);
-    const uint8_t* c = (const uint8_t*) ckv;
+    const KvRows& c = ckv;
     if (G == 8) sparse_attn_packed_kernel<8><<<grid, kThreads, 0, s>>>(q, win, c, sel, sel_stride, a, sink, heads, scale, out);
     else if (G == 4) sparse_attn_packed_kernel<4><<<grid, kThreads, 0, s>>>(q, win, c, sel, sel_stride, a, sink, heads, scale, out);
     else if (G == 2) sparse_attn_packed_kernel<2><<<grid, kThreads, 0, s>>>(q, win, c, sel, sel_stride, a, sink, heads, scale, out);

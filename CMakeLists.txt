@@ -846,7 +846,7 @@ if(STRATA_ENABLE_CUDA OR STRATA_ENABLE_HIP)
     set(_ds4_hip_extra
         "$<$<COMPILE_LANGUAGE:HIP,CXX>:SHELL:-include ${CMAKE_CURRENT_SOURCE_DIR}/include/strata/models/deepseekv41/hip_extra.h>")
     add_library(strata_dsv41_kernels STATIC ${_ds4}/vendor/exl3.cu ${_ds4}/vendor/sampler.cu ${_ds4}/vendor/moe_win.cu
-                ${_ds4}/vendor/exl3_cpu.cpp)
+                ${_ds4}/vendor/exl3_cpu.cpp ${_ds4}/ds4_kernels.cu)
     if(NOT STRATA_ENABLE_HIP)   # (the pre-sm_80 NVIDIA decode kernels exl3.cu dispatches to)
       target_sources(strata_dsv41_kernels PRIVATE ${_ds4}/vendor/exl3_legacy.cu)
     endif()
@@ -860,8 +860,17 @@ if(STRATA_ENABLE_CUDA OR STRATA_ENABLE_HIP)
       add_executable(ds4_conversation_layout_test ${_ds4}/conversation_layout_test.cpp)
       target_link_libraries(ds4_conversation_layout_test PRIVATE strata_dsv41_state)
       add_test(NAME ds4_conversation_layout_test COMMAND ds4_conversation_layout_test)
+      # D2: the cache rows' writer and readers on the page pool's blocks (KvRows) against rows back to back, bitwise
+      add_executable(ds4_kv_rows_parity ${_ds4}/kv_rows_parity.cpp)
+      target_link_libraries(ds4_kv_rows_parity PRIVATE strata_dsv41_kernels)
+      if(STRATA_ENABLE_HIP)
+        target_compile_options(ds4_kv_rows_parity PRIVATE "${_ds4_hip_extra}")
+      endif()
+      add_test(NAME ds4_kv_rows_parity COMMAND ds4_kv_rows_parity)
+      add_test(NAME ds4_kv_rows_parity_split COMMAND ds4_kv_rows_parity)
+      set_tests_properties(ds4_kv_rows_parity_split PROPERTIES ENVIRONMENT "DS4_ATTN_SPLIT=1")
     endif()
-    add_executable(strata-dsv41 ${_ds4}/ds4_main.cpp ${_ds4}/ds4_model.cu ${_ds4}/ds4_kernels.cu ${_ds4}/ds4_vision.cu
+    add_executable(strata-dsv41 ${_ds4}/ds4_main.cpp ${_ds4}/ds4_model.cu ${_ds4}/ds4_vision.cu
                    ${_ds4}/ds4_gguf.cu ${_ds4}/ds4_gguf_cpu.cpp ${_ds4}/ds4_iq.cu ${_ds4}/ds4_iq_cpu.cpp
                    ${_ds4}/ds4_tq.cu ${_ds4}/ds4_tq_cpu.cpp ${_ds4}/ds4_gg_cpu.cpp ${_ds4}/ds4_packinfo.cpp)
     # the commit the binary was built from, readable with --version (set -DSTRATA_BUILD_ID=... for a tree without .git)

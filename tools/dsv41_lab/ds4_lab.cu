@@ -219,7 +219,7 @@ static void test_indexer(int T, int n) {
     for (auto& v : q) v = nrand(); for (int t = 0; t < T; ++t) for (int h = 0; h < heads; ++h) w[(size_t) t * 64 + h] = srand_();
     Dev<uint8_t> dk(keys); Dev<float> dq(q), dw(w), dout; dout.alloc((size_t) T * n);
     Rows lim; for (int t = 0; t < kWin; ++t) { lim.n[t] = n; lim.k[t] = topk_k; }
-    index_score(dq.p, dw.p, dk.p, heads, hd, T, n, nullptr, 0, 1, lim, dout.p, n, g_s); CK(cudaStreamSynchronize(g_s));
+    index_score(dq.p, dw.p, make_kv_rows(dk.p, kKvFp4p, hd), heads, hd, T, n, nullptr, 0, 1, lim, dout.p, n, g_s); CK(cudaStreamSynchronize(g_s));
     auto sc = dout.get();
     std::vector<double> rr; std::vector<float> gg;
     for (int t = 0; t < T; ++t) for (int p = 0; p < n; p += std::max(1, n / 512)) {
@@ -227,7 +227,7 @@ static void test_indexer(int T, int n) {
         rr.push_back(s); gg.push_back(sc[(size_t) t * n + p]);
     }
     char ex[96]; std::snprintf(ex, sizeof ex, "%d keys, %.1f MB of keys", n, n * (double) rb / 1e6);
-    const double us = time_us([&] { index_score(dq.p, dw.p, dk.p, heads, hd, T, n, nullptr, 0, 1, lim, dout.p, n, g_s); });
+    const double us = time_us([&] { index_score(dq.p, dw.p, make_kv_rows(dk.p, kKvFp4p, hd), heads, hd, T, n, nullptr, 0, 1, lim, dout.p, n, g_s); });
     report("index_score", T, max_rel(gg, rr), 3e-5, us, ex);
     // top-512 of the device's own scores: exact set compare
     Rows tr; for (int t = 0; t < kWin; ++t) { tr.n[t] = n; tr.k[t] = std::min(topk_k, n); }
@@ -270,7 +270,7 @@ static void test_attn(int T, int ncache) {
     Dev<uint8_t> dck(ckv); Dev<uint16_t> dwin(win); Dev<float> dq(q), dsink(sink), dout; Dev<int> dsel(sel); dout.alloc((size_t) T * heads * d);
     Dev<uint16_t> dscr; dscr.alloc((size_t) kAttnScratchT * (nsel + 8) * d);
     AttnScratch scr; scr.rows = dscr.p; scr.max_t = kAttnScratchT; scr.cap = nsel + 8;
-    sparse_attn(dq.p, dwin.p, dck.p, dsel.p, nsel, ar, dsink.p, heads, d, T, scale, dout.p, g_s, kKvFp4, 0, &scr); CK(cudaStreamSynchronize(g_s));
+    sparse_attn(dq.p, dwin.p, make_kv_rows(dck.p, kKvFp4, d), dsel.p, nsel, ar, dsink.p, heads, d, T, scale, dout.p, g_s, kKvFp4, 0, &scr); CK(cudaStreamSynchronize(g_s));
     auto o = dout.get(); std::vector<double> rr; std::vector<float> gg;
     for (int t = 0; t < T; t += std::max(1, T / 2)) for (int h = 0; h < heads; h += 7) {
         std::vector<double> s; std::vector<const float*> rows;
@@ -284,7 +284,7 @@ static void test_attn(int T, int ncache) {
         for (int e = 0; e < d; ++e) { rr.push_back(acc[e]); gg.push_back(o[((size_t) t * heads + h) * d + e]); }
     }
     char ex[96]; std::snprintf(ex, sizeof ex, "64 heads x 512, 128 win + 512 sel, cache %d rows", ncache);
-    report("sparse_attn (fp4 ckv)", T, max_rel(gg, rr), 1e-4, time_us([&] { sparse_attn(dq.p, dwin.p, dck.p, dsel.p, nsel, ar, dsink.p, heads, d, T, scale, dout.p, g_s, kKvFp4, 0, &scr); }), ex);
+    report("sparse_attn (fp4 ckv)", T, max_rel(gg, rr), 1e-4, time_us([&] { sparse_attn(dq.p, dwin.p, make_kv_rows(dck.p, kKvFp4, d), dsel.p, nsel, ar, dsink.p, heads, d, T, scale, dout.p, g_s, kKvFp4, 0, &scr); }), ex);
     // split-KV version (tools/dsv41_lab/attn_split.cuh), same inputs
     {
         const int total = nwin + nsel;
@@ -305,9 +305,9 @@ static void test_attn(int T, int ncache) {
         run("attn_split G2 R32", [](auto... a) { strata::ds4lab::sparse_attn_split<2, 32>(a...); }, 32);
     }
     // the packed-rows kernel (no scratch): used from 8 queries on, timed here at this T for comparison
-    sparse_attn(dq.p, dwin.p, dck.p, dsel.p, nsel, ar, dsink.p, heads, d, T, scale, dout.p, g_s, kKvFp4, 0, nullptr); CK(cudaStreamSynchronize(g_s));
+    sparse_attn(dq.p, dwin.p, make_kv_rows(dck.p, kKvFp4, d), dsel.p, nsel, ar, dsink.p, heads, d, T, scale, dout.p, g_s, kKvFp4, 0, nullptr); CK(cudaStreamSynchronize(g_s));
     { auto o2 = dout.get(); std::vector<float> g2; for (int t = 0; t < T; t += std::max(1, T / 2)) for (int h = 0; h < heads; h += 7) for (int e = 0; e < d; ++e) g2.push_back(o2[((size_t) t * heads + h) * d + e]);
-      report("sparse_attn (packed)", T, max_rel(g2, rr), 1e-4, time_us([&] { sparse_attn(dq.p, dwin.p, dck.p, dsel.p, nsel, ar, dsink.p, heads, d, T, scale, dout.p, g_s, kKvFp4, 0, nullptr); })); }
+      report("sparse_attn (packed)", T, max_rel(g2, rr), 1e-4, time_us([&] { sparse_attn(dq.p, dwin.p, make_kv_rows(dck.p, kKvFp4, d), dsel.p, nsel, ar, dsink.p, heads, d, T, scale, dout.p, g_s, kKvFp4, 0, nullptr); })); }
 }
 
 // ============================================================================================================ Engram
