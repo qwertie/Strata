@@ -729,13 +729,18 @@ void PagedDeepSeek::start_request(int session, const strata::serve::RequestStart
     p.cum_min = Model::get_default_cum();
     p.pin = 0;
     p.cool = false;
+    // a negative floor in a request means the engine's, as in strata-dsv41
+    const auto get_or_default = [](const std::string& value, float fallback) {
+        const float f = std::strtof(value.c_str(), nullptr);
+        return f >= 0 ? f : fallback;
+    };
     for (const auto& [key, value] : r.keys)
         if (key == "spec")
             p.spec = std::atoi(value.c_str()) != 0;
         else if (key == "dspark_conf")
-            p.conf_min = std::strtof(value.c_str(), nullptr);
+            p.conf_min = get_or_default(value, p.conf_min);
         else if (key == "dspark_cum" || key == "spec_cum")
-            p.cum_min = std::strtof(value.c_str(), nullptr);
+            p.cum_min = get_or_default(value, p.cum_min);
         else if (key == "pin")
             p.pin = std::atoll(value.c_str());
 }

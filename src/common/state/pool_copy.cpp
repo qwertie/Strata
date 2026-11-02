@@ -45,7 +45,9 @@ bool get_pieces(const PagePool& pool, const RegionSpan& span, std::vector<Piece>
             err = "a conversation span names a region outside its layout";
             return false;
         }
-        pieces.push_back({range.region, range.offset, range.bytes ? range.bytes : pool.block_bytes(range.region)});
+        const uint64_t block = pool.block_bytes(range.region);
+        pieces.push_back({range.region, range.offset,
+                          range.bytes ? range.bytes : block - std::min(range.offset, block)});
     }
     for (size_t r = span.first; r < pool.layout().regions.size() && r - span.first < span.count; ++r)
         pieces.push_back({r, 0, pool.block_bytes(r)});

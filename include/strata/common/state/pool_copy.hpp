@@ -12,7 +12,7 @@
 
 namespace strata::core {
 
-/// Selects bytes within each block of a region; bytes == 0 selects the whole block.
+/// Selects bytes within each block of a region; bytes == 0 selects the rest of the block from `offset` on.
 struct RegionRange {
     size_t region = 0;
     uint64_t offset = 0, bytes = 0;
