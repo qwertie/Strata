@@ -781,13 +781,19 @@ if(STRATA_ENABLE_CUDA OR STRATA_ENABLE_HIP)
   target_include_directories(dflash2_attn_bench PRIVATE ${_strata_gpu_include_directories})
   target_link_libraries(dflash2_attn_bench PRIVATE strata_kernels ${_strata_gpu_runtime_target})
 
+  # The paged engine (src/common/serve/paged_engine.cpp): conversations in page pools, over any model's PagedModel
+  add_library(strata_paged STATIC src/common/serve/paged_engine.cpp)
+  target_include_directories(strata_paged PRIVATE ${_strata_gpu_include_directories})
+  target_link_libraries(strata_paged PUBLIC strata_engine strata_serve strata_spec strata_state strata_split
+                        ${_strata_gpu_runtime_target})
+
   # Qwen3.8's model loader (strata::qwen38::Model), which the `strata` program below calls
   add_library(strata_qwen38 STATIC src/models/qwen38/model.cpp src/models/qwen38/conversation.cpp
               src/models/qwen38/options.cpp src/models/qwen38/conversation_pages.cpp
-              src/models/qwen38/conversation_drafter.cpp src/models/qwen38/paged_engine.cpp)
+              src/models/qwen38/conversation_drafter.cpp src/models/qwen38/paged_model.cpp)
   target_include_directories(strata_qwen38 PRIVATE ${_strata_gpu_include_directories})
-  target_link_libraries(strata_qwen38 PUBLIC strata_engine strata_prefill strata_serve strata_spec strata_state
-                        strata_split ${_strata_gpu_runtime_target})
+  target_link_libraries(strata_qwen38 PUBLIC strata_engine strata_prefill strata_paged strata_serve strata_spec
+                        strata_state strata_split ${_strata_gpu_runtime_target})
 
   add_executable(strata src/program/generate.cpp)
   strata_utf8_manifest(strata)

@@ -1,7 +1,8 @@
 # src/common/serve/
 
-The engine side of the line protocol that the Python server speaks (`strata_common/engine_client.py`). Headers:
-`include/strata/common/serve/`. Library: `strata_serve` (no GPU).
+The engine side of the line protocol that the Python server speaks (`strata_common/engine_client.py`), and the paged
+engine. Headers: `include/strata/common/serve/`. Libraries: `strata_serve` (no GPU) and `strata_paged` (the paged
+engine).
 
 - `loop.hpp`: `Input` reads the server's lines on a thread of its own (STOP raises a flag that a running request
   checks; the other lines wait in a queue). `Loop` gives the engine the commands that are its own and meanwhile runs
@@ -10,8 +11,14 @@ The engine side of the line protocol that the Python server speaks (`strata_comm
 - `memory_report.hpp`: GET_MEMORY_USE's answer (what the engine holds in each memory, for the server's
   `GET /v1/memory`): each engine fills a `MemoryReport` (`EngineHooks::describe_memory`), and the loop adds the parked
   conversations and writes the lines.
-- `request.hpp`: a request line (`GEN`, `GENI`, `BGEN`, `BGENI`) split into its parts, and the sampling keys every
-  engine reads.
+- `request.hpp`: a request line (`GEN`, `GENI`, `BGEN`, `BGENI`) split into its parts, its token ids, and the
+  sampling keys every engine reads.
+- `paged_engine.hpp`: the paged engine (docs/MEMORY_MANAGER_PLAN.md, "One shared paged engine"): conversations in
+  page pools, several decoding at once, pausing to RAM and the SSD, priorities, `CHANGE_SETTINGS`, the pools' resizes
+  and refills, the adaptive tier, the layer cut's planning and moves. It runs a model through `paged_model.hpp`
+  (`PagedModel`: per card the state layout, experts and a cut move; per conversation its state on each card,
+  `PagedPart`; the prompt, the step and the drafter). strata-q38 runs it for Qwen3.8
+  (`src/models/qwen38/paged_model.cpp`).
 
 Each engine still handles its own requests, SAVE / RESTORE, VRAM and QUIT, and writes its own `T`, `PP`, `DONE`, `BT`
 and `BDONE` lines.

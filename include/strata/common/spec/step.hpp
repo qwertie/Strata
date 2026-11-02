@@ -1,7 +1,7 @@
 // include/strata/common/spec/step.hpp - the decode step for several conversations at once: one pass through the
 // model computes a row for each active conversation's next token and for its guesses (docs/MEMORY_MANAGER_PLAN.md,
-// "The step" and "How rows are shared").  It is model-neutral: the model runs the rows (StepModel).  strata-q38
-// (src/models/qwen38/paged_engine.cpp) decodes through it.
+// "The step" and "How rows are shared").  It is model-neutral: the model runs the rows (StepModel).  The paged engine
+// (src/common/serve/paged_engine.cpp) decodes through it.
 #pragma once
 
 #include <cstdint>

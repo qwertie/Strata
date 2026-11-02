@@ -46,7 +46,8 @@ public:
               std::string& err);
     /// Opens the compute side only, on `device`, over experts that another pool holds: `cache`'s slots, where `res`
     /// (layer * n_expert + expert: a slot, or a negative value) says; both must outlive it, and `adapt` must not be
-    /// called.  strata-q38 lends a card's spare pages to other cards' experts this way (paged_engine.cpp).
+    /// called.  strata-q38 lends a card's spare pages to other cards' experts this way
+    /// (src/models/qwen38/paged_model.cpp).
     bool attach(int device, const ExpertCache& cache, const int32_t* res, int64_t n_layers, int64_t n_expert,
                 std::string& err);
     void close();

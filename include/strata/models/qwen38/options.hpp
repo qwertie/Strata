@@ -4,6 +4,7 @@
 
 #include "strata/common/kernels/coupled_draft.hpp"
 #include "strata/common/kernels/cpu/pool.hpp"
+#include "strata/common/serve/request.hpp"
 
 #include <algorithm>
 #include <array>
@@ -438,8 +439,7 @@ bool is_launch_blocking();
 void prime_gpu_queues();
 /// Prints the command line's help (every option of `strata` for a Qwen3.8 model) to stderr.
 void print_usage();
-/// Reads comma- or space-separated token ids from `s` into `out`; false (with `err`) for a malformed or empty list.
-bool parse_i64_list(const char* s, std::vector<int64_t>& out, std::string& err);
+using strata::serve::parse_i64_list;
 /// Reads the command line into `o`; `have_tokens` tells whether it gave the prompt (--tokens, --tokens-file).  Returns
 /// -1 to go on, otherwise the exit status for main() (--help, or a bad option, whose reason has been printed).
 int parse_options(int argc, char** argv, Options& o, bool& have_tokens);

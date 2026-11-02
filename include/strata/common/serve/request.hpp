@@ -47,5 +47,7 @@ bool read_sampling_key(const std::string& key, const std::string& value, Samplin
 
 /// Reads comma-separated hexadecimal numbers (the img_keys option: one key per picture); empty if any is malformed.
 std::vector<uint64_t> parse_hex_list(const std::string& text);
+/// Reads comma- or space-separated token ids from `s` into `out`; false (with `err`) for a malformed or empty list.
+bool parse_i64_list(const char* s, std::vector<int64_t>& out, std::string& err);
 
 }  // namespace strata::serve
