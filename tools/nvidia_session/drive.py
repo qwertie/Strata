@@ -9,9 +9,7 @@ Scenarios (the engine's --serve protocol unless said otherwise):
   q36       Qwen3.6: the same for its engine (strata-q36)
   multi     Qwen3.8: a 2,000-token prompt, a 128-token answer, a second turn; the startup lines appended
   cutmove   strata-q38: a 96-token story in a batch slot; with --move-cut the first card's memory is halved after 24
-            tokens and set back after 48 (the layer cut moves between two steps), with --layer-cut the cut moves 6
-            layers toward the card with the bigger pool after 24 tokens and back after 48 (CHANGE_SETTINGS layer_cut);
-            the answers go to FILE.settings
+            tokens and set back after 48 (the layer cut moves between two steps); the answers go to FILE.settings
   ds        DeepSeek V4.1: greedy and seeded answers, a 128-token one for the speed
   server    the HTTP server on port 8091 with this engine (Qwen3.8): two greedy chats and their speed
   config    no engine start: FILE gets the run config (strata-<model>.json) that `server` uses, for
@@ -60,7 +58,6 @@ def main() -> int:
     ap.add_argument("--deepseek")
     ap.add_argument("--other")
     ap.add_argument("--move-cut", action="store_true")
-    ap.add_argument("--layer-cut", action="store_true")
     a = ap.parse_args()
     env = dict(e.split("=", 1) for e in a.env)
     if a.scenario == "config":
@@ -320,15 +317,10 @@ def cutmove(e: Engine, a):
     story = tok.encode(QWEN_USER + "Write a long, detailed story about a lighthouse keeper who counts ships." +
                        QWEN_ANSWER, parse_special=True)
     changes = {}
-    report = "".join(e.ask_quietly("GET_MEMORY_USE", "END_MEMORY")) if a.move_cut or a.layer_cut else ""
-    setting = lambda key: int(re.search(rf"\b{re.escape(key)}=(\d+)", report)[1])  # noqa: E731
     if a.move_cut:
-        mib = setting("memory_mib.gpu0")
+        report = "".join(e.ask_quietly("GET_MEMORY_USE", "END_MEMORY"))
+        mib = int(re.search(r"memory_mib\.gpu0=(\d+)", report)[1])
         changes = {24: f"memory_mib.gpu0={mib // 2}", 48: f"memory_mib.gpu0={mib}"}
-    elif a.layer_cut:   # the card with the bigger pool takes the layers, so that their experts still fit on a card
-        cut, layers = setting("layer_cut"), setting("layers")
-        to = min(max(cut + (6 if setting("memory_mib.gpu0") > setting("memory_mib.gpu1") else -6), 4), layers - 4)
-        changes = {24: f"layer_cut={to}", 48: f"layer_cut={cut}"}
     e.bgen(0, 96, story, changes)
 
 

@@ -39,7 +39,7 @@ constexpr int kBeforeLastCheck = 1;
 /// strata-ds41's options beside the paged engine's and the model's: the GPU pool's experts and the adaptive tier (as
 /// strata-q38's options of the same names).
 struct ExpertOptions {
-    int64_t gpu_experts = -1;   ///< --gpu-experts: the most experts the GPU's pool holds; -1: as many as fit
+    int64_t gpu_experts = -1;   ///< --expert-cache: the most experts the GPU's pool holds; -1 (auto): as many as fit
     int adapt_every = 4;        ///< --adapt-every: decode steps between two rounds of the tier
     /// --adapt-swaps: the most experts a round moves into the GPU's pool (0: the tier is off).  The old engine's expert
     /// cache has at most 8 moves under way (kMaxSwaps); a DeepSeek expert is 4 to 5 times a Qwen3.8 one, whose 96 a
@@ -531,9 +531,10 @@ int read_model_options(int argc, char** argv, Options& o, ExpertOptions& x, std:
             continue;
         if (a == "--eos")
             eos = val("--eos");
-        else if (a == "--gpu-experts")
-            x.gpu_experts = std::atoll(val("--gpu-experts").c_str());
-        else if (a == "--adapt-every")
+        else if (a == "--expert-cache") {
+            const std::string v = val("--expert-cache");
+            x.gpu_experts = v == "auto" ? -1 : std::atoll(v.c_str());
+        } else if (a == "--adapt-every")
             x.adapt_every = std::atoi(val("--adapt-every").c_str());
         else if (a == "--adapt-swaps")
             x.adapt_swaps = std::atoi(val("--adapt-swaps").c_str());
@@ -556,6 +557,8 @@ int read_model_options(int argc, char** argv, Options& o, ExpertOptions& x, std:
         o.profile = o.pack + "/expert-profile.bin";   // "none": no profile
     if (o.profile == "none")
         o.profile.clear();
+    if (!o.expert_cache)   // --no-expert-cache: the experts stay where the start put them, as strata-dsv41's do
+        x.adapt_swaps = 0;
     o.dspark = false;   // (the drafter comes in step D7)
     return -1;
 }

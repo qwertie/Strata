@@ -208,20 +208,6 @@ test('the controls change the other settings within their ranges', async () => {
   assert.match(element.innerHTML, /<p class="mem-note">Context: 32.768 tokens · Batch slots: 4<\/p>/);
 });
 
-test('on a split over two cards, a control moves the layer cut within the model\'s layers', async () => {
-  const split = { ...live, settings: { ...live.settings, layer_cut: 24, layers: 48 } };
-  const { calls, onChange } = recorder(), { element, fire } = mount(split, onChange);
-  assert.match(element.innerHTML, /data-setting="layer_cut" value="24" min="1" max="47"/);
-  assert.match(element.innerHTML, /Layers: 48/);
-  const cut = value => control('[data-setting]', { dataset: { setting: 'layer_cut' }, value });
-  fire('change', { target: cut('48') });
-  assert.match(element.innerHTML,
-    /Layer cut \(the second card&#39;s first layer\): choose a whole number from 1 to 47\./);
-  fire('change', { target: cut('20') });
-  await settle();
-  assert.deepEqual(calls, [[{ layer_cut: 20 }, 'session']]);
-});
-
 test('every segment of a bar says in its tooltip what it is', () => {
   const card = { id: 'gpu0', name: 'card', total: 16 * GIB, free: GIB, unified: false, paused_count: null,
     paused_budget: null, other: GIB, uses: { weights: 4 * GIB, experts: 8 * GIB, conversations: GIB, pool_free: GIB } };

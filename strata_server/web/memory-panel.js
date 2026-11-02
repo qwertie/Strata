@@ -49,8 +49,7 @@ const CHANGED_KEY = "strata.memoryPanel.changed";
 const SETTINGS = {context: "Context", concurrent: "Conversations at once", rows: "Rows per step",
                   lookahead: "Lookahead", tokens_min: "Conversation tokens, minimum",
                   tokens_max: "Conversation tokens, maximum", ssd_pause_mib: "SSD for paused conversations (MiB)",
-                  drafter: "Drafter", slots: "Batch slots", layer_cut: "Layer cut (the second card's first layer)",
-                  layers: "Layers"};
+                  drafter: "Drafter", slots: "Batch slots"};
 /** Settings the engine reports that the panel shows elsewhere (the bars) or not at all. */
 const UNLISTED = /^memory_mib\.|^token_bytes$|^conversation_bytes$/;
 /**
@@ -63,8 +62,7 @@ const CONTROLS = [["concurrent", () => 1, (s) => s.slots ?? 8],
                   ["rows", (s) => s.concurrent ?? 1, () => 8],
                   ["lookahead", () => 0, (s) => s.drafter ? (s.rows ?? 1) - 1 : 0],
                   ["tokens_min", () => 0, (s) => s.tokens_max ?? Infinity],
-                  ["tokens_max", (s) => s.tokens_min ?? 0, () => Infinity],
-                  ["layer_cut", () => 1, (s) => (s.layers ?? Infinity) - 1]];
+                  ["tokens_max", (s) => s.tokens_min ?? 0, () => Infinity]];
 /** HTML entities for the characters esc replaces. @type {Record<string, string>} */
 const ESCAPES = {"&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"};
 /** Names shown for where a conversation is held (its `place`). */

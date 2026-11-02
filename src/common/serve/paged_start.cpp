@@ -36,8 +36,7 @@ int take_paged_options(int& argc, char** argv, const std::string& program, Paged
                        {"--ssd-pause-mib", &s.ssd_pause_mib}, {"--rows", &rows},
                        {"--lookahead", &lookahead},           {"--concurrent", &concurrent},
                        {"--pause-dir", nullptr, &s.pause_dir}, {"--copy-back", nullptr, &s.copy_back},
-                       {"--drafter", nullptr, &drafter},      {"--remote-experts", nullptr, &s.remote_experts},
-                       {"--fill", nullptr, &s.fill}};
+                       {"--drafter", nullptr, &drafter},      {"--remote-experts", nullptr, &s.remote_experts}};
     const char* const name = program.c_str();
     int out = 1;
     for (int i = 1; i < argc; ++i) {
@@ -67,10 +66,6 @@ int take_paged_options(int& argc, char** argv, const std::string& program, Paged
     }
     if (s.remote_experts != "auto" && s.remote_experts != "on" && s.remote_experts != "off") {
         std::fprintf(stderr, "%s: --remote-experts takes auto, on or off\n", name);
-        return 2;
-    }
-    if (s.fill != "eager" && s.fill != "background") {
-        std::fprintf(stderr, "%s: --fill takes eager or background\n", name);
         return 2;
     }
     if (drafter != "on" && drafter != "off") {
@@ -193,16 +188,11 @@ bool open_ram_pool(const std::string& program, const PagedSettings& s, strata::c
     const uint64_t bytes = get_ram_pool_bytes(
         s, headroom, every + (uint64_t) ring * *std::max_element(blob_bytes.begin(), blob_bytes.end()));
     const auto t0 = std::chrono::steady_clock::now();
-    const bool fill = s.fill == "eager";
     if (!ram.open(files, bytes, ring, layout, get_ram_pool_config(card), blob_bytes, n_expert,
-                  get_ram_ranking(profile, residency, blob_bytes, n_expert), err, fill))
+                  get_ram_ranking(profile, residency, blob_bytes, n_expert), err))
         return false;
     const double fill_s = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
     const uint64_t held = ram.pages().pool().report().experts.bytes;
-    char filled[96] = "its experts are read from the SSD after the start (--fill background)";
-    if (fill)
-        std::snprintf(filled, sizeof filled, "%.2f GiB of experts read in %.1f s (%.1f GB/s)",
-                      (double) held / 1073741824.0, fill_s, fill_s > 0 ? (double) held / 1e9 / fill_s : 0.0);
     double ssd = 0, back = 0;
     // (no more than `gpu_bytes`' chunk holds: a small GPU pool's chunk is smaller than the staging ring)
     const uint64_t timed = std::min(ram.ring_bytes(), card.experts.pool().chunk_bytes());
@@ -212,12 +202,13 @@ bool open_ram_pool(const std::string& program, const PagedSettings& s, strata::c
         back = std::max(back, ram.time_copy_in(gpu_bytes, timed));
     }
     copy_back = s.copy_back == "on" || (s.copy_back == "auto" && strata::core::is_copy_back_worth(back, ssd));
-    std::fprintf(stderr, "%s: the RAM's page pool: %.2f GiB%s, %s; the other experts are read from the SSD "
-                         "without the file cache.  An expert the GPU evicts is %s (copying it back: %.1f GB/s, reading "
-                         "the SSD: %.1f GB/s; --copy-back %s)\n",
+    std::fprintf(stderr, "%s: the RAM's page pool: %.2f GiB%s, %.2f GiB of experts read in %.1f s (%.1f GB/s); the "
+                         "other experts are read from the SSD without the file cache.  An expert the GPU evicts is %s "
+                         "(copying it back: %.1f GB/s, reading the SSD: %.1f GB/s; --copy-back %s)\n",
                  program.c_str(), (double) (ram.pages().pool().report().total.bytes) / 1073741824.0,
-                 ram.is_page_locked() ? ", page-locked" : "", filled,
-                 copy_back ? "copied back to RAM" : "dropped", back, ssd, s.copy_back.c_str());
+                 ram.is_page_locked() ? ", page-locked" : "", (double) held / 1073741824.0, fill_s,
+                 fill_s > 0 ? (double) held / 1e9 / fill_s : 0.0, copy_back ? "copied back to RAM" : "dropped", back,
+                 ssd, s.copy_back.c_str());
     return true;
 }
 

@@ -130,14 +130,6 @@ class MemorySettings(FakeEngineCase):
         with self.assertRaises(ValueError):                               # a card the engine does not have
             runconfig.check_live({"memory_mib.gpu1.2": 4096}, True, list(settings)[1:3])
 
-    def test_a_layer_cut_saves_as_the_layer_split(self):
-        from strata_server import runconfig
-        values = runconfig.check_live({"layer_cut": 20}, True, [])
-        new, changed = runconfig.apply_live({"args": ["--layer-split", "auto"]}, values, {"layer_cut": 20})
-        self.assertEqual((new["args"], changed), (["--layer-split", "20"], ["layer_cut"]))
-        with self.assertRaises(ValueError):                               # a card needs a layer
-            runconfig.check_live({"layer_cut": 0}, True, [])
-
     def test_only_from_strata_s_own_page(self):
         self.start()
         self.assertEqual(self.post({"set": {"rows": 4}}, origin="https://evil.example")[0], 403)

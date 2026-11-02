@@ -330,9 +330,6 @@ function Invoke-Memory {
             $move = "`"--args=$Q38Memory --expert-cache 3000 --pcie-frac 0 --gpu-mib $mib --layer-split auto`""
             Invoke-Versus "memory-cut-move-$order" cutmove "strata-q38.exe --cards $cards $move" (
                 "strata-q38.exe --cards $cards $move --move-cut")
-            # the cut moved by the layer_cut setting, no card's memory changed
-            Invoke-Versus "memory-layer-cut-$order" cutmove "strata-q38.exe --cards $cards $move" (
-                "strata-q38.exe --cards $cards $move --layer-cut")
         }
     }
     # the kit's own run config (the model's arguments from -DataDir's files, the drafter included), not a
