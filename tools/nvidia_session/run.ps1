@@ -160,7 +160,12 @@ function Invoke-Builds([string]$Arch, [string]$Tag) {
         $rev = @{ before = $Before; after = $After }[$side]
         $start = Get-Date
         Initialize-Worktree $side $src $rev
-        $build = "$cmake --build `"$bd`" -j $Jobs -- -k 0"
+        if (-not $DryRun -and (git -C $src rev-parse HEAD 2>$null) -ne (git -C $Root rev-parse "$rev^{commit}" 2>$null)) {
+            Invoke-Report row $Results "build-$side-$Tag" FAIL ("$src is not at $rev (a worktree made from another " +
+                "checkout? use a new -Work folder; see steps\worktree-$side.log)")
+            continue
+        }
+        $build ="$cmake --build `"$bd`" -j $Jobs -- -k 0"
         $null = Invoke-Step "build-$side-$Tag" @(
             "call `"$VsDir\VC\Auxiliary\Build\vcvars64.bat`" >nul || exit /b 1",
             ("if not exist `"$bd\CMakeCache.txt`" $cmake -G Ninja -S `"$src`" -B `"$bd`" -DCMAKE_BUILD_TYPE=Release " +
