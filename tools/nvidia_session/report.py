@@ -411,7 +411,7 @@ def summarize_gpus(path: Path) -> str:
         busy = [r for r in rows if (number(r["utilization.gpu"]) or 0) >= 10] or rows
         values = lambda key: [v for r in busy if (v := number(r[key])) is not None]  # noqa: E731
         reasons = Counter(name for r in busy for bit, name in THROTTLE.items()
-                          if int(r["clocks_throttle_reasons.active"].replace("[N/A]", "0"), 16) & bit)
+                          if parse_hex(r["clocks_throttle_reasons.active"]) & bit)
         out.append(f"GPU{index} " + " ".join(filter(None, [
             f"{statistics.mean(v):.0f} MHz" if (v := values("clocks.sm")) else "",
             f"{max(v):.0f} C" if (v := values("temperature.gpu")) else "",
@@ -449,6 +449,14 @@ def number(s: str) -> float | None:
     except ValueError:
         return None
 
+
+
+def parse_hex(text: str) -> int:
+    """Reads nvidia-smi's hex bit mask; an empty or unknown value ("[N/A]", "0x" from a sample cut short) is 0."""
+    try:
+        return int(text, 16)
+    except ValueError:
+        return 0
 
 if __name__ == "__main__":
     sys.exit(main(sys.argv[1:]))
