@@ -245,12 +245,18 @@ public:
     /// for its doorbell, #31); batch_poll then makes no CUDA call before every layer is served.
     int batch_serve(PoolMultiFn pool, void* user);
     void set_external_serve(bool on) { ext_serve_.store(on, std::memory_order_release); }
-    /// A slot's sampling (temperature / top_p / top_k / min_p / seed; penalties are not applied in batch windows):
+    /// A slot's sampling:
     /// its row is drawn again on the last stage with Philox(seed, position), as a solo window draws it.  Greedy by
     /// default.  Set on the first stage, it reaches the last.
     void set_slot_sampling(int slot, const strata::kernels::SamplerParams& sp) {
         if (slot >= 0 && slot < (int) slot_sp_.size()) slot_sp_[(size_t) slot] = sp;
         if (next_) next_->set_slot_sampling(slot, sp);
+    }
+    /// Supplies host penalty histories in the order of the next batch window's rows.
+    void set_batch_histories(const std::vector<std::vector<int32_t>>& histories) {
+        batch_histories_ = histories;
+        if (next_)
+            next_->set_batch_histories(histories);
     }
     const int32_t* batch_out() const { return b_out_; }
     bool last_stage() const { return g_ != nullptr && le_ == g_->n_layers; }
@@ -415,7 +421,10 @@ private:
     std::chrono::steady_clock::time_point ext_checked_{};   ///< batch_poll's last check with external serving
     int32_t b_out_[8] = {};
     std::vector<strata::kernels::SamplerParams> slot_sp_;
-    bool sample_rows(int S, std::string& err);   ///< the sampled slots' rows of the last batch window
+    std::vector<std::vector<int32_t>> batch_histories_; ///< histories for the next batch window
+    int32_t* batch_history_device_ = nullptr; ///< the last stage's reusable sampler input
+    size_t batch_history_capacity_ = 0; ///< number of int32 slots allocated on the device
+    bool sample_rows(int S, std::string& err);   ///< applies sampling and penalties to the last batch window
     int32_t* h_commitb_ = nullptr; int32_t* m_commitb_ = nullptr;   // per slot [1, 0, pos, -1 ..], stride 2 + max_t
     int32_t* commitb_ = nullptr;
     float* tail_snap_b_ = nullptr;         ///< per (slot, QSA layer) indexer tail snapshot

@@ -967,6 +967,7 @@ void PagedDeepSeek::end_prompt(Part& p) {
 /// Gets the token after the model's last logits by `p`'s request's sampling.
 int32_t PagedDeepSeek::sample(const Part& p) {
     const strata::serve::Sampling& s = p.smp;
+    // The old DeepSeek engine also omits penalties from its sampling call.
     return m_.sample(s.temperature, s.top_p, s.top_k, s.min_p, s.seed, counter_++);
 }
 

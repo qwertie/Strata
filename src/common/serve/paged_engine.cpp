@@ -1686,6 +1686,11 @@ strata::spec::StepModel PagedEngine::get_step_model() {
     model.run = [this](const std::vector<strata::spec::StepRow>& rows, std::vector<int32_t>& picks,
                        std::string& err) {
         step_rows_ = (int) rows.size();
+        std::vector<const std::vector<int32_t>*> histories;
+        histories.reserve(rows.size());
+        for (const auto& row : rows)
+            histories.push_back(&held_[(size_t) row.session]->live);
+        model_.set_step_histories(histories);
         return model_.run_rows(rows, picks, err);
     };
     model.keep = [this](const std::vector<strata::spec::StepRow>& rows, const std::vector<int>& kept,

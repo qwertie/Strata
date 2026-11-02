@@ -627,6 +627,10 @@ Verifier::~Verifier() {
     for (auto& kv : commit_bm_)
         if (kv.second) cudaGraphExecDestroy(kv.second);
     if (arena_b_) cudaFree(arena_b_);
+    if (batch_history_device_) {
+        const OnDevice on_device(device_);
+        cudaFree(batch_history_device_);
+    }
     if (h_commitb_) cudaFreeHost(h_commitb_);
     if (qcnt_) cudaFree(qcnt_);
     if (d_spec_) cudaFree(d_spec_);
@@ -3943,17 +3947,58 @@ bool Verifier::commit_slot_prefixes(const int* keep, std::string& err) {
 }
 
 bool Verifier::sample_rows(int S, std::string& err) {
-    bool any = false;
+    std::vector<int32_t> history;
+    std::vector<size_t> offsets((size_t) S);
     for (int t = 0; t < S; ++t) {
+        offsets[(size_t) t] = history.size();
+        if ((size_t) t < batch_histories_.size())
+            history.insert(history.end(), batch_histories_[(size_t) t].begin(), batch_histories_[(size_t) t].end());
+    }
+    if (!history.empty()) {
+        cudaError_t e = cudaSuccess;
+        if (history.size() > batch_history_capacity_) {
+            if (batch_history_device_)
+                cudaFree(batch_history_device_);
+            batch_history_device_ = nullptr;
+            batch_history_capacity_ = 0;
+            e = cudaMalloc(&batch_history_device_, history.size() * sizeof(int32_t));
+            if (e == cudaSuccess)
+                batch_history_capacity_ = history.size();
+        }
+        if (e == cudaSuccess)
+            e = cudaMemcpy(batch_history_device_, history.data(), history.size() * sizeof(int32_t),
+                           cudaMemcpyHostToDevice);
+        if (e != cudaSuccess) {
+            err = std::string("verify batch: penalty history: ") + cudaGetErrorString(e);
+            return false;
+        }
+    }
+    bool any = false;
+    for (int t = 0; t < S;) {
         strata::kernels::SamplerParams sp = slot_sp_[(size_t) last_rows_[t]];
-        if (sp.greedy || sp.temperature <= 0.0f) continue;
+        const int h = (size_t) t < batch_histories_.size() ? (int) batch_histories_[(size_t) t].size() : 0;
+        int end = t + 1;
+        while (end < S && last_rows_[end] == last_rows_[t] && last_pos_b_[end] == last_pos_b_[end - 1] + 1 &&
+               ((size_t) end < batch_histories_.size() ? (int) batch_histories_[(size_t) end].size() : 0) == h)
+            ++end;
+        if ((sp.greedy || sp.temperature <= 0.0f) && h == 0) {
+            t = end;
+            continue;
+        }
         sp.counter = (uint64_t) last_pos_b_[t];   // Philox(seed, position): the solo window's draw for this position
-        sp.penalty_last_n = 0;
-        strata::kernels::sample_tokens(head_logits_ + (size_t) t * (size_t) n_vocab_, 1, (int) n_vocab_, nullptr, 0, sp,
+        if (h == 0)
+            sp.penalty_last_n = 0;
+        strata::kernels::sample_tokens(head_logits_ + (size_t) t * (size_t) n_vocab_, end - t, (int) n_vocab_,
+                                       h ? batch_history_device_ + offsets[(size_t) t] : nullptr, h, sp,
                                        m_out_ + t, cs_);
         any = true;
+        t = end;
     }
-    if (any && cudaStreamSynchronize(cs_) != cudaSuccess) { err = "verify batch: the row sampling failed"; return false; }
+    const cudaError_t e = any ? cudaStreamSynchronize(cs_) : cudaSuccess;
+    if (e != cudaSuccess) {
+        err = "verify batch: the row sampling failed";
+        return false;
+    }
     return true;
 }
 

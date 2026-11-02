@@ -240,6 +240,8 @@ public:
     /// get_prompt_chunk tokens with decode steps of other conversations between them.
     virtual bool read_prompt(const PagedParts& parts, const std::vector<int64_t>& ids, int64_t from, int64_t n,
                              bool drafting, const ChunkDone& on_chunk, std::string& err) = 0;
+    /// Supplies the consumed tokens for each row's conversation, valid until run_rows returns.
+    virtual void set_step_histories(const std::vector<const std::vector<int32_t>*>&) {}
     /// Runs a step's rows (spec::StepModel::run); picks[r] gets row r's next token, or -1 when its logits were not
     /// finite.
     virtual bool run_rows(const std::vector<strata::spec::StepRow>& rows, std::vector<int32_t>& picks,

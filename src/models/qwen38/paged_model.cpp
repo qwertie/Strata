@@ -9,6 +9,7 @@
 #include "strata/common/kernels/cpu/expert_layout.hpp"
 #include "strata/common/serve/paged_engine.hpp"
 #include "strata/common/serve/paged_model.hpp"
+#include "strata/common/serve/penalty_history.hpp"
 #include "strata/models/qwen38/conversation.hpp"
 #include "strata/models/qwen38/conversation_drafter.hpp"
 #include "strata/models/qwen38/conversation_pages.hpp"
@@ -160,6 +161,9 @@ public:
     int64_t get_prompt_chunk() const override { return conv_.sp.chunk(); }
     bool read_prompt(const PagedParts& parts, const std::vector<int64_t>& ids, int64_t from, int64_t n, bool drafting,
                      const ChunkDone& on_chunk, std::string& err) override;
+    void set_step_histories(const std::vector<const std::vector<int32_t>*>& histories) override {
+        histories_ = histories;
+    }
     bool run_rows(const std::vector<strata::spec::StepRow>& rows, std::vector<int32_t>& picks,
                   std::string& err) override;
     bool keep_rows(const std::vector<strata::spec::StepRow>& rows, const std::vector<int>& kept, bool drafting,
@@ -180,6 +184,8 @@ private:
     ConversationDrafter* const drafter_;
     const int sessions_;
     std::vector<int32_t> picks_;       ///< the last step's token after each row, for the drafter
+    std::vector<const std::vector<int32_t>*> histories_; ///< consumed tokens for the current step
+    std::vector<int> history_lengths_; ///< each session's penalty window
 };
 
 std::string get_split_hop_refusal(const Options& o);
@@ -552,7 +558,9 @@ void PagedQwen::report_hops() const {
 
 void PagedQwen::start_request(int session, const strata::serve::RequestStart& r) {
     strata::kernels::SamplerParams sp = get_sampler_params(r.sampling);
-    sp.penalty_last_n = 0;   // the penalties need a history per window (the old engine's set_history): not here
+    if (history_lengths_.size() < (size_t) sessions_)
+        history_lengths_.resize((size_t) sessions_);
+    history_lengths_[(size_t) session] = std::min(sp.penalty_last_n, 4096);
     conv_.ver.set_slot_sampling(session, sp);
 }
 
@@ -649,6 +657,7 @@ bool PagedQwen::run_rows(const std::vector<strata::spec::StepRow>& rows, std::ve
         tokens[r] = row.token;
         pos[r] = row.pos;
     }
+    conv_.ver.set_batch_histories(strata::serve::get_penalty_histories(rows, histories_, history_lengths_));
     if (!conv_.run_rows(sessions, S, tokens, pos, picks.data(), err))
         return false;
     for (int r = 0; r < S; ++r)

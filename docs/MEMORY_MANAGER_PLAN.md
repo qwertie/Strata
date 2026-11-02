@@ -364,6 +364,9 @@ the engine within 16 GiB of the limit.
 
 ## Later
 
+- Qwen3.8's paged verifier applies request penalties to each row's conversation and earlier drafts. On the Strix Halo,
+  one greedy penalty test differed with drafting from token 26: its history matched, but its logits differed. The old
+  engine's drafted and non-drafted penalty outputs also differed on that prompt. DeepSeek's sampling omits penalties.
 - **Tree drafting**: a conversation's share of rows spent as a tree of guesses (several likely continuations
   checked in one pass). The parent table of the step allows it from the start; it needs the drafter to propose trees,
   the verify kernels to take tree-shaped parents, and for GDN layers a running state per branch.

@@ -1,6 +1,7 @@
 // src/common/spec/step_test.cpp - the decode step's row sharing and acceptance (step.hpp), with a model that answers
 // each token with the token after it (no GPU).
 #include "strata/common/spec/step.hpp"
+#include "strata/common/serve/penalty_history.hpp"
 
 #include <cstdio>
 #include <map>
@@ -66,6 +67,15 @@ Decoding conversation(int session, int32_t next, int64_t pos, int64_t max_new) {
 }  // namespace
 
 int main() {
+    {
+        const std::vector<int32_t> a{1, 2}, b{7};
+        const std::vector<StepRow> rows{{0, 3, 2, -1}, {0, 4, 3, 0}, {1, 8, 1, -1}, {1, 9, 2, 2}};
+        const std::vector<const std::vector<int32_t>*> tails{&a, &a, &b, &b};
+        const auto histories = strata::serve::get_penalty_histories(rows, tails, {3, 4});
+        check(histories == std::vector<std::vector<int32_t>>{{1, 2, 3}, {2, 3, 4}, {-1, -1, 7, 8},
+                                                              {-1, 7, 8, 9}},
+              "each conversation and draft row has its own penalty history");
+    }
     {   // the plan's table: 3 conversations at once, 8 rows
         StepSettings s{3, 8, 8};
         check(share_guess_rows(s, 3, 3, 0) == std::vector<int>{2, 2, 1}, "3 active: 2, 2, 1");
