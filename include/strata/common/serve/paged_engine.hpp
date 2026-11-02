@@ -25,14 +25,16 @@
 // that their cards have no room for, and computes them in one hop (`remote_experts`; auto: where a hop over the card's
 // link costs less than the CPU computing an expert).  When a card's memory setting changes, the cut moves if the
 // planner says so: between two steps every conversation is paused to RAM, the cards take their new layers, and the
-// conversations come back.
+// conversations come back.  `layer_cut` moves the cut of a split over two cards to a given layer the same way,
+// without changing any card's memory.
 //
 // CHANGE_SETTINGS (memory_report.hpp) changes, between two steps, each pool's size (`memory_mib.gpu<N>`, per card
 // `memory_mib.gpu<N>.<card>` for a later card on the GPU of an earlier one,
 // `memory_mib.ram`: a pool takes and gives back memory in chunks of 256 MiB; a shrink evicts the experts of the
 // chunks it gives back and moves or pauses the conversations there), `tokens_min`, `tokens_max`, `ssd_pause_mib`,
-// `drafter` (off gives its weights back), `concurrent`, `rows` and `lookahead`.  A shrink is refused only when the
-// biggest decoding conversation (at the end of its request) or the token minimum would not fit.
+// `drafter` (off gives its weights back), `concurrent`, `rows`, `lookahead` and `layer_cut` (the second card's first
+// layer; `layers` in SETTINGS is the model's layer count).  A shrink is refused only when the biggest decoding
+// conversation (at the end of its request) or the token minimum would not fit.
 #pragma once
 
 #include "strata/common/experts/ram_experts.hpp"
@@ -70,6 +72,10 @@ struct PagedSettings {
     std::string pause_dir;                         ///< --pause-dir; empty: the temporary folder's <program name>
     std::string copy_back = "auto";                ///< --copy-back
     std::string remote_experts = "auto";           ///< --remote-experts
+    /// --fill: eager, the RAM's pool reads its experts before the engine says READY; background, it opens empty and
+    /// reads them between requests (strata-q38's open_ram), so the first request comes sooner; then, too, decode steps
+    /// leave the experts the RAM's pool wants back to the time between requests
+    std::string fill = "eager";
     bool drafter = true;                           ///< --drafter on|off: its weights loaded (with --lookahead)
     strata::spec::StepSettings step;               ///< --rows, --lookahead and --concurrent (default --batch)
 };

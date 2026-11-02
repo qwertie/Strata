@@ -208,6 +208,32 @@ test('the controls change the other settings within their ranges', async () => {
   assert.match(element.innerHTML, /<p class="mem-note">Context: 32.768 tokens · Batch slots: 4<\/p>/);
 });
 
+test('on a split over two cards, a control moves the layer cut within the model\'s layers', async () => {
+  const split = { ...live, settings: { ...live.settings, layer_cut: 24, layers: 48 } };
+  const { calls, onChange } = recorder(), { element, fire } = mount(split, onChange);
+  assert.match(element.innerHTML, /data-setting="layer_cut" value="24" min="1" max="47"/);
+  assert.match(element.innerHTML, /Layers: 48/);
+  const cut = value => control('[data-setting]', { dataset: { setting: 'layer_cut' }, value });
+  fire('change', { target: cut('48') });
+  assert.match(element.innerHTML,
+    /Layer cut \(the second card&#39;s first layer\): choose a whole number from 1 to 47\./);
+  fire('change', { target: cut('20') });
+  await settle();
+  assert.deepEqual(calls, [[{ layer_cut: 20 }, 'session']]);
+});
+
+test('every segment of a bar says in its tooltip what it is', () => {
+  const card = { id: 'gpu0', name: 'card', total: 16 * GIB, free: GIB, unified: false, paused_count: null,
+    paused_budget: null, other: GIB, uses: { weights: 4 * GIB, experts: 8 * GIB, conversations: GIB, pool_free: GIB } };
+  const [row] = rows(draw({ available: true, memories: [card], settings: {} }));
+  const tips = [...row.matchAll(/class="mem-seg"[^>]*title="([^"]*)"/g)].map(m => m[1]);
+  assert.equal(tips.length, 6);
+  assert.match(tips[0], /^Weights: 4.00 GiB\. The parts of the model that must always be loaded here \(attention/);
+  assert.match(tips[4], /^Other: 1.00 GiB\. Memory in use here that the engine does not count as its own: other progr/);
+  for (const t of tips)
+    assert.match(t, /: [\d.,]+ (GiB|MiB)\. \S/);
+});
+
 test('an engine that cannot change its settings while it runs shows them read-only', () => {
   const { calls, onChange } = recorder(), fixed = mount({ ...live, can_change: false }, onChange).element.innerHTML;
   for (const html of [fixed, draw(live)]) {             // draw(live): a caller that sends no changes

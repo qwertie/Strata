@@ -120,6 +120,13 @@ git checkout memory-manager
 powershell -ExecutionPolicy Bypass -File tools\nvidia_session\run.ps1 -Only preflight, build, memory -Before 4fa1d1cf -DataDir E:\Strata-data
 ```
 
+To run only the memory checks again, in a new results folder, after `git pull` on the branch (the build after is
+rebuilt in its folder, the build before is kept):
+
+```powershell
+powershell -ExecutionPolicy Bypass -File tools\nvidia_session\run.ps1 -Only build, memory -Before 4fa1d1cf -DataDir G:\AI-stuff\Strata-data -Work "Z:\C++\strata-builds-mm"
+```
+
 `strata-q38` gets `--ram-mib 20480`: its RAM pool is page-locked and by default takes what RAM has free, which on 48 GB
 leaves Windows' commit limit too little. Each check runs 2 times a build (`-Runs N` for another count).
 
@@ -128,10 +135,11 @@ leaves Windows' commit limit too little. Each check runs 2 times a build (`-Runs
 | `memory-q38-1card` | `strata-q38` on the bigger card, M7's build against this one | its answers and speed did not change (it now measures the card's link at start and paces the experts it puts back by it) |
 | `multi-split-auto-SB`, `-BS` | the old engine's `--layer-split auto`, both card orders, M7's build against this one | the old engine is unchanged now that its split planner is shared code (`src/common/experts/layer_split.cpp`): the same answers, and the same `layer split auto: K=...` line (the startup lines are compared too) |
 | `memory-speed-split-q38` | the old engine's `--layer-split auto` on both cards ("before") against `strata-q38` on the bigger card ("after") | today's split's speed against the new engine's; DIFF here only means `strata-q38` decoded more than 5% slower |
-| `memory-q38-2cards-SB`, `-BS` | `strata-q38` on the bigger card against `strata-q38 --layer-split auto` on both cards, both with `--expert-cache 4000 --pcie-frac 0` (the same experts on the GPUs: the profile's first 4000, each on the card of its layer) | the same tokens on two cards as on one (step M8): each card its own page pool, the verify windows and the prompt path handing their rows from card to card, a conversation paused and resumed across both cards |
-| `memory-hop-SB`, `-BS` | `strata-q38` on the bigger card against `strata-q38 --layer-split 24 --gpu-mib 3072,8192 --remote-experts on` on both cards, both with `--expert-cache 4000 --pcie-frac 0` | the second card holds the experts of the first card's layers that its 3 GiB pool has no room for and computes them in one hop (step M8): the same tokens as one card, or a DIFF from rounding (see below) |
+| `memory-q38-2cards-SB`, `-BS` | `strata-q38` on the bigger card against `strata-q38 --layer-split auto` on both cards, both with `--expert-cache 400 --pcie-frac 0 --lookahead 0` and `STRATA_PREFILL_CPU_SHARE=0` (the same experts on the GPUs: the profile's first 400, each on the card of its layer, few enough for the 3060's pool of under 1 GiB as the second card; no drafting, which on a split changes tokens at near-ties; no CPU share of a prompt) | the same tokens on two cards as on one (step M8): each card its own page pool, the verify windows and the prompt path handing their rows from card to card, a conversation paused and resumed across both cards |
+| `memory-hop-SB`, `-BS` | `strata-q38` on the bigger card against `strata-q38 --layer-split 24 --gpu-mib 512,8192 --remote-experts on` on both cards, both with the settings of `memory-q38-2cards` | the second card holds the experts of the first card's layers that its 512 MiB pool has no room for and computes them in one hop (step M8): the same tokens as one card, or a DIFF from rounding (see below) |
 | `memory-cut-move-SB`, `-BS` | `strata-q38` on both cards (`--expert-cache 3000 --pcie-frac 0`, pools of 12 GiB on the bigger card and 5 GiB on the smaller), a 96-token story in a batch slot, against the same with the first card's memory halved after 24 tokens and set back after 48 (`CHANGE_SETTINGS`; the answers to the changes go to `*.out.settings`) | the layer cut moves while the story decodes (step M9) and the tokens stay the same: the planner runs again on the cards' new pool sizes, the conversations' state for the moved layers goes to the other card, and each card takes its new layers' experts before the next step |
-| `memory-rows-card`, `-ram`, `-ssd` | `tools\measure_rows.py` on the bigger card: as many experts on the card as fit, most of them in RAM, about half on the SSD | M7's table of conversations at once and rows per step on NVIDIA (docs/DETAILS.md has the Strix Halo's numbers). Needs `strata-iq3_s.json`, the run config setup writes; skipped without it |
+| `memory-layer-cut-SB`, `-BS` | as `memory-cut-move`, the cut moved by `CHANGE_SETTINGS layer_cut=K` instead: 6 layers toward the card with the bigger pool after 24 tokens, back after 48; no card's memory changes | the same tokens, and each change's answer (`*.out.settings`) has the new `layer_cut=` and no `ERR` or `SHORTFALL` |
+| `memory-rows-card`, `-ram`, `-ssd` | `tools\measure_rows.py` on the bigger card: as many experts on the card as fit, most of them in RAM, about half on the SSD, with the kit's own run config (`rows-config.json`: `drive.py config`, the model's files from `-DataDir`) | M7's table of conversations at once and rows per step on NVIDIA (docs/DETAILS.md has the Strix Halo's numbers). PASS: measured; FAIL: `steps\memory-rows-<case>.log` says why |
 
 `strata-q38` runs on several cards since M8's second part (only tested on one GPU with two stages so far: the
 Strix Halo has one). What the session must confirm, beyond the table's PASS:
@@ -139,7 +147,9 @@ Strix Halo has one). What the session must confirm, beyond the table's PASS:
 - `memory-q38-2cards-*`: PASS (the same tokens), in both card orders. The stderr of a two-card run says
   `the page pool of gpu<N> (layers A-B)` once per card, and `--layer-split auto`'s `K=` line; the cut it chose and
   each card's pool size go in the report. Its speed against `memory-q38-1card` goes in it too (no target yet).
-- `memory-cut-move-*`: PASS (the same tokens), its `*.out.settings` answers have no `ERR` and no `SHORTFALL`, and the
+- `memory-cut-move-*`: PASS (the same tokens), its `*.out.settings` answers have no `ERR` and no `SHORTFALL` (the
+  first session's `ERR gpu0 has room for 1.00 GiB of pool, not 2.25 GiB` came from the engine counting the prompt
+  path's buffers as free memory to keep after they were allocated), and the
   `--move-cut` run's stderr has `strata-q38: the layer cut moved: K=A -> K=B (...) in N ms` once or twice (after 24
   tokens, and after 48 when the planner gives the restored sizes another cut than the start's, which `--layer-split
   auto` chose by the old engine's search). Note the lines and their times in the report. No such line: send the
@@ -157,9 +167,17 @@ Strix Halo has one). What the session must confirm, beyond the table's PASS:
 - A check that SKIPs says `is not there yet` in its stderr: drafting on a split is refused for now.
 
 **Measured on this PC by hand.** Under the table, `memory-q38-1card`'s stderr (`*.out.stderr`) has a line
-`strata-q38: the GPU's link to RAM: X GB/s to the GPU, Y GB/s back, Z ms a round trip`, and the old engine's split
+`strata-q38: gpu<N>'s link to RAM: X GB/s to the GPU, Y GB/s back, Z ms a round trip`, and the old engine's split
 runs print `layer split auto: CUDA<n> link X GB/s`. Note both for each card (and with `nvidia-smi -q -d PCIE` whether
-the 3060 sits on x4): the planner and the rules for experts on another card are priced from these numbers.
+the 3060 sits on x4): the planner and the rules for experts on another card are priced from these numbers. The two
+should now agree within about 10% (the first session's link lines read 3.4-6.8 GB/s for the 3080 on x16, against
+13.4 from the old engine's probe: short copies on a link still idling at a lower PCIe generation).
+
+**`--fill background`, by hand.** Once, on the bigger card, start the after build's `strata-q38` as
+`memory-q38-1card` does, with and without `--fill background`, and note the seconds from the start to `READY` and to
+the first answer's first token (`drive.py multi` writes the answers; the start's time is the `.out` file's
+creation). The RAM pool's 19.7 GiB took 51 s to read on this PC's drive, so the background fill should save about
+that much before `READY`; the first answer then reads its experts from the SSD as it goes.
 
 ## What the table says
 

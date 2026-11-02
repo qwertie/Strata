@@ -31,7 +31,7 @@ RamExperts::~RamExperts() {
 
 bool RamExperts::open(ExpertSource& files, uint64_t bytes, int ring, const StateLayout& layout, PagePoolConfig config,
                       const std::vector<uint64_t>& blob_bytes, int64_t n_expert, const std::vector<ExpertKey>& ranking,
-                      std::string& err) {
+                      std::string& err, bool fill) {
     files_ = &files;
     blob_bytes_ = blob_bytes;
     n_expert_ = n_expert;
@@ -69,6 +69,10 @@ bool RamExperts::open(ExpertSource& files, uint64_t bytes, int ring, const State
     };
     hooks.moved = [this](ExpertKey key, int32_t first) { first_page_[index_of(key.layer, key.expert)] = first; };
     pages_.set_hooks(std::move(hooks));
+    if (!fill) {   // every expert of the ranking is wanted, as one that a conversation evicted would be
+        pages_.set_ranking(ranking, (int64_t) first_page_.size());
+        return true;
+    }
     Reads batch;
     for (size_t i = 0; i < ranking.size(); ++i) {
         const ExpertKey key = ranking[i];

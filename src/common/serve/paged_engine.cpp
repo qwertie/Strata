@@ -137,9 +137,12 @@ private:
     void report_resize(const char* name, const strata::core::PagePoolReport& before,
                        const strata::core::PagePoolReport& after, Clock::time_point t0) const;
     /// Runs the layer split's planner on the cards' pool sizes (their memory settings), for the conversations that
-    /// decode and the token minimum; gets the cut it chose (get_cut's form), or today's when no other can run (a card
-    /// would lack a layer's dense weights, or the model cannot run its layers: PagedModel::can_run_layers).
+    /// decode and the token minimum; gets the cut it chose (get_cut's form), or today's when no other can run
+    /// (get_layers_problem).
     std::vector<int64_t> plan_cut() const;
+    /// Gets why card `k` cannot run layers [lb, le) (empty: it can): it lacks their dense weights, or the model cannot
+    /// run them on one card (PagedModel::can_run_layers).
+    std::string get_layers_problem(size_t k, int64_t lb, int64_t le) const;
     /// Moves the layer cut to `cut` between two steps: every conversation is paused into the RAM's pool, each card
     /// takes its new layers (the pool's layout for them and their experts, the conversations' state and the model's
     /// side of the card), the decoding conversations come back, and each card fills its pool with its experts before
@@ -238,9 +241,10 @@ private:
     /// that the pools do not hold take the pages of the least-routed ones of their layer (at most --adapt-swaps,
     /// each by --adapt-min-gain more routings).  False (ERR printed) when a copy failed.
     bool adapt_experts();
-    /// Puts back a batch of the experts the conversations evicted (the GPUs' first, then the RAM's), or waits until
-    /// pages open to them: the serve loop's work between requests.  False when a copy failed (said on stderr).
-    bool refill_experts();
+    /// Puts back a batch of the experts the conversations evicted (the GPUs' first, then, `with_ram`, the RAM's), or
+    /// waits until pages open to them: the serve loop's work between requests.  False when a copy failed (said on
+    /// stderr).
+    bool refill_experts(bool with_ram = true);
     /// Tells whether a pool wants experts back (ExpertPages::is_refill_wanted).
     bool is_refill_wanted() const;
     /// Uploads the cards' residency tables when experts came or left since the last upload.
@@ -688,7 +692,9 @@ bool PagedEngine::decode_step() {
     strata::core::progress_beat();
     if (refilling_ && !is_refill_wanted())
         refilling_ = false;
-    return adapt_experts() && (!refilling_ || refill_experts());
+    // with --fill background the RAM's pool reads most of its experts from the SSD after the start: between requests,
+    // not between the steps of one
+    return adapt_experts() && (!refilling_ || refill_experts(settings_.fill != "background"));
 }
 
 bool PagedEngine::preempt(size_t slot, int64_t priority) {
@@ -1002,7 +1008,7 @@ bool PagedEngine::adapt_experts() {
     return true;
 }
 
-bool PagedEngine::refill_experts() {
+bool PagedEngine::refill_experts(bool with_ram) {
     std::string err;
     uint64_t wait_ms = 0;
     int loaded = 0;
@@ -1015,7 +1021,7 @@ bool PagedEngine::refill_experts() {
         if (loaded < 0)
             break;
     }
-    if (loaded == 0 && ram_.pages().is_refill_wanted()) {   // the GPUs' first: their experts are the hotter ones
+    if (with_ram && loaded == 0 && ram_.pages().is_refill_wanted()) {   // the GPUs' first: their experts are hotter
         uint64_t ram_wait_ms = 0;
         loaded = ram_.pages().refill(kRefillBatch, ram_wait_ms, err);
         if (ram_wait_ms > 0 && (wait_ms == 0 || ram_wait_ms < wait_ms))
@@ -1142,6 +1148,8 @@ strata::serve::MemoryReport PagedEngine::describe_memory() const {
                        {"tokens_min", settings_.tokens_min},
                        {"tokens_max", settings_.tokens_max},
                        {"ssd_pause_mib", settings_.ssd_pause_mib}};
+    if (cards_.size() == 2)
+        report.settings.insert(report.settings.end(), {{"layer_cut", cards_[1].lb}, {"layers", facts_.n_layers}});
     for (const PagedCard& card : cards_)
         report.settings.emplace_back("memory_mib." + card.id,
                                      (int64_t) (card.experts.pool().report().total.bytes >> 20));
@@ -1159,6 +1167,7 @@ std::string PagedEngine::change_settings(const SettingValues& values, std::strin
     PagedSettings s = settings_;
     std::vector<std::optional<uint64_t>> gpu_bytes(cards_.size());   // per card
     std::optional<uint64_t> ram_bytes;
+    std::optional<int64_t> cut_asked;   // layer_cut
     for (const auto& [name, text] : values) {
         if (name == "drafter") {
             if (text != "on" && text != "off")
@@ -1189,6 +1198,8 @@ std::string PagedEngine::change_settings(const SettingValues& values, std::strin
             s.step.rows = (int) v;
         else if (name == "lookahead")
             s.step.lookahead = (int) v;
+        else if (name == "layer_cut")
+            cut_asked = v;
         else
             return facts_.name + " has no setting " + name;
     }
@@ -1224,6 +1235,16 @@ std::string PagedEngine::change_settings(const SettingValues& values, std::strin
         if (gpu_bytes[card.index] && asked > get_largest_gpu(card))
             return card.id + " has room for " + gib(get_largest_gpu(card)) + " of pool, not " + gib(asked);
     }
+    if (cut_asked && cards_.size() != 2)
+        return "layer_cut moves the cut between two cards; this engine runs on " + std::to_string(cards_.size()) +
+               " (--layer-split sets the cuts of more at the start)";
+    for (size_t k = 0; cut_asked && k < 2; ++k) {
+        const auto [lb, le] = get_card_layers({*cut_asked}, k, facts_.n_layers);
+        if (lb >= le)
+            return "layer_cut must be 1 to " + std::to_string(facts_.n_layers - 1);
+        if (const std::string why = get_layers_problem(k, lb, le); !why.empty())
+            return why;
+    }
     // (each range takes all of get_commit_room: on the Strix Halo, where the GPU's memory is commit too, one change
     // that grows both pools to their largest can take the commit margin)
     if (ram_bytes && (*ram_bytes < get_smallest_ram() || *ram_bytes > get_largest_ram()))
@@ -1257,12 +1278,14 @@ std::string PagedEngine::change_settings(const SettingValues& values, std::strin
     if (s.drafter && !settings_.drafter && !switch_drafter(true, err))
         note("", err);
     resize(false);
-    if (std::any_of(gpu_bytes.begin(), gpu_bytes.end(), [](const auto& b) { return b.has_value(); })) {
-        const std::vector<int64_t> cut = plan_cut();
+    // the cut asked for, else the planner's for the cards' new pool sizes
+    const bool resized = std::any_of(gpu_bytes.begin(), gpu_bytes.end(), [](const auto& b) { return b.has_value(); });
+    if (resized || cut_asked) {
+        const std::vector<int64_t> cut = cut_asked ? std::vector<int64_t>{*cut_asked} : plan_cut();
         const bool move = cut != get_cut();
         if (move && !move_cut(cut, err))
             note("moving the layer cut: ", err);
-        if ((!move || cut != get_cut()) && !holder_.empty()) {   // (a cut move places them for its new cut)
+        if (resized && (!move || cut != get_cut()) && !holder_.empty()) {   // (a cut move places them for its cut)
             place_card_experts(true);
             refilling_ = true;
         }
@@ -1377,15 +1400,24 @@ std::vector<int64_t> PagedEngine::plan_cut() const {
     for (const ExpertKey& key : facts_.split_ranking)
         problem.ranked_layers.push_back(key.layer);
     problem.can_start = [&](const std::vector<SplitFill>& fills) {
-        for (size_t k = 0; k < fills.size(); ++k) {
-            const int64_t lb = fills[k].lb, le = fills[k].le;
-            if (lb < cards_[k].weights_lb || le > cards_[k].weights_le || !model_.can_run_layers(lb, le))
+        for (size_t k = 0; k < fills.size(); ++k)
+            if (!get_layers_problem(k, fills[k].lb, fills[k].le).empty())
                 return false;
-        }
         return true;
     };
     const SplitPlan plan = plan_layer_split(problem, (facts_.name + ": the layer cut: ").c_str());
     return plan.cuts.empty() || plan.start_unchecked ? get_cut() : plan.cuts;
+}
+
+std::string PagedEngine::get_layers_problem(size_t k, int64_t lb, int64_t le) const {
+    const PagedCard& card = cards_[k];
+    const auto range = [](int64_t b, int64_t e) { return std::to_string(b) + "-" + std::to_string(e - 1); };
+    if (lb < card.weights_lb || le > card.weights_le)
+        return card.id + " holds the dense weights of layers " + range(card.weights_lb, card.weights_le) +
+               " only (--trim-stage-weights), not of " + range(lb, le);
+    if (!model_.can_run_layers(lb, le))
+        return facts_.name + " cannot run layers " + range(lb, le) + " on one card";
+    return {};
 }
 
 bool PagedEngine::move_cut(const std::vector<int64_t>& cut, std::string& err) {

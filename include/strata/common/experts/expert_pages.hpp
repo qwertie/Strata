@@ -104,9 +104,10 @@ public:
     uint64_t get_time() const { return now_(); }
     /// Tells whether experts that conversations evicted wait for pages that may be free for them now or soon.
     bool is_refill_wanted() const;
-    /// Puts back up to `max` evicted experts, hottest first, into the pages experts may take.  Gets how many (-1 when
-    /// a copy failed, with `err`); `wait_ms` gets 0, or the milliseconds until more pages open to experts when the
-    /// next expert found no room before then.
+    /// Puts back up to `max` evicted experts, hottest first, into free pages experts may take; it evicts no expert,
+    /// since one there now may be one that decoding uses more (the adaptive tier's).  Gets how many (-1 when a copy
+    /// failed, with `err`); `wait_ms` gets 0, or the milliseconds until more pages open to experts when the next
+    /// expert found no room before then.
     int refill(int max, uint64_t& wait_ms, std::string& err);
 
 private:
@@ -137,6 +138,8 @@ private:
     /// The pool's free pages when `refill` last found no room and no page about to open; refills wait until that
     /// changes.  UINT64_MAX: not waiting.
     uint64_t blocked_at_free_ = UINT64_MAX;
+    /// While `refill` runs: `admit` takes free pages only (a GPU's refill reaches it through the cache's admitter)
+    bool free_only_ = false;
 };
 
 }  // namespace strata::core

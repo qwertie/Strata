@@ -139,7 +139,9 @@ public:
     /// Gets the regions a conversation keeps in `card`'s pool when the card runs layers [lb, le).
     virtual bool get_card_layout(const PagedCard& card, int64_t lb, int64_t le, strata::core::StateLayout& layout,
                                  std::string& err) const = 0;
-    /// Gets the GPU memory `card`'s pool must leave free for the model's own buffers there.
+    /// Gets the GPU memory `card`'s pool must leave free besides what is allocated there now: the model's reserve
+    /// and its buffers there that are not allocated (a drafter switched off).  The engine weighs it against the GPU's
+    /// free memory when a pool grows.
     virtual uint64_t get_gpu_keep(const PagedCard& card) const = 0;
     /// Gets the experts of the profile of layers [lb, le), hottest first; on a layer split, `max_experts` (the most
     /// the GPUs hold) becomes how many of them are among the whole profile's first `max_experts`.

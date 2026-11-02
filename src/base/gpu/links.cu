@@ -7,6 +7,7 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cstring>
 #include <functional>
 
 namespace strata::core {
@@ -49,7 +50,10 @@ LinkSpeed measure(void* a, void* b, size_t bytes, int dev_a, int dev_b) {
         return true;
     };
     LinkSpeed s;
-    if (!copy(b, a, bytes))   // warm up: the context and the copy engines
+    // warm up each way: the context, the copy engines, and a link that idles at a lower PCIe generation (an RTX 3080
+    // on x16, which reads 13.4 GB/s in 256 MiB bursts, measured 3.4 GB/s to it and 3.3 back, about gen 1's speed, in
+    // a few 64 MiB copies without)
+    if (!copy(b, a, bytes) || !copy(a, b, bytes))
         return s;
     s.to_gbps = get_gbps(bytes, time_best_ms([&] { return copy(b, a, bytes); }));
     s.from_gbps = get_gbps(bytes, time_best_ms([&] { return copy(a, b, bytes); }));
@@ -67,8 +71,10 @@ LinkSpeed measure_host_link(int dev, size_t bytes) {
     void* h = nullptr;
     void* d = nullptr;
     LinkSpeed s;
-    if (cudaMallocHost(&h, bytes) == cudaSuccess && cudaMalloc(&d, bytes) == cudaSuccess)
+    if (cudaMallocHost(&h, bytes) == cudaSuccess && cudaMalloc(&d, bytes) == cudaSuccess) {
+        std::memset(h, 0, bytes);   // its pages in before the timing
         s = measure(h, d, bytes, -1, dev);
+    }
     (void) cudaGetLastError();
     (void) cudaFree(d);
     (void) cudaFreeHost(h);

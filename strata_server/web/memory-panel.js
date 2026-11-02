@@ -15,6 +15,23 @@
 const USES = {weights: "Weights", experts: "Experts", conversations: "Conversations", pool_free: "Free in the pool",
               paused: "Paused conversations", drafter: "Drafter", scratch: "Scratch", engram: "Engram",
               borrowed: "GPU (borrowed from RAM)", other: "Other", free: "Free"};
+/** What each use of a bar is, in plain words: the tooltip of its segment and its legend entry. */
+const USE_HELP = {
+  weights: "The parts of the model that must always be loaded here (attention, the shared layers, the output head), " +
+    "unlike experts, which are loaded as they are needed",
+  experts: "Experts kept here so that they need not be read from slower memory: the model's specialist parts, a few " +
+    "of which each word uses",
+  conversations: "What the model remembers of the conversations it is working on (their context)",
+  pool_free: "Room the engine has set aside here that nothing uses yet; experts or conversations take it as needed",
+  paused: "Conversations put aside for now, kept here until they continue",
+  drafter: "The small model that guesses the next words ahead, so that answers come faster",
+  scratch: "Working space the engine needs while it computes",
+  engram: "DeepSeek's table of word patterns, read as it answers",
+  borrowed: "Memory the graphics chip borrows from the system RAM beyond its own share",
+  other: "Memory in use here that the engine does not count as its own: other programs, the graphics runtime's own " +
+    "buffers and anything else Strata does not name",
+  free: "Not in use by anything",
+};
 /** The uses that are the engine's page pool on a GPU or in RAM, whose end is the divider that sets the pool's size. */
 const POOL_USES = ["experts", "conversations", "paused", "pool_free"];
 /** Size in bytes (32 GiB) at which a memory's bar fills the width. */
@@ -32,7 +49,8 @@ const CHANGED_KEY = "strata.memoryPanel.changed";
 const SETTINGS = {context: "Context", concurrent: "Conversations at once", rows: "Rows per step",
                   lookahead: "Lookahead", tokens_min: "Conversation tokens, minimum",
                   tokens_max: "Conversation tokens, maximum", ssd_pause_mib: "SSD for paused conversations (MiB)",
-                  drafter: "Drafter", slots: "Batch slots"};
+                  drafter: "Drafter", slots: "Batch slots", layer_cut: "Layer cut (the second card's first layer)",
+                  layers: "Layers"};
 /** Settings the engine reports that the panel shows elsewhere (the bars) or not at all. */
 const UNLISTED = /^memory_mib\.|^token_bytes$|^conversation_bytes$/;
 /**
@@ -45,7 +63,8 @@ const CONTROLS = [["concurrent", () => 1, (s) => s.slots ?? 8],
                   ["rows", (s) => s.concurrent ?? 1, () => 8],
                   ["lookahead", () => 0, (s) => s.drafter ? (s.rows ?? 1) - 1 : 0],
                   ["tokens_min", () => 0, (s) => s.tokens_max ?? Infinity],
-                  ["tokens_max", (s) => s.tokens_min ?? 0, () => Infinity]];
+                  ["tokens_max", (s) => s.tokens_min ?? 0, () => Infinity],
+                  ["layer_cut", () => 1, (s) => (s.layers ?? Infinity) - 1]];
 /** HTML entities for the characters esc replaces. @type {Record<string, string>} */
 const ESCAPES = {"&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"};
 /** Names shown for where a conversation is held (its `place`). */
@@ -363,11 +382,13 @@ function drawBar(x, divider, drag) {
     `pool ${fmt(x.allocated_pct, 1)}% allocated, ${fmt(x.fragmented_pct, 2)}% fragmented`]
     .filter(Boolean).join(" · ");
   const title = (/** @type {{use: string}} */ p) => esc(USES[p.use] || p.use);
+  const tip = (/** @type {{use: string, bytes: number}} */ p) =>
+    `${title(p)}: ${size(p.bytes)}${p.use in USE_HELP ? `. ${esc(USE_HELP[p.use])}` : ""}`;
   const seg = (/** @type {{use: string, bytes: number, drawn?: number}} */ p) =>
-    `<span class="mem-seg" data-use="${esc(p.use)}" title="${title(p)}: ${size(p.bytes)}" ` +
+    `<span class="mem-seg" data-use="${esc(p.use)}" title="${tip(p)}" ` +
     `style="width:${total ? (100 * (p.drawn ?? p.bytes)) / total : 0}%"></span>`;
   const key = (/** @type {{use: string, bytes: number}} */ p) =>
-    `<span><i class="mem-key" data-use="${esc(p.use)}"></i>${title(p)} ${size(p.bytes)}</span>`;
+    `<span title="${tip(p)}"><i class="mem-key" data-use="${esc(p.use)}"></i>${title(p)} ${size(p.bytes)}</span>`;
   return `<div class="mem-row"><div class="mem-head"><span>${esc(label)}</span><span class="mem-facts">${esc(facts)}` +
     `</span></div><div class="mem-bar" style="width:${x.total ? 100 * Math.min(x.total / FULL_BAR, 1) : 100}%">` +
     `<div class="mem-segs">${parts.map(seg).join("")}</div>${divider ? drawDivider(x.id, divider, drag) : ""}</div>` +

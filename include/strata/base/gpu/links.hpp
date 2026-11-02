@@ -17,8 +17,10 @@ struct LinkSpeed {
     bool is_known() const { return to_gbps > 0 && from_gbps > 0; }
 };
 
-/// Measures the link between card `dev` and the host with copies of `bytes` from and to page-locked memory (the best
-/// of four each way: a disturbance only ever slows a copy).  Unknown (zeros) when the memory could not be had.
+/// Measures the link between card `dev` and the host with copies of `bytes` from and to page-locked memory, after one
+/// copy each way that wakes the link (the best of four each way: a disturbance only ever slows a copy).  Copies of
+/// 256 MiB measure the link's speed; much smaller ones also measure the time to start a copy.  Unknown (zeros) when
+/// the memory could not be had.
 LinkSpeed measure_host_link(int dev, size_t bytes);
 /// Measures the copies from card `from` to card `to` and back, `bytes` each, as the runtime makes them (peer to peer
 /// where the cards can, else through the host).  Unknown (zeros) when the memory could not be had.

@@ -159,11 +159,11 @@ public:
 
     /// Gets the first of an expert's `pages` consecutive pages: the ones it has, the free run nearest its size's home
     /// point (open to experts, and above the token minimum's reserve; in the reserve's pages only past the reserve's
-    /// count and when no free page waits to open), or else the run of the least-used expert of its size, when that
-    /// was last used before `used_at`.  `used_at` is also the new expert's last use, so that experts
+    /// count and when no free page waits to open), or else, `may_evict`, the run of the least-used expert of its size,
+    /// when that was last used before `used_at`.  `used_at` is also the new expert's last use, so that experts
     /// added from a ranking (hottest first) can be given earlier times for colder ones.  no_page when there is no
     /// room.
-    PageId add_expert(ExpertKey key, uint32_t pages, uint64_t used_at = clock_now);
+    PageId add_expert(ExpertKey key, uint32_t pages, uint64_t used_at = clock_now, bool may_evict = true);
     /// Counts a use of an expert for eviction and gets its first page; no_page when the pool does not hold it.
     PageId use_expert(ExpertKey key);
     /// Gets an expert's first page without counting a use; no_page when the pool does not hold it.

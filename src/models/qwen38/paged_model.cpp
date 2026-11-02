@@ -432,14 +432,15 @@ bool get_card_layout(const Model& m, const PagedCard& card, const ModelCard& mc,
     return true;
 }
 
-/// Gets the GPU memory `card`'s pool leaves free: --vram-reserve-mib, the prompt path's own buffers, and the drafter's
-/// head when the card runs it (has_drafter).
-uint64_t get_gpu_keep(const Model& m, const ModelCard& card) {
+/// Gets the GPU memory `card`'s pool leaves free besides what is allocated there: --vram-reserve-mib, and the drafter's
+/// head when the card runs it (has_drafter) and has not bound it.  Before the start allocates the card's prompt path
+/// (`started` false), also the prompt path's own buffers and the head, which the GPU's free memory still holds.
+uint64_t get_gpu_keep(const Model& m, const ModelCard& card, bool started) {
+    const uint64_t head = (card.stage != nullptr ? card.stage->head : m.native_head).row_bytes();
     return ((uint64_t) m.o.vram_reserve_mib << 20) +
-           strata::prefill::Prefill::bytes_needed_owned(m.g, *card.own, m.o.prefill_chunk, m.srcp != nullptr) +
-           (has_drafter(m, card)
-                ? m.mtp.bind_bytes((card.stage != nullptr ? card.stage->head : m.native_head).row_bytes(), m.n_vocab)
-                : 0);
+           (started ? 0 : strata::prefill::Prefill::bytes_needed_owned(m.g, *card.own, m.o.prefill_chunk,
+                                                                       m.srcp != nullptr)) +
+           (has_drafter(m, card) && (!started || m.mtp.vram_bytes() == 0) ? m.mtp.bind_bytes(head, m.n_vocab) : 0);
 }
 
 /// Gives card `k` its layers in its prompt path and verify windows (PagedCard::lb and le), as their stage of the layer
@@ -457,7 +458,9 @@ bool PagedQwen::get_card_layout(const PagedCard& card, int64_t lb, int64_t le, s
     return qwen38::get_card_layout(m_, card, cards_[card.index], lb, le, layout, err);
 }
 
-uint64_t PagedQwen::get_gpu_keep(const PagedCard& card) const { return qwen38::get_gpu_keep(m_, cards_[card.index]); }
+uint64_t PagedQwen::get_gpu_keep(const PagedCard& card) const {
+    return qwen38::get_gpu_keep(m_, cards_[card.index], true);
+}
 
 std::vector<strata::core::ExpertKey> PagedQwen::get_card_ranking(int64_t lb, int64_t le, int64_t& max_experts) const {
     return qwen38::get_card_ranking(m_, lb, le, max_experts);
@@ -777,7 +780,8 @@ bool open_pages(Model& m, PagedCard& card, ModelCard& mc, int64_t tokens_min, in
     for (size_t i = 0; i < ranking.size() && (int64_t) i < max_experts; ++i)
         most += (blobs[(size_t) ranking[i].layer] + page - 1) / page * page;
     uint64_t room = 0;
-    const uint64_t pool_b = strata::serve::get_gpu_pool_bytes(card.dev, get_gpu_keep(m, mc), gpu_mib, most, room);
+    const uint64_t keep = get_gpu_keep(m, mc, false);
+    const uint64_t pool_b = strata::serve::get_gpu_pool_bytes(card.dev, keep, gpu_mib, most, room);
     const uint64_t chunk = strata::serve::get_chunk_bytes(pool_b, page);
     mc.cache->set_expert_bytes((int64_t) strata::kernels::cpu::expert_layout().max_blob);
     strata::core::PagePoolConfig config;
@@ -794,9 +798,9 @@ bool open_pages(Model& m, PagedCard& card, ModelCard& mc, int64_t tokens_min, in
 /// it (`copy_back`, by --copy-back and the two speeds measured here).  The pool takes --ram-mib, by default
 /// get_ram_room (the RAM free less the resident headroom, within the commit margin), but no more than every expert
 /// and the staging ring take.  It holds first the experts of the profile the GPUs' pools do not, in the profile's
-/// order, then copies of the GPUs', then the experts outside the profile, as far as they fit.  Its conversation layout
-/// has the whole model's regions, so that a paused conversation is one conversation in it wherever the layer cut is
-/// (PagedQwen::get_ram_span).
+/// order, then copies of the GPUs', then the experts outside the profile, as far as they fit: read here, or with
+/// --fill background by the engine's refills after the start.  Its conversation layout has the whole model's regions,
+/// so that a paused conversation is one conversation in it wherever the layer cut is (PagedQwen::get_ram_span).
 bool open_ram(Model& m, const PagedCards& cards, const ModelCards& model_cards, const PagedSettings& s,
               strata::core::RamExperts& ram, bool& copy_back, std::string& err) {
     using strata::core::ExpertKey;
@@ -824,10 +828,15 @@ bool open_ram(Model& m, const PagedCards& cards, const ModelCards& model_cards, 
     if (!get_card_layout(m, cards.back(), model_cards.back(), 0, m.g.n_layers, layout, err))
         return false;
     const Clock::time_point t0 = Clock::now();
-    if (!ram.open(m.src, bytes, ring, layout, config, blobs, m.g.n_expert, ranking, err))
+    const bool fill = s.fill == "eager";
+    if (!ram.open(m.src, bytes, ring, layout, config, blobs, m.g.n_expert, ranking, err, fill))
         return false;
     const double fill_s = get_ms_since(t0) / 1000.0;
     const uint64_t held = ram.pages().pool().report().experts.bytes;
+    char filled[96] = "its experts are read from the SSD after the start (--fill background)";
+    if (fill)
+        std::snprintf(filled, sizeof filled, "%.2f GiB of experts read in %.1f s (%.1f GB/s)",
+                      (double) held / 1073741824.0, fill_s, fill_s > 0 ? (double) held / 1e9 / fill_s : 0.0);
     double ssd = 0, back = 0;
     // the best of three: on the Strix Halo single copies measured 3.3 to 57 GB/s, single SSD reads 0.3 to 2.4 GB/s
     for (int round = 0; round < 3; ++round) {
@@ -835,12 +844,11 @@ bool open_ram(Model& m, const PagedCards& cards, const ModelCards& model_cards, 
         back = std::max(back, ram.time_copy_in(m.xcache.device_slot(0), ram.ring_bytes()));
     }
     copy_back = s.copy_back == "on" || (s.copy_back == "auto" && strata::core::is_copy_back_worth(back, ssd));
-    std::fprintf(stderr, "strata-q38: the RAM's page pool: %.2f GiB%s, %.2f GiB of experts read in %.1f s (%.1f GB/s); "
-                         "the other experts are read from the SSD without the file cache.  An expert the GPU evicts "
-                         "is %s (copying it back: %.1f GB/s, reading the SSD: %.1f GB/s; --copy-back %s)\n",
+    std::fprintf(stderr, "strata-q38: the RAM's page pool: %.2f GiB%s, %s; the other experts are read from the SSD "
+                         "without the file cache.  An expert the GPU evicts is %s (copying it back: %.1f GB/s, reading "
+                         "the SSD: %.1f GB/s; --copy-back %s)\n",
                  (double) (ram.pages().pool().report().total.bytes) / 1073741824.0,
-                 ram.is_page_locked() ? ", page-locked" : "", (double) held / 1073741824.0,
-                 fill_s, fill_s > 0 ? (double) held / 1e9 / fill_s : 0.0,
+                 ram.is_page_locked() ? ", page-locked" : "", filled,
                  copy_back ? "copied back to RAM" : "dropped", back, ssd, s.copy_back.c_str());
     return true;
 }

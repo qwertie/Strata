@@ -74,6 +74,35 @@ int main() {
     check(ram.open(ssd, 12 * kPage + 2 * 2 * kPage, 2, layout, config, kBlobs, kExperts, ranking, err), err.c_str());
     check(ram.holds(1, 2) && !ram.holds(0, 3) && ram.pages().pool().report().experts.pages == 12,
           "the pool holds the ranking's first experts");
+    {
+        Ssd later_ssd;
+        RamExperts later;
+        check(later.open(later_ssd, 12 * kPage + 2 * 2 * kPage, 2, layout, config, kBlobs, kExperts, ranking, err,
+                         false),
+              err.c_str());
+        check(later.pages().pool().report().experts.pages == 0 && later_ssd.reads == 0 &&
+                  later.pages().is_refill_wanted(),
+              "a pool opened without its fill holds no expert and wants them");
+        uint64_t ms = 0;
+        while (later.pages().is_refill_wanted() && later.pages().refill(16, ms, err) > 0) {
+        }
+        check(later.holds(1, 2) && !later.holds(0, 3) && later.pages().pool().report().experts.pages == 12,
+              "its refills bring in what the fill would have");
+    }
+    {
+        Ssd colder_ssd;
+        RamExperts colder;
+        check(colder.open(colder_ssd, 12 * kPage + 2 * 2 * kPage, 2, layout, config, kBlobs, kExperts, ranking, err,
+                          false),
+              err.c_str());
+        for (int32_t e = 3; e < 6; ++e)   // colder experts than those the refill wants take every page
+            for (int32_t l = 0; l < 3; ++l)
+                check(colder.pages().admit(l, e) != kNotResident, "a colder expert comes in");
+        uint64_t ms = 0;
+        check(colder.pages().refill(16, ms, err) == 0 && colder.pages().pool().find_expert({0, 3}) != no_page &&
+                  !colder.pages().is_refill_wanted(),
+              "a refill evicts no expert: it waits for free pages");
+    }
     check(is_expert(ram.blob(1, 2), 1, 2) && !ram.transient(1, 2), "an expert in the pool is its bytes there");
     const int filled = ssd.reads;
     check(is_expert(ram.blob(2, 5), 2, 5) && ram.transient(2, 5) && ssd.reads == filled + 1,

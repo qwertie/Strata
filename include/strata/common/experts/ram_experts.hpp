@@ -36,12 +36,13 @@ public:
     /// Makes the pool in `bytes` of page-locked RAM, less a staging ring of `ring` buffers of the largest expert (as
     /// many as the experts a step's layer may read from the SSD), with the conversations' `layout` and `config`'s
     /// limits; `config.page_bytes` is the GPU pool's, so that a conversation's blocks are alike in both, and the pool
-    /// takes its memory in chunks of `config.chunk_bytes` (at most the pool).  Then reads the experts of `ranking`
-    /// into it, in order, as far as they fit.  The experts of layer l are `blob_bytes[l]` bytes, `n_expert` per layer.
-    /// `files` reads the experts from the SSD and must outlive this object.
+    /// takes its memory in chunks of `config.chunk_bytes` (at most the pool).  Then, with `fill`, reads the experts of
+    /// `ranking` into it, in order, as far as they fit; without, leaves them to `pages().refill`, in the same order.
+    /// The experts of layer l are `blob_bytes[l]` bytes, `n_expert` per layer.  `files` reads the experts from the SSD
+    /// and must outlive this object.
     bool open(ExpertSource& files, uint64_t bytes, int ring, const StateLayout& layout, PagePoolConfig config,
               const std::vector<uint64_t>& blob_bytes, int64_t n_expert, const std::vector<ExpertKey>& ranking,
-              std::string& err);
+              std::string& err, bool fill = true);
     /// Takes or gives back chunks so that the pool and the staging ring hold `bytes` (ExpertPages::resize).
     PoolResize resize(uint64_t bytes) { return pages_.resize(bytes > ring_bytes() ? bytes - ring_bytes() : 0); }
     /// Copies expert `key` in from `bytes` (any memory: a GPU's pages it is leaving) when the pool does not hold it

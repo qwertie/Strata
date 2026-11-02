@@ -136,7 +136,9 @@ int ExpertPages::refill(int max, uint64_t& wait_ms, std::string& err) {
     int loaded = 0;
     while (loaded < max && !evicted_.empty()) {
         const ExpertKey key = ranked_[(size_t) *evicted_.begin()];
+        free_only_ = true;
         const int32_t slot = cache_ != nullptr ? cache_->admit(key.layer, key.expert) : admit(key.layer, key.expert);
+        free_only_ = false;
         if (slot == kNotResident) {
             const uint64_t opening = pool_->get_next_opening();
             if (opening > 0)
@@ -159,7 +161,8 @@ int32_t ExpertPages::admit(int64_t layer, int64_t expert, uint64_t used_at) {
     const int32_t r = rank >= 0 ? rank : (int32_t) ranked_.size();   // an expert outside the ranking ranks after it
     if (r >= max_experts_)
         return kNotResident;
-    const PageId page = pool_->add_expert(key, pages_[(size_t) layer], used_at != 0 ? used_at : get_used_at(r));
+    const PageId page =
+        pool_->add_expert(key, pages_[(size_t) layer], used_at != 0 ? used_at : get_used_at(r), !free_only_);
     if (page == no_page)
         return kNotResident;
     if (rank < 0) {

@@ -308,18 +308,21 @@ function Invoke-Memory {
         Add-Row memory-2cards SKIP 'one card'
     } else {
         $one = "strata-q38.exe --cards $Big $q38"
-        # the same experts on the GPUs in both (the profile's first 4000, each on the card of its layer) and none of
-        # a layer's experts read over the bus, so that one card and two compute each expert in the same place
-        $same = "--expert-cache 4000 --pcie-frac 0"
-        $oneSame = "strata-q38.exe --cards $Big `"--args=$Q38Memory $same`""
-        $split = "`"--args=$Q38Memory $same --layer-split auto`""
+        # one card against two: the same experts on the GPUs (the profile's first 400, each on the card of its
+        # layer: the 3060 as the second card has room for a pool of under 1 GiB), none of a layer's experts read over
+        # the bus and no CPU share of a prompt, so that both compute each expert in the same place; and no drafting,
+        # which on a split changes tokens at near-ties (docs/MEMORY_MANAGER_PLAN.md, M8 part 4)
+        $same = "--expert-cache 400 --pcie-frac 0 --lookahead 0"
+        $sameEnv = '--env STRATA_PREFILL_CPU_SHARE=0'
+        $oneSame = "strata-q38.exe --cards $Big `"--args=$Q38Memory $same`" $sameEnv"
+        $split = "`"--args=$Q38Memory $same --layer-split auto`" $sameEnv"
         Invoke-Versus memory-speed-split-q38 multi "strata.exe --cards $Small,$Big `"--args=--layer-split auto`"" $one
         foreach ($order in 'SB', 'BS') {
             $cards = Get-CardList $order
             Invoke-Versus "memory-q38-2cards-$order" multi $oneSame "strata-q38.exe --cards $cards $split"
             # the first card's pool too small for its share of those experts: the second card holds the rest and
             # computes them in one hop, so that the GPUs still hold what one card does
-            $hop = "`"--args=$Q38Memory $same --layer-split 24 --gpu-mib 3072,8192 --remote-experts on`""
+            $hop = "`"--args=$Q38Memory $same --layer-split 24 --gpu-mib 512,8192 --remote-experts on`" $sameEnv"
             Invoke-Versus "memory-hop-$order" multi $oneSame "strata-q38.exe --cards $cards $hop"
             # pools with room to spare (12 GiB on the bigger card, 5 GiB on the smaller), so that with the first
             # card's halved the cut moves and each of the profile's first 3000 experts still fits on a card
@@ -327,15 +330,26 @@ function Invoke-Memory {
             $move = "`"--args=$Q38Memory --expert-cache 3000 --pcie-frac 0 --gpu-mib $mib --layer-split auto`""
             Invoke-Versus "memory-cut-move-$order" cutmove "strata-q38.exe --cards $cards $move" (
                 "strata-q38.exe --cards $cards $move --move-cut")
+            # the cut moved by the layer_cut setting, no card's memory changed
+            Invoke-Versus "memory-layer-cut-$order" cutmove "strata-q38.exe --cards $cards $move" (
+                "strata-q38.exe --cards $cards $move --layer-cut")
         }
     }
-    $config = "$Root\strata-iq3_s.json"
-    if (-not (Test-Need memory-rows @($config))) { return }
+    # the kit's own run config (the model's arguments from -DataDir's files, the drafter included), not a
+    # strata-iq3_s.json in the checkout: one copied from another PC names paths this PC may not have
     $exe = "$Work\after-86\strata-q38.exe"
+    $config = "$Results\rows-config.json"
+    $null = Invoke-Step memory-rows-config ("`"$Py`" `"$PSScriptRoot\drive.py`" config --out `"$config`" " +
+        "--data `"$DataDir`" --exe `"$exe`"")
     foreach ($case in @(@('card', ''), @('ram', '--gpu-mib 8192'), @('ssd', '--gpu-mib 8192 --ram-mib 4096'))) {
-        $null = Invoke-Step "memory-rows-$($case[0])" ("`"$Py`" `"$Root\tools\measure_rows.py`" --config `"$config`" " +
-            "--exe `"$exe`" --case $($case[0]) --out `"$Results\rows-$($case[0])`" -- --gpu $Big $Q38Memory " +
-            $case[1])
+        $name = "memory-rows-$($case[0])"
+        $code = Invoke-Step $name ("`"$Py`" `"$Root\tools\measure_rows.py`" --config `"$config`" --exe `"$exe`" " +
+            "--case $($case[0]) --out `"$Results\rows-$($case[0])`" -- --gpu $Big $Q38Memory $($case[1])")
+        if ($code -eq 0) {
+            Add-Row $name PASS "measured: rows-$($case[0]).json"
+        } else {
+            Add-Row $name FAIL "measure_rows.py stopped (exit $code): see steps\$name.log"
+        }
     }
     $null = Invoke-Step memory-rows-report ("`"$Py`" `"$Root\tools\measure_rows.py`" --report " +
         "`"$Results\rows-card.json`" `"$Results\rows-ram.json`" `"$Results\rows-ssd.json`"")

@@ -9,9 +9,13 @@ Scenarios (the engine's --serve protocol unless said otherwise):
   q36       Qwen3.6: the same for its engine (strata-q36)
   multi     Qwen3.8: a 2,000-token prompt, a 128-token answer, a second turn; the startup lines appended
   cutmove   strata-q38: a 96-token story in a batch slot; with --move-cut the first card's memory is halved after 24
-            tokens and set back after 48 (the layer cut moves between two steps); the answers go to FILE.settings
+            tokens and set back after 48 (the layer cut moves between two steps), with --layer-cut the cut moves 6
+            layers toward the card with the bigger pool after 24 tokens and back after 48 (CHANGE_SETTINGS layer_cut);
+            the answers go to FILE.settings
   ds        DeepSeek V4.1: greedy and seeded answers, a 128-token one for the speed
   server    the HTTP server on port 8091 with this engine (Qwen3.8): two greedy chats and their speed
+  config    no engine start: FILE gets the run config (strata-<model>.json) that `server` uses, for
+            tools/measure_rows.py
 FILE gets the engine's stdout (or the server's answers), FILE.stderr its stderr; FILE ends with "exit <code>".
 FILE.gpu.csv and FILE.sys.csv get what the cards and the PC were doing, once a second (Sampler).
 --cards are the cards the engine sees, numbered as nvidia-smi numbers them. --env adds the check's settings.
@@ -46,7 +50,7 @@ QWEN_USER, QWEN_ANSWER = "<|im_start|>user\n", "<|im_end|>\n<|im_start|>assistan
 
 def main() -> int:
     ap = argparse.ArgumentParser()
-    ap.add_argument("scenario", choices=["q38", "q38state", "q36", "multi", "cutmove", "ds", "server"])
+    ap.add_argument("scenario", choices=["q38", "q38state", "q36", "multi", "cutmove", "ds", "server", "config"])
     ap.add_argument("--exe", required=True)
     ap.add_argument("--out", required=True)
     ap.add_argument("--data", required=True)
@@ -56,8 +60,12 @@ def main() -> int:
     ap.add_argument("--deepseek")
     ap.add_argument("--other")
     ap.add_argument("--move-cut", action="store_true")
+    ap.add_argument("--layer-cut", action="store_true")
     a = ap.parse_args()
     env = dict(e.split("=", 1) for e in a.env)
+    if a.scenario == "config":
+        Path(a.out).write_text(json.dumps(make_run_config(a, env), indent=1), encoding="utf-8")
+        return 0
     with Sampler(a.out):
         return serve(a, env) if a.scenario == "server" else run_engine(a, env)
 
@@ -312,10 +320,15 @@ def cutmove(e: Engine, a):
     story = tok.encode(QWEN_USER + "Write a long, detailed story about a lighthouse keeper who counts ships." +
                        QWEN_ANSWER, parse_special=True)
     changes = {}
+    report = "".join(e.ask_quietly("GET_MEMORY_USE", "END_MEMORY")) if a.move_cut or a.layer_cut else ""
+    setting = lambda key: int(re.search(rf"\b{re.escape(key)}=(\d+)", report)[1])  # noqa: E731
     if a.move_cut:
-        report = "".join(e.ask_quietly("GET_MEMORY_USE", "END_MEMORY"))
-        mib = int(re.search(r"memory_mib\.gpu0=(\d+)", report)[1])
+        mib = setting("memory_mib.gpu0")
         changes = {24: f"memory_mib.gpu0={mib // 2}", 48: f"memory_mib.gpu0={mib}"}
+    elif a.layer_cut:   # the card with the bigger pool takes the layers, so that their experts still fit on a card
+        cut, layers = setting("layer_cut"), setting("layers")
+        to = min(max(cut + (6 if setting("memory_mib.gpu0") > setting("memory_mib.gpu1") else -6), 4), layers - 4)
+        changes = {24: f"layer_cut={to}", 48: f"layer_cut={cut}"}
     e.bgen(0, 96, story, changes)
 
 
@@ -401,11 +414,7 @@ def serve(a, env: dict[str, str]) -> int:
     the answers and their speed, and ends the server and its engine."""
     import psutil
     out = Path(a.out)
-    cfg = {"exe": a.exe, "args": qwen38_args(Path(a.data)) + a.args.split(), "cwd": str(ROOT), "port": PORT,
-           "tokenizer": str(Path(a.data) / "packs/iq3_s/tokenizer"), "model_name": "qwen3.8-flash-next-iq3_s",
-           "log": str(out) + ".engine.log", "lib_dirs": [str(Path(a.exe).parent)], "backend": "cuda", "env": env,
-           "gpu": [int(c) for c in a.cards.split(",") if c]}
-    out.with_suffix(".json").write_text(json.dumps(cfg, indent=1), encoding="utf-8")
+    out.with_suffix(".json").write_text(json.dumps(make_run_config(a, env), indent=1), encoding="utf-8")
     doc = (ROOT / "docs/ARCHITECTURE.md").read_text(encoding="utf-8")[:8500]
     prompts = {"short": "What is the capital of Australia? Answer in one sentence.",
                "long": "Read the following document and summarize its main rules in five bullet points.\n\n" + doc}
@@ -441,6 +450,15 @@ def serve(a, env: dict[str, str]) -> int:
             pass
     out.write_text("\n".join(lines + [f"exit {code}"]) + "\n", encoding="utf-8", newline="\n")
     return code
+
+
+def make_run_config(a, env: dict[str, str]) -> dict:
+    """Gets a run config (strata-<model>.json, as setup writes it) for Qwen3.8 with this engine, the files in --data
+    and --args, on --cards; its log goes beside --out."""
+    return {"exe": a.exe, "args": qwen38_args(Path(a.data)) + a.args.split(), "cwd": str(ROOT), "port": PORT,
+            "tokenizer": str(Path(a.data) / "packs/iq3_s/tokenizer"), "model_name": "qwen3.8-flash-next-iq3_s",
+            "log": str(a.out) + ".engine.log", "lib_dirs": [str(Path(a.exe).parent)], "backend": "cuda", "env": env,
+            "gpu": [int(c) for c in a.cards.split(",") if c]}
 
 
 def is_port_taken() -> bool:

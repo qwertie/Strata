@@ -18,8 +18,9 @@
 
 namespace strata::serve {
 
-/// The bytes each way that measure a GPU's link to RAM at start.
-constexpr size_t kLinkProbeBytes = 64ull << 20;
+/// The bytes each way that measure a GPU's link to RAM at start: the old engine's probe's burst (probe_pcie_h2d_gbps
+/// in src/models/qwen38/model.cpp), about 10 ms on PCIe 4.0 x16 and 90 ms on 3.0 x4.
+constexpr size_t kLinkProbeBytes = 256ull << 20;
 
 int take_paged_options(int& argc, char** argv, const std::string& program, PagedSettings& s) {
     struct Own {
@@ -34,7 +35,8 @@ int take_paged_options(int& argc, char** argv, const std::string& program, Paged
                        {"--ssd-pause-mib", &s.ssd_pause_mib}, {"--rows", &rows},
                        {"--lookahead", &lookahead},           {"--concurrent", &concurrent},
                        {"--pause-dir", nullptr, &s.pause_dir}, {"--copy-back", nullptr, &s.copy_back},
-                       {"--drafter", nullptr, &drafter},      {"--remote-experts", nullptr, &s.remote_experts}};
+                       {"--drafter", nullptr, &drafter},      {"--remote-experts", nullptr, &s.remote_experts},
+                       {"--fill", nullptr, &s.fill}};
     const char* const name = program.c_str();
     int out = 1;
     for (int i = 1; i < argc; ++i) {
@@ -64,6 +66,10 @@ int take_paged_options(int& argc, char** argv, const std::string& program, Paged
     }
     if (s.remote_experts != "auto" && s.remote_experts != "on" && s.remote_experts != "off") {
         std::fprintf(stderr, "%s: --remote-experts takes auto, on or off\n", name);
+        return 2;
+    }
+    if (s.fill != "eager" && s.fill != "background") {
+        std::fprintf(stderr, "%s: --fill takes eager or background\n", name);
         return 2;
     }
     if (drafter != "on" && drafter != "off") {

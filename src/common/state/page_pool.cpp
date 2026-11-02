@@ -202,7 +202,7 @@ const std::vector<PageId>& PagePool::conversation_blocks(ConversationId id, size
     return conversations_.at(id).blocks.at(region);
 }
 
-PageId PagePool::add_expert(ExpertKey key, uint32_t pages, uint64_t used_at) {
+PageId PagePool::add_expert(ExpertKey key, uint32_t pages, uint64_t used_at, bool may_evict) {
     if (const PageId held = use_expert(key); held != no_page)
         return held;
     if (used_at == clock_now)
@@ -215,7 +215,7 @@ PageId PagePool::add_expert(ExpertKey key, uint32_t pages, uint64_t used_at) {
     if (free_pages_ >= reserved_pages() + pages && (first = find_near(pages, get_home(pages), get_minimum_pages())) ==
                                                        no_page && opening_.empty())
         first = find_near(pages, get_home(pages), 0);
-    if (const auto same = size_by_use_.find(pages); first == no_page && same != size_by_use_.end() &&
+    if (const auto same = size_by_use_.find(pages); first == no_page && may_evict && same != size_by_use_.end() &&
                                                     !same->second.empty() &&
                                                     std::get<0>(*same->second.begin()) < used_at) {
         first = std::get<2>(*same->second.begin());
