@@ -1,6 +1,7 @@
 // include/strata/common/serve/paged_model.hpp - what the paged engine (paged_engine.hpp) asks of a model: its cards'
 // state layouts and experts, a conversation's state on each card, reading a prompt, the step and the drafter
-// (docs/MEMORY_MANAGER_PLAN.md, "One shared paged engine").  Qwen3.8 implements it (src/models/qwen38/paged_model.cpp).
+// (docs/MEMORY_MANAGER_PLAN.md, "One shared paged engine").  Qwen3.8 (src/models/qwen38/paged_model.cpp) and DeepSeek
+// V4.1 (src/models/deepseekv41/paged_model.cpp) implement it.
 //
 // The model is a class with virtual functions, as DraftSource (strata/common/spec/draft_source.hpp) is, rather than a
 // struct of functions as spec::StepModel and EngineHooks are: the engine also keeps objects the model makes (a
@@ -89,6 +90,7 @@ struct PagedModelFacts {
     int64_t context = 0;                    ///< the most tokens a conversation holds (--max-context)
     int max_rows = 0;                       ///< the most rows one step may run (its verify windows' room)
     std::vector<int64_t> end_tokens;        ///< the tokens that end an answer
+    Sampling sampling;                      ///< a request's sampling before its keys (the old engine's defaults)
     /// a drafter guesses tokens (propose), its state in the conversations' pages; without one the engine never calls
     /// forget_drafts, propose or switch_drafter
     bool has_drafter = false;
@@ -98,7 +100,6 @@ struct PagedModelFacts {
     std::vector<strata::core::ExpertKey> split_ranking;
     int64_t gpu_experts = 0;                ///< the most experts the GPUs' pools hold (--expert-cache)
     uint64_t ram_headroom = 0;              ///< the RAM the RAM pool's largest size leaves free
-    int64_t prompt_chunk = 0;               ///< the prompt path's chunk setting, which DONE lines report
     /// the adaptive tier (the old engine's --adapt-swaps, --adapt-min-gain and --adapt-decay; the interval is
     /// PagedModel::get_adapt_interval)
     int adapt_swaps = 0;
@@ -106,6 +107,17 @@ struct PagedModelFacts {
     uint64_t row_bytes = 0;                 ///< the bytes of one row's hidden state, which a hop carries each way
     /// the ms the CPU takes for one routed expert of a decode step, against which a hop to another card is weighed
     double cpu_expert_ms = 0;
+};
+
+/// What a request's DONE line reports (PagedModel::print_done).
+struct RequestDone {
+    int64_t produced = 0;                ///< the tokens answered
+    int64_t prompt = 0;                  ///< the prompt's tokens
+    int64_t resumed = 0;                 ///< of them, the tokens the conversation held already
+    int64_t read = 0;                    ///< of them, the tokens read (the rest of the prompt but its last token)
+    double prompt_ms = 0, decode_ms = 0;
+    const char* finish = "length";       ///< why it ended: stop, length, cancel, ...
+    int64_t guessed = 0, guessed_right = 0;   ///< the drafter's guesses, and how many were kept
 };
 
 /// A model that the paged engine runs: the engine keeps the conversations, the pools and the protocol, the model
@@ -136,11 +148,13 @@ public:
     /// Copies expert `key`'s bytes into `card`'s pool from page `first`: the card's ExpertPages calls it when it takes
     /// an expert in (ExpertPages::Hooks::load).
     virtual bool load_expert(const PagedCard& card, strata::core::ExpertKey key, int32_t first, std::string& err) = 0;
-    /// Gets the residency table: per expert (layer * n_expert + expert), its first page in the pool of the card that
-    /// runs its layer, else kNotResident.  The engine writes it as experts come and go and then calls
-    /// publish_residency for each card.
+    /// Gets the residency table: per expert (layer * n_expert + expert), its first page (ExpertPages' slot) in the pool
+    /// of the card that runs its layer, else kNotResident.  The engine writes it as experts come and go and then calls
+    /// publish_residency for each card; it reads it to choose the adaptive tier's swaps.
     virtual std::vector<int32_t>& get_residency() = 0;
-    /// Copies the residency table to `card`'s device.
+    /// Tells `card`'s kernels where its layers' experts are now, in the model's own form: Qwen3.8 copies the table to
+    /// the card's device (its kernels take an expert at its pool's arena plus its slot); DeepSeek's kernels take a
+    /// table of addresses per layer (PagePool::page_address of each first page).
     virtual bool publish_residency(const PagedCard& card, std::string& err) = 0;
     /// Gets the routings each expert (layer * n_expert + expert) had in the decode steps, which the adaptive tier
     /// counts and decays; empty when the tier is off.
@@ -214,9 +228,12 @@ public:
     virtual int propose(PagedPart& last, int session, int n, int32_t* out, std::string& err) = 0;
     /// Loads (`on`) or gives back the drafter's weights; false (and `err`) when loading failed.
     virtual bool switch_drafter(bool on, std::string& err) = 0;
-    /// Prints the INFO line that starts the protocol: `slots` batch slots, `spec` rows a conversation's step may run
+    /// Prints the INFO lines that start the protocol: `slots` batch slots, `spec` rows a conversation's step may run
     /// (0: no drafting).
     virtual void print_info(int slots, int spec) const = 0;
+    /// Prints the DONE line that ends a request, in the fields the model's old engine wrote (the server reads each
+    /// engine's).
+    virtual void print_done(const RequestDone& done) const = 0;
 };
 
 }  // namespace strata::serve

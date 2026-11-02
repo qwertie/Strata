@@ -23,5 +23,8 @@ LinkSpeed measure_host_link(int dev, size_t bytes);
 /// Measures the copies from card `from` to card `to` and back, `bytes` each, as the runtime makes them (peer to peer
 /// where the cards can, else through the host).  Unknown (zeros) when the memory could not be had.
 LinkSpeed measure_card_link(int from, int to, size_t bytes);
+/// Gets card `dev`'s compute speed as the layer split's rules take it (split_rules::get_layer_ms): its
+/// multiprocessors times its clock in GHz, at least 1; the clock is taken as 1.8 GHz where the runtime does not say.
+double get_card_speed(int dev);
 
 }  // namespace strata::core

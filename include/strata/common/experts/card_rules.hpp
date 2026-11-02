@@ -9,6 +9,7 @@
 
 #include <cstdint>
 #include <functional>
+#include <string>
 #include <vector>
 
 namespace strata::core {
@@ -32,6 +33,12 @@ int get_refill_batch(const LinkSpeed& link, uint64_t bytes, double budget_ms, in
 /// Tells whether an expert a card evicts is copied back to RAM: when that measures at least kCopyBackFactor times as
 /// fast as reading it from the SSD (`back_gbps`: the card to RAM; `ssd_gbps`: an SSD read).
 bool is_copy_back_worth(double back_gbps, double ssd_gbps);
+
+/// Gets why a layer split whose cards run on `devices` (each card's GPU, in the cards' order) may not compute experts
+/// in hops between its cards (--remote-experts on), or an empty string when it may.  Two cards on one GPU may not: a
+/// hop runs beside a verify window that spins on the same GPU waiting for it, and on the Strix Halo's GPU such hops
+/// stalled and Windows reset the GPU driver (a GPU timeout, LiveKernelEvent 141).
+std::string get_hop_refusal(const std::vector<int>& devices);
 
 /// One card's pool as the placement sees it.
 struct CardPool {

@@ -12,5 +12,12 @@ stay its own (see the open issues in REFACTOR_PLAN.md).
 test is `conversation_layout_test.cpp`. The geometry (`geometry.hpp`) and the cache rows' sizes (`kv_rows.hpp`) are
 headers the old engine reads too.
 
+The model loads in three calls (`ds4_model.hpp`): `Model::load` (the dense weights, the embedding table, the
+Engram's reader), `reserve_caches` (the conversation's state for the whole context) and `place_experts` (the prompt
+path's buffers, the routed experts in the GPU memory left, the CPU lane and the RAM store). `strata-dsv41`
+(`ds4_main.cpp`) calls all three; `strata-ds41` (`paged_model.cpp`, step D4, `main()` in `src/program/ds41_main.cpp`)
+skips `reserve_caches`: it opens the GPU's page pool first and points the model at a conversation's pages
+(`use_state_memory`). Both read the model's options with `read_option` (`ds4_options.cpp`).
+
 See [docs/ARCHITECTURE.md](../../../docs/ARCHITECTURE.md) for the layers and
 [docs/REFACTOR_PLAN.md](../../../docs/REFACTOR_PLAN.md) for the steps.

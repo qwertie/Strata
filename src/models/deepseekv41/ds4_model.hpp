@@ -14,6 +14,8 @@
 #pragma once
 
 #include "strata/common/serve/memory_report.hpp"
+#include "strata/models/deepseekv41/conversation_layout.hpp"
+#include "strata/models/deepseekv41/kv_rows.hpp"
 
 #include <cstddef>
 #include <cstdint>
@@ -65,6 +67,14 @@ struct Options {
     bool verbose = false;
 };
 
+/// Reads comma- or space-separated integers from `s`, stopping at the first that is not one.
+std::vector<int> parse_ids(const std::string& s);
+/// Reads option `name` of the model's own (those Options holds: --pack, --gpus, --max-context, --dspark, ...) into
+/// `o`, its value from `next` (which exits when there is none); false when `name` is not one of them.  `drafting`
+/// gets whether --dspark lets the drafter draft (off: loaded, not used).
+bool read_option(const std::string& name, const std::function<std::string(const char*)>& next, Options& o,
+                 bool& drafting);
+
 /// A picture in the prompt: its span's rows (every position of the span carries the image token), BF16 [span][dim]
 struct Image {
     int64_t start = 0;
@@ -107,7 +117,28 @@ class Model {
 public:
     Model();
     ~Model();
+    /// Loads the dense weights, the embedding table and the Engram's reader, without the conversation's state
+    /// (reserve_caches) or the routed experts (place_experts), which take the GPU memory left after it.
     bool load(const Options& o, std::string& err);
+    /// Gives the conversation its state for the whole context in GPU memory of its own (the old engine's caches);
+    /// strata-ds41 gives it page-pool pages instead (use_state_memory).
+    bool reserve_caches(std::string& err);
+    /// Allocates the prompt path's buffers, places the routed experts in the GPU memory left (the rest on the CPU
+    /// lane and in the RAM store) and starts the threads that serve them.  The model runs from then on.
+    bool place_experts(std::string& err);
+
+    /// Gets the model's shapes (load's).
+    const Geometry& geometry() const;
+    /// Gets the bytes of one routed expert of each trunk layer.
+    std::vector<uint64_t> get_expert_bytes() const;
+    /// Gets the CUDA ids of the GPUs the model runs on, in its order (use_state_memory's `dev` is an index here).
+    std::vector<int> get_devices() const;
+    /// Points the conversation's state on GPU `dev` at memory the caller keeps, in place of reserve_caches': the
+    /// window rings of the layers it runs and the partial groups of its KV sources in `fixed`, where `at` puts them
+    /// (describe_conversation), and each KV source's compressed rows and index keys at `ckv[s]` and `ik[s]` where the
+    /// GPU keeps them.  Call again whenever the memory moves.
+    void use_state_memory(int dev, uint8_t* fixed, const ConversationRegions& at, const std::vector<KvRows>& ckv,
+                          const std::vector<KvRows>& ik);
 
     /// Feeds `token` at position pos(); with logits, the next token's logits are left on the head's device.
     bool step(int token, bool logits, std::string& err);

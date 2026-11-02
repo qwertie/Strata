@@ -770,6 +770,7 @@ struct Model::Impl {
     unsigned win_seq = 0;             // the windows the threads ran (the hand-offs' seq)
     // the chunked prompt path (threads mode): chunk tokens a pass, runs shorter than chunk_min in windows
     int chunk = 0, chunk_min = 512;
+    double load_t0 = 0;   // when load() began (its messages' times)
     static constexpr bool kChunkedPromptDefault = true;   // the layer-major prompt is the default (gate: KL 0.1685 vs 0.1686, 8K prompt 6x, decode within 2% - ds4 notes-dsv41-r97)
     static constexpr int kFlowChunkMin = 2;   // chunk_min with every device's layers on the flow (see load)
     // --prefill-chunk at most (route() runs in kVlRows-row slabs).  The default stays kVlRows: a 16384-token chunk
@@ -1818,7 +1819,7 @@ struct Model::Impl {
     // ---- loading
     bool load(const Options& opt, std::string& err) {
         o = opt;
-        const double t0 = now_ms();
+        load_t0 = now_ms();
         if (!pk.load(o.pack, err)) return false;
         g.from(pk);
         if (g.dim == 0 || g.nl == 0 || (int) g.ratios.size() < g.nl) {
@@ -2312,10 +2313,6 @@ struct Model::Impl {
                     CK(cudaEventCreateWithFlags(&s.ev_ik, cudaEventDisableTiming));
                     CK(cudaSetDevice(d.id));
                 }
-                if (s.ckv[di] && !dalloc(d, s.ckv[di].base, (size_t) s.cap * ckv_rb(), err, &d.caches))
-                    return false;
-                if (s.ik[di] && !dalloc(d, s.ik[di].base, (size_t) s.cap * ik_rb(), err, &d.caches))
-                    return false;
             }
         }
         for (Src& sr : srcs) {
@@ -2378,7 +2375,7 @@ struct Model::Impl {
                 }
         }
         if (o.verbose)
-            std::fprintf(stderr, "ds4: dense weights loaded in %.1f s\n", (now_ms() - t0) / 1000.0);
+            std::fprintf(stderr, "ds4: dense weights loaded in %.1f s\n", (now_ms() - load_t0) / 1000.0);
         // the markov steps over a head group of two or more (DS4_MK_SPLIT=0: the lead's whole rows, as before): E
         // host-mapped, the steps' slots
         // (only where every member holds its rows of the markov head: a type load_dense does not take keeps the lead's)
@@ -2548,7 +2545,36 @@ struct Model::Impl {
                 std::fclose(f);
             }
         }
+        return true;
+    }
 
+    // the conversation's state for the whole context (Model::reserve_caches): each layer's window ring, each KV
+    // source's partial group, and its compressed rows and index keys on every device that keeps them
+    bool reserve_caches(std::string& err) {
+        for (size_t di = 0; di < devs.size(); ++di) {
+            Dev& d = devs[di];
+            for (Src& s : srcs) {
+                if (s.ckv[di] && !dalloc(d, s.ckv[di].base, (size_t) s.cap * ckv_rb(), err, &d.caches))
+                    return false;
+                if (s.ik[di] && !dalloc(d, s.ik[di].base, (size_t) s.cap * ik_rb(), err, &d.caches))
+                    return false;
+            }
+        }
+        for (Layer& l0 : L)
+            for (int mi = 0; mi < l0.nm; ++mi) {
+                Layer& l = member(l0, mi);
+                Dev& d = devs[(size_t) l.dev];
+                if (l.kv_src && l.ratio > 1 && (!dalloc(d, l.c_kv, (size_t) l.ratio * g.hd, err) ||
+                                                !dalloc(d, l.c_score, (size_t) l.ratio * g.hd, err)))
+                    return false;
+                if (!dalloc(d, l.win, (size_t) g.win * win_rb(), err, &d.caches)) return false;
+            }
+        return true;
+    }
+
+    // the rest of the load (Model::place_experts): the prompt path's buffers, the routed experts in what VRAM is left
+    // and the rest on the CPU lane, the threads that serve them, the RAM store
+    bool finish_load(std::string& err) {
         // the chunked prompt path's buffers (before the experts: they take what is left)
         if (chunk > 0) {
             // recommend, never force: a chunk the cards cannot hold in buffers is halved (down to 256 rows) and then the
@@ -2779,7 +2805,7 @@ struct Model::Impl {
         calibrate_paths();
         init_store();      // (last: the store's arena is registered with the driver - page-locked memory the other pinned allocations must come before)
         preload_store();
-        if (o.verbose) std::fprintf(stderr, "ds4: loaded in %.1f s\n%s", (now_ms() - t0) / 1000.0, describe().c_str());
+        if (o.verbose) std::fprintf(stderr, "ds4: loaded in %.1f s\n%s", (now_ms() - load_t0) / 1000.0, describe().c_str());
         if (chunk > 0) (void) pick_flow_min();   // (the startup line)
         reset();
         start_warm();
@@ -3671,9 +3697,6 @@ struct Model::Impl {
                 const std::string C = A + "compressor.";
                 if (!mat(d, C + "wkv", l.c_wkv, err, acct) || !f32(d, C + "norm.weight", l.c_norm, err, acct)) return false;
                 if (l.ratio > 1 && !mat(d, C + "wgate", l.c_wgate, err, acct)) return false;
-                if (l.ratio > 1 && (!dalloc(d, l.c_kv, (size_t) l.ratio * g.hd, err) ||
-                                    !dalloc(d, l.c_score, (size_t) l.ratio * g.hd, err)))
-                    return false;
             }
             if (l.ix_src) {
                 const std::string I = A + "indexer.";
@@ -3698,7 +3721,6 @@ struct Model::Impl {
                     l.eg_w = qw;
                 }
             }
-            if (!dalloc(d, l.win, (size_t) g.win * win_rb(), err, &d.caches)) return false;
             if (g.n_mtp > 0 && !l.mtp) {
                 if (!dalloc(d, l.ring_bak, (size_t) kWin * win_rb(), err)) return false;
                 if (l.kv_src && l.ratio > 1 && (!dalloc(d, l.c_snap, (size_t) 2 * l.ratio * g.hd, err) ||
@@ -4841,7 +4863,7 @@ struct Model::Impl {
                 Layer& l = member(l0, m);
                 Dev& d = devs[(size_t) l.dev];
                 cudaSetDevice(d.id);
-                cudaMemsetAsync(l.win, 0, (size_t) g.win * win_rb(), d.st);
+                if (l.win) cudaMemsetAsync(l.win, 0, (size_t) g.win * win_rb(), d.st);
                 if (l.c_kv) cudaMemsetAsync(l.c_kv, 0, (size_t) l.ratio * g.hd * 4, d.st);
                 if (l.c_score) cudaMemsetAsync(l.c_score, 0, (size_t) l.ratio * g.hd * 4, d.st);
             }
@@ -9361,6 +9383,40 @@ struct Model::Impl {
 Model::Model() : p_(new Impl) {}
 Model::~Model() = default;
 bool Model::load(const Options& o, std::string& err) { return p_->load(o, err); }
+bool Model::reserve_caches(std::string& err) { return p_->reserve_caches(err); }
+bool Model::place_experts(std::string& err) { return p_->finish_load(err); }
+const Geometry& Model::geometry() const { return p_->g; }
+std::vector<uint64_t> Model::get_expert_bytes() const {
+    std::vector<uint64_t> bytes;
+    for (int il = 0; il < p_->g.nl; ++il)
+        bytes.push_back(p_->L[(size_t) il].blob);
+    return bytes;
+}
+std::vector<int> Model::get_devices() const {
+    std::vector<int> ids;
+    for (const Dev& d : p_->devs)
+        ids.push_back(d.id);
+    return ids;
+}
+void Model::use_state_memory(int dev, uint8_t* fixed, const ConversationRegions& at, const std::vector<KvRows>& ckv,
+                             const std::vector<KvRows>& ik) {
+    Impl& p = *p_;
+    for (size_t s = 0; s < p.srcs.size(); ++s) {
+        Src& src = p.srcs[s];
+        if (src.ckv[(size_t) dev])
+            src.ckv[(size_t) dev] = ckv[s];
+        if (src.ik[(size_t) dev])
+            src.ik[(size_t) dev] = ik[s];
+        Layer& l = p.L[(size_t) src.layer];
+        if (l.dev == dev && at.group[s] != kNoOffset) {
+            l.c_kv = (float*) (fixed + at.group[s]);
+            l.c_score = l.c_kv + (size_t) l.ratio * p.g.hd;
+        }
+    }
+    for (Layer& l : p.L)   // (not the head groups' members of --tp: strata-ds41 runs on one GPU until D9)
+        if (l.dev == dev)
+            l.win = fixed + at.ring[(size_t) l.il];
+}
 bool Model::step(int token, bool logits, std::string& err) { return p_->step(token, logits, err); }
 bool Model::feed(const int* tokens, int n, int logits_rows, std::string& err) {
     Impl& p = *p_;

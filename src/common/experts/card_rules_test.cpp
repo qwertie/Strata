@@ -37,6 +37,10 @@ int main() {
     CHECK(!is_hop_cheaper(hop_x4, 1, 0.1) && is_hop_cheaper(hop_x4, 2, 0.1));
     CHECK(!is_hop_cheaper(hop_tb, 2, 0.1) && is_hop_cheaper(hop_tb, 4, 0.1));
     std::printf("hop of 8 rows: x4 %.3f ms, Thunderbolt %.3f ms\n", hop_x4, hop_tb);
+    // hops between cards: refused only where two cards share a GPU (--split-device 0, or a GPU named twice)
+    CHECK(get_hop_refusal({0, 1}).empty() && get_hop_refusal({0, 1, 2}).empty() && get_hop_refusal({0}).empty());
+    CHECK(!get_hop_refusal({0, 0}).empty() && !get_hop_refusal({0, 1, 1}).empty());
+    CHECK(get_hop_refusal({0, 2, 0}).find("cards 0 and 2 share GPU 0") == 0);
     {   // placement: layers 0-23 on card 0 (room for 3 experts), 24-47 on card 1 (room for 30)
         const int64_t layers = 48, n_expert = 4;
         const std::vector<uint64_t> bytes(layers, expert);

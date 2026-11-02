@@ -377,6 +377,8 @@ PagedEngine::PagedEngine(PagedModel& model, PagedCards& cards, strata::core::Ram
                          const PagedSettings& settings, int slots)
     : model_(model), facts_(model.facts), cards_(cards), ram_(ram), settings_(settings),
       step_(get_step_model(), model.facts.end_tokens) {
+    if (settings_.tokens_max < 0)
+        settings_.tokens_max = facts_.context;
     apply_step_settings();
     for (int i = 0; i <= slots; ++i) {
         held_.push_back(std::make_unique<Held>());
@@ -476,7 +478,7 @@ int PagedEngine::serve() {
 
 bool PagedEngine::serve_request(const std::string& line) {
     strata::serve::RequestLine req;
-    strata::serve::Sampling smp;
+    strata::serve::Sampling smp = facts_.sampling;
     std::vector<int64_t> ids;
     std::string err;
     const size_t slots = at_.size() - 1;
@@ -575,11 +577,8 @@ bool PagedEngine::serve_request(const std::string& line) {
         }
         finish = h.decoding ? "length" : h.dec.finish;
     }
-    // the fields of the old engine's DONE that this one has (no expert counts)
-    std::printf("DONE %lld %lld %.1f %.1f %s %lld %lld %lld 0 0 0 0 0.0 %lld 0 chunk=%lld experts_streamed=0\n",
-                (long long) h.dec.produced, (long long) n, prompt_ms, get_ms_since(d0), finish,
-                (long long) h.dec.guessed_right, (long long) h.dec.guessed, (long long) resume,
-                (long long) (read_to - resume), (long long) facts_.prompt_chunk);
+    model_.print_done({h.dec.produced, n, resume, read_to - resume, prompt_ms, get_ms_since(d0), finish,
+                       h.dec.guessed, h.dec.guessed_right});
     if (req.batch) {
         if (h.decoding)
             h.slot = (int) req.slot;

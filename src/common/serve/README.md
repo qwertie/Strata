@@ -17,8 +17,10 @@ engine).
   page pools, several decoding at once, pausing to RAM and the SSD, priorities, `CHANGE_SETTINGS`, the pools' resizes
   and refills, the adaptive tier, the layer cut's planning and moves. It runs a model through `paged_model.hpp`
   (`PagedModel`: per card the state layout, experts and a cut move; per conversation its state on each card,
-  `PagedPart`; the prompt, the step and the drafter). strata-q38 runs it for Qwen3.8
-  (`src/models/qwen38/paged_model.cpp`).
+  `PagedPart`; the prompt, the step, the drafter and the `INFO` and `DONE` lines, each in its old engine's fields).
+  strata-q38 runs it for Qwen3.8 (`src/models/qwen38/paged_model.cpp`), strata-ds41 for DeepSeek
+  (`src/models/deepseekv41/paged_model.cpp`). What each model's start does before it, `paged_start.cpp`: the engine's
+  own options, the runtime's environment, the cards' links, the pools' sizes and their GPU memory.
 
 Each engine still handles its own requests, SAVE / RESTORE, VRAM and QUIT, and writes its own `T`, `PP`, `DONE`, `BT`
 and `BDONE` lines.
@@ -37,7 +39,8 @@ and `BDONE` lines.
   model's `set_cancel` asks `is_stop_requested`.
 
 Not shared yet: the `DONE` line has 15 fields and named ones (`chunk=`, ...) on Qwen3.8, 15 on Qwen3.6 and 10 on
-DeepSeek; a shared writer would have to keep each engine's fields.
+DeepSeek; a shared writer would have to keep each engine's fields (the paged engine leaves it to the model:
+`PagedModel::print_done`).
 
 See [docs/ARCHITECTURE.md](../../../docs/ARCHITECTURE.md) for the layers and
 [docs/REFACTOR_PLAN.md](../../../docs/REFACTOR_PLAN.md) for the steps.

@@ -22,6 +22,16 @@ int get_refill_batch(const LinkSpeed& link, uint64_t bytes, double budget_ms, in
 
 bool is_copy_back_worth(double back_gbps, double ssd_gbps) { return back_gbps >= kCopyBackFactor * ssd_gbps; }
 
+std::string get_hop_refusal(const std::vector<int>& devices) {
+    for (size_t i = 0; i < devices.size(); ++i)
+        for (size_t j = i + 1; j < devices.size(); ++j)
+            if (devices[i] == devices[j])
+                return "cards " + std::to_string(i) + " and " + std::to_string(j) + " share GPU " +
+                       std::to_string(devices[i]) + ": a hop between them waits behind a verify window spinning on " +
+                       "that GPU (on the Strix Halo the hops stalled and Windows reset the GPU driver)";
+    return {};
+}
+
 ExpertPlacement place_experts(const std::vector<CardPool>& cards, const std::vector<ExpertKey>& ranking,
                               int64_t n_layers, int64_t n_expert, const std::vector<uint64_t>& expert_bytes,
                               const std::function<bool(int owner, int holder)>& may_hold) {

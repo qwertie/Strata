@@ -782,7 +782,7 @@ if(STRATA_ENABLE_CUDA OR STRATA_ENABLE_HIP)
   target_link_libraries(dflash2_attn_bench PRIVATE strata_kernels ${_strata_gpu_runtime_target})
 
   # The paged engine (src/common/serve/paged_engine.cpp): conversations in page pools, over any model's PagedModel
-  add_library(strata_paged STATIC src/common/serve/paged_engine.cpp)
+  add_library(strata_paged STATIC src/common/serve/paged_engine.cpp src/common/serve/paged_start.cpp)
   target_include_directories(strata_paged PRIVATE ${_strata_gpu_include_directories})
   target_link_libraries(strata_paged PUBLIC strata_engine strata_serve strata_spec strata_state strata_split
                         ${_strata_gpu_runtime_target})
@@ -876,9 +876,25 @@ if(STRATA_ENABLE_CUDA OR STRATA_ENABLE_HIP)
       add_test(NAME ds4_kv_rows_parity_split COMMAND ds4_kv_rows_parity)
       set_tests_properties(ds4_kv_rows_parity_split PROPERTIES ENVIRONMENT "DS4_ATTN_SPLIT=1")
     endif()
-    add_executable(strata-dsv41 ${_ds4}/ds4_main.cpp ${_ds4}/ds4_model.cu ${_ds4}/ds4_vision.cu
-                   ${_ds4}/ds4_gguf.cu ${_ds4}/ds4_gguf_cpu.cpp ${_ds4}/ds4_iq.cu ${_ds4}/ds4_iq_cpu.cpp
-                   ${_ds4}/ds4_tq.cu ${_ds4}/ds4_tq_cpu.cpp ${_ds4}/ds4_gg_cpu.cpp ${_ds4}/ds4_packinfo.cpp)
+    # the model (strata::ds4::Model), which strata-dsv41 and strata-ds41 both run
+    add_library(strata_dsv41 STATIC ${_ds4}/ds4_model.cu ${_ds4}/ds4_options.cpp ${_ds4}/ds4_vision.cu
+                ${_ds4}/ds4_gguf.cu ${_ds4}/ds4_gguf_cpu.cpp ${_ds4}/ds4_iq.cu ${_ds4}/ds4_iq_cpu.cpp
+                ${_ds4}/ds4_tq.cu ${_ds4}/ds4_tq_cpu.cpp ${_ds4}/ds4_gg_cpu.cpp ${_ds4}/ds4_packinfo.cpp)
+    target_include_directories(strata_dsv41 PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include
+                               ${_strata_gpu_include_directories} ${CMAKE_CURRENT_SOURCE_DIR}/third_party/ggml)
+    target_link_libraries(strata_dsv41 PUBLIC strata_dsv41_kernels strata_dsv41_state strata_serve
+                          ${_strata_gpu_runtime_target} ${_strata_gpu_blas_target})
+    find_package(Threads REQUIRED)
+    target_link_libraries(strata_dsv41 PUBLIC Threads::Threads)
+    if(WIN32 AND STRATA_ENABLE_HIP)   # cudaMemGetInfo is the DXGI-budgeted hip_compat::mem_get_info (src/base/gpu/device.cu): on a Strix Halo the
+      # carve-out is not all the GPU may use, and the engine sizes its expert tiers by what the budget says is free
+      target_link_libraries(strata_dsv41 PUBLIC strata_core)
+    endif()
+    if(STRATA_NATIVE_EXPERTS)   # Strata's CPU trellis kernels (tq_cpu.hpp) for the trellis experts on the CPU lane
+      target_link_libraries(strata_dsv41 PUBLIC strata_kernels_cpu)
+      target_compile_definitions(strata_dsv41 PRIVATE STRATA_DSV41_TQ_CPU=1)
+    endif()
+    add_executable(strata-dsv41 ${_ds4}/ds4_main.cpp)
     # the commit the binary was built from, readable with --version (set -DSTRATA_BUILD_ID=... for a tree without .git)
     if(NOT STRATA_BUILD_ID AND EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/BUILD_ID)   # (a git archive has no .git: the packer writes the commit here)
       file(STRINGS ${CMAKE_CURRENT_SOURCE_DIR}/BUILD_ID STRATA_BUILD_ID LIMIT_COUNT 1)
@@ -891,20 +907,11 @@ if(STRATA_ENABLE_CUDA OR STRATA_ENABLE_HIP)
       set(STRATA_BUILD_ID unknown)
     endif()
     set_source_files_properties(${_ds4}/ds4_main.cpp PROPERTIES COMPILE_DEFINITIONS "DS4_BUILD_ID=\"${STRATA_BUILD_ID}\"")
-    target_include_directories(strata-dsv41 PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include ${_strata_gpu_include_directories}
-                               ${CMAKE_CURRENT_SOURCE_DIR}/third_party/ggml)
-    target_link_libraries(strata-dsv41 PRIVATE strata_dsv41_kernels strata_serve ${_strata_gpu_runtime_target}
-                          ${_strata_gpu_blas_target})
-    find_package(Threads REQUIRED)
-    target_link_libraries(strata-dsv41 PRIVATE Threads::Threads)
-    if(WIN32 AND STRATA_ENABLE_HIP)   # cudaMemGetInfo is the DXGI-budgeted hip_compat::mem_get_info (src/base/gpu/device.cu): on a Strix Halo the
-      # carve-out is not all the GPU may use, and the engine sizes its expert tiers by what the budget says is free
-      target_link_libraries(strata-dsv41 PRIVATE strata_core)
-    endif()
-    if(STRATA_NATIVE_EXPERTS)   # Strata's CPU trellis kernels (tq_cpu.hpp) for the trellis experts on the CPU lane
-      target_link_libraries(strata-dsv41 PRIVATE strata_kernels_cpu)
-      target_compile_definitions(strata-dsv41 PRIVATE STRATA_DSV41_TQ_CPU=1)
-    endif()
+    target_link_libraries(strata-dsv41 PRIVATE strata_dsv41)
+    # strata-ds41 (docs/MEMORY_MANAGER_PLAN.md D4): DeepSeek on the paged engine, its conversation in page-pool pages
+    add_executable(strata-ds41 src/program/ds41_main.cpp ${_ds4}/paged_model.cpp)
+    strata_utf8_manifest(strata-ds41)
+    target_link_libraries(strata-ds41 PRIVATE strata_dsv41 strata_paged)
     if(STRATA_NATIVE_EXPERTS)
       # the CPU lane's ggml-type rows: ggml-cpu's dots against Strata's AVX2 i-quant rows (bits and GB/s); no GPU, no model
       add_executable(ds4_gg_bench tests/dsv41/gg_dot_bench.cpp ${_ds4}/ds4_gg_cpu.cpp)
@@ -967,7 +974,7 @@ if(STRATA_ENABLE_CUDA OR STRATA_ENABLE_HIP)
       target_compile_features(ds4_pick_rule_test PRIVATE cxx_std_17)
     endif()
     if(STRATA_ENABLE_HIP)
-      foreach(_t strata_dsv41_kernels strata-dsv41)
+      foreach(_t strata_dsv41_kernels strata_dsv41 strata-dsv41 strata-ds41)
         target_compile_options(${_t} PRIVATE "${_ds4_hip_extra}")
       endforeach()
     endif()

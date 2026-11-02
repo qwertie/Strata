@@ -97,4 +97,13 @@ LinkSpeed measure_card_link(int from, int to, size_t bytes) {
     return s;
 }
 
+double get_card_speed(int dev) {
+    int sms = 0, khz = 0;
+    if (cudaDeviceGetAttribute(&sms, cudaDevAttrMultiProcessorCount, dev) != cudaSuccess ||
+        cudaDeviceGetAttribute(&khz, cudaDevAttrClockRate, dev) != cudaSuccess || khz <= 0)
+        khz = 1800000;   // (the old engine's guess)
+    (void) cudaGetLastError();
+    return std::max(1.0, sms * (khz / 1e6));
+}
+
 }  // namespace strata::core

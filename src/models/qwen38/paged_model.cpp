@@ -2,14 +2,10 @@
 // and its side of the engine's model interface (strata/common/serve/paged_model.hpp).
 #include "strata/models/qwen38/paged_model.hpp"
 
-#include "strata/base/gpu/links.hpp"
 #include "strata/base/gpu/on_device.hpp"
-#include "strata/base/gpu/runtime.hpp"
-#include "strata/base/platform/env.hpp"
 #include "strata/common/experts/card_rules.hpp"
 #include "strata/common/experts/expert_pages.hpp"
 #include "strata/common/experts/ram_experts.hpp"
-#include "strata/common/experts/split_rules.hpp"
 #include "strata/common/kernels/cpu/expert_layout.hpp"
 #include "strata/common/serve/paged_engine.hpp"
 #include "strata/common/serve/paged_model.hpp"
@@ -43,6 +39,9 @@ using strata::serve::PagedCards;
 using strata::serve::PagedParts;
 using strata::serve::PagedSettings;
 
+/// The program's name, which starts its stderr lines.
+const std::string kProgram = "strata-q38";
+
 /// The lookahead when --mtp is given and --lookahead is not: on the Strix Halo one conversation decoded fastest with 3
 /// guesses a step (4 rows) or 2, and several conversations with 8 rows (docs/DETAILS.md, rows per step).
 constexpr int kDefaultLookahead = 3;
@@ -50,8 +49,6 @@ constexpr int kDefaultLookahead = 3;
 /// another card is weighed (--remote-experts auto, card_rules' is_hop_cheaper): the Strix Halo's pool computed 70,349
 /// experts in 2,449 ms and 43,808 in 1,550 ms (two stages, 6 requests each, the reads from the SSD not counted).
 constexpr double kCpuExpertMs = 0.035;
-/// The bytes each way that measure the GPU's link to RAM at start.
-constexpr size_t kLinkProbeBytes = 64ull << 20;
 /// With drafting, the verify windows' graphs kept for the most recent row layouts (the old engine's --batch-mtp).
 constexpr size_t kWindowGraphs = 64;
 
@@ -177,6 +174,7 @@ public:
     int propose(strata::serve::PagedPart& last, int session, int n, int32_t* out, std::string& err) override;
     bool switch_drafter(bool on, std::string& err) override;
     void print_info(int slots, int spec) const override;
+    void print_done(const strata::serve::RequestDone& done) const override;
 
 private:
     Model& m_;
@@ -190,7 +188,7 @@ private:
     std::vector<int32_t> picks_;       ///< the last step's token after each row, for the drafter
 };
 
-int take_own_options(int& argc, char** argv, PagedSettings& s);
+std::string get_hop_refusal(const PagedSettings& s, const Options& o);
 std::vector<uint64_t> get_blob_bytes(const Model& m);
 PagedCard& add_card(Model& m, Conversation& conv, PagedCards& cards, ModelCards& model_cards, GpuStage* stage);
 bool open_pages(Model& m, PagedCard& card, ModelCard& mc, int64_t tokens_min, int64_t gpu_mib, int64_t max_experts,
@@ -208,29 +206,22 @@ uint64_t read_size(const std::vector<uint8_t>& bytes, size_t& at);
 int run_paged_engine(int argc, char** argv) {
     std::setvbuf(stdout, nullptr, _IONBF, 0);   // each protocol line reaches the server as it is printed
     PagedSettings settings;
-    if (const int status = take_own_options(argc, argv, settings); status >= 0) return status;
-#if defined(STRATA_USE_HIP) && defined(_WIN32)
-    // ROCclr on Windows keeps freed memory in its resource cache and gives none of it back (on the Strix Halo, 8 GiB
-    // freed with hipHostFree or hipFree stayed taken from Windows' RAM), so the pools could not shrink; an explicit
-    // setting wins
-    strata::platform::set_env("GPU_RESOURCE_CACHE_SIZE", "0", false);
-#endif
-    // a card computing another card's experts (--remote-experts) runs them on a stream of its own while that card's
-    // verify window spins on the GPU for them; the runtime spreads its streams over a few hardware queues (HIP 4 a
-    // priority, CUDA 8 connections), and a hop that landed behind a spinning kernel waited for ever (two stages on the
-    // Strix Halo's GPU, 2 of 2 runs; 0 of 1 with 16 queues, which a stream of the highest priority did not fix).  An
-    // explicit setting wins.
-    if (settings.remote_experts != "off" &&
-        std::any_of(argv + 1, argv + argc, [](const char* a) { return std::strcmp(a, "--layer-split") == 0; })) {
-        strata::platform::set_env("GPU_MAX_HW_QUEUES", "16", false);
-        strata::platform::set_env("CUDA_DEVICE_MAX_CONNECTIONS", "32", false);
-    }
+    if (const int status = strata::serve::take_paged_options(argc, argv, kProgram, settings); status >= 0)
+        return status;
+    const bool layer_split =
+        std::any_of(argv + 1, argv + argc, [](const char* a) { return std::strcmp(a, "--layer-split") == 0; });
+    strata::serve::set_paged_runtime_env(settings, layer_split);
     prepare_process(argc, argv);
     prime_gpu_queues();
     Options o;
     bool have_tokens = false;
     if (const int status = parse_options(argc, argv, o, have_tokens); status >= 0) return status;
     if (const int status = apply_device_defaults(o); status >= 0) return status;
+    if (const std::string why = get_hop_refusal(settings, o); !why.empty()) {
+        std::fprintf(stderr, "%s: --remote-experts on: %s; use --remote-experts auto or off\n", kProgram.c_str(),
+                     why.c_str());
+        return 2;
+    }
     const int slots = std::max(o.batch, 0);
     if (settings.step.concurrent < 0 || settings.step.concurrent > std::max(slots, 1))
         settings.step.concurrent = std::max(slots, 1);
@@ -263,8 +254,6 @@ int run_paged_engine(int argc, char** argv) {
     if (o.prefill_chunk <= 0) o.prefill_chunk = 2048;   // open_pages leaves room for the prompt path's own buffers
     if (o.resident_budget > 0 && settings.ram_mib < 0)
         settings.ram_mib = (int64_t) (o.resident_budget >> 20);
-    if (settings.tokens_max < 0)
-        settings.tokens_max = o.max_context;
     o.mmap_experts = true;
     o.resident_cpu_experts = o.resident_pin = o.resident_soft = false;
     o.resident_budget = 0;
@@ -339,7 +328,7 @@ PagedQwen::PagedQwen(Model& m, Conversation& conv, const PagedCards& cards, Mode
     : m_(m), conv_(conv), pcards_(cards), cards_(model_cards), split_(split), ram_(ram), drafter_(drafter),
       sessions_(sessions) {
     const Options& o = m.o;
-    facts.name = "strata-q38";
+    facts.name = kProgram;
     facts.n_layers = m.g.n_layers;
     facts.n_expert = m.g.n_expert;
     facts.context = o.max_context;
@@ -351,7 +340,6 @@ PagedQwen::PagedQwen(Model& m, Conversation& conv, const PagedCards& cards, Mode
         facts.split_ranking.push_back({m.profile_all[i].first, m.profile_all[i].second});
     facts.gpu_experts = o.expert_cache;
     facts.ram_headroom = o.resident_headroom;
-    facts.prompt_chunk = o.prefill_chunk;
     facts.adapt_swaps = o.adapt_swaps;
     facts.adapt_min_gain = o.adapt_min_gain;
     facts.adapt_decay = o.adapt_decay;
@@ -720,60 +708,26 @@ void PagedQwen::print_info(int slots, int spec) const {
                 slots > 0 ? (" batch_slots=" + std::to_string(slots) + " slot_cache=0").c_str() : "");
 }
 
-/// Removes strata-q38's own options from `argv` (the rest is `strata`'s command line).  -1: go on, else exit status.
-int take_own_options(int& argc, char** argv, PagedSettings& s) {
-    struct Own {
-        const char* name;
-        int64_t* value;
-        std::string* text = nullptr;   ///< instead of `value`, for a word
-    };
-    int64_t rows = s.step.rows, lookahead = -1, concurrent = -1;   // -1: chosen once the options are read
-    std::string drafter = "on", gpu_mib;
-    const Own own[] = {{"--tokens-min", &s.tokens_min},       {"--tokens-max", &s.tokens_max},
-                       {"--gpu-mib", nullptr, &gpu_mib},      {"--ram-mib", &s.ram_mib},
-                       {"--ssd-pause-mib", &s.ssd_pause_mib}, {"--rows", &rows},
-                       {"--lookahead", &lookahead},           {"--concurrent", &concurrent},
-                       {"--pause-dir", nullptr, &s.pause_dir}, {"--copy-back", nullptr, &s.copy_back},
-                       {"--drafter", nullptr, &drafter},      {"--remote-experts", nullptr, &s.remote_experts}};
-    int out = 1;
-    for (int i = 1; i < argc; ++i) {
-        const Own* o = std::find_if(std::begin(own), std::end(own),
-                                    [&](const Own& x) { return std::strcmp(argv[i], x.name) == 0; });
-        if (o == std::end(own)) {
-            argv[out++] = argv[i];
-            continue;
-        }
-        if (i + 1 >= argc) {
-            std::fprintf(stderr, "strata-q38: %s needs a value\n", o->name);
-            return 2;
-        }
-        if (o->text != nullptr)
-            *o->text = argv[++i];
-        else
-            *o->value = std::atoll(argv[++i]);
-    }
-    argc = out;
-    s.step.rows = (int) std::clamp<int64_t>(rows, 0, INT32_MAX);
-    s.step.lookahead = (int) std::clamp<int64_t>(lookahead, -1, INT32_MAX);
-    s.step.concurrent = (int) std::clamp<int64_t>(concurrent, -1, INT32_MAX);   // -1: --batch, set once it is read
-    s.drafter = drafter == "on";
-    if (s.copy_back != "auto" && s.copy_back != "on" && s.copy_back != "off") {
-        std::fprintf(stderr, "strata-q38: --copy-back takes auto, on or off\n");
-        return 2;
-    }
-    if (s.remote_experts != "auto" && s.remote_experts != "on" && s.remote_experts != "off") {
-        std::fprintf(stderr, "strata-q38: --remote-experts takes auto, on or off\n");
-        return 2;
-    }
-    if (drafter != "on" && drafter != "off") {
-        std::fprintf(stderr, "strata-q38: --drafter takes on or off\n");
-        return 2;
-    }
-    if (std::string err; !gpu_mib.empty() && !parse_i64_list(gpu_mib.c_str(), s.gpu_mib, err)) {
-        std::fprintf(stderr, "strata-q38: --gpu-mib takes MiB, one per card of a layer split: %s\n", err.c_str());
-        return 2;
-    }
-    return -1;
+void PagedQwen::print_done(const strata::serve::RequestDone& d) const {
+    // the fields of the old engine's DONE that this one has (no expert counts)
+    std::printf("DONE %lld %lld %.1f %.1f %s %lld %lld %lld 0 0 0 0 0.0 %lld 0 chunk=%lld experts_streamed=0\n",
+                (long long) d.produced, (long long) d.prompt, d.prompt_ms, d.decode_ms, d.finish,
+                (long long) d.guessed_right, (long long) d.guessed, (long long) d.resumed, (long long) d.read,
+                (long long) m_.o.prefill_chunk);
+}
+
+/// Gets why the cards of `o`'s layer split may not compute experts in hops (--remote-experts on in `s`), or an empty
+/// string: card 0 runs on GPU 0 (a layer split takes no other primary device) and the later cards on --split-device's
+/// GPUs, which without the option are GPUs of their own.
+std::string get_hop_refusal(const PagedSettings& s, const Options& o) {
+    std::vector<int64_t> stages;
+    std::string err;
+    if (s.remote_experts != "on" || o.layer_split.empty() || o.split_device.empty() ||
+        !strata::serve::parse_i64_list(o.split_device.c_str(), stages, err))
+        return {};
+    std::vector<int> devices = {0};
+    devices.insert(devices.end(), stages.begin(), stages.end());
+    return strata::core::get_hop_refusal(devices);
 }
 
 /// Adds the card that runs layers [lb, le) of `m` to `cards` and its model side to `model_cards`: CUDA0's (card 0,
@@ -798,18 +752,7 @@ PagedCard& add_card(Model& m, Conversation& conv, PagedCards& cards, ModelCards&
     mc.sp = stage != nullptr ? &stage->sp : &conv.sp;
     card.weights_lb = m.stage_weights_trimmed ? card.lb : 0;
     card.weights_le = m.stage_weights_trimmed ? card.le : m.g.n_layers;
-    const strata::core::LinkSpeed link = card.link = strata::core::measure_host_link(card.dev, kLinkProbeBytes);
-    card.refill_batch =
-        strata::core::get_refill_batch(link, strata::kernels::cpu::expert_layout().max_blob,
-                                       strata::serve::kRefillBudgetMs, strata::serve::kRefillBatch);
-    std::fprintf(stderr, "strata-q38: %s's link to RAM: %.1f GB/s to the GPU, %.1f GB/s back, %.3f ms a round trip\n",
-                 card.id.c_str(), link.to_gbps, link.from_gbps, link.latency_ms);
-    int sms = 0, khz = 0;
-    if (cudaDeviceGetAttribute(&sms, cudaDevAttrMultiProcessorCount, card.dev) != cudaSuccess ||
-        cudaDeviceGetAttribute(&khz, cudaDevAttrClockRate, card.dev) != cudaSuccess || khz <= 0)
-        khz = 1800000;   // (the old engine's guess)
-    (void) cudaGetLastError();
-    card.layer_ms = strata::program::split_rules::get_layer_ms(std::max(1.0, sms * (khz / 1e6)));
+    strata::serve::measure_card(card, kProgram, strata::kernels::cpu::expert_layout().max_blob);
     return card;
 }
 
@@ -830,40 +773,20 @@ bool open_pages(Model& m, PagedCard& card, ModelCard& mc, int64_t tokens_min, in
     strata::core::StateLayout layout;
     if (!ConversationPages::get_layout(m.g, *mc.own, drafting ? &m.mtp.kv_state() : nullptr, layout, err))
         return false;
-    uint64_t most = layout.bytes_for(m.o.max_context);
-    for (const strata::core::StateRegion& r : layout.regions)   // + each region's last block
-        most += strata::core::choose_block_pages(r, page) * page;
+    uint64_t most = strata::serve::get_conversation_bytes(layout, m.o.max_context, page);
     for (size_t i = 0; i < ranking.size() && (int64_t) i < max_experts; ++i)
         most += (blobs[(size_t) ranking[i].layer] + page - 1) / page * page;
-    const uint64_t room = strata::serve::get_gpu_room(card.dev, get_gpu_keep(m, mc), 0);
-    const uint64_t pool_b = gpu_mib >= 0 ? std::min((uint64_t) gpu_mib << 20, room) : std::min(room, most);
-    const uint64_t chunk = std::max<uint64_t>(std::min(strata::serve::kChunkBytes, pool_b) / page, 1) * page;
+    uint64_t room = 0;
+    const uint64_t pool_b = strata::serve::get_gpu_pool_bytes(card.dev, get_gpu_keep(m, mc), gpu_mib, most, room);
+    const uint64_t chunk = strata::serve::get_chunk_bytes(pool_b, page);
     mc.cache->set_expert_bytes((int64_t) strata::kernels::cpu::expert_layout().max_blob);
     strata::core::PagePoolConfig config;
     config.tokens_min = std::clamp<int64_t>(tokens_min, 0, m.o.max_context);
-    strata::core::ChunkMemory memory;   // (called later from any card's work: each on its own GPU)
-    memory.alloc = [dev = card.dev](uint64_t n) {
-        const strata::core::OnDevice on_card(dev);
-        return (uint8_t*) strata::core::gpu_alloc_zeroed((size_t) n);
-    };
-    memory.free = [dev = card.dev](uint8_t* p) {
-        const strata::core::OnDevice on_card(dev);
-        strata::core::gpu_free(p);
-    };
-    memory.copy = [dev = card.dev](uint8_t* to, const uint8_t* from, uint64_t n) {
-        const strata::core::OnDevice on_card(dev);
-        return strata::core::gpu_copy(to, from, (size_t) n);
-    };
     if (!mc.cache->open((int64_t) (chunk / page), m.g.n_layers, m.g.n_expert, (int64_t) page, err) ||
-        !card.experts.open(*mc.cache, std::move(memory), pool_b, layout, config, blobs, m.g.n_expert, max_experts,
-                           ranking, err))
+        !card.experts.open(*mc.cache, strata::serve::get_gpu_chunk_memory(card.dev), pool_b, layout, config, blobs,
+                           m.g.n_expert, max_experts, ranking, err))
         return false;
-    std::fprintf(stderr, "strata-q38: the page pool of %s (layers %lld-%lld): %.2f GiB (of %.2f GiB it could take) in "
-                         "chunks of %.0f MiB, pages of %llu bytes, for the experts and the conversations, %lld tokens "
-                         "of it kept for the conversations\n",
-                 card.id.c_str(), (long long) card.lb, (long long) card.le - 1,
-                 (double) card.experts.pool().report().total.bytes / 1073741824.0, (double) room / 1073741824.0,
-                 (double) chunk / 1048576.0, (unsigned long long) page, (long long) config.tokens_min);
+    strata::serve::say_gpu_pool(kProgram, card, room, chunk);
     return true;
 }
 
@@ -894,13 +817,9 @@ bool open_ram(Model& m, const PagedCards& cards, const ModelCards& model_cards, 
                 ranking.push_back({l, e});
         }
     const int ring = strata::kernels::kVerifyMaxT * (int) m.K;   // the experts of one layer of a step
-    uint64_t bytes = (uint64_t) s.ram_mib << 20;
-    if (s.ram_mib < 0)
-        bytes = std::min(strata::serve::get_ram_room(m.o.resident_headroom),
-                         every + (uint64_t) ring * *std::max_element(blobs.begin(), blobs.end()));
-    strata::core::PagePoolConfig config;
-    config.page_bytes = cards[0].experts.pool().page_bytes();
-    config.chunk_bytes = strata::serve::kChunkBytes / config.page_bytes * config.page_bytes;
+    const uint64_t bytes = strata::serve::get_ram_pool_bytes(
+        s, m.o.resident_headroom, every + (uint64_t) ring * *std::max_element(blobs.begin(), blobs.end()));
+    const strata::core::PagePoolConfig config = strata::serve::get_ram_pool_config(cards[0]);
     strata::core::StateLayout layout;
     if (!get_card_layout(m, cards.back(), model_cards.back(), 0, m.g.n_layers, layout, err))
         return false;
