@@ -10,6 +10,7 @@
 #include "strata/common/experts/split_rules.hpp"
 #include "strata/common/serve/loop.hpp"
 #include "strata/common/state/progress.hpp"
+#include "strata/common/state/resume_point.hpp"
 
 #include <algorithm>
 #include <chrono>
@@ -97,6 +98,7 @@ struct Held {
 struct Paused {
     uint64_t serial = 0;              ///< its number (LIST_CONVERSATIONS' parked<serial>) and its id in the RAM's pool
     std::vector<int32_t> live;        ///< the tokens it holds
+    std::vector<int64_t> points;      ///< the positions short of its end it can go back to (get_rewind_points)
     std::vector<uint8_t> state;       ///< the model's state beside the pages, apart from the layer cut (save_state)
     int64_t priority = 0;             ///< its last request's
     uint64_t used = 0;                ///< Held::used
@@ -190,8 +192,9 @@ private:
     /// request's priority is as high.
     bool preempt(size_t slot, int64_t priority);
     /// Puts the conversation that holds the longest start of `ids` (an idle one on the GPU, or a paused one, which
-    /// comes back) in place `target` of `at_`, pausing the one there unless that is it.  Gets how many of `ids` it
-    /// holds.
+    /// comes back) in place `target` of `at_`, pausing the one there unless that is it.  A conversation whose tokens
+    /// `ids` leave before their end comes back at the latest point it can go back to (get_resume_tokens), and stays
+    /// paused whole as well, as strata-dsv41's slots keep it.  Gets how many of `ids` it holds.
     int64_t take_conversation(size_t target, const std::vector<int64_t>& ids);
     /// Gives `h` the pages for `tokens` tokens on every card, pausing idle conversations (the lowest priority, then
     /// the least recently used, first) while a pool has no room, and tells the kernels about the experts that left
@@ -711,46 +714,76 @@ void PagedEngine::end_preempted(size_t slot) {
 }
 
 int64_t PagedEngine::take_conversation(size_t target, const std::vector<int64_t>& ids) {
-    const auto get_prefix = [&](const std::vector<int32_t>& live) -> int64_t {
-        const size_t n = live.size();
-        return n > 0 && n < ids.size() && std::equal(live.begin(), live.end(), ids.begin()) ? (int64_t) n : 0;
+    const auto get_start = [&](const std::vector<int32_t>& live, const std::vector<int64_t>& points) {
+        return (int64_t) strata::core::get_resume_tokens(live, points, ids);
     };
     size_t best = target;
-    int64_t most = get_prefix(get_held(target).live);
+    int64_t most = get_start(get_held(target).live, model_.get_rewind_points(get_held(target).parts));
     for (size_t i = 0; i < at_.size(); ++i) {
         const Held& h = get_held(i);
-        if (const int64_t prefix = get_prefix(h.live); !h.decoding && prefix > most) {
+        if (const int64_t start = get_start(h.live, model_.get_rewind_points(h.parts)); !h.decoding && start > most) {
             best = i;
-            most = prefix;
+            most = start;
         }
     }
     auto back = paused_.end();
     for (auto p = paused_.begin(); p != paused_.end(); ++p)
-        if (const int64_t prefix = get_prefix(p->live); prefix > most) {
+        if (const int64_t start = get_start(p->live, p->points); start > most) {
             back = p;
-            most = prefix;
+            most = start;
         }
     if (back == paused_.end())
         std::swap(at_[target], at_[best]);
+    Held& h = get_held(target);
+    std::string err;
+    // a conversation on the GPU that `ids` leave before its end pauses whole and comes back from its pause, short of
+    // its end (it goes back in place when it cannot pause)
+    if (back == paused_.end() && most > 0 && most < (int64_t) h.live.size()) {
+        if (!pause(h, err)) {
+            say("pausing a conversation failed, so it goes back in place and is not kept whole: %s\n", err.c_str());
+        } else {
+            back = std::find_if(paused_.begin(), paused_.end(), [&](const Paused& x) { return x.serial == serial_; });
+            if (back == paused_.end())   // trim_ssd forgot it at once
+                return 0;
+        }
+    }
+    const bool whole = most == 0 || most == (int64_t) (back == paused_.end() ? h.live : back->live).size();
     // out of the list first: pausing the conversation in its place changes the list
     std::optional<Paused> p;
     if (back != paused_.end()) {
         p = std::move(*back);
         paused_.erase(back);
     }
-    Held& h = get_held(target);
     if ((p || most == 0) && !h.live.empty())
         pause_or_forget(h);
-    if (!p)
+    if (p) {
+        const bool ok = resume(*p, h, err);
+        if (whole) {
+            drop_pages(*p);
+        } else {   // it stays paused whole; the pauses that made room for it did not count its bytes
+            paused_.push_back(std::move(*p));
+            trim_ram();
+            trim_ssd();
+        }
+        if (!ok) {
+            say("resuming a paused conversation failed, so its prompt is read again: %s\n", err.c_str());
+            h.live.clear();
+            return 0;
+        }
+    }
+    if (whole)
         return most;
-    std::string err;
-    const bool ok = resume(*p, h, err);
-    drop_pages(*p);
-    if (ok)
-        return most;
-    say("resuming a paused conversation failed, so its prompt is read again: %s\n", err.c_str());
-    h.live.clear();
-    return 0;
+    if (!model_.rewind(h.parts, most, err)) {
+        say("going back to token %lld of a conversation failed, so its prompt is read again: %s\n", (long long) most,
+            err.c_str());
+        h.forget();
+        return 0;
+    }
+    say("a conversation of %zu tokens goes back to token %lld\n", h.live.size(), (long long) most);
+    h.live.resize((size_t) most);
+    for (const std::unique_ptr<PagedPart>& part : h.parts)
+        part->truncate(most);
+    return most;
 }
 
 bool PagedEngine::make_room(Held& h, int64_t tokens, std::string& err) {
@@ -801,6 +834,7 @@ bool PagedEngine::pause(Held& h, std::string& err, bool ram_only) {
     p.serial = ++serial_;
     p.priority = h.dec.priority;
     p.used = h.used;
+    p.points = model_.get_rewind_points(h.parts);
     if (!model_.save_state(h.parts, p.state, err))
         return false;
     strata::core::PagePool& ram = ram_.pages().pool();

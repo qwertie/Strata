@@ -203,6 +203,16 @@ public:
     /// its pages are back.
     virtual bool restore_state(const std::vector<uint8_t>& state, const PagedParts& parts,
                                const std::vector<int32_t>& live, std::string& err) const = 0;
+    /// Gets the positions short of its end that the conversation of `parts` can go back to (rewind), so that a prompt
+    /// that leaves it there continues it (strata/common/state/resume_point.hpp): DeepSeek's checkpoints; none by
+    /// default (Qwen3.8's GDN state goes only forward).
+    virtual std::vector<int64_t> get_rewind_points(const PagedParts&) const { return {}; }
+    /// Makes the conversation of `parts` hold its first `tokens` tokens, one of get_rewind_points; false (and `err`)
+    /// when it cannot.  The engine then gives back its pages beyond them (PagedPart::truncate).
+    virtual bool rewind(const PagedParts&, int64_t tokens, std::string& err) {
+        err = "the conversation cannot go back to token " + std::to_string(tokens);
+        return false;
+    }
     /// Forgets what the drafter knows of `session`: its conversation starts a request or the drafter came back.
     virtual void forget_drafts(int session) = 0;
 

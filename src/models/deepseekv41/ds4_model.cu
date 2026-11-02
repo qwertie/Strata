@@ -920,12 +920,8 @@ struct Model::Impl {
     // the state
     int64_t pos = 0;
     std::vector<int32_t> toks, ctoks;
-    struct Check {                    // the state at a position: every window ring, the compressors' partial groups
-        int64_t pos = -1;
-        std::vector<std::vector<uint8_t>> win;
-        std::vector<std::vector<float>> comp;
-    };
-    static constexpr int kChecks = 4;
+    using Check = Checkpoint;         // the state at a position: every window ring, the compressors' partial groups
+    static constexpr int kChecks = kCheckpoints;
     Check ck[kChecks];                // the end of the last prompt, the position before it, the anchor (the position
                                       // before the end of the first prompt of the run of prompts that each continued
                                       // the last in place: a chat template that drops earlier turns' reasoning at a new
@@ -5047,7 +5043,7 @@ struct Model::Impl {
 
     bool restore(int64_t limit) {
         const int b = best_check(limit);
-        if (b < 0) return false;
+        if (b < 0 || !get_check_problem(ck[b]).empty()) return false;
         const Check& c = ck[b];
         for (size_t i = 0; i < L.size(); ++i)
             for (int m = 0; m < L[i].nm; ++m) {   // (a group's members hold the same state: the lead's copy)
@@ -5390,16 +5386,54 @@ struct Model::Impl {
             err = "the slot does not end where it should";
             return false;
         }
-        pos = n_pos;
         toks.swap(toks_in);
+        set_position();
+        for (int k = 0; k < kChecks; ++k) ck[k] = std::move(got[k]);   // (the slot's own; the old ones held the state
+                                                               // this one replaced)
+        ok = true;
+        return true;
+    }
+
+    // Makes the position and the Engram history follow `toks`, after another conversation's tokens took their place
+    // (slot_load, swap_conversation); a slot set aside before is no longer this state.
+    void set_position() {
+        pos = (int64_t) toks.size();
         ctoks.resize((size_t) pos);
         for (size_t i = 0; i < (size_t) pos; ++i)
             ctoks[i] = toks[i] < pk.eg_vocab ? pk.eg_map[(size_t) toks[i]] : 0;
-        for (int k = 0; k < kChecks; ++k) ck[k] = std::move(got[k]);   // (the slot's own; the old ones held the state
-                                                               // this one replaced)
         slot_held = false;
-        ok = true;
-        return true;
+    }
+
+    // Model::get_state_problem: the first kept checkpoint of `s` whose rings or partial groups are not this model's
+    std::string get_state_problem(const ConversationState& s) const {
+        for (const Check& c : s.checks)
+            if (c.pos >= 0)
+                if (std::string why = get_check_problem(c); !why.empty()) return why;
+        return {};
+    }
+    // why checkpoint `c` cannot go back to the GPU: a layer count, ring or partial group not this model's ("": it can)
+    std::string get_check_problem(const Check& c) const {
+        if (c.win.size() != L.size() || c.comp.size() != 2 * L.size())
+            return "a checkpoint of " + std::to_string(c.win.size()) + " layers, not " + std::to_string(L.size());
+        for (size_t i = 0; i < L.size(); ++i) {
+            const size_t group = L[i].c_kv ? (size_t) L[i].ratio * g.hd : 0;
+            if (c.win[i].size() != (size_t) g.win * win_rb() || c.comp[2 * i].size() != group ||
+                c.comp[2 * i + 1].size() != group)
+                return "a checkpoint whose layer " + std::to_string(i) + " is not this model's";
+        }
+        return {};
+    }
+
+    // Model::swap_conversation
+    void swap_conversation(ConversationState& s) {
+        for (Dev& d : devs) {
+            cudaSetDevice(d.id);
+            cudaStreamSynchronize(d.st);
+        }
+        toks.swap(s.tokens);
+        for (int k = 0; k < kChecks; ++k)
+            std::swap(ck[k], s.checks[(size_t) k]);
+        set_position();
     }
 
     // Copies the first n rows of `rows` to host memory `to`, block by block, and waits for them (slot_save).
@@ -9651,6 +9685,8 @@ int Model::vocab() const { return p_->g.vocab; }
 const std::vector<int32_t>& Model::tokens() const { return p_->toks; }
 void Model::reset() { p_->reset(); }
 void Model::checkpoint(int slot) { p_->checkpoint(slot); }
+void Model::swap_conversation(ConversationState& s) { p_->swap_conversation(s); }
+std::string Model::get_state_problem(const ConversationState& s) const { return p_->get_state_problem(s); }
 bool Model::restore(int64_t limit) { return p_->restore(limit); }
 void Model::pin() { p_->pin(); }
 std::vector<int64_t> Model::check_positions() const { return p_->check_positions(); }

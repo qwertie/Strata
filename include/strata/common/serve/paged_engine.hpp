@@ -10,8 +10,9 @@
 // experts take back the pages conversations left.  Up to `concurrent` conversations decode together, each step one
 // pass through the model with a row per conversation and the rows left over shared among their guesses
 // (strata::spec::Step); a prompt is read in passes of its own, a chunk at a time between the others' steps.  A request
-// continues the conversation that holds the longest start of its prompt, reading only the rest.  A request's
-// `priority=N` key (default 0) orders the conversations of a step, higher first.
+// continues the conversation that holds the longest start of its prompt, reading only the rest; a conversation the
+// prompt leaves before its end goes back to a point it keeps (PagedModel::get_rewind_points), and stays paused whole
+// as well.  A request's `priority=N` key (default 0) orders the conversations of a step, higher first.
 //
 // The RAM is a second page pool (RamExperts): the experts the GPU's pool does not hold, then copies of those it does
 // while room allows, and the paused conversations.  The experts in neither are read from the SSD without the file

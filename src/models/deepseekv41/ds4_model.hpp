@@ -15,6 +15,7 @@
 
 #include "strata/common/serve/memory_report.hpp"
 #include "strata/models/deepseekv41/conversation_layout.hpp"
+#include "strata/models/deepseekv41/conversation_state.hpp"
 #include "strata/models/deepseekv41/kv_rows.hpp"
 
 #include <cstddef>
@@ -236,6 +237,13 @@ public:
     void pin();
     /// The positions restore() can go back to, latest first (a slot keeps them: it can be taken back at any of them).
     std::vector<int64_t> check_positions() const;
+    /// Exchanges the tokens and checkpoints of the conversation the model computes for `s`'s, once the GPUs' work
+    /// ends.  For strata-ds41, which holds several conversations: the rest of each one's state is in its pages, which
+    /// use_state_memory points the model at.
+    void swap_conversation(ConversationState& s);
+    /// Gets why `s`'s checkpoints cannot be this model's (their layers, rings or partial groups are of other sizes), or
+    /// "" when they can: swap_conversation takes only such state (strata-ds41 checks a paused conversation's).
+    std::string get_state_problem(const ConversationState& s) const;
 
     /// The conversation in the model into `out` (slot_save): its position, its tokens, every window ring (the DSpark
     /// blocks' included), the compressors' partial groups and each KV source's compressed KV and index keys up to it,

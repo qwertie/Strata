@@ -8,6 +8,8 @@
 // The magic at both ends and the .bin size make a half-written or foreign file refused, never read.
 #pragma once
 
+#include "strata/common/state/resume_point.hpp"
+
 #include <algorithm>
 #include <cstddef>
 #include <cstdint>
@@ -79,14 +81,7 @@ inline size_t pick(const std::vector<Cand>& slots, const std::vector<int>& promp
     if (prompt.size() < 2) return SIZE_MAX;
     size_t best = SIZE_MAX;
     for (size_t i = 0; i < slots.size(); ++i) {
-        const std::vector<int32_t>& t = *slots[i].tokens;
-        const size_t lim = std::min(t.size(), prompt.size() - 1);
-        size_t c = 0;
-        while (c < lim && t[c] == prompt[c]) ++c;
-        size_t u = c == t.size() ? c : 0;
-        if (u == 0)
-            for (int64_t k : *slots[i].cks)
-                if ((size_t) k <= c && (size_t) k > u) u = (size_t) k;
+        const size_t u = strata::core::get_resume_tokens(*slots[i].tokens, *slots[i].cks, prompt);
         if (u > *len && u > floor) {
             best = i;
             *len = u;
