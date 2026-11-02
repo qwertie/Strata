@@ -88,7 +88,7 @@ bool RamExperts::open(ExpertSource& files, uint64_t bytes, int ring, const State
 }
 
 bool RamExperts::keep_copy(ExpertKey key, const uint8_t* bytes) {
-    if (holds(key.layer, key.expert))
+    if ((size_t) key.layer >= blob_bytes_.size() || holds(key.layer, key.expert))
         return false;
     const int32_t first = pages_.admit(key.layer, key.expert);
     if (first == kNotResident)

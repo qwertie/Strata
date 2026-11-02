@@ -45,7 +45,8 @@ public:
     /// Takes or gives back chunks so that the pool and the staging ring hold `bytes` (ExpertPages::resize).
     PoolResize resize(uint64_t bytes) { return pages_.resize(bytes > ring_bytes() ? bytes - ring_bytes() : 0); }
     /// Copies expert `key` in from `bytes` (any memory: a GPU's pages it is leaving) when the pool does not hold it
-    /// and has room for it among colder experts of its size; tells whether it did.
+    /// and has room for it among colder experts of its size; tells whether it did.  An expert of a layer past the
+    /// pool's (DeepSeek's drafter, whose experts only the GPU's pool holds) is never copied.
     bool keep_copy(ExpertKey key, const uint8_t* bytes);
     /// Tells whether the pool holds expert (`layer`, `expert`).
     bool holds(int64_t layer, int64_t expert) const { return first_page_[index_of(layer, expert)] != kNotResident; }

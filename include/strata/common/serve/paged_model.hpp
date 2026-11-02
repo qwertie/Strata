@@ -20,6 +20,7 @@
 #include <functional>
 #include <memory>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace strata::serve {
@@ -94,6 +95,10 @@ struct PagedModelFacts {
     /// a drafter guesses tokens (propose), its state in the conversations' pages; without one the engine never calls
     /// forget_drafts, propose or switch_drafter
     bool has_drafter = false;
+    /// what the start needs for a drafter, for the refusal of `drafter on` without one ("--mtp and ...")
+    std::string drafter_start;
+    /// the most conversations one step may run; 0: as many as the batch slots
+    int max_concurrent = 0;
     std::vector<uint64_t> expert_bytes;     ///< per layer: one expert's bytes
     /// on a layer split, the first --expert-cache experts of the whole model's profile, hottest first (what one GPU
     /// would hold); empty without a split
@@ -108,6 +113,14 @@ struct PagedModelFacts {
     /// the ms the CPU takes for one routed expert of a decode step, against which a hop to another card is weighed
     double cpu_expert_ms = 0;
 };
+
+/// A request as its conversation's model sees it (PagedModel::start_request).
+struct RequestStart {
+    Sampling sampling;
+    /// the request line's keys, in its order: the sampling keys and the engine's own (priority) among them
+    std::vector<std::pair<std::string, std::string>> keys;
+};
+
 
 /// What a request's DONE line reports (PagedModel::print_done).
 struct RequestDone {
@@ -192,8 +205,8 @@ public:
 
     // ---- per conversation
 
-    /// Sets the sampling of `session`'s next request.
-    virtual void set_sampling(int session, const Sampling& smp) = 0;
+    /// Tells the model of `session`'s next request: its sampling and the keys of the model's own.
+    virtual void start_request(int session, const RequestStart& r) = 0;
     /// Copies the state the model keeps beside a conversation's pages on each card (`parts`) to `state`, in a form
     /// that does not depend on the layer cut.  The engine calls it as it pauses the conversation, before its pages
     /// leave the cards' pools.
@@ -235,9 +248,11 @@ public:
     /// reads them when `drafting`.
     virtual bool keep_rows(const std::vector<strata::spec::StepRow>& rows, const std::vector<int>& kept,
                            bool drafting, std::string& err) = 0;
-    /// Writes up to `n` guesses of `session`'s next tokens to `out` from its state on the last card (`last`); gets
-    /// how many, or -1 (and `err`) when the drafter failed.
-    virtual int propose(PagedPart& last, int session, int n, int32_t* out, std::string& err) = 0;
+    /// Writes up to `n` guesses of the tokens after `token` at `pos` in `session` to `out` from its state on the last
+    /// card (`last`); gets how many, or -1 (and `err`) when the drafter failed.  It is called before each of the
+    /// conversation's steps (spec::StepModel::propose), also with `n` 0.
+    virtual int propose(PagedPart& last, int session, int32_t token, int64_t pos, int n, int32_t* out,
+                        std::string& err) = 0;
     /// Loads (`on`) or gives back the drafter's weights; false (and `err`) when loading failed.
     virtual bool switch_drafter(bool on, std::string& err) = 0;
     /// Prints the INFO lines that start the protocol: `slots` batch slots, `spec` rows a conversation's step may run

@@ -152,7 +152,7 @@ public:
     bool attach_hop(PagedCard& card, std::string& err) override;
     void set_hop_holders(const int32_t* holder) override { split_.holder = holder; }
     void report_hops() const override;
-    void set_sampling(int session, const strata::serve::Sampling& smp) override;
+    void start_request(int session, const strata::serve::RequestStart& r) override;
     bool save_state(const PagedParts& parts, std::vector<uint8_t>& state, std::string& err) const override;
     bool restore_state(const std::vector<uint8_t>& state, const PagedParts& parts, const std::vector<int32_t>& live,
                        std::string& err) const override;
@@ -164,7 +164,8 @@ public:
                   std::string& err) override;
     bool keep_rows(const std::vector<strata::spec::StepRow>& rows, const std::vector<int>& kept, bool drafting,
                    std::string& err) override;
-    int propose(strata::serve::PagedPart& last, int session, int n, int32_t* out, std::string& err) override;
+    int propose(strata::serve::PagedPart& last, int session, int32_t, int64_t, int n, int32_t* out,
+                std::string& err) override;
     bool switch_drafter(bool on, std::string& err) override;
     void print_info(int slots, int spec) const override;
     void print_done(const strata::serve::RequestDone& done) const override;
@@ -328,6 +329,7 @@ PagedQwen::PagedQwen(Model& m, Conversation& conv, const PagedCards& cards, Mode
     facts.max_rows = strata::kernels::kVerifyMaxT;
     facts.end_tokens = o.eos_ids;
     facts.has_drafter = drafter != nullptr;
+    facts.drafter_start = "--mtp and a --lookahead above 0";
     facts.expert_bytes = get_blob_bytes(m);
     for (size_t i = 0; i < m.profile_all.size() && (int64_t) i < o.expert_cache; ++i)
         facts.split_ranking.push_back({m.profile_all[i].first, m.profile_all[i].second});
@@ -549,8 +551,8 @@ void PagedQwen::report_hops() const {
                          pcards_[k].id.c_str(), (long long) hop.experts(), (long long) hop.entries(), hop.ms_wait);
 }
 
-void PagedQwen::set_sampling(int session, const strata::serve::Sampling& smp) {
-    strata::kernels::SamplerParams sp = get_sampler_params(smp);
+void PagedQwen::start_request(int session, const strata::serve::RequestStart& r) {
+    strata::kernels::SamplerParams sp = get_sampler_params(r.sampling);
     sp.penalty_last_n = 0;   // the penalties need a history per window (the old engine's set_history): not here
     conv_.ver.set_slot_sampling(session, sp);
 }
@@ -671,7 +673,8 @@ bool PagedQwen::keep_rows(const std::vector<strata::spec::StepRow>& rows, const 
     return true;
 }
 
-int PagedQwen::propose(strata::serve::PagedPart& last, int session, int n, int32_t* out, std::string& err) {
+int PagedQwen::propose(strata::serve::PagedPart& last, int session, int32_t, int64_t, int n, int32_t* out,
+                       std::string& err) {
     Part& part = get_part(last);
     return drafter_->propose(session, part.pages, part.ss, conv_.ver.final_R_all(), n, out, err);
 }

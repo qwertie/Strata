@@ -865,7 +865,8 @@ struct Model::Impl {
     cudaEvent_t ev_seed = nullptr;    // the drafter's seeding read h_taps: the next window's taps wait for it
     float* d_confv = nullptr;         // on the head device
     int* d_ints = nullptr;            // on the head device: drafts in, picks out
-    float conf_threshold = std::getenv("DS4_DSPARK_CONF") ? (float) std::atof(std::getenv("DS4_DSPARK_CONF")) : 0.5f;
+    int64_t verified_p0 = 0;          // the first position of the window verify_rows ran, and its rows
+    int verified_rows = 0;
     // a sampled round's drafts: the distribution q each one was drawn from (its kept list, on the head device) for
     // verify()'s rule - a point at the draft for the drafter's argmax; and the chain they were drawn with (verify()
     // checks it is its own)
@@ -3852,13 +3853,11 @@ struct Model::Impl {
         std::stable_sort(order.begin(), order.end(), [&](int a, int b) { return p[a] > p[b]; });
         return order;
     }
-    /// Readies the trunk's layers for experts that set_expert_addresses places (Options::expert_pages): none on the
-    /// GPU and no copy of the CPU lane's own, each layer's slot table allocated.
+    /// Readies the layers (the trunk's and the DSpark blocks') for experts that set_expert_addresses places
+    /// (Options::expert_pages): none on the GPU and no copy of the CPU lane's own, each layer's slot table allocated.
     bool place_paged(std::string& err) {
         size_t most = 0;
         for (Layer& l : L) {
-            if (l.mtp)
-                continue;
             if (l.lay.fmt != gg::kFmtMXFP4 || l.nm > 1 || l.cpu_only) {
                 err = "experts in page pools need a GGUF pack whose experts the GPU computes, on one GPU";
                 return false;
@@ -3878,12 +3877,13 @@ struct Model::Impl {
         held.assign(most, nullptr);
         return true;
     }
-    /// Makes the GPU compute the trunk's experts at device addresses `at` ([layer][expert]; null: the CPU lane's) from
-    /// the next window on: their slots in by_heat's order, the decode's table (vram_tab) and the prompt's (slot_tab).
+    /// Makes the GPU compute the experts at device addresses `at` ([layer][expert]; null: the CPU lane's) from the
+    /// next window on: their slots in by_heat's order, the decode's table (vram_tab) and the prompt's (slot_tab).
     bool set_expert_addresses(const std::vector<const uint8_t*>& at, std::string& err) {
         for (Layer& l : L) {
-            if (l.mtp || l.slot_tab == nullptr)
+            if (l.slot_tab == nullptr)
                 continue;
+
             const uint8_t* const* a = at.data() + (size_t) l.il * g.n_exp;
             if (std::equal(l.page_at.begin(), l.page_at.end(), a,
                            [](unsigned long long was, const uint8_t* now) { return was == (unsigned long long) now; }))
@@ -4719,7 +4719,7 @@ struct Model::Impl {
                                      "rest is read from the SSD as the prompt picks it (--ssd-cache N sets the size)\n", gb, lane_gb);
         }
         // (the trunk's layers: the drafter's bigger experts stay in place)
-        const std::vector<ExpertStore::LayerGeo> geo = get_expert_files();
+        const std::vector<ExpertStore::LayerGeo> geo = get_expert_files((size_t) g.nl);
         ExpertStore::Cfg cfg;
         cfg.budget_bytes = (size_t) (gb * 1e9);
         cfg.threads = std::getenv("DS4_STORE_THREADS") ? std::atoi(std::getenv("DS4_STORE_THREADS")) : 8;
@@ -4811,12 +4811,12 @@ struct Model::Impl {
                          zc_stage_buf != nullptr ? "copied into a staging area at the PCIe rate first" : "off", cfg.reserve);
         }
     }
-    std::vector<ExpertFileLayout> get_expert_files() const {
-        std::vector<ExpertFileLayout> geo((size_t) g.nl);
-        for (const Layer& l : L) {
-            if (l.il >= g.nl)
-                continue;
-            ExpertFileLayout& gl = geo[(size_t) l.il];
+    // where the first `n` layers' experts lie in the files (the trunk's, then the DSpark blocks')
+    std::vector<ExpertFileLayout> get_expert_files(size_t n) const {
+        std::vector<ExpertFileLayout> geo(n);
+        for (size_t il = 0; il < n; ++il) {
+            const Layer& l = L[il];
+            ExpertFileLayout& gl = geo[il];
             gl.n_exp = l.n_exp;
             for (int r = 0; r < 3; ++r) {
                 gl.file[r] = l.mx_file[r];
@@ -7082,13 +7082,24 @@ struct Model::Impl {
         return t;
     }
 
-    // [y, drafts] at positions pos ..: the trunk's verdict, its next token, and the state back to what it kept.
+    // [y, drafts] at positions pos ..: the trunk's verdict, its next token, and the state back to what it kept
+    bool verify(int y, const std::vector<int>& drafts, float temperature, float top_p, int top_k, float min_p,
+                uint64_t seed, uint64_t counter, int& accepted, int& next, std::string& err) {
+        std::vector<int> picks;
+        if (!verify_rows(y, drafts, temperature, top_p, top_k, min_p, seed, counter, picks, err)) return false;
+        accepted = (int) picks.size() - 1;
+        next = picks.back();
+        return keep_verified((int) picks.size(), err);
+    }
+
+    // [y, drafts] at positions pos .. through the model: picks[i] gets the token that follows row i, for the rows up
+    // to the first rejected draft (the rows after it get none), and the state holds every row until keep_verified.
     // Greedy: the drafts the trunk's argmax agrees with.  Sampled: the speculative-sampling rule over the request's own
     // chain (top_k, top_p, min_p, temperature): draft d stands with probability min(1, p(d) / q(d)), q the distribution
     // it was drawn from (the drafter's argmax: a point at d, so p(d)), a rejected one is replaced by a draw from the
     // residual max(0, p - q) - so each kept token is distributed as the trunk's own draw.
-    bool verify(int y, const std::vector<int>& drafts, float temperature, float top_p, int top_k, float min_p,
-                uint64_t seed, uint64_t counter, int& accepted, int& next, std::string& err) {
+    bool verify_rows(int y, const std::vector<int>& drafts, float temperature, float top_p, int top_k, float min_p,
+                     uint64_t seed, uint64_t counter, std::vector<int>& picks, std::string& err) {
         const int n = (int) std::min<size_t>(drafts.size(), (size_t) kWin - 1);
         const int T = n + 1, V = g.vocab;
         const int64_t p0 = pos;
@@ -7101,6 +7112,8 @@ struct Model::Impl {
         st.verify_ms += now_ms() - tv;
         spec_win = false;
         if (!ok) return false;
+        verified_p0 = p0;
+        verified_rows = T;
         Dev& hd = devs[(size_t) head_dev];
         cudaSetDevice(hd.id);
         int m = 0;
@@ -7112,7 +7125,7 @@ struct Model::Impl {
             CK(cudaMemcpyAsync(h_idx, d_ints + 16, (size_t) T * 4, cudaMemcpyDeviceToHost, hd.st));
             CK(cudaStreamSynchronize(hd.st));
             while (m < n && h_idx[m] == drafts[(size_t) m]) ++m;
-            next = h_idx[m];
+            picks.assign(h_idx, h_idx + m + 1);
         } else {
             // row i keeps draft i with probability min(1, p(d) / q(d)), else draws from the residual max(0, p - q)
             // (never d itself): each row a token distributed as the model's own draw at that position, p through the
@@ -7143,12 +7156,20 @@ struct Model::Impl {
             CK(cudaMemcpyAsync(h_idx, d_ints + 16, (size_t) n * 4, cudaMemcpyDeviceToHost, hd.st));
             CK(cudaStreamSynchronize(hd.st));
             while (m < n && h_idx[m] == drafts[(size_t) m]) ++m;
-            next = m < n ? h_idx[m] : sample_row(n, temperature, top_p, top_k, min_p, seed, counter + (uint64_t) n, nullptr);
+            picks.assign(h_idx, h_idx + std::min(m + 1, n));
+            if (m == n) picks.push_back(sample_row(n, temperature, top_p, top_k, min_p, seed, counter + (uint64_t) n, nullptr));
         }
         drafts_q = false;
-        rollback(p0, T, m + 1);
-        if (!seed_drafter(p0, m + 1, 0, err)) return false;
-        accepted = m;
+        return true;
+    }
+
+    // the window verify_rows ran keeps its first `keep` rows (at least its first): the rest rolled back, the drafter
+    // seeded with the kept ones
+    bool keep_verified(int keep, std::string& err) {
+        const int64_t p0 = verified_p0;
+        const int n = verified_rows - 1, m = keep - 1;
+        rollback(p0, verified_rows, keep);
+        if (!seed_drafter(p0, keep, 0, err)) return false;
         st.drafts_offered += n;
         st.drafts_accepted += m;
         for (int i = 0; i < n && i <= m && i < 8; ++i) {
@@ -9577,7 +9598,8 @@ Model::~Model() = default;
 bool Model::load(const Options& o, std::string& err) { return p_->load(o, err); }
 bool Model::reserve_caches(std::string& err) { return p_->reserve_caches(err); }
 bool Model::place_experts(std::string& err) { return p_->finish_load(err); }
-std::vector<ExpertFileLayout> Model::get_expert_files() const { return p_->get_expert_files(); }
+std::vector<ExpertFileLayout> Model::get_expert_files() const { return p_->get_expert_files(p_->L.size()); }
+
 std::vector<std::string> Model::get_file_paths() const {
     std::vector<std::string> paths;
     for (const std::string& f : p_->pk.files)
@@ -9594,8 +9616,8 @@ uint64_t Model::get_scratch_bytes(int dev) const { return p_->devs[(size_t) dev]
 const Geometry& Model::geometry() const { return p_->g; }
 std::vector<uint64_t> Model::get_expert_bytes() const {
     std::vector<uint64_t> bytes;
-    for (int il = 0; il < p_->g.nl; ++il)
-        bytes.push_back(p_->L[(size_t) il].blob);
+    for (const auto& l : p_->L)
+        bytes.push_back(l.blob);
     return bytes;
 }
 std::vector<int> Model::get_devices() const {
@@ -9604,8 +9626,8 @@ std::vector<int> Model::get_devices() const {
         ids.push_back(d.id);
     return ids;
 }
-void Model::use_state_memory(int dev, uint8_t* fixed, const ConversationRegions& at, const std::vector<KvRows>& ckv,
-                             const std::vector<KvRows>& ik) {
+void Model::use_state_memory(int dev, uint8_t* fixed, uint8_t* drafter, const ConversationRegions& at,
+                             const std::vector<KvRows>& ckv, const std::vector<KvRows>& ik) {
     Impl& p = *p_;
     for (size_t s = 0; s < p.srcs.size(); ++s) {
         Src& src = p.srcs[s];
@@ -9621,7 +9643,7 @@ void Model::use_state_memory(int dev, uint8_t* fixed, const ConversationRegions&
     }
     for (Layer& l : p.L)   // (not the head groups' members of --tp: strata-ds41 runs on one GPU until D9)
         if (l.dev == dev)
-            l.win = fixed + at.ring[(size_t) l.il];
+            l.win = (l.mtp ? drafter : fixed) + at.ring[(size_t) l.il];
 }
 bool Model::step(int token, bool logits, std::string& err) { return p_->step(token, logits, err); }
 bool Model::feed(const int* tokens, int n, int logits_rows, std::string& err) {
@@ -9679,6 +9701,11 @@ bool Model::verify(int y, const std::vector<int>& d, float t, float tp, int tk, 
                    int& accepted, int& next, std::string& err) {
     return p_->verify(y, d, t, tp, tk, mp, seed, counter, accepted, next, err);
 }
+bool Model::verify_rows(int y, const std::vector<int>& d, float t, float tp, int tk, float mp, uint64_t seed,
+                        uint64_t counter, std::vector<int>& picks, std::string& err) {
+    return p_->verify_rows(y, d, t, tp, tk, mp, seed, counter, picks, err);
+}
+bool Model::keep_verified(int keep, std::string& err) { return p_->keep_verified(keep, err); }
 int64_t Model::pos() const { return p_->pos; }
 int64_t Model::max_context() const { return p_->o.max_context; }
 int Model::vocab() const { return p_->g.vocab; }

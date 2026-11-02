@@ -99,18 +99,6 @@ static std::string g_round_tag;
 static std::vector<float> g_round_conf;
 static int g_round_nd = 0;
 
-// The drafts' cut on the product of their confidences (DeepInfer's cumulative rule): a draft is verified while the chance
-// that it and every draft before it are kept stays at least this - a long window whose later drafts are likely lost is
-// not verified whole.  STRATA_DS4_DSPARK_CUM=F, a request's dspark_cum key; 0: off, only the floor on each draft's own
-// confidence (dspark_conf).  Off by default (not measured faster on code: H100 / owner PC); Project Maya runs 0.5 (a Radeon 8065S: decode +6.5%, the same tokens)
-float dspark_cum_default() {
-    static const float v = [] {
-        const char* e = std::getenv("STRATA_DS4_DSPARK_CUM");
-        return e != nullptr ? (float) std::atof(e) : 0.0f;
-    }();
-    return v;
-}
-
 // One round of decoding after `tok` (the token at pos(), not fed yet): with the drafter, its drafts while their
 // confidence holds (at most `room` - 1 of them), verified together; else a plain step.  `out` gets the tokens that follow
 // tok (the accepted drafts, then the trunk's next), the last of them the next round's tok.
@@ -125,12 +113,8 @@ bool round(strata::ds4::Model& m, int tok, int room, bool spec, float conf_min, 
         if (!m.draft(tok, drafts, conf, err, temperature, top_p, top_k, min_p, seed, counter)) return false;
         g_round_conf = conf;
         g_round_nd = (int) drafts.size();
-        int keep = 0;
-        if (cum_min < 0) cum_min = dspark_cum_default();
-        float cum = 1.0f;
-        while (keep < (int) drafts.size() && keep < room - 1 && conf[(size_t) keep] >= conf_min &&
-               (cum *= conf[(size_t) keep]) >= cum_min)
-            ++keep;
+        const int keep = strata::ds4::Model::count_confident(
+            conf, room - 1, conf_min, cum_min < 0 ? strata::ds4::Model::get_default_cum() : cum_min);
         if (keep > 0) {
             drafts.resize((size_t) keep);
             int acc = 0, next = -1;
@@ -161,7 +145,7 @@ struct Req {
     long long pin = 0;      // pin=N: the first N prompt tokens are a start other requests share (a system prompt and its
                             // tools): the state at N is kept as a checkpoint, so another agent behind the same start
                             // goes back to it instead of reading it again
-    float cum = -1.0f;      // dspark_cum=F: the cut on the product of the confidences (-1: the engine's, dspark_cum_default)
+    float cum = -1.0f;      // dspark_cum=F: the cut on the product of the confidences (-1: the engine's, Model::get_default_cum)
     std::string file;   // GENI: the pictures
     std::vector<int> ids;
 };

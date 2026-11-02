@@ -37,6 +37,12 @@ constexpr int kDefaultTopK = 64;
 /// and before its last token (Model::feed_mark), which Model::pin makes the anchor.
 constexpr int kPromptEndCheck = 0;
 constexpr int kBeforeLastCheck = 1;
+/// The checkpoint of a prompt's start that other requests share (a GEN's pin=N), as the old engine keeps it.
+constexpr int kSharedStartCheck = 3;
+/// The shortest shared start pin=N keeps a checkpoint of (the old engine's).
+constexpr int64_t kShortestPin = 256;
+/// The most rows of one window (the model's kWin): a token and up to 15 drafts.
+constexpr int kWindowRows = 16;
 
 /// strata-ds41's options beside the paged engine's and the model's: the batch slots, the GPU pool's experts and the
 /// adaptive tier (as strata-q38's options of the same names).
@@ -50,6 +56,7 @@ struct ProgramOptions {
     int adapt_swaps = 8;
     float adapt_min_gain = 1.5f;   ///< --adapt-min-gain: the routings a move must gain (choose_expert_swaps)
     float adapt_decay = 0.7f;      ///< --adapt-decay: the routing counts' factor after each round
+    bool drafting = true;          ///< --dspark is not off: the drafter starts switched on (--drafter)
 };
 
 /// A conversation's state on the one card: its regions in the card's pool (describe_conversation's) and the tables of
@@ -77,6 +84,13 @@ struct Part final : strata::serve::PagedPart {
     bool prompt_open = false;   ///< its request's prompt is not read to its end, where it keeps two checkpoints
     /// the end of its next prompt becomes its anchor (Model::pin): its conversation started over or went back
     bool pin_next = false;
+    // its request's DSpark keys (the old engine's): spec=0 turns drafting off, dspark_conf=F is the floor on each
+    // draft's confidence, dspark_cum=F (spec_cum=F) the cut on their product, pin=N the shared start
+    bool spec = true;
+    float conf_min = 0, cum_min = 0;
+    int64_t pin = 0;
+    /// its last proposal offered no draft, so that the next one offers none without drafting (the old engine's rule)
+    bool cool = false;
 
     Part(Model& model, const ConversationRegions& regions, int device, Part*& seated_part)
         : m(model), at(regions), dev(device), seated(seated_part) {}
@@ -213,9 +227,12 @@ struct Part final : strata::serve::PagedPart {
             ckv[s] = get_rows(at.ckv[s]);
             ik[s] = get_rows(at.ik[s]);
         }
-        uint8_t* fixed = at.trunk != kNoRegion ? pool->page_address(pool->conversation_blocks(cid, at.trunk).at(0))
-                                               : nullptr;
-        m.use_state_memory(0, fixed, at, ckv, ik);
+        m.use_state_memory(0, get_fixed(at.trunk), get_fixed(at.drafter), at, ckv, ik);
+    }
+
+    /// Gets the address of fixed region `r`; null for kNoRegion.
+    uint8_t* get_fixed(size_t r) const {
+        return r != kNoRegion ? pool->page_address(pool->conversation_blocks(cid, r).at(0)) : nullptr;
     }
 
     /// Gets how region `r`'s rows lie in its blocks; none for kNoRegion.
@@ -240,19 +257,23 @@ struct Part final : strata::serve::PagedPart {
 /// time (the seated Part's: its memory the Part's pages), one row a step; the GPU computes the experts of the card's
 /// pool, the CPU the others from the RAM's pool (Options::expert_pages).  A paused conversation's checkpoints are its
 /// state beside the pages (save_state), and a prompt that leaves a conversation before its end goes back to one of
-/// them (rewind).  The drafter, several conversations in a step and a layer split are the plan's steps D7 to D9; until
-/// then their calls refuse or do nothing.
+/// them (rewind).  The DSpark drafter guesses (propose) as the old engine's rounds draft, a step verifies them in one
+/// window (run_rows) and rolls the rejected ones back (keep_rows); its rings are a fixed region of the conversation,
+/// its experts in the GPU's pool before the trunk's (the RAM's pool holds none: it drafts only while all of them are
+/// on the GPU).  Several conversations in a step and a layer split are the plan's steps D8 and D9; until then their
+/// calls refuse.
 class PagedDeepSeek final : public strata::serve::PagedModel {
 public:
-    /// `files`: the experts on the SSD; `ram`: the RAM's pool, which the model reads (Options::expert_pages).
-    PagedDeepSeek(Model& m, const ConversationRegions& at, const Options& o, const ProgramOptions& x,
+    /// `drafting`: the drafter is switched on at the start; `files`: the experts on the SSD; `ram`: the RAM's pool,
+    /// which the model reads (Options::expert_pages).
+    PagedDeepSeek(Model& m, const ConversationRegions& at, const Options& o, const ProgramOptions& x, bool drafting,
                   const std::vector<int>& eos, ExpertFiles& files, strata::core::RamExperts& ram);
 
     PagedParts make_parts(PagedCard& card, size_t count, std::string& err) override;
     bool get_card_layout(const PagedCard&, int64_t lb, int64_t le, strata::core::StateLayout& layout,
                          std::string& err) const override {
         ConversationRegions at;
-        return describe_conversation(m_.geometry(), (int) lb, (int) le, false, layout, at, err);
+        return describe_conversation(m_.geometry(), (int) lb, (int) le, facts.has_drafter, layout, at, err);
     }
     uint64_t get_gpu_keep(const PagedCard&) const override { return (uint64_t) o_.reserve_mib << 20; }
     std::vector<strata::core::ExpertKey> get_card_ranking(int64_t lb, int64_t le, int64_t& max_experts) const override;
@@ -277,7 +298,7 @@ public:
     }
     void set_hop_holders(const int32_t*) override {}
     void report_hops() const override {}
-    void set_sampling(int session, const strata::serve::Sampling& smp) override;
+    void start_request(int session, const strata::serve::RequestStart& r) override;
     bool save_state(const PagedParts& parts, std::vector<uint8_t>& state, std::string& err) const override;
     bool restore_state(const std::vector<uint8_t>& state, const PagedParts& parts, const std::vector<int32_t>& live,
                        std::string& err) const override;
@@ -289,14 +310,11 @@ public:
                      const ChunkDone& on_chunk, std::string& err) override;
     bool run_rows(const std::vector<strata::spec::StepRow>& rows, std::vector<int32_t>& picks,
                   std::string& err) override;
-    bool keep_rows(const std::vector<strata::spec::StepRow>&, const std::vector<int>&, bool, std::string&) override {
-        return true;   // (one row a step, which the model has fed)
-    }
-    int propose(strata::serve::PagedPart&, int, int, int32_t*, std::string&) override { return 0; }
-    bool switch_drafter(bool, std::string& err) override {
-        err = "DeepSeek's drafter comes in step D7";
-        return false;
-    }
+    bool keep_rows(const std::vector<strata::spec::StepRow>& rows, const std::vector<int>& kept, bool,
+                   std::string& err) override;
+    int propose(strata::serve::PagedPart& last, int session, int32_t token, int64_t pos, int n, int32_t* out,
+                std::string& err) override;
+    bool switch_drafter(bool on, std::string& err) override;
     void print_info(int slots, int) const override {
         for (const std::string& line : m_.info_lines())
             std::printf("%s\n", line.c_str());
@@ -316,6 +334,10 @@ public:
     bool fill_card(PagedCard& card, std::string& err);
 
 private:
+    /// Gets the experts of trunk layers [lb, le) in the order the GPU's pool takes them (get_ranking), the drafter's
+    /// before them while it is on.
+    std::vector<strata::core::ExpertKey> get_pool_ranking(int64_t lb, int64_t le) const;
+    bool is_drafter_ready() const;
     bool go_to(int64_t pos, std::string& err);
     void end_prompt(Part& p);
     int32_t sample(const Part& p);
@@ -329,19 +351,27 @@ private:
     ExpertFiles& files_;
     strata::core::RamExperts& ram_;
     std::vector<uint8_t> staging_;     ///< an expert read from the files on its way to the GPU
+    std::vector<uint64_t> blobs_;      ///< per layer (the trunk's, then the drafter's): one expert's bytes
     std::vector<int32_t> residency_;
     std::vector<Part*> parts_;         ///< by session, on the one card (make_parts'; a layer split is step D9)
+    PagedCard* card_ = nullptr;        ///< the one card (make_parts')
     Part* seated_ = nullptr;           ///< the conversation the model computes (Part::take_seat), or null
     uint64_t counter_ = 0;             ///< the sampler's draw count, which the old engine keeps across requests
+    bool drafting_ = false;            ///< the drafter is switched on: its experts are wanted in the GPU's pool
+    /// the drafter's experts (get_ranking's), which it needs all of on the GPU to draft
+    std::vector<strata::core::ExpertKey> drafter_experts_;
+    int verified_ = 0;                 ///< the rows of the last step's verify window with a pick; 0: a plain step
 };
 
 /// Gets the Part a PagedPart of this model is.
 Part& get_part(strata::serve::PagedPart& part) { return static_cast<Part&>(part); }
 
 int read_model_options(int argc, char** argv, Options& o, ProgramOptions& x, std::string& eos);
-std::vector<strata::core::ExpertKey> get_ranking(const Model& m, int64_t lb, int64_t le);
+std::vector<strata::core::ExpertKey> get_ranking(const Model& m, int64_t lb, int64_t le, bool drafter);
+void add_ranks(const Model& m, int64_t lb, int64_t le, std::vector<strata::core::ExpertKey>& ranking);
 bool open_card_pool(const Model& m, const PagedSettings& s, const strata::core::StateLayout& layout, uint64_t keep,
-                    int64_t max_experts, PagedCard& card, std::string& err);
+                    int64_t max_experts, const std::vector<strata::core::ExpertKey>& ranking, PagedCard& card,
+                    std::string& err);
 
 }  // namespace
 
@@ -356,13 +386,9 @@ int run_paged_engine(int argc, char** argv) {
     std::string eos = "1";
     if (const int status = read_model_options(argc, argv, o, x, eos); status >= 0)
         return status;
-    if (settings.step.lookahead > 0) {
-        std::fprintf(stderr, "%s: --lookahead: the drafter comes in step D7\n", kProgram.c_str());
-        return 2;
-    }
-    settings.step.concurrent = settings.step.rows = 1;   // one conversation a step, one row, no guesses
-    settings.step.lookahead = 0;
-    settings.drafter = false;
+    if (settings.step.lookahead == 0)   // (no guesses: the drafter is not loaded, as --dspark none)
+        o.dspark = false;
+    settings.step.concurrent = 1;   // one conversation a step until step D8
     strata::serve::set_paged_runtime_env(settings, false);
     ExpertFiles files;   // (before the RAM's pool, which reads through it)
     strata::core::RamExperts ram;
@@ -378,6 +404,20 @@ int run_paged_engine(int argc, char** argv) {
         std::fprintf(stderr, "%s: runs on one GPU (--gpus N) until step D9\n", kProgram.c_str());
         return 2;
     }
+    // --dspark-block N is the lookahead's default, else the drafter's block; --dspark off is --drafter off
+    const bool has_drafter = m.draft_block() > 0;
+    if (settings.step.lookahead < 0)
+        settings.step.lookahead = !has_drafter ? 0 : o.dspark_block > 0 ? o.dspark_block : m.draft_block();
+    if (settings.step.lookahead > 0 && !has_drafter) {
+        std::fprintf(stderr, "%s: --lookahead %d needs the DSpark drafter (--dspark on)\n", kProgram.c_str(),
+                     settings.step.lookahead);
+        return 2;
+    }
+    if (const std::string why = strata::serve::get_step_settings_problem(settings.step, kWindowRows); !why.empty()) {
+        std::fprintf(stderr, "%s: %s\n", kProgram.c_str(), why.c_str());
+        return 2;
+    }
+    settings.drafter = settings.drafter && x.drafting && has_drafter;
     const Geometry& g = m.geometry();
     PagedCards cards;
     PagedCard& card = cards.emplace_back();
@@ -391,18 +431,21 @@ int run_paged_engine(int argc, char** argv) {
     strata::core::StateLayout layout;
     ConversationRegions at;
     bool copy_back = false;
-    if (!describe_conversation(g, 0, g.nl, false, layout, at, err) || !m.place_experts(err) ||
+    if (!describe_conversation(g, 0, g.nl, has_drafter, layout, at, err) || !m.place_experts(err) ||
         !files.open(m.get_file_paths(), m.get_expert_files(), err) ||
-        !open_card_pool(m, settings, layout, (uint64_t) o.reserve_mib << 20, x.gpu_experts, card, err)) {
+        !open_card_pool(m, settings, layout, (uint64_t) o.reserve_mib << 20, x.gpu_experts,
+                        get_ranking(m, 0, g.nl, settings.drafter), card, err)) {
+
         std::fprintf(stderr, "%s: %s\n", kProgram.c_str(), err.c_str());
         return 1;
     }
-    PagedDeepSeek model(m, at, o, x, parse_ids(eos), files, ram);
+    PagedDeepSeek model(m, at, o, x, settings.drafter, parse_ids(eos), files, ram);
     if (x.adapt_every > 0 && x.adapt_swaps > 0)   // the routings the engine's adaptive tier counts
         m.get_usage().assign((size_t) g.nl * (size_t) g.n_exp, 0.0f);
+    const std::vector<uint64_t> trunk(blobs.begin(), blobs.begin() + g.nl);   // (the RAM's pool: the trunk's experts)
     if (!model.fill_card(card, err) ||
-        !strata::serve::open_ram_pool(kProgram, settings, files, kRamHeadroom, kCpuLaneExperts, layout, card, blobs,
-                                      g.n_exp, get_ranking(m, 0, g.nl), model.get_residency(),
+        !strata::serve::open_ram_pool(kProgram, settings, files, kRamHeadroom, kCpuLaneExperts, layout, card, trunk,
+                                      g.n_exp, get_ranking(m, 0, g.nl, false), model.get_residency(),
                                       card.experts.pool().page_address(0), ram, copy_back, err)) {
         std::fprintf(stderr, "%s: %s\n", kProgram.c_str(), err.c_str());
         return 1;
@@ -415,35 +458,49 @@ int run_paged_engine(int argc, char** argv) {
 namespace {
 
 PagedDeepSeek::PagedDeepSeek(Model& m, const ConversationRegions& at, const Options& o, const ProgramOptions& x,
-                             const std::vector<int>& eos, ExpertFiles& files, strata::core::RamExperts& ram)
-    : m_(m), at_(at), o_(o), x_(x), files_(files), ram_(ram) {
+                             bool drafting, const std::vector<int>& eos, ExpertFiles& files,
+                             strata::core::RamExperts& ram)
+    : m_(m), at_(at), o_(o), x_(x), files_(files), ram_(ram), drafting_(drafting) {
     const Geometry& g = m.geometry();
     facts.name = kProgram;
     facts.n_layers = g.nl;
     facts.n_expert = g.n_exp;
     facts.context = o.max_context;
-    facts.max_rows = 1;
+    facts.max_rows = kWindowRows;
+    facts.max_concurrent = 1;
     facts.end_tokens.assign(eos.begin(), eos.end());
     facts.sampling.top_k = kDefaultTopK;
-    facts.expert_bytes = m.get_expert_bytes();
+    facts.has_drafter = m.draft_block() > 0;
+    facts.drafter_start = "--dspark on and a --lookahead above 0";
+    // the engine's tables are the trunk's; the drafter's experts are this model's alone (residency_ has room for them,
+    // after the trunk's layers)
+    blobs_ = m.get_expert_bytes();
+    facts.expert_bytes.assign(blobs_.begin(), blobs_.begin() + g.nl);
     facts.gpu_experts = x.gpu_experts;
     facts.ram_headroom = kRamHeadroom;
     facts.adapt_swaps = x.adapt_swaps;
     facts.adapt_min_gain = x.adapt_min_gain;
     facts.adapt_decay = x.adapt_decay;
-    staging_.resize(*std::max_element(facts.expert_bytes.begin(), facts.expert_bytes.end()));
-    residency_.assign((size_t) g.nl * (size_t) g.n_exp, strata::core::kNotResident);
+    staging_.resize(*std::max_element(blobs_.begin(), blobs_.end()));
+    residency_.assign(blobs_.size() * (size_t) g.n_exp, strata::core::kNotResident);
+    const std::vector<strata::core::ExpertKey> all = get_ranking(m, 0, 0, true);
+    drafter_experts_.assign(all.begin(), all.end());
 }
 
 std::vector<strata::core::ExpertKey> PagedDeepSeek::get_card_ranking(int64_t lb, int64_t le,
                                                                      int64_t& max_experts) const {
+    std::vector<strata::core::ExpertKey> ranking = get_pool_ranking(lb, le);
     if (max_experts < 0)
-        max_experts = (le - lb) * facts.n_expert;
-    return get_ranking(m_, lb, le);
+        max_experts = (int64_t) ranking.size();
+    return ranking;
+}
+
+std::vector<strata::core::ExpertKey> PagedDeepSeek::get_pool_ranking(int64_t lb, int64_t le) const {
+    return get_ranking(m_, lb, le, drafting_);
 }
 
 bool PagedDeepSeek::load_expert(const PagedCard& card, strata::core::ExpertKey key, int32_t first, std::string& err) {
-    return copy_expert(card, key, first, ram_.holds(key.layer, key.expert), err);
+    return copy_expert(card, key, first, key.layer < facts.n_layers && ram_.holds(key.layer, key.expert), err);
 }
 
 bool PagedDeepSeek::publish_residency(const PagedCard& card, std::string& err) {
@@ -484,7 +541,7 @@ bool PagedDeepSeek::copy_expert(const PagedCard& card, strata::core::ExpertKey k
     const strata::core::OnDevice on(card.dev);
     if (bytes == nullptr ||
         !strata::core::gpu_copy(card.experts.pool().page_address((strata::core::PageId) first), bytes,
-                                (size_t) facts.expert_bytes[(size_t) key.layer])) {
+                                (size_t) blobs_[(size_t) key.layer])) {
         err = "copying layer " + std::to_string(key.layer) + " expert " + std::to_string(key.expert) + " to " +
               card.id + " failed";
         return false;
@@ -497,6 +554,7 @@ PagedParts PagedDeepSeek::make_parts(PagedCard& card, size_t count, std::string&
         err = "strata-ds41 runs on one card";
         return {};
     }
+    card_ = &card;
     PagedParts parts;
     for (size_t i = 0; i < count; ++i) {
         parts.push_back(std::make_unique<Part>(m_, at_, card.dev, seated_));
@@ -505,12 +563,27 @@ PagedParts PagedDeepSeek::make_parts(PagedCard& card, size_t count, std::string&
     return parts;
 }
 
-void PagedDeepSeek::set_sampling(int session, const strata::serve::Sampling& smp) {
+void PagedDeepSeek::start_request(int session, const strata::serve::RequestStart& r) {
     Part& p = *parts_[(size_t) session];
-    p.smp = smp;
+    p.smp = r.sampling;
     p.prompt_open = true;
     p.primed_pos = -1;   // (its pick had the last request's sampling)
+    p.spec = true;
+    p.conf_min = o_.dspark_conf;
+    p.cum_min = Model::get_default_cum();
+    p.pin = 0;
+    p.cool = false;
+    for (const auto& [key, value] : r.keys)
+        if (key == "spec")
+            p.spec = std::atoi(value.c_str()) != 0;
+        else if (key == "dspark_conf")
+            p.conf_min = std::strtof(value.c_str(), nullptr);
+        else if (key == "dspark_cum" || key == "spec_cum")
+            p.cum_min = std::strtof(value.c_str(), nullptr);
+        else if (key == "pin")
+            p.pin = std::atoll(value.c_str());
 }
+
 
 // The state beside the pages is the conversation's host side (conversation_state.hpp's bytes).
 bool PagedDeepSeek::save_state(const PagedParts& parts, std::vector<uint8_t>& state, std::string&) const {
@@ -590,12 +663,25 @@ bool PagedDeepSeek::read_prompt(const PagedParts& parts, const std::vector<int64
     // step that would feed it
     const int64_t end = from + n;
     const bool last = end + 1 == (int64_t) ids.size();
-    const std::vector<int> tokens(ids.begin() + from, ids.begin() + end + (last ? 1 : 0));
     if (last && !p.reserve(end + 1, err))
         return false;
+    // pin=N: a read that crosses N stops there for the shared start's checkpoint, as the old engine's does
+    const int64_t pin = p.pin >= kShortestPin && p.pin + 1 < (int64_t) ids.size() ? p.pin : 0;
+    int64_t at = from;
+    if (pin > from && pin < end) {
+        const std::vector<int> start(ids.begin() + from, ids.begin() + pin);
+        if (!m_.feed(start.data(), (int) start.size(), 0, err))
+            return false;
+        m_.checkpoint(kSharedStartCheck);
+        at = pin;
+    }
+    const std::vector<int> tokens(ids.begin() + at, ids.begin() + end + (last ? 1 : 0));
     if (!(last ? m_.feed_mark(tokens.data(), (int) tokens.size(), 1, kBeforeLastCheck, err)
                : m_.feed(tokens.data(), (int) tokens.size(), 0, err)))
         return false;
+    if (end == pin)
+        m_.checkpoint(kSharedStartCheck);
+
     if (last) {
         end_prompt(p);
         p.primed_pos = end;
@@ -607,12 +693,27 @@ bool PagedDeepSeek::read_prompt(const PagedParts& parts, const std::vector<int64
 
 bool PagedDeepSeek::run_rows(const std::vector<strata::spec::StepRow>& rows, std::vector<int32_t>& picks,
                              std::string& err) {
-    if (rows.size() != 1) {
-        err = "strata-ds41 runs one row a step (no drafting before step D7)";
-        return false;
-    }
     const strata::spec::StepRow& row = rows[0];
     Part& p = *parts_[(size_t) row.session];
+    verified_ = 0;
+    if (rows.size() > 1) {   // a token and its drafts (propose's), in one verify window
+        if (rows.back().session != row.session) {
+            err = "strata-ds41 runs one conversation a step (several are step D8)";
+            return false;
+        }
+        std::vector<int> drafts, got;
+        for (size_t r = 1; r < rows.size(); ++r)
+            drafts.push_back(rows[r].token);
+        p.take_seat();
+        const strata::serve::Sampling& s = p.smp;
+        if (!go_to(row.pos, err) || !m_.verify_rows(row.token, drafts, s.temperature, s.top_p, s.top_k, s.min_p,
+                                                    s.seed, counter_, got, err))
+            return false;
+        std::copy(got.begin(), got.end(), picks.begin());
+        verified_ = (int) got.size();
+        return true;
+    }
+
     const bool primed = p.primed_pos == row.pos && p.primed_token == row.token && p.get_pos() == row.pos + 1;
     p.primed_pos = -1;
     if (primed) {
@@ -632,6 +733,75 @@ bool PagedDeepSeek::run_rows(const std::vector<strata::spec::StepRow>& rows, std
         end_prompt(p);
     picks[0] = sample(p);
     return true;
+}
+
+// A verify window keeps the rows the step accepted; the sampler's draw count moves past every row with a pick, as the
+// old engine's does.
+bool PagedDeepSeek::keep_rows(const std::vector<strata::spec::StepRow>&, const std::vector<int>& kept, bool,
+                              std::string& err) {
+    if (verified_ == 0)
+        return true;   // (one row, which run_rows fed)
+    counter_ += (uint64_t) verified_;
+    return m_.keep_verified(kept[0], err);
+}
+
+// The old engine's round: the drafter's block after `token`, kept while the confidences hold (Model::count_confident),
+// none for the prompt's last token (which the prompt's read or run_rows feeds), and none, without drafting, after a
+// proposal that offered none.
+int PagedDeepSeek::propose(strata::serve::PagedPart& last, int, int32_t token, int64_t pos, int n, int32_t* out,
+                           std::string& err) {
+    Part& p = get_part(last);
+    if (n <= 0 || !drafting_ || !p.spec || p.prompt_open || p.primed_pos == pos || !is_drafter_ready())
+        return 0;
+    if (p.cool) {
+        p.cool = false;
+        return 0;
+    }
+    p.take_seat();
+    std::vector<int> drafts;
+    std::vector<float> conf;
+    const strata::serve::Sampling& s = p.smp;
+    if (!go_to(pos, err) ||
+        !m_.draft(token, drafts, conf, err, s.temperature, s.top_p, s.top_k, s.min_p, s.seed, counter_))
+        return -1;
+    const int keep = Model::count_confident(conf, n, p.conf_min, p.cum_min);
+
+    p.cool = keep == 0;
+    std::copy(drafts.begin(), drafts.begin() + keep, out);
+    for (const strata::core::ExpertKey& key : drafter_experts_)   // (every draft uses its blocks: they stay hot)
+        card_->experts.note_use(key);
+    return keep;
+}
+
+// Off, the drafter's experts leave the GPU's pool to the trunk's; on, they come back in place of the coldest of the
+// trunk's (the engine's refill brings them in), and it drafts once all of them are there.  Its dense weights stay (the
+// rings are seeded while it is off, so its first drafts are as good as ever).
+bool PagedDeepSeek::switch_drafter(bool on, std::string& err) {
+    drafting_ = on;
+    std::vector<strata::core::ExpertKey> ranking = get_pool_ranking(card_->lb, card_->le);
+    int64_t most = x_.gpu_experts < 0 ? (int64_t) ranking.size() : x_.gpu_experts;
+    if (on) {   // no more than the pool's experts and free pages hold
+        const strata::core::PagePoolReport r = card_->experts.pool().report();
+        uint64_t room = r.experts.bytes + r.free.bytes;
+        int64_t fit = 0;
+        for (const strata::core::ExpertKey& key : ranking) {
+            const uint64_t bytes = blobs_[(size_t) key.layer];
+            if (bytes > room)
+                break;
+            room -= bytes;
+            ++fit;
+        }
+        most = std::min(most, fit);
+    }
+    card_->experts.set_ranking(ranking, most);
+    return publish_residency(*card_, err);
+}
+
+/// Tells whether the GPU's pool holds every one of the drafter's experts, which its blocks need.
+bool PagedDeepSeek::is_drafter_ready() const {
+    return std::all_of(drafter_experts_.begin(), drafter_experts_.end(), [&](const strata::core::ExpertKey& k) {
+        return residency_[(size_t) k.layer * (size_t) facts.n_expert + (size_t) k.expert] >= 0;
+    });
 }
 
 /// Keeps the model's state at the end of `p`'s prompt as a checkpoint, and the one before its last token as the anchor
@@ -665,7 +835,6 @@ bool PagedDeepSeek::go_to(int64_t pos, std::string& err) {
 /// Reads the model's own options, strata-ds41's (`x`) and --eos from `argv` (the paged engine's are gone) into `o`, `x`
 /// and `eos`.  -1: go on, else the exit status.
 int read_model_options(int argc, char** argv, Options& o, ProgramOptions& x, std::string& eos) {
-    bool drafting = false;
     for (int i = 1; i < argc; ++i) {
         const std::string a = argv[i];
         const auto val = [&](const char* what) -> std::string {
@@ -675,7 +844,7 @@ int read_model_options(int argc, char** argv, Options& o, ProgramOptions& x, std
             }
             return argv[++i];
         };
-        if (read_option(a, val, o, drafting))
+        if (read_option(a, val, o, x.drafting))
             continue;
         if (a == "--eos")
             eos = val("--eos");
@@ -709,37 +878,49 @@ int read_model_options(int argc, char** argv, Options& o, ProgramOptions& x, std
         o.profile.clear();
     if (!o.expert_cache)   // --no-expert-cache: the experts stay where the start put them, as strata-dsv41's do
         x.adapt_swaps = 0;
-    o.dspark = false;   // (the drafter comes in step D7)
     return -1;
+
 }
 
-/// Gets the experts of layers [lb, le) in the order the GPU's pool takes them: each layer's hottest (Model::
+/// Gets the experts of trunk layers [lb, le) in the order the GPU's pool takes them: each layer's hottest (Model::
 /// get_heat_order), then each layer's second, and so on, so that a pool holds the same share of every layer, as the
-/// old engine's VRAM does.
-std::vector<strata::core::ExpertKey> get_ranking(const Model& m, int64_t lb, int64_t le) {
-    std::vector<std::vector<int>> order;
-    for (int64_t l = lb; l < le; ++l)
-        order.push_back(m.get_heat_order((int) l));
+/// old engine's VRAM does; with `drafter`, the DSpark blocks' experts (the layers after the trunk's) first, in the same
+/// order, as the old engine places them before the trunk's.
+std::vector<strata::core::ExpertKey> get_ranking(const Model& m, int64_t lb, int64_t le, bool drafter) {
     std::vector<strata::core::ExpertKey> ranking;
-    for (size_t rank = 0; rank < (size_t) m.geometry().n_exp; ++rank)
-        for (int64_t l = lb; l < le; ++l)
-            ranking.push_back({(int32_t) l, order[(size_t) (l - lb)][rank]});
+    const int nl = m.geometry().nl;
+    if (drafter)
+        add_ranks(m, nl, nl + m.geometry().n_mtp, ranking);
+    add_ranks(m, lb, le, ranking);
     return ranking;
 }
 
-/// Opens `card`'s page pool for conversations of `layout` and the first `max_experts` experts of get_ranking (-1:
-/// every one) in the GPU memory the model left: --gpu-mib, by default what they and one conversation of the whole
-/// context take, leaving `keep` free.
+/// Adds the experts of layers [lb, le) to `ranking` rank by rank (get_ranking's order).
+void add_ranks(const Model& m, int64_t lb, int64_t le, std::vector<strata::core::ExpertKey>& ranking) {
+    std::vector<std::vector<int>> order;
+    size_t most = 0;
+    for (int64_t l = lb; l < le; ++l)
+        most = std::max(most, order.emplace_back(m.get_heat_order((int) l)).size());
+    for (size_t rank = 0; rank < most; ++rank)
+        for (int64_t l = lb; l < le; ++l)
+            if (rank < order[(size_t) (l - lb)].size())
+                ranking.push_back({(int32_t) l, order[(size_t) (l - lb)][rank]});
+}
+
+/// Opens `card`'s page pool for conversations of `layout` and the first `max_experts` experts of `ranking` (-1: every
+/// one) in the GPU memory the model left: --gpu-mib, by default what they and one conversation of the whole context
+/// take, leaving `keep` free.  Its page is the trunk's experts' (the drafter's take whole pages, a few bytes unused).
 bool open_card_pool(const Model& m, const PagedSettings& s, const strata::core::StateLayout& layout, uint64_t keep,
-                    int64_t max_experts, PagedCard& card, std::string& err) {
+                    int64_t max_experts, const std::vector<strata::core::ExpertKey>& ranking, PagedCard& card,
+                    std::string& err) {
     const std::vector<uint64_t> blobs = m.get_expert_bytes();
-    const uint64_t page = strata::core::choose_expert_page_bytes(blobs);
-    const std::vector<strata::core::ExpertKey> ranking = get_ranking(m, 0, m.geometry().nl);
+    const uint64_t page =
+        strata::core::choose_expert_page_bytes({blobs.begin(), blobs.begin() + m.geometry().nl});
     if (max_experts < 0)
         max_experts = (int64_t) ranking.size();
     uint64_t most = strata::serve::get_conversation_bytes(layout, m.max_context(), page), room = 0;
     for (size_t i = 0; i < ranking.size() && (int64_t) i < max_experts; ++i)
-        most += blobs[(size_t) ranking[i].layer];   // (whole pages: the page divides every expert's size)
+        most += (blobs[(size_t) ranking[i].layer] + page - 1) / page * page;
     const uint64_t bytes =
         strata::serve::get_gpu_pool_bytes(card.dev, keep, s.gpu_mib.empty() ? -1 : s.gpu_mib[0], most, room);
     strata::core::PagePoolConfig config;

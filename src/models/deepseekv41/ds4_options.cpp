@@ -1,5 +1,5 @@
 // src/models/deepseekv41/ds4_options.cpp - the model's own command-line options (ds4_model.hpp: read_option), which
-// strata-dsv41 and strata-ds41 both read.
+// strata-dsv41 and strata-ds41 both read, and the drafts' confidence cut both make.
 #include "ds4_model.hpp"
 
 #include <algorithm>
@@ -58,6 +58,27 @@ bool read_option(const std::string& a, const std::function<std::string(const cha
     } else
         return false;
     return true;
+}
+
+int Model::count_confident(const std::vector<float>& conf, int most, float conf_min, float cum_min) {
+    int keep = 0;
+    float cum = 1.0f;
+    while (keep < (int) conf.size() && keep < most && conf[(size_t) keep] >= conf_min &&
+           (cum *= conf[(size_t) keep]) >= cum_min)
+        ++keep;
+    return keep;
+}
+
+// The drafts' cut on the product of their confidences (DeepInfer's cumulative rule): a draft is verified while the
+// chance that it and every draft before it are kept stays at least this - a long window whose later drafts are likely
+// lost is not verified whole.  Off by default (not measured faster on code: H100 / owner PC); Project Maya runs 0.5 (a
+// Radeon 8065S: decode +6.5%, the same tokens).
+float Model::get_default_cum() {
+    static const float v = [] {
+        const char* e = std::getenv("STRATA_DS4_DSPARK_CUM");
+        return e != nullptr ? (float) std::atof(e) : 0.0f;
+    }();
+    return v;
 }
 
 }  // namespace strata::ds4

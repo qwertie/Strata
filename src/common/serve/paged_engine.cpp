@@ -257,7 +257,10 @@ private:
     /// Tells whether the drafter is switched on (the model has one and settings_.drafter).
     bool is_drafting() const { return settings_.drafter && facts_.has_drafter; }
     /// Gets the most conversations that may decode at once: the batch slots, or 1 without any.
-    int get_most_concurrent() const { return (int) std::max<size_t>(at_.size() - 1, 1); }
+    int get_most_concurrent() const {
+        const int slots = (int) std::max<size_t>(at_.size() - 1, 1);
+        return facts_.max_concurrent > 0 ? std::min(slots, facts_.max_concurrent) : slots;
+    }
     /// Gives the step settings_' step settings, the lookahead 0 while the drafter is off.
     void apply_step_settings();
     /// Gets the conversation in place `place` of `at_`.
@@ -541,7 +544,7 @@ bool PagedEngine::serve_request(const std::string& line) {
             part->clear_state();
     }
     std::printf("RESUME %lld\n", (long long) resume);
-    model_.set_sampling(session, smp);
+    model_.start_request(session, {smp, req.keys});
     const char* finish = "length";
     int64_t read_to = resume;   // the prompt tokens the session holds
     if (!make_room(h, n - 1, err)) {   // refused: the engine stays up
@@ -568,6 +571,7 @@ bool PagedEngine::serve_request(const std::string& line) {
         h.dec.next = (int32_t) ids[(size_t) (n - 1)];
         h.dec.pos = n - 1;
         h.dec.max_new = std::min<int64_t>(req.max_new, facts_.context - n);
+
         h.decoding = true;
         h.slot = -1;
         h.t0 = d0;
@@ -1238,12 +1242,13 @@ std::string PagedEngine::change_settings(const SettingValues& values, std::strin
     const int slots = get_most_concurrent();
     if (s.step.concurrent < 1 || s.step.concurrent > slots)
         return "the conversations at once may be 1 to " + std::to_string(slots) +
-               " (the batch slots it started with; more need a restart with a larger --batch)";
+               (slots == facts_.max_concurrent ? " (the most one step of this model runs)"
+                                               : " (the batch slots it started with; more need a restart with a "
+                                                 "larger --batch)");
     if (const std::string why = get_step_settings_problem(s.step, facts_.max_rows); !why.empty())
         return why;
-    // (the reason names Qwen3.8's options: a model fact once another model has a drafter)
     if (s.drafter && !facts_.has_drafter)
-        return "this engine has no drafter: it needs --mtp and a --lookahead above 0 at its start";
+        return "this engine has no drafter: it needs " + facts_.drafter_start + " at its start";
     if (s.tokens_min > s.tokens_max)
         return "the conversation token minimum (" + std::to_string(s.tokens_min) + ") is above the maximum (" +
                std::to_string(s.tokens_max) + ")";
@@ -1674,14 +1679,14 @@ strata::spec::StepModel PagedEngine::get_step_model() {
     model.keep = [this](const std::vector<strata::spec::StepRow>& rows, const std::vector<int>& kept,
                         std::string& err) { return model_.keep_rows(rows, kept, is_drafting(), err); };
     if (facts_.has_drafter)
-        model.propose = [this](int session, int32_t, int64_t pos, int n, int32_t* out) {
+        model.propose = [this](int session, int32_t token, int64_t pos, int n, int32_t* out) {
             if (!is_drafting())
                 return 0;
             Held& h = *held_[(size_t) session];
             std::string err;
             if (n > 0 && !make_room(h, pos + 1 + n, err))   // (the drafter writes the guesses' cells)
                 n = 0;
-            const int got = model_.propose(*h.parts.back(), session, n, out, err);
+            const int got = model_.propose(*h.parts.back(), session, token, pos, n, out, err);
             if (got >= 0)
                 return got;
             say("the drafter: %s\n", err.c_str());
