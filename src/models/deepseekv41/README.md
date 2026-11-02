@@ -7,5 +7,10 @@ The DeepSeek V4.1-Flash engine. Headers: `include/strata/models/deepseekv41/`.
 (`ds4_iq`, `ds4_gguf`, `ds4_tq`), its draft sampling (`vendor/sampler.cu`) and its worker pool (`ds4_pool.hpp`)
 stay its own (see the open issues in REFACTOR_PLAN.md).
 
+`conversation_layout.cpp` describes a conversation's state as page-pool regions (step D1 of
+[docs/MEMORY_MANAGER_PLAN.md](../../../docs/MEMORY_MANAGER_PLAN.md#deepseek-v41-flash-on-the-memory-manager)); its
+test is `conversation_layout_test.cpp`. The geometry (`geometry.hpp`) and the cache rows' sizes (`kv_rows.hpp`) are
+headers the old engine reads too.
+
 See [docs/ARCHITECTURE.md](../../../docs/ARCHITECTURE.md) for the layers and
 [docs/REFACTOR_PLAN.md](../../../docs/REFACTOR_PLAN.md) for the steps.

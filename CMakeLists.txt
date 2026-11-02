@@ -852,6 +852,15 @@ if(STRATA_ENABLE_CUDA OR STRATA_ENABLE_HIP)
     endif()
     target_include_directories(strata_dsv41_kernels PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include ${_strata_gpu_include_directories})
     target_link_libraries(strata_dsv41_kernels PUBLIC strata_kernels ${_strata_gpu_runtime_target})
+    # one conversation's state as page-pool regions (docs/MEMORY_MANAGER_PLAN.md, step D1): host code, no GPU
+    add_library(strata_dsv41_state STATIC ${_ds4}/conversation_layout.cpp)
+    target_include_directories(strata_dsv41_state PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
+    target_link_libraries(strata_dsv41_state PUBLIC strata_state)
+    if(STRATA_BUILD_TESTS)
+      add_executable(ds4_conversation_layout_test ${_ds4}/conversation_layout_test.cpp)
+      target_link_libraries(ds4_conversation_layout_test PRIVATE strata_dsv41_state)
+      add_test(NAME ds4_conversation_layout_test COMMAND ds4_conversation_layout_test)
+    endif()
     add_executable(strata-dsv41 ${_ds4}/ds4_main.cpp ${_ds4}/ds4_model.cu ${_ds4}/ds4_kernels.cu ${_ds4}/ds4_vision.cu
                    ${_ds4}/ds4_gguf.cu ${_ds4}/ds4_gguf_cpu.cpp ${_ds4}/ds4_iq.cu ${_ds4}/ds4_iq_cpu.cpp
                    ${_ds4}/ds4_tq.cu ${_ds4}/ds4_tq_cpu.cpp ${_ds4}/ds4_gg_cpu.cpp ${_ds4}/ds4_packinfo.cpp)

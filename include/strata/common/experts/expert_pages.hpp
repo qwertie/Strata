@@ -25,14 +25,6 @@
 
 namespace strata::core {
 
-/// Gets the page size for experts whose sizes are `blob_bytes` (one per layer; the experts of a layer are all one
-/// size): their greatest common divisor, so that every expert is a whole number of pages and no page is part empty
-/// (25,600 bytes for Qwen3.8 IQ3_S, 92,160 for DeepSeek's 2.00 bpw set).  A page must be a multiple of 256 bytes,
-/// the alignment the cache gives every slot, and at least 16 KiB, so that a pool has no more pages than its slot
-/// tables can count; when the divisor is not, the multiple of 256 bytes from 16 KiB to 512 KiB that wastes the least
-/// of the pages the experts take.
-uint64_t choose_expert_page_bytes(const std::vector<uint64_t>& blob_bytes);
-
 /// The memory a pool's chunks come from (a GPU's, or page-locked RAM), given by the engine.
 struct ChunkMemory {
     /// Gets `bytes` of the memory; null when it has not that much.

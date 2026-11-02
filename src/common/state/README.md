@@ -47,7 +47,7 @@ A model split across devices describes one layout per device. Device memory and 
   keys) through segmented host buffers. Those parts map onto `per_token` regions and the pooled keys onto
   `per_block` (plus the spare row the next block fills). They move when the paged K/V pool comes: a page pool
   replaces a growing region's rows, and `copy_state` then copies page by page.
-- **DeepSeek V4.1** (`src/models/deepseekv41/`) does not use it yet. Its slot (`slot_bytes`, `slot_save`,
+- **DeepSeek V4.1** (`src/models/deepseekv41/`): the old engine does not use it. Its slot (`slot_bytes`, `slot_save`,
   `slot_load` in `ds4_model.cu`) maps onto one layout per device: per layer the window ring and the compressor's
   partial group (`c_kv`, `c_score`) as `fixed` regions, per KV source the compressed K/V and the index keys as
   `per_block` regions with `block` = the source's ratio. Describing it would delete little: the slot file is no
@@ -55,7 +55,10 @@ A model split across devices describes one layout per device. Device memory and 
   after them), a tensor-parallel group's members each hold a copy of the ring and partial group that a load writes
   into all of them, a source's rows are written to every device that keeps them, and the copies are synchronous
   `cudaMemcpy` calls that `copy_state` would make asynchronous. It moves with its conversation slots in RAM and on
-  disk (`ds4_main.cpp`), when those become the conversation cache's.
+  disk (`ds4_main.cpp`), when those become the conversation cache's. For the page pool, `describe_conversation`
+  (`src/models/deepseekv41/conversation_layout.cpp`, step D1 of the memory manager) describes a card's part of it:
+  its layers' rings and partial groups in one `fixed` region, the DSpark rings in another, and per KV source its
+  layers read, the compressed rows and the index keys as `per_block` regions.
 
 ## The page pool (`page_pool.hpp`)
 

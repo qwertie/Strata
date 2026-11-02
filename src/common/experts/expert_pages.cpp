@@ -2,7 +2,6 @@
 #include "strata/common/experts/expert_pages.hpp"
 
 #include <algorithm>
-#include <numeric>
 #include <stdexcept>
 #include <utility>
 
@@ -13,26 +12,6 @@ namespace {
 constexpr int kChunkTries = 4;
 
 }  // namespace
-
-uint64_t choose_expert_page_bytes(const std::vector<uint64_t>& blob_bytes) {
-    constexpr uint64_t align = 256, smallest = 16 << 10, largest = 512 << 10;
-    uint64_t gcd = 0;
-    for (const uint64_t b : blob_bytes)
-        gcd = std::gcd(gcd, b);
-    if (gcd % align == 0 && gcd >= smallest)
-        return gcd;
-    uint64_t best = smallest, best_used = UINT64_MAX;
-    for (uint64_t page = smallest; page <= largest; page += align) {
-        uint64_t used = 0;
-        for (const uint64_t b : blob_bytes)
-            used += (b + page - 1) / page * page;
-        if (used < best_used) {
-            best = page;
-            best_used = used;
-        }
-    }
-    return best;
-}
 
 bool ExpertPages::open(ExpertCache& cache, ChunkMemory memory, uint64_t bytes, const StateLayout& layout,
                        PagePoolConfig config, const std::vector<uint64_t>& blob_bytes, int64_t n_expert,

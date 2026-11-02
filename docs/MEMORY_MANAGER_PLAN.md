@@ -3,7 +3,7 @@
 A plan for a new Qwen3.8 engine whose memory and parallelism can be seen and changed while it runs. It is built on the
 shared code of the refactor ([REFACTOR_PLAN.md](REFACTOR_PLAN.md)) and adds to it, so that Qwen3.6 and DeepSeek can
 move onto it later. Status: M0 to M7 done, M8 in part (strata-q38 on a layer split), M9 in a first version (the cut moves while it
-decodes; 2026-11-01), branch
+decodes; 2026-11-01), DeepSeek's D1 done (its steps are D1 to D10), branch
 `memory-manager`.
 
 ## What the user gets
@@ -241,6 +241,7 @@ The server forwards both through one endpoint (`GET/POST /v1/memory`); "save as 
 | Expert pages (evict, load, count use) | `src/common/experts/` |
 | Copies between pool, RAM and SSD | `src/base/gpu/` (the runtime interface), `src/base/platform/` (files) |
 | Qwen3.8 rows with parent table, its regions, its drafter | `src/models/qwen38/` |
+| DeepSeek's rows with parent table, its regions, its drafter | `src/models/deepseekv41/` |
 | `/v1/memory`, saving defaults | `strata_server/`, `strata_common/` (run config) |
 | The panel | `strata_server/web/` |
 
@@ -271,12 +272,101 @@ The server forwards both through one endpoint (`GET/POST /v1/memory`); "save as 
 M0 is useful on its own and touches no engine logic. M2 to M6 are the new engine; the old Qwen3.8 path stays until
 the new one is at least as fast.
 
+## DeepSeek V4.1-Flash on the memory manager
+
+The owner's order: DeepSeek next, then Qwen3.6. DeepSeek gets the same pools, step, tiers, pausing, live settings,
+panel and layer-split planner as Qwen3.8. Its own code is only what is truly DeepSeek's: its attention and the
+state it keeps, its kernels, its Engram and its DSpark drafter. The old engine (`strata-dsv41`) stays as it is until
+the new one is as fast; its answers must not change.
+
+### What DeepSeek keeps, and where it keeps it today
+
+Numbers from the IST-DAS 2.00 bpw pack's `ds4.txt` and `tensors.txt` (step D1's test computes them):
+
+- **A conversation is small.** Each of the 40 layers and 3 DSpark blocks keeps a ring of the last 128 tokens (528
+  bytes a token), and 3 of the 4 compressors keep a partial group (8 KiB each): 2.73 MB for the layers, 0.2 MB for
+  the DSpark blocks. What grows is the compressed K/V and index keys of the 4 KV sources (layers 2, 8, 14, 20): a row
+  of 288 and of 80 bytes per group of 2 tokens (1 for layer 20), 920 bytes a token in all. A 32K conversation takes
+  33.7 MB; one of a million tokens, about 0.9 GB. The old engine reserves the caches for the whole context at load and keeps one
+  conversation; the others are slots in RAM and in files (`slot_save`, synchronous copies, a `.meta` per file).
+- **The experts are large.** 40 layers x 384 experts in 8 sizes, 7.7 to 10.2 MB, 123.0 GiB in all. Their greatest
+  common divisor is 92,160 bytes, so the pages are 92,160 bytes and an expert takes 84 to 111 of them. The DSpark
+  blocks have 3 x 128 experts of 18.8 MB (204 pages each, 7.2 GB).
+- **Experts today.** Each layer has its own VRAM arena (one allocation, a spare slot for swaps); the kernels find a
+  decode token's experts through a device table of pointers per layer (`vram_tab`), but the prompt's chunks address
+  them as arena plus slot times stride. The CPU lane reads the others from the model's files in place (a mapping) or
+  from its own RAM store (`ds4_store.hpp`: unbuffered reads, its own slots and LRU/LFU). Experts move into VRAM by
+  their recent use (`cache_tick_swaps`).
+- **No step of several conversations.** One position, one set of rings and caches; a window of up to 16 rows is
+  one conversation's tokens (a prompt piece, or a token and its DSpark drafts).
+
+### How it maps onto the shared code
+
+| DeepSeek today | On the memory manager |
+|---|---|
+| Caches reserved for the whole context at load | `describe_conversation` (D1): per card a fixed region for its layers' rings and partial groups, one for the DSpark rings, and per KV source it reads a `per_block` region of compressed rows and one of index keys (one page holds 320 rows or 1,152 keys, nothing wasted) |
+| Kernels read a source's rows at base + group x row bytes | at the page that holds the group (a table per region, as Qwen3.8's `units`, M2b) |
+| A VRAM arena per layer and a spare slot | the card's `ExpertPages`, opened without a cache (the pointer table takes any page's address) |
+| The prompt's expert sets at arena + slot x stride | a pointer per expert of a set |
+| The CPU lane's mapping and RAM store | `RamExperts` over an `ExpertSource` of DeepSeek's files (unbuffered reads); the CPU lane asks it for each expert |
+| `cache_tick_swaps` (heat) | the shared adaptive tier (`choose_expert_swaps`, `ExpertPages::replace`) |
+| Slots in RAM and files, `.meta` prefix matching | pausing to the RAM's pool and to the SSD (`pool_copy`), `take_conversation`'s longest start |
+| Checkpoints (host copies of the rings, up to 4) | stay host copies, kept with the conversation's other state beside its pages and paused with it |
+| Its own layer split by free memory, `--tp` | the shared planner (`plan_layer_split`) for a layer split; `--tp` stays in the old engine (see "Several GPUs") |
+| DSpark draft and verify | `StepModel::propose` (the drafter's guesses, its confidence floor) and `run` / `keep` (verify, roll back) |
+| The Engram's reader and row cache | unchanged; the row cache counted in RAM, the table on the SSD |
+| `describe_memory` | the shared report, the same panel |
+
+### One shared paged engine
+
+strata-q38's `PagedEngine` (2,442 lines in `paged_engine.cpp`) is mostly model-neutral: the conversations and their
+places, pausing to RAM and to files, priorities and preempting, the batch protocol, the step, `CHANGE_SETTINGS`, the
+pools' resizes and refills, the adaptive tier, the report, the cut's planning and moves. About 240 of its lines name
+Qwen3.8's parts (the GDN and QSA state, the sessions, the verify windows and prompt path, the PLE history, the
+stages, the hop to a card's lent experts), and its start (`run_paged_engine`, `init_card_paths`) is Qwen3.8's.
+Step D3 moves the engine to `src/common/serve/paged_engine.cpp` behind a model interface
+(`include/strata/common/serve/paged_model.hpp`), and each model's side to its folder:
+
+- per card: the state layout for its layers (`describe_conversation`), the experts' sizes and ranking, loading an
+  expert into its pages and publishing where experts are (Qwen3.8: the residency table of slots; DeepSeek: the
+  pointer tables), the usage counts of the adaptive tier, a cut move;
+- per conversation on a card: pointing the model at its pages, reserving pages as it grows, after a shrink moved
+  them, and giving them back (Qwen3.8's `ConversationPages`), and the state beside the pages, as bytes (Qwen3.8: the
+  PLE history and the indexer's tail; DeepSeek: the tokens, the Engram's history and the checkpoints);
+- reading a prompt piece into a conversation; the step (`StepModel`: run, keep, propose); the drafter on and off;
+  the sizes of each layer for the planner; the rest of the report (weights, scratch, the Engram).
+
+`strata-q38` and the new `strata-ds41` stay two thin `main()`s in `src/program/`: DeepSeek's targets build with
+their own options (`STRATA_BUILD_DSV41`, a forced HIP header), so one program with both families would tie the two
+builds together for no gain.
+
+### Steps
+
+| Step | Work | Checked by |
+|---|---|---|
+| D1 | DeepSeek's conversation as page-pool regions: `describe_conversation` and `find_kv_sources` (`src/models/deepseekv41/conversation_layout.cpp`); the geometry (`Geometry`, was `Geo`) and the cache rows' sizes (`kv_rows.hpp`) move out of the old engine's sources so both read them; `choose_expert_page_bytes` moves to the page pool's library, which needs no GPU. Done (2026-11-01) | the unit test (`ds4_conversation_layout_test`, 81 checks): the pack's 4 KV sources, one card's regions (2.73 MB of rings and partial groups, 0.2 MB of DSpark rings, 920 bytes a token: the old engine's caches less their spare row), the regions of a cut at 20 and at 10 (a source read across the cut is on both cards), pages of 92,160 bytes (84 to 111 an expert), a block of one page for each growing region, and a pool holding a 32K conversation in 366 pages. The old engine builds; its device code is byte-identical (`.hip_fat`); its host code is the same source moved (the HIP build is not bit-reproducible: an untouched file rebuilt gives another object). Not run: no code path changed |
+| D2 | The kernels read and write the compressed rows and index keys through a page table per region (the four readers: `index_score`, `unpack_sel`, `sparse_attn_packed`, the split-K `attn_part`; the writer `finish_kernel`'s packed rows, which may cross a page), and the rings and partial groups at any address; the host's copies of rows (hand-offs, `replicate`, slots) go page by page. With no table the arithmetic is today's | a parity test: shuffled pages against one array, bit-identical rows, scores and attention, window and chunk paths; the old engine's tokens unchanged (the protocol smoke, `%TEMP%`'s `smoke_ds.py` way, profile reset) |
+| D3 | The paged engine becomes model-neutral (above): `PagedEngine` to `src/common/serve/`, Qwen3.8's side to `src/models/qwen38/paged_model.cpp` | strata-q38's tokens unchanged (M9's checks: 5 prompts, pauses, resizes, a cut moved), its unit tests, `tests/architecture` |
+| D4 | DeepSeek's loader split as Qwen3.8's was (M2c): `Model::load` without placing experts or reserving caches; one conversation's prompt read and decode step over its pages (window and chunk paths); `strata-ds41`, a thin `main()`, with one conversation and drafting off; experts as in the old engine for now | token-identical to `strata-dsv41 --dspark none` at temperature 0 (the pack copy and the profile reset make it deterministic); the conversation's pages grow with it |
+| D5 | Experts in the pools: each card's `ExpertPages` (pages' addresses in the pointer tables), the prompt's expert sets through pointers, the RAM's `RamExperts` over an `ExpertSource` of the GGUF files (unbuffered), the CPU lane asking it, the adaptive tier, copy-back by measured speeds; the old store, mapping and swaps are not used | the same tokens with the tier off; with a small RAM setting the same tokens as with a large one and RAM use at the setting; speed against the old engine's store at the same budgets |
+| D6 | Pausing, priorities, `LIST_CONVERSATIONS`, the checkpoints beside the pages (a re-rendered history goes back to its anchor), `GET_MEMORY_USE` and `CHANGE_SETTINGS` (most of it D3's) | a conversation paused to RAM and to the SSD continues with the same tokens; a chat whose earlier reasoning is dropped restores as the old engine's slots do |
+| D7 | DSpark through the step: `propose` drafts up to the conversation's share while the confidence holds, `run` verifies the rows, `keep` rolls the rings and compressors back; the drafter's experts in the pool as 3 more layers; `drafter on/off` live | the old engine's DSpark tokens (greedy); acceptance and speed against it |
+| D8 | Several conversations in one step: each row of a window reads its own conversation's rings, compressors, page tables and position; the Engram history per conversation | answers per conversation as alone (or where they differ, at near-ties as M3 found); aggregate speed of 1, 2 and 3 conversations |
+| D9 | The layer split (shared planner, cut moves) on DeepSeek's per-layer sizes | two stages on the Strix Halo's one GPU give one card's tokens; a cut moved while decoding |
+| D10 | The server and `strata launch` start `strata-ds41` when asked (opt-in); MODELS.md and DETAILS.md get the measured numbers | the server's DeepSeek checks through `strata-ds41`; the panel |
+
+D1 and D2 change no behavior. D3 is the largest refactor and is checked on Qwen3.8 alone, so it could go first; it is
+third because DeepSeek's side (D2's tables, D4's loader) shows what the interface must hold. Running DeepSeek on the
+test PC needs care: its commit limit is 127.6 GiB, and DeepSeek has reached it before. Every engine start reads the
+commit charge first, caps each pool so that the pools and a 16 GiB margin fit, and runs with a watchdog that stops
+the engine within 16 GiB of the limit.
+
 ## Later
 
 - **Tree drafting**: a conversation's share of rows spent as a tree of guesses (several likely continuations
   checked in one pass). The parent table of the step allows it from the start; it needs the drafter to propose trees,
   the verify kernels to take tree-shaped parents, and for GDN layers a running state per branch.
-- Qwen3.6 and DeepSeek on the new step and pools.
+- Qwen3.6 on the new step and pools, after DeepSeek ([above](#deepseek-v41-flash-on-the-memory-manager)).
 - More than 8 rows per step, and so more than 8 conversations at once: the verify kernels widened beyond 8 rows.
   Not several passes per step, which would read the weights more than once. Kernel work for a later pull request,
   not this one.
