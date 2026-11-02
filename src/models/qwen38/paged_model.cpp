@@ -20,7 +20,6 @@
 #include <cuda_runtime.h>
 
 #include <algorithm>
-#include <chrono>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -33,7 +32,6 @@
 namespace strata::qwen38 {
 namespace {
 
-using Clock = std::chrono::steady_clock;
 using strata::serve::PagedCard;
 using strata::serve::PagedCards;
 using strata::serve::PagedParts;
@@ -51,11 +49,6 @@ constexpr int kDefaultLookahead = 3;
 constexpr double kCpuExpertMs = 0.035;
 /// With drafting, the verify windows' graphs kept for the most recent row layouts (the old engine's --batch-mtp).
 constexpr size_t kWindowGraphs = 64;
-
-/// Gets the milliseconds from `t0` to now.
-double get_ms_since(Clock::time_point t0) {
-    return std::chrono::duration<double, std::milli>(Clock::now() - t0).count();
-}
 
 /// Qwen3.8's side of one of the engine's cards (PagedCard of the same index): its prompt path and verify windows,
 /// which hand their rows to the next card's.  Card 0 runs on the Model's own cache and session and the Conversation's
@@ -794,63 +787,21 @@ bool open_pages(Model& m, PagedCard& card, ModelCard& mc, int64_t tokens_min, in
     return true;
 }
 
-/// Opens the RAM's page pool `ram` beside the cards' and gets whether an expert a GPU's pool evicts is copied back to
-/// it (`copy_back`, by --copy-back and the two speeds measured here).  The pool takes --ram-mib, by default
-/// get_ram_room (the RAM free less the resident headroom, within the commit margin), but no more than every expert
-/// and the staging ring take.  It holds first the experts of the profile the GPUs' pools do not, in the profile's
-/// order, then copies of the GPUs', then the experts outside the profile, as far as they fit: read here, or with
-/// --fill background by the engine's refills after the start.  Its conversation layout has the whole model's regions,
-/// so that a paused conversation is one conversation in it wherever the layer cut is (PagedQwen::get_ram_span).
+/// Opens the RAM's page pool `ram` beside the cards' (open_ram_pool) and gets whether an expert a GPU's pool evicts is
+/// copied back to it (`copy_back`): first the experts of the profile that the GPUs' pools do not hold.  Its conversation
+/// layout has the whole model's regions, so that a paused conversation is one conversation in it wherever the layer
+/// cut is (PagedQwen::get_ram_span).
 bool open_ram(Model& m, const PagedCards& cards, const ModelCards& model_cards, const PagedSettings& s,
               strata::core::RamExperts& ram, bool& copy_back, std::string& err) {
-    using strata::core::ExpertKey;
-    const std::vector<uint64_t> blobs = get_blob_bytes(m);
-    const auto at = [&](int64_t l, int64_t e) { return (size_t) (l * m.g.n_expert + e); };
-    std::vector<ExpertKey> ranking, on_gpu;
-    std::vector<uint8_t> ranked(blobs.size() * (size_t) m.g.n_expert, 0);
-    for (const auto& [l, e] : m.profile_all.empty() ? m.profile : m.profile_all) {
-        (m.host_res[at(l, e)] >= 0 ? on_gpu : ranking).push_back({l, e});
-        ranked[at(l, e)] = 1;
-    }
-    ranking.insert(ranking.end(), on_gpu.begin(), on_gpu.end());
-    uint64_t every = 0;
-    for (int32_t l = 0; l < (int32_t) blobs.size(); ++l)
-        for (int32_t e = 0; e < (int32_t) m.g.n_expert; ++e) {
-            every += blobs[(size_t) l];
-            if (!ranked[at(l, e)])
-                ranking.push_back({l, e});
-        }
-    const int ring = strata::kernels::kVerifyMaxT * (int) m.K;   // the experts of one layer of a step
-    const uint64_t bytes = strata::serve::get_ram_pool_bytes(
-        s, m.o.resident_headroom, every + (uint64_t) ring * *std::max_element(blobs.begin(), blobs.end()));
-    const strata::core::PagePoolConfig config = strata::serve::get_ram_pool_config(cards[0]);
+    std::vector<strata::core::ExpertKey> profile;
+    for (const auto& [l, e] : m.profile_all.empty() ? m.profile : m.profile_all)
+        profile.push_back({l, e});
     strata::core::StateLayout layout;
-    if (!get_card_layout(m, cards.back(), model_cards.back(), 0, m.g.n_layers, layout, err))
-        return false;
-    const Clock::time_point t0 = Clock::now();
-    const bool fill = s.fill == "eager";
-    if (!ram.open(m.src, bytes, ring, layout, config, blobs, m.g.n_expert, ranking, err, fill))
-        return false;
-    const double fill_s = get_ms_since(t0) / 1000.0;
-    const uint64_t held = ram.pages().pool().report().experts.bytes;
-    char filled[96] = "its experts are read from the SSD after the start (--fill background)";
-    if (fill)
-        std::snprintf(filled, sizeof filled, "%.2f GiB of experts read in %.1f s (%.1f GB/s)",
-                      (double) held / 1073741824.0, fill_s, fill_s > 0 ? (double) held / 1e9 / fill_s : 0.0);
-    double ssd = 0, back = 0;
-    // the best of three: on the Strix Halo single copies measured 3.3 to 57 GB/s, single SSD reads 0.3 to 2.4 GB/s
-    for (int round = 0; round < 3; ++round) {
-        ssd = std::max(ssd, ram.time_ssd_reads(round));
-        back = std::max(back, ram.time_copy_in(m.xcache.device_slot(0), ram.ring_bytes()));
-    }
-    copy_back = s.copy_back == "on" || (s.copy_back == "auto" && strata::core::is_copy_back_worth(back, ssd));
-    std::fprintf(stderr, "strata-q38: the RAM's page pool: %.2f GiB%s, %s; the other experts are read from the SSD "
-                         "without the file cache.  An expert the GPU evicts is %s (copying it back: %.1f GB/s, reading "
-                         "the SSD: %.1f GB/s; --copy-back %s)\n",
-                 (double) (ram.pages().pool().report().total.bytes) / 1073741824.0,
-                 ram.is_page_locked() ? ", page-locked" : "", filled,
-                 copy_back ? "copied back to RAM" : "dropped", back, ssd, s.copy_back.c_str());
-    return true;
+    const int ring = strata::kernels::kVerifyMaxT * (int) m.K;   // the experts of one layer of a step
+    return get_card_layout(m, cards.back(), model_cards.back(), 0, m.g.n_layers, layout, err) &&
+           strata::serve::open_ram_pool(kProgram, s, m.src, m.o.resident_headroom, ring, layout, cards[0],
+                                        get_blob_bytes(m), m.g.n_expert, profile, m.host_res,
+                                        m.xcache.device_slot(0), ram, copy_back, err);
 }
 
 /// Gets why strata-q38 cannot run the loaded model `m` (empty: it can).

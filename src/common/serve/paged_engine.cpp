@@ -583,6 +583,7 @@ bool PagedEngine::serve_request(const std::string& line) {
     }
     model_.print_done({h.dec.produced, n, resume, read_to - resume, prompt_ms, get_ms_since(d0), finish,
                        h.dec.guessed, h.dec.guessed_right});
+    model_.end_request();
     if (req.batch) {
         if (h.decoding)
             h.slot = (int) req.slot;
@@ -686,8 +687,10 @@ bool PagedEngine::decode_step() {
                 "token 0\n", (long long) d.pos);
             h->forget();
         }
-        if (h->slot >= 0)
+        if (h->slot >= 0) {
             std::printf("BDONE %d %lld %s %.1f\n", h->slot, (long long) d.produced, d.finish, get_ms_since(h->t0));
+            model_.end_request();
+        }
     }
     strata::core::progress_beat();
     if (refilling_ && !is_refill_wanted())

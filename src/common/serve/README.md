@@ -20,7 +20,8 @@ engine).
   `PagedPart`; the prompt, the step, the drafter and the `INFO` and `DONE` lines, each in its old engine's fields).
   strata-q38 runs it for Qwen3.8 (`src/models/qwen38/paged_model.cpp`), strata-ds41 for DeepSeek
   (`src/models/deepseekv41/paged_model.cpp`). What each model's start does before it, `paged_start.cpp`: the engine's
-  own options, the runtime's environment, the cards' links, the pools' sizes and their GPU memory.
+  own options, the runtime's environment, the cards' links, the pools' sizes and their GPU memory, and the RAM's pool
+  opened with the experts the GPUs lack first and the copy-back rule (`open_ram_pool`).
 
 Each engine still handles its own requests, SAVE / RESTORE, VRAM and QUIT, and writes its own `T`, `PP`, `DONE`, `BT`
 and `BDONE` lines.

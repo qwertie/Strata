@@ -909,9 +909,14 @@ if(STRATA_ENABLE_CUDA OR STRATA_ENABLE_HIP)
     set_source_files_properties(${_ds4}/ds4_main.cpp PROPERTIES COMPILE_DEFINITIONS "DS4_BUILD_ID=\"${STRATA_BUILD_ID}\"")
     target_link_libraries(strata-dsv41 PRIVATE strata_dsv41)
     # strata-ds41 (docs/MEMORY_MANAGER_PLAN.md D4): DeepSeek on the paged engine, its conversation in page-pool pages
-    add_executable(strata-ds41 src/program/ds41_main.cpp ${_ds4}/paged_model.cpp)
+    add_executable(strata-ds41 src/program/ds41_main.cpp ${_ds4}/paged_model.cpp ${_ds4}/expert_files.cpp)
     strata_utf8_manifest(strata-ds41)
     target_link_libraries(strata-ds41 PRIVATE strata_dsv41 strata_paged)
+    if(STRATA_BUILD_TESTS)   # D5: the experts read from the files without the file cache, against the files' bytes
+      add_executable(ds4_expert_files_test ${_ds4}/expert_files_test.cpp ${_ds4}/expert_files.cpp)
+      target_link_libraries(ds4_expert_files_test PRIVATE strata_engine strata_dsv41_state)
+      add_test(NAME ds4_expert_files_test COMMAND ds4_expert_files_test)
+    endif()
     if(STRATA_NATIVE_EXPERTS)
       # the CPU lane's ggml-type rows: ggml-cpu's dots against Strata's AVX2 i-quant rows (bits and GB/s); no GPU, no model
       add_executable(ds4_gg_bench tests/dsv41/gg_dot_bench.cpp ${_ds4}/ds4_gg_cpu.cpp)

@@ -236,6 +236,9 @@ public:
     /// Prints the DONE line that ends a request, in the fields the model's old engine wrote (the server reads each
     /// engine's).
     virtual void print_done(const RequestDone& done) const = 0;
+    /// Called after each DONE and BDONE line (a batch request has both): DeepSeek writes its expert profile back, as its
+    /// old engine does after each request.
+    virtual void end_request() {}
 };
 
 }  // namespace strata::serve

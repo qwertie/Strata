@@ -78,6 +78,9 @@ bool down(const Args& a, int groups, int ne_max, cudaStream_t s);
 struct SetArgs {
     const uint8_t* wbase = nullptr;
     size_t stride = 0;
+    /// device memory: expert i's blob, in place of wbase + i stride (strata-ds41's experts in page-pool pages); null:
+    /// none
+    const uint8_t* const* wtab = nullptr;
     size_t tr[3] = {0, 0, 0};
     const int* bounds = nullptr;
     int row0 = 0, max_rows = 0, n_exp = 0;
@@ -95,6 +98,13 @@ struct SetArgs {
 };
 bool set_gate_up(const SetArgs& a, cudaStream_t s);
 bool set_down(const SetArgs& a, cudaStream_t s);
+#if defined(__CUDACC__) || defined(__HIPCC__)
+/// Gets expert i's blob in a set (SetArgs, ds4_gguf.cu's SetK): wtab[i] when the set has a table, else wbase + i stride.
+template <class Set>
+__device__ __forceinline__ const uint8_t* get_set_blob(const Set& a, int i) {
+    return a.wtab != nullptr ? a.wtab[i] : a.wbase + (size_t) i * a.stride;
+}
+#endif
 /// Test hooks for the matrix-core (HIP gfx11 / gfx12) prompt tiles: hipk_force(-1 default rules, 0 scalar tiles, 1 matrix-core tiles) and the
 /// count of matrix-core launches so far (both do nothing / return -1 where there are no such tiles; hipk_force returns whether this device has them)
 bool hipk_force(int mode);

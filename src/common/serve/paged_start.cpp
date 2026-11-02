@@ -11,6 +11,7 @@
 #include "strata/common/serve/request.hpp"
 
 #include <algorithm>
+#include <chrono>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -160,6 +161,64 @@ strata::core::PagePoolConfig get_ram_pool_config(const PagedCard& card) {
     config.page_bytes = card.experts.pool().page_bytes();
     config.chunk_bytes = kChunkBytes / config.page_bytes * config.page_bytes;
     return config;
+}
+
+std::vector<strata::core::ExpertKey> get_ram_ranking(const std::vector<strata::core::ExpertKey>& profile,
+                                                     const std::vector<int32_t>& residency,
+                                                     const std::vector<uint64_t>& blob_bytes, int64_t n_expert) {
+    using strata::core::ExpertKey;
+    const auto at = [&](int64_t l, int64_t e) { return (size_t) (l * n_expert + e); };
+    std::vector<ExpertKey> ranking, on_gpu;
+    std::vector<uint8_t> ranked(blob_bytes.size() * (size_t) n_expert, 0);
+    for (const ExpertKey& k : profile) {
+        (residency[at(k.layer, k.expert)] >= 0 ? on_gpu : ranking).push_back(k);
+        ranked[at(k.layer, k.expert)] = 1;
+    }
+    ranking.insert(ranking.end(), on_gpu.begin(), on_gpu.end());
+    for (int32_t l = 0; l < (int32_t) blob_bytes.size(); ++l)
+        for (int32_t e = 0; e < (int32_t) n_expert; ++e)
+            if (!ranked[at(l, e)])
+                ranking.push_back({l, e});
+    return ranking;
+}
+
+bool open_ram_pool(const std::string& program, const PagedSettings& s, strata::core::ExpertSource& files,
+                   uint64_t headroom, int ring, const strata::core::StateLayout& layout, const PagedCard& card,
+                   const std::vector<uint64_t>& blob_bytes, int64_t n_expert,
+                   const std::vector<strata::core::ExpertKey>& profile, const std::vector<int32_t>& residency,
+                   const uint8_t* gpu_bytes, strata::core::RamExperts& ram, bool& copy_back, std::string& err) {
+    uint64_t every = 0;
+    for (const uint64_t b : blob_bytes)
+        every += b * (uint64_t) n_expert;
+    const uint64_t bytes = get_ram_pool_bytes(
+        s, headroom, every + (uint64_t) ring * *std::max_element(blob_bytes.begin(), blob_bytes.end()));
+    const auto t0 = std::chrono::steady_clock::now();
+    const bool fill = s.fill == "eager";
+    if (!ram.open(files, bytes, ring, layout, get_ram_pool_config(card), blob_bytes, n_expert,
+                  get_ram_ranking(profile, residency, blob_bytes, n_expert), err, fill))
+        return false;
+    const double fill_s = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
+    const uint64_t held = ram.pages().pool().report().experts.bytes;
+    char filled[96] = "its experts are read from the SSD after the start (--fill background)";
+    if (fill)
+        std::snprintf(filled, sizeof filled, "%.2f GiB of experts read in %.1f s (%.1f GB/s)",
+                      (double) held / 1073741824.0, fill_s, fill_s > 0 ? (double) held / 1e9 / fill_s : 0.0);
+    double ssd = 0, back = 0;
+    // (no more than `gpu_bytes`' chunk holds: a small GPU pool's chunk is smaller than the staging ring)
+    const uint64_t timed = std::min(ram.ring_bytes(), card.experts.pool().chunk_bytes());
+    // the best of three: on the Strix Halo single copies measured 3.3 to 57 GB/s, single SSD reads 0.3 to 2.4 GB/s
+    for (int round = 0; round < 3; ++round) {
+        ssd = std::max(ssd, ram.time_ssd_reads(round));
+        back = std::max(back, ram.time_copy_in(gpu_bytes, timed));
+    }
+    copy_back = s.copy_back == "on" || (s.copy_back == "auto" && strata::core::is_copy_back_worth(back, ssd));
+    std::fprintf(stderr, "%s: the RAM's page pool: %.2f GiB%s, %s; the other experts are read from the SSD "
+                         "without the file cache.  An expert the GPU evicts is %s (copying it back: %.1f GB/s, reading "
+                         "the SSD: %.1f GB/s; --copy-back %s)\n",
+                 program.c_str(), (double) (ram.pages().pool().report().total.bytes) / 1073741824.0,
+                 ram.is_page_locked() ? ", page-locked" : "", filled,
+                 copy_back ? "copied back to RAM" : "dropped", back, ssd, s.copy_back.c_str());
+    return true;
 }
 
 }  // namespace strata::serve

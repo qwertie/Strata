@@ -147,6 +147,9 @@ bool mma_supported();
 struct SetArgs {
     const uint8_t* wbase = nullptr;
     size_t stride = 0;
+    /// device memory: expert e's blob, in place of wbase + e * stride (strata-ds41's experts in page-pool pages); null:
+    /// none.  A GGUF's sets only (ds4_gguf.cu passes it on): strata-ds41 takes no EXL3 pack
+    const uint8_t* const* wtab = nullptr;
     ExpertLayout lay;
     int n_exp = 0;
     const int* bounds = nullptr;

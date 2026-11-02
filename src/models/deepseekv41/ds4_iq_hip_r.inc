@@ -24,7 +24,7 @@ __global__ void __launch_bounds__(NW * 32) set_kernel_r(const SetArgs a, int dbg
     load_tab<T>(tab);
     const int nr = min(BM, hi_r - r0);
     const int c0 = blockIdx.y * BN;
-    const uint8_t* blob = a.wbase + (size_t) e * a.stride;
+    const uint8_t* blob = get_set_blob(a, e);
     const int K = GU ? a.n_embd : a.n_ff;
     const size_t rb = row_bytes_t<T>(K);
     const int tid = (int) threadIdx.x, warp = tid >> 5, lane = tid & 31, l16 = lane & 15, hi = lane >> 4;

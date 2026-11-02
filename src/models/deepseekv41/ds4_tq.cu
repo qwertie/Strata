@@ -405,7 +405,7 @@ __global__ void __launch_bounds__(kThreads) set_kernel(const SetArgs a) {
     const int tile = blockIdx.x * kWaves + wave;
     const int row = tile * kTileRows + r;
     const size_t rb = (size_t) (Kin / 128) * (2 + 4 * K);
-    const uint8_t* blob = a.wbase + (size_t) e * a.stride;
+    const uint8_t* blob = get_set_blob(a, e);
     if ((int) threadIdx.x < ne) rowsel[threadIdx.x] = GATE_UP ? a.idx[r0 + threadIdx.x] : r0 + (int) threadIdx.x;
     __syncthreads();
     if (tile * kTileRows >= N) return;

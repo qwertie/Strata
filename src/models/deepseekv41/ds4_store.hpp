@@ -17,6 +17,7 @@
 #pragma once
 
 #include "strata/base/platform/os.hpp"
+#include "ds4_model.hpp"
 #include "ds4_pool.hpp"
 
 #include <algorithm>
@@ -37,14 +38,8 @@ namespace strata::ds4 {
 
 class ExpertStore {
 public:
-    struct LayerGeo {
-        int n_exp = 0;
-        int file[3] = {-1, -1, -1};
-        uint64_t off[3] = {0, 0, 0}, stride[3] = {0, 0, 0};   // matrix r of expert e: file[r], off[r] + e stride[r]
-        uint64_t bytes[3] = {0, 0, 0};
-        uint64_t tr[3] = {0, 0, 0};                            // matrix r's place in the blob
-        uint64_t blob = 0;                                     // the blob's bytes (gaps of 8192 between matrices)
-    };
+    /// (the blob has gaps of kSlack between matrices)
+    using LayerGeo = ExpertFileLayout;
     enum Policy { kLru = 0, kLfu = 1 };
     struct Stats {
         std::atomic<int64_t> hits{0}, misses{0}, prefetched{0}, prefetch_used{0}, prefetch_wasted{0}, evictions{0}, fails{0};

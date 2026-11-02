@@ -740,7 +740,7 @@ __global__ void __launch_bounds__(kThreads) set_kernel(const SetArgs a) {
     load_tab<T>(tab);
     const int nr = min(RM, hi - r0);
     const int c0 = blockIdx.y * BN;
-    const uint8_t* blob = a.wbase + (size_t) e * a.stride;
+    const uint8_t* blob = get_set_blob(a, e);
     const int K = GATE_UP ? a.n_embd : a.n_ff;
     const size_t rb = row_bytes_t<T>(K);
     const int tid = (int) threadIdx.x;
@@ -831,7 +831,7 @@ __global__ void __launch_bounds__(kThreads) set_tc_kernel(const SetArgs a) {
     load_tab<T>(tab);
     const int nr = min(BM, hi - r0);
     const int c0 = blockIdx.y * BN;
-    const uint8_t* blob = a.wbase + (size_t) e * a.stride;
+    const uint8_t* blob = get_set_blob(a, e);
     const int K = GATE_UP ? a.n_embd : a.n_ff;
     const size_t rb = row_bytes_t<T>(K);
     const int tid = (int) threadIdx.x, warp = tid >> 5;
@@ -976,7 +976,7 @@ __device__ __forceinline__ void light_item(const SetArgs& a, const int8_t* __res
     const int lo = a.bounds[e] - a.row0, ne = a.bounds[e + 1] - a.bounds[e];
     if (ne <= 0 || ne > NE || row >= N) return;   // (ne: uniform, the tiles take an expert of more rows)
     const size_t rb = row_bytes_t<T>(K);
-    const uint8_t* blob = a.wbase + (size_t) e * a.stride;
+    const uint8_t* blob = get_set_blob(a, e);
     const size_t q0 = (size_t) e * kLightRows;
     const uint8_t* w0 = blob + a.tr[GATE_UP ? 0 : 2] + (size_t) row * rb;
     const uint8_t* w1 = blob + a.tr[1] + (size_t) row * rb;
@@ -1040,7 +1040,7 @@ __global__ void __launch_bounds__(kThreads) light_kernel_rows(const SetArgs a, c
     const int K = GATE_UP ? a.n_embd : a.n_ff, N = GATE_UP ? a.n_ff : a.n_embd, nsb = K / 32;
     const int row = blockIdx.x * kWarps + (threadIdx.x >> 5), lane = threadIdx.x & 31;
     if (row >= N) return;
-    const uint8_t* blob = a.wbase + (size_t) e * a.stride;
+    const uint8_t* blob = get_set_blob(a, e);
     const size_t rb = row_bytes_t<T>(K);
     const uint8_t* w0 = blob + a.tr[GATE_UP ? 0 : 2] + (size_t) row * rb;
     const uint8_t* w1 = blob + a.tr[1] + (size_t) row * rb;

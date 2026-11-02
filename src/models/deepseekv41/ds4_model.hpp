@@ -24,7 +24,15 @@
 #include <string>
 #include <vector>
 
+namespace strata::core {
+class ExpertSource;
+}
+
 namespace strata::ds4 {
+
+/// The experts the CPU lane reads at a time from the caller's pool (Options::expert_pages): the staging buffers that
+/// pool must have for the experts it does not hold.
+constexpr int kCpuLaneExperts = 8;
 
 struct Options {
     std::string pack;                 // <model>/maya-ds4
@@ -65,6 +73,23 @@ struct Options {
     bool vision = true;               // the vision tower (the checkpoint's vision.* / aligner.*), when it has one
     bool vision_only = false;         // (tests) load the vision tower alone: encode_image() and nothing else
     bool verbose = false;
+    /// strata-ds41 (the memory manager's pools): the routed experts are the caller's - the GPU computes those
+    /// set_expert_addresses names, the CPU lane and the prompt path read the others from this pool (a RAM page pool
+    /// over the SSD) - instead of the old engine's VRAM slots, RAM store, files' mapping and moves.  A GGUF pack on
+    /// one GPU, without the drafter.  Null: the old engine's own.
+    strata::core::ExpertSource* expert_pages = nullptr;
+};
+
+/// Where one trunk layer's routed experts lie in the model's files (Model::get_file_paths) and where each matrix goes
+/// in an expert's blob, the layout the GPU's kernels and the CPU lane read: matrix r (gate, up, down) of expert e is
+/// bytes[r] bytes at off[r] + e * stride[r] in file file[r], at tr[r] in a blob of `blob` bytes.
+struct ExpertFileLayout {
+    int n_exp = 0;
+    int file[3] = {-1, -1, -1};
+    uint64_t off[3] = {0, 0, 0}, stride[3] = {0, 0, 0};
+    uint64_t bytes[3] = {0, 0, 0};
+    uint64_t tr[3] = {0, 0, 0};
+    uint64_t blob = 0;
 };
 
 /// Reads comma- or space-separated integers from `s`, stopping at the first that is not one.
@@ -131,6 +156,23 @@ public:
     const Geometry& geometry() const;
     /// Gets the bytes of one routed expert of each trunk layer.
     std::vector<uint64_t> get_expert_bytes() const;
+    /// Gets where each trunk layer's routed experts lie in the model's files (a GGUF pack's).
+    std::vector<ExpertFileLayout> get_expert_files() const;
+    /// Gets the paths of the model's files, which ExpertFileLayout::file numbers.
+    std::vector<std::string> get_file_paths() const;
+    /// Gets trunk layer `layer`'s experts hottest first by the expert profile's routings so far, then by index.
+    std::vector<int> get_heat_order(int layer) const;
+    /// (Options::expert_pages) Makes the GPU compute the trunk's experts at device addresses `at` (layer * n_exp +
+    /// expert; null: the CPU lane's) from the next feed on; false (and `err`) when the tables could not be written.
+    bool set_expert_addresses(const std::vector<const uint8_t*>& at, std::string& err);
+    /// (Options::expert_pages) Gets each trunk expert's routings in windows since the caller last changed them (layer
+    /// * n_exp + expert), counted once the caller sized it to that.
+    std::vector<float>& get_usage();
+    /// Gets the GPU memory of the weights on GPU `dev` (an index into get_devices).
+    uint64_t get_weight_bytes(int dev) const;
+    /// Gets the GPU memory of the buffers on GPU `dev` that are not the weights, the experts or the caches (the
+    /// windows' and the prompt path's).
+    uint64_t get_scratch_bytes(int dev) const;
     /// Gets the CUDA ids of the GPUs the model runs on, in its order (use_state_memory's `dev` is an index here).
     std::vector<int> get_devices() const;
     /// Points the conversation's state on GPU `dev` at memory the caller keeps, in place of reserve_caches': the

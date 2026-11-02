@@ -24,6 +24,7 @@
 #include "strata/models/deepseekv41/geometry.hpp"
 #include "strata/base/gpu/memory_info.hpp"
 #include "strata/base/platform/os.hpp"
+#include "strata/core/expert_source.hpp"
 #include "ds4_pool.hpp"
 #include "ds4_store.hpp"
 #include "ds4_vision.cuh"
@@ -638,6 +639,12 @@ struct Layer {
     uint8_t* ring_bak = nullptr;
     float *c_snap = nullptr, *c_rows = nullptr;
     unsigned long long* vram_tab = nullptr;     // device [n_exp]
+    // (Options::expert_pages, set_expert_addresses') the experts hottest first by the profile at load, the order of
+    // the VRAM slots, as in the old engine; device [n_exp]: each slot's blob, a page-pool page, which the prompt's
+    // expert sets read; each expert's page as last given (0: not on the GPU)
+    std::vector<int> by_heat;
+    unsigned long long* slot_tab = nullptr;
+    std::vector<unsigned long long> page_at;
     std::vector<uint8_t> zc;                    // (the RAM store) expert -> 1: its store slot is GPU-visible, the device computes it over PCIe
     unsigned long long* zc_tab = nullptr;       // device [n_exp]: those slots' device addresses (0: none) - the decode token's zc_stage reads it
     std::vector<std::array<x3::Mat, 3>> vm;     // expert -> its gate, up, down as EXL3 views of its VRAM blob
@@ -1013,10 +1020,16 @@ struct Model::Impl {
     }();
     // the RAM store (--ssd-cache): the CPU lane's experts in slots a policy owns, read unbuffered (null: off)
     std::unique_ptr<ExpertStore> store;
+    // (Options::expert_pages) the blobs of the experts the CPU lane computes now, by expert, from the RAM's pool
+    // (cpu_experts_paged); and each expert's routings in windows ([layer][expert], count_usage; empty: not counted)
+    std::vector<const uint8_t*> held;
+    std::vector<float> usage;
     uint8_t* zc_stage_buf = nullptr;   // device: k staging slots for the store's experts of a decode token
     size_t zc_stride = 0;
     bool zc_copy = true;               // DS4_STORE_STAGE=0: the expert kernels read the arena over PCIe themselves
     bool in_ram(const Layer& l, int e) const {   // (DISK_SKIP_W) expert e's pages in RAM now
+        if (o.expert_pages != nullptr)
+            return !o.expert_pages->transient(l.il, e);
         if (!l.ram.empty() && l.ram[(size_t) e] >= 0) return true;
         if (l.lay.fmt == gg::kFmtMXFP4) {
             for (int r = 0; r < 3; ++r)
@@ -1654,6 +1667,8 @@ struct Model::Impl {
         return true;
     }
     const uint8_t* mx_mat(const Layer& l, int e, int r) const {   // expert e's matrix r: its RAM-tier slot, else the file's
+        if (o.expert_pages != nullptr)   // (cpu_experts_paged's)
+            return held[(size_t) e] + l.lay.trellis[r];
         if (store) {
             const int s = store->find(l.il, e);
             if (s >= 0) return store->mat(s, r);
@@ -1820,6 +1835,13 @@ struct Model::Impl {
     bool load(const Options& opt, std::string& err) {
         o = opt;
         load_t0 = now_ms();
+        // the caller's pools replace the expert cache's moves, the RAM tier and the lookahead's reads (the CPU lane
+        // reads the pool, not the files' mapping)
+        if (o.expert_pages != nullptr) {
+            o.expert_cache = false;
+            ram_tier = false;
+            ahead_mode = 0;
+        }
         if (!pk.load(o.pack, err)) return false;
         g.from(pk);
         if (g.dim == 0 || g.nl == 0 || (int) g.ratios.size() < g.nl) {
@@ -2626,7 +2648,7 @@ struct Model::Impl {
         }
         // the CPU lane's experts read in place (decided above): how much of them the load reads ahead, from what VRAM
         // now leaves over
-        if (file_experts) {
+        if (file_experts && o.expert_pages == nullptr) {
             double room = 0, all = 0;   // the VRAM place_experts will find for experts; every expert's bytes
             for (Dev& d : devs) {
                 cudaSetDevice(d.id);
@@ -2665,7 +2687,7 @@ struct Model::Impl {
         }
         // the experts: VRAM slots in what each device has left, the rest on the host
         if (!place_experts(err)) return false;
-        if (!load_experts(err)) return false;
+        if (o.expert_pages == nullptr && !load_experts(err)) return false;
         if (pk.gguf) make_pools();
         if (chunk > 0) {
             // the CPU lane's parts pinned (the chunks stream them to the GPUs by DMA), each layer's virtual slots
@@ -2802,7 +2824,8 @@ struct Model::Impl {
                 workers.push_back(std::make_unique<Worker>());
                 workers.back()->start();
             }
-        calibrate_paths();
+        if (o.expert_pages == nullptr)   // (its reads would go through the files' mapping)
+            calibrate_paths();
         init_store();      // (last: the store's arena is registered with the driver - page-locked memory the other pinned allocations must come before)
         preload_store();
         if (o.verbose) std::fprintf(stderr, "ds4: loaded in %.1f s\n%s", (now_ms() - load_t0) / 1000.0, describe().c_str());
@@ -3259,7 +3282,17 @@ struct Model::Impl {
         it.e = e;
         it.v = v;
         bool in_ram = !l.ram.empty() && l.ram[(size_t) e] >= 0;
-        const uint8_t* store_blob = nullptr;   // (the RAM store holds it: copied into staging like a RAM-tier slot, no read)
+        // (the RAM store or the caller's pool holds it: copied into staging like a RAM-tier slot, no read)
+        const uint8_t* store_blob = nullptr;
+        if (o.expert_pages != nullptr && !o.expert_pages->transient(l.il, e)) {
+            store_blob = o.expert_pages->blob(l.il, e);
+            in_ram = true;
+            if (o.expert_pages->pinned(l.il, e)) {   // (page-locked: DMA'd from where it lies)
+                for (int r = 0; r < 3; ++r) it.src[r] = store_blob + l.lay.trellis[r];
+                ++c.it_ram;
+                return;
+            }
+        }
         if (!in_ram && store && l.nm == 1) {
             const int ss = store->find(l.il, e);
             if (ss >= 0) {
@@ -3473,7 +3506,7 @@ struct Model::Impl {
                     j.left = &it.left;
                     j.bad = &it.bad;
                     j.mem = it.ram != nullptr ? it.ram + l.lay.trellis[r] + mx_read_off(l, it.mi, r) : nullptr;
-                    j.map = pk.at(l.mx_file[r], j.off);
+                    j.map = o.expert_pages == nullptr ? pk.at(l.mx_file[r], j.off) : nullptr;
                     j.keep = it.keep != nullptr ? it.keep + l.lay.trellis[r] : nullptr;
                     sb += flow_region(r);
                 }
@@ -3523,6 +3556,7 @@ struct Model::Impl {
     bool flow_layer(Dev& d, Chunk& c, Layer& L0, int mi, int k, int T, const std::vector<int>& b, std::string& err) {
         cudaStream_t s = d.st;
         const uint8_t* vbase = member(L0, mi).vram_base;   // (a member's: its part of each VRAM expert, L0's slots)
+        const unsigned long long* vtab = member(L0, mi).slot_tab;
         if (c.spec_k != k || c.spec_il != L0.il) {
             err = "the prompt path's expert stream is out of step (layer " + std::to_string(L0.il) + ")";
             return false;
@@ -3568,10 +3602,10 @@ struct Model::Impl {
             c.n_comp = i1;
             if (!flow_pump(c, err)) return false;
             const int v_to = (int) ((int64_t) L0.n_slots * (int64_t) (c.n_comp - lb) / (int64_t) std::max<size_t>(1, n_lay));
-            if (!run_set(d, c, L0, vbase, 0, unit(L0), c.bounds, b.data(), v_done, v_to, T, err)) return false;
+            if (!run_set(d, c, L0, vbase, 0, unit(L0), c.bounds, b.data(), v_done, v_to, T, err, vtab)) return false;
             v_done = v_to;
         }
-        if (!run_set(d, c, L0, vbase, 0, unit(L0), c.bounds, b.data(), v_done, L0.n_slots, T, err)) return false;
+        if (!run_set(d, c, L0, vbase, 0, unit(L0), c.bounds, b.data(), v_done, L0.n_slots, T, err, vtab)) return false;
         while (c.base < c.n_comp && c.items.size() > 4096) {   // (done with: read, copied and used)
             c.items.pop_front();
             ++c.base;
@@ -3581,8 +3615,10 @@ struct Model::Impl {
 
     // the experts [i0, i1) of a sorted set (blobs at wbase + i * stride; bounds b on the host, d_bounds on the device)
     // over the chunk's rows, in pieces of at most C rows, each added into acc in pick order
+    // (tab: device, the set's blobs from member wb0's on, in place of wbase + i * stride - the VRAM slots' of
+    // Options::expert_pages, slot_tab; null: none)
     bool run_set(Dev& d, Chunk& c, const Layer& l, const uint8_t* wbase, int wb0, size_t stride, const int* d_bounds,
-                 const int* b, int i0, int i1, int T, std::string& err) {
+                 const int* b, int i0, int i1, int T, std::string& err, const unsigned long long* tab = nullptr) {
         const int D = g.dim, FF = l.ffn;
         while (i0 < i1) {
             int j = i0 + 1;
@@ -3592,7 +3628,10 @@ struct Model::Impl {
             for (int i = i0; i < j; ++i) max_rows = std::max(max_rows, b[i + 1] - b[i]);
             if (nrows > 0) {
                 x3::SetArgs sa;
-                sa.wbase = wbase + (size_t) (i0 - wb0) * stride;   // (wbase: set member wb0's blob)
+                if (tab != nullptr)
+                    sa.wtab = (const uint8_t* const*) (tab + (i0 - wb0));
+                else
+                    sa.wbase = wbase + (size_t) (i0 - wb0) * stride;   // (wbase: set member wb0's blob)
                 sa.stride = stride;
                 sa.lay = l.nm > 1 ? l.hlay : l.lay;
                 sa.n_exp = j - i0;
@@ -3784,8 +3823,7 @@ struct Model::Impl {
         return true;
     }
 
-    void set_vm(Layer& l, int e, int slot) {
-        uint8_t* b = l.vram_base + (size_t) slot * l.blob;
+    void set_vm(Layer& l, int e, const uint8_t* b) {
         if (l.lay.fmt == gg::kFmtMXFP4) {
             for (int r = 0; r < 3; ++r) {
                 x3::Mat& m = l.vm[(size_t) e][(size_t) r];
@@ -3809,6 +3847,69 @@ struct Model::Impl {
             m.cb = 2;
             m.ld = 0;
         }
+    }
+    /// Gets layer l's experts hottest first by the profile, then by index.
+    std::vector<int> get_heat_order(const Layer& l) const {
+        std::vector<int> order((size_t) l.n_exp);
+        std::iota(order.begin(), order.end(), 0);
+        const uint32_t* p = prof.data() + (size_t) l.il * g.n_exp;
+        std::stable_sort(order.begin(), order.end(), [&](int a, int b) { return p[a] > p[b]; });
+        return order;
+    }
+    /// Readies the trunk's layers for experts that set_expert_addresses places (Options::expert_pages): none on the
+    /// GPU and no copy of the CPU lane's own, each layer's slot table allocated.
+    bool place_paged(std::string& err) {
+        size_t most = 0;
+        for (Layer& l : L) {
+            if (l.mtp)
+                continue;
+            if (l.lay.fmt != gg::kFmtMXFP4 || l.nm > 1 || l.cpu_only) {
+                err = "experts in page pools need a GGUF pack whose experts the GPU computes, on one GPU";
+                return false;
+            }
+            l.by_heat = get_heat_order(l);
+            l.slot.assign((size_t) l.n_exp, -1);
+            l.host.assign((size_t) l.n_exp, nullptr);
+            l.hh.assign((size_t) l.n_exp, {nullptr, nullptr, nullptr, nullptr});
+            l.vm.assign((size_t) l.n_exp, {});
+            l.heat.assign((size_t) l.n_exp, 0.0f);
+            l.page_at.assign((size_t) l.n_exp, 0);
+            l.n_vram = l.n_slots = 0;
+            if (!dalloc(devs[(size_t) l.dev], l.slot_tab, (size_t) l.n_exp, err))
+                return false;
+            most = std::max(most, (size_t) l.n_exp);
+        }
+        held.assign(most, nullptr);
+        return true;
+    }
+    /// Makes the GPU compute the trunk's experts at device addresses `at` ([layer][expert]; null: the CPU lane's) from
+    /// the next window on: their slots in by_heat's order, the decode's table (vram_tab) and the prompt's (slot_tab).
+    bool set_expert_addresses(const std::vector<const uint8_t*>& at, std::string& err) {
+        for (Layer& l : L) {
+            if (l.mtp || l.slot_tab == nullptr)
+                continue;
+            const uint8_t* const* a = at.data() + (size_t) l.il * g.n_exp;
+            if (std::equal(l.page_at.begin(), l.page_at.end(), a,
+                           [](unsigned long long was, const uint8_t* now) { return was == (unsigned long long) now; }))
+                continue;
+            std::vector<unsigned long long> slots;
+            for (int e : l.by_heat) {
+                l.page_at[(size_t) e] = (unsigned long long) a[e];
+                l.slot[(size_t) e] = a[e] != nullptr ? (int) slots.size() : -1;
+                if (a[e] != nullptr) {
+                    slots.push_back((unsigned long long) a[e]);
+                    set_vm(l, e, a[e]);
+                }
+            }
+            l.n_vram = l.n_slots = (int) slots.size();
+            cudaSetDevice(devs[(size_t) l.dev].id);
+            if (cudaMemcpy(l.vram_tab, l.page_at.data(), l.page_at.size() * 8, cudaMemcpyHostToDevice) != cudaSuccess ||
+                cudaMemcpy(l.slot_tab, slots.data(), slots.size() * 8, cudaMemcpyHostToDevice) != cudaSuccess) {
+                err = "writing layer " + std::to_string(l.il) + "'s expert tables failed";
+                return false;
+            }
+        }
+        return true;
     }
     // an expert's VRAM blob -> its CPU-lane part X, and its NH parts -> the blob (the cache's swaps)
     void blob_to_part(const Layer& l, const uint8_t* blob, int X, uint8_t* dst) const {
@@ -3876,6 +3977,8 @@ struct Model::Impl {
     }
 
     bool place_experts(std::string& err) {
+        if (o.expert_pages != nullptr)
+            return place_paged(err);
         // (Windows, an integrated GPU: what its experts may commit - commit_room - and what that kept off the GPU)
         double room = 1e300, kept = 0;
         for (const Dev& d : devs)
@@ -3967,11 +4070,8 @@ struct Model::Impl {
                                  "programs)\n", room0 / 1e9, commit_margin() / 1e9);
         }
         for (Layer& l : L) {
-            // the hottest experts of the profile first, then by index
-            std::vector<int> order((size_t) l.n_exp);
-            std::iota(order.begin(), order.end(), 0);
+            const std::vector<int> order = get_heat_order(l);
             const uint32_t* p = prof.data() + (size_t) l.il * g.n_exp;
-            std::stable_sort(order.begin(), order.end(), [&](int a, int b) { return p[a] > p[b]; });
             l.slot.assign((size_t) l.n_exp, -1);
             l.host.assign((size_t) l.n_exp, nullptr);
             // a layer with experts on both sides keeps one VRAM slot free for the cache's swaps
@@ -4058,7 +4158,7 @@ struct Model::Impl {
             l.vm.assign((size_t) l.n_exp, {});
             if (l.nm == 1)   // (the host-routed window path's views: a group's members take the device-routed path)
                 for (int e = 0; e < l.n_exp; ++e)
-                    if (l.slot[(size_t) e] >= 0) set_vm(l, e, l.slot[(size_t) e]);
+                    if (l.slot[(size_t) e] >= 0) set_vm(l, e, l.vram_base + (size_t) l.slot[(size_t) e] * l.blob);
             if (!halloc(l.tab_pin, (size_t) 2 * l.nm, err)) return false;
             for (int m = 0; m < l.nm; ++m) {
                 Layer& x = member(l, m);
@@ -4580,7 +4680,7 @@ struct Model::Impl {
         if (cached > -1.5) return cached;
         double gb = o.ssd_cache_gb;
         if (const char* v = std::getenv("DS4_STORE_GB")) gb = std::atof(v);
-        if (!pk.gguf) gb = 0.0;
+        if (!pk.gguf || o.expert_pages != nullptr) gb = 0.0;
         else if (gb < 0.0 && cpu_lane_fits_ram()) {   // auto, and the RAM holds every CPU-lane expert beside kRamMargin: they are copied in at load
             auto_copy_all = true;                       // (copy_experts), the demand store would only be a second, smaller copy of them
             gb = 0.0;
@@ -4622,20 +4722,8 @@ struct Model::Impl {
                 std::fprintf(stderr, "ds4: RAM store: the auto size (%.1f GB) holds less than the CPU lane's experts (%.1f GB): the hottest are kept, the "
                                      "rest is read from the SSD as the prompt picks it (--ssd-cache N sets the size)\n", gb, lane_gb);
         }
-        std::vector<ExpertStore::LayerGeo> geo((size_t) g.nl);   // (the trunk's layers: the drafter's bigger experts stay in place)
-        for (const Layer& l : L) {
-            if (l.il >= g.nl) continue;
-            ExpertStore::LayerGeo& gl = geo[(size_t) l.il];
-            gl.n_exp = l.n_exp;
-            for (int r = 0; r < 3; ++r) {
-                gl.file[r] = l.mx_file[r];
-                gl.off[r] = l.mx_off[r];
-                gl.stride[r] = l.mx_stride[r];
-                gl.bytes[r] = mx_part_bytes(l, r);
-                gl.tr[r] = l.lay.trellis[r];
-            }
-            gl.blob = l.blob;
-        }
+        // (the trunk's layers: the drafter's bigger experts stay in place)
+        const std::vector<ExpertStore::LayerGeo> geo = get_expert_files();
         ExpertStore::Cfg cfg;
         cfg.budget_bytes = (size_t) (gb * 1e9);
         cfg.threads = std::getenv("DS4_STORE_THREADS") ? std::atoi(std::getenv("DS4_STORE_THREADS")) : 8;
@@ -4726,6 +4814,24 @@ struct Model::Impl {
             std::fprintf(stderr, "ds4: RAM store: the GPU takes its slots over PCIe (%s), %zu slots kept evictable\n",
                          zc_stage_buf != nullptr ? "copied into a staging area at the PCIe rate first" : "off", cfg.reserve);
         }
+    }
+    std::vector<ExpertFileLayout> get_expert_files() const {
+        std::vector<ExpertFileLayout> geo((size_t) g.nl);
+        for (const Layer& l : L) {
+            if (l.il >= g.nl)
+                continue;
+            ExpertFileLayout& gl = geo[(size_t) l.il];
+            gl.n_exp = l.n_exp;
+            for (int r = 0; r < 3; ++r) {
+                gl.file[r] = l.mx_file[r];
+                gl.off[r] = l.mx_off[r];
+                gl.stride[r] = l.mx_stride[r];
+                gl.bytes[r] = mx_part_bytes(l, r);
+                gl.tr[r] = l.lay.trellis[r];
+            }
+            gl.blob = l.blob;
+        }
+        return geo;
     }
     // the profile's hottest experts (VRAM's left out) read into the store before the first token (DS4_STORE_PRELOAD=0: not)
     void preload_store() {
@@ -5646,7 +5752,7 @@ struct Model::Impl {
             // cost more than computing a warm expert, 0.34 ms a 6.3 MB matrix on Windows)
             std::vector<std::pair<const void*, size_t>> want;
             for (const Ent& en : ents)
-                if (!store && (l.ram.empty() || l.ram[(size_t) en.e] < 0))
+                if (!store && o.expert_pages == nullptr && (l.ram.empty() || l.ram[(size_t) en.e] < 0))
                     for (int r = 0; r < 3; ++r) want.push_back({mx_mat(l, en.e, r), mx_part_bytes(l, r)});
             platform::prefetch_cold(want);
         }
@@ -5739,7 +5845,7 @@ struct Model::Impl {
             // off by default (the mmap path, owner PC: not faster in every pair); DS4_IQ_PF_COLD=1 turns it on)
             std::vector<std::pair<const void*, size_t>> want;
             for (const Ent& en : ents)
-                if (!store && (l.ram.empty() || l.ram[(size_t) en.e] < 0))
+                if (!store && o.expert_pages == nullptr && (l.ram.empty() || l.ram[(size_t) en.e] < 0))
                     for (int r = 0; r < 3; ++r) want.push_back({mx_mat(l, en.e, r), mx_part_bytes(l, r)});
             static const bool pf_all = std::getenv("DS4_IQ_PF_COLD") == nullptr || std::atoi(std::getenv("DS4_IQ_PF_COLD")) == 0;
             if (pf_all) platform::prefetch(want);
@@ -5812,6 +5918,43 @@ struct Model::Impl {
         }
     }
 
+    // (Options::expert_pages) the CPU lane's entries from the caller's pool, kCpuLaneExperts experts at a time: the
+    // pool keeps the blobs it gives for the layer in place while it gives no more than that many it does not hold.
+    // Each group's entries computed as cpu_experts_mx computes them (an entry's rows do not depend on the others').
+    // An expert the pool could not read: its rows are 0, said once.
+    void cpu_experts_paged(const Layer& l, const float* x, const std::vector<Ent>& ents, size_t ldx) {
+        strata::core::ExpertSource& pool = *o.expert_pages;
+        std::vector<int32_t> ids;
+        for (const Ent& en : ents)
+            ids.push_back(en.e);
+        pool.begin_layer(l.il, ids.data(), (int64_t) ids.size());
+        for (size_t a = 0; a < ents.size();) {
+            std::vector<Ent> group, lost;
+            std::vector<int64_t> want;
+            for (; a < ents.size(); ++a) {
+                const bool known = std::find(want.begin(), want.end(), ents[a].e) != want.end();
+                if (!known && want.size() == (size_t) kCpuLaneExperts)
+                    break;
+                if (!known)
+                    want.push_back(ents[a].e);
+                group.push_back(ents[a]);
+            }
+            pool.prefetch(l.il, want.data(), (int64_t) want.size());
+            for (const int64_t e : want)
+                held[(size_t) e] = pool.blob(l.il, e);
+            const auto is_lost = [&](const Ent& en) { return held[(size_t) en.e] == nullptr; };
+            std::copy_if(group.begin(), group.end(), std::back_inserter(lost), is_lost);
+            group.erase(std::remove_if(group.begin(), group.end(), is_lost), group.end());
+            cpu_experts_mx(l, x, group, ldx, nullptr);
+            for (const Ent& en : lost) {
+                static std::atomic<bool> said{false};
+                if (!said.exchange(true))
+                    std::fprintf(stderr, "ds4: layer %d expert %d could not be read: its rows are left out\n", l.il,
+                                 en.e);
+                std::memset(c_yd.data() + (size_t) en.slot0 * g.dim, 0, (size_t) en.n * g.dim * 4);
+            }
+        }
+    }
     // the window's CPU-lane experts made ready (and pinned) in the store for the length of the call
     struct StoreHold {
         Impl* m = nullptr;
@@ -5855,6 +5998,8 @@ struct Model::Impl {
     void cpu_experts(const Layer& l, const float* x, const std::vector<Ent>& ents, size_t ldx = 0,
                      const int* ord = nullptr) {
         if (ldx == 0) ldx = (size_t) g.dim;
+        if (o.expert_pages != nullptr)
+            return cpu_experts_paged(l, x, ents, ldx);
         if (l.lay.fmt == gg::kFmtMXFP4) {
             StoreHold hold(this, l, ents);
             static const bool split = std::getenv("DS4_MISS_SPLIT") == nullptr || std::atoi(std::getenv("DS4_MISS_SPLIT")) != 0;
@@ -6237,7 +6382,11 @@ struct Model::Impl {
         if (n > 0) std::fprintf(stderr, "ds4: RAM store: %.1f GB free: gave back %zu chunks (%zu slots left)\n", avail / 1e9, n, store->slots_allocated());
     }
     void cache_tick_swaps(int T) {
-        if (!o.expert_cache || cache_ths.empty()) return;
+        if (!o.expert_cache || cache_ths.empty()) {   // (no moves: the CPU lane's hits would only pile up)
+            for (Layer& l : L)
+                l.cpu_hits.clear();
+            return;
+        }
         std::vector<Swap> ready;
         std::vector<RamSwap> rready;
         {
@@ -6287,7 +6436,7 @@ struct Model::Impl {
                 }
                 store->unmark(l.il, sw.in);
             }
-            if (l.nm == 1) set_vm(l, sw.in, l.spare_vram);
+            if (l.nm == 1) set_vm(l, sw.in, l.vram_base + (size_t) l.spare_vram * l.blob);
             l.hh[(size_t) sw.in] = {nullptr, nullptr, nullptr, nullptr};
             l.host[(size_t) sw.in] = nullptr;
             l.slot[(size_t) sw.out] = -1;
@@ -6384,6 +6533,11 @@ struct Model::Impl {
             platform::prefetch_cold(b);   // (the resident ones would only cost the page walk)
             b.clear();
         }
+    }
+    // (Options::expert_pages) a routing of layer l's expert e in a window, for the paged engine's adaptive tier
+    void count_usage(const Layer& l, int e) {
+        if (!usage.empty() && !l.mtp)
+            usage[(size_t) l.il * g.n_exp + e] += 1.0f;
     }
     // an expert the CPU lane reads from the files (neither in VRAM nor in the RAM tier)
     static bool file_read(const Layer& l, int e) {
@@ -6510,6 +6664,7 @@ struct Model::Impl {
                         if (e < 0 || e >= l.n_exp) continue;
                         ++pr[e];
                         l.heat[(size_t) e] += 1.0f;
+                        count_usage(l, e);
                         if (fl != nullptr) {
                             ++st.ahead_picks;
                             st.ahead_hit_k += fl[e] & 1;
@@ -7387,10 +7542,12 @@ struct Model::Impl {
             ++S.kp;
             if (!copy_ahead(d, c, S, di, err)) return false;
             const int v_to = (int) ((int64_t) L0.n_slots * (bi + 1) / nb);
-            if (!run_set(d, c, l, l.vram_base, 0, unit(l), c.bounds, b.data(), v_done, v_to, T, err)) return false;
+            if (!run_set(d, c, l, l.vram_base, 0, unit(l), c.bounds, b.data(), v_done, v_to, T, err, l.slot_tab))
+                return false;
             v_done = v_to;
         }
-        if (!run_set(d, c, l, l.vram_base, 0, unit(l), c.bounds, b.data(), v_done, L0.n_slots, T, err)) return false;
+        if (!run_set(d, c, l, l.vram_base, 0, unit(l), c.bounds, b.data(), v_done, L0.n_slots, T, err, l.slot_tab))
+            return false;
         if (nm > 1) allreduce(c.acc, T * D, ab, mi, ++c.arb_seq, d.xcnt, s);
         hc_post_inplace(c.acc, c.h, c.f_post, c.f_comb, D, H, T, s);
         CK(cudaMemcpyAsync(c.pre, c.f_pre, (size_t) T * 8 * 4, cudaMemcpyDeviceToDevice, s));
@@ -9182,6 +9339,7 @@ struct Model::Impl {
                 }
                 ++pr[e];
                 l.heat[(size_t) e] += 1.0f;
+                count_usage(l, e);
                 if (l.slot[(size_t) e] < 0) l.cpu_hits.push_back(e);
                 per[(size_t) e].push_back({t, i});
             }
@@ -9385,6 +9543,20 @@ Model::~Model() = default;
 bool Model::load(const Options& o, std::string& err) { return p_->load(o, err); }
 bool Model::reserve_caches(std::string& err) { return p_->reserve_caches(err); }
 bool Model::place_experts(std::string& err) { return p_->finish_load(err); }
+std::vector<ExpertFileLayout> Model::get_expert_files() const { return p_->get_expert_files(); }
+std::vector<std::string> Model::get_file_paths() const {
+    std::vector<std::string> paths;
+    for (const std::string& f : p_->pk.files)
+        paths.push_back(p_->pk.model_dir + "/" + f);
+    return paths;
+}
+std::vector<int> Model::get_heat_order(int layer) const { return p_->get_heat_order(p_->L[(size_t) layer]); }
+bool Model::set_expert_addresses(const std::vector<const uint8_t*>& at, std::string& err) {
+    return p_->set_expert_addresses(at, err);
+}
+std::vector<float>& Model::get_usage() { return p_->usage; }
+uint64_t Model::get_weight_bytes(int dev) const { return p_->devs[(size_t) dev].weights; }
+uint64_t Model::get_scratch_bytes(int dev) const { return p_->devs[(size_t) dev].scratch; }
 const Geometry& Model::geometry() const { return p_->g; }
 std::vector<uint64_t> Model::get_expert_bytes() const {
     std::vector<uint64_t> bytes;
