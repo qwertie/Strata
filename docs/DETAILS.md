@@ -1532,6 +1532,45 @@ mean KL from the stock model 0.063 nats (max 4.1), perplexity +15% on code, +2.3
 - UD-Q4_K_XL on a 64 GB PC with a 12 GB RTX 5070: 7-8.5 tok/s, picks the same tokens as llama.cpp on the same file at 97.5-99% of the
   positions of short greedy answers and 90-91% after a 16K prompt ([UNSLOTH_Q4.md](UNSLOTH_Q4.md#quality-against-llamacpp-on-the-same-file)).
 
+### Qwen page-pool benchmark budgets
+
+The Qwen timings attached to `4c047a0f` (suffix drafting), `dce39bcf` (pictures) and `0b8b86ab`
+(batch groups) used restricted memory. They do not measure performance at the owner's normal settings and do
+not establish that the replacement engine matches or beats the original engine at those settings.
+
+The saved source-setup config inspected on 3 November 2026, `strata-iq3_s.json`, selects Windows HIP,
+native IQ3_S from `Strata-data`, `--expert-cache auto --resident-experts --prefill auto --spec 4
+--spec-min-p 0.5 --mtp C:/AI-models/Strata-data/mtp/rt --max-context 204800 --kv int8 --vision
+--vram-reserve-mib 700`, with server `parallel: 2`. Its existing `strata-iq3_s.log` records 24,576 GPU
+expert slots using 46.84 GiB, 2.69 GiB of resident RAM experts and no file blob reads in the reported requests.
+These are historical configuration and residency records, not a new throughput measurement or proof of stable
+residency for a different workload. The page-pool GPU budget must also cover conversation pages; it cannot be
+set to the old expert-cache size alone. Unified memory must be counted once.
+
+For comparison, the suffix report at `%TEMP%/suffix-drafter/planner/warm/REPORT.md` used Strix Halo,
+Windows HIP, IQ3_S, 8,192 context, greedy decoding and `STRATA_SPEC_COST=1`. The new engine used
+`--gpu-mib 14336 --ram-mib 2048 --lookahead 5 --remote-experts off`; the original used
+`--mmap-experts --resident-budget-gib 2 --spec 6`. Both requested 6,000 GPU experts, disabled adaptive swaps
+and capped MTP with `--mtp-max-t 4`. Actual GPU residency differed. Two fixed warm-up rounds preceded two
+measured rounds of 64 tokens per answer; the report does not establish a residency-stability stopping condition.
+Rates below pool the two measured decode times and exclude prefill. They are retained only as restricted-memory
+results from that report; they were not rerun during this inspection.
+
+| Prompt | MTP | Original suffix off / on, tok/s | Page-pool suffix off / on, tok/s |
+|---|---|---:|---:|
+| Repetitive list | Off | 3.22 / 4.46 | 4.46 / 4.94 |
+| Seasons | Off | 3.93 / 4.03 | 6.91 / 6.68 |
+| Repetitive list | On | 4.95 / 4.86 | 5.50 / 5.50 |
+| Seasons | On | 5.71 / 5.25 | 8.81 / 9.02 |
+
+A realistic-budget rerun is pending. On inspection, Docker Desktop and its backend were running; the safety
+rule forbids inference alongside Docker. Free physical RAM was about 21.6 GiB and free commit about 62.6 GiB
+out of a 127.3 GiB limit. No engine was started and no service was stopped. Before rerunning, check both memory
+limits, reserve 16 GiB of commit and 4 GiB of physical RAM with a PID-scoped watchdog, and account for weights
+and scratch outside the pools. Use port 8091 only. Measure at least two rounds of at least 256 tokens after
+expert residency or hit rates stabilize, including one and three conversations. No new realistic-budget speed,
+identity result or optimization gain is claimed here.
+
 ### Pictures in the page-pool engines
 
 `strata-q38` reads the same `GENI` embedding files as `strata`, using the same prompt row and M-RoPE builder.
@@ -1543,6 +1582,7 @@ refuses pictures. Existing vision settings still apply; there are no new picture
 Measured on 3 November 2026, Windows HIP, Strix Halo (gfx1151), Qwen3.8 IQ3_S, 8K context, vision on,
 4,096 MiB GPU and 2,048 MiB RAM pools, 400 GPU experts, adaptation off, no drafting, temperature zero:
 one conversation gave 2.55 before / 2.65 after tokens/s; three gave 2.01 / 2.15 aggregate tokens/s.
+These restricted-memory checks do not describe the owner's normal setup (see the budget correction above).
 This is one round of 64-token answers: a picture with counting, then Python and story prompts alongside it.
 Timing starts after the last admission and excludes prefill and earlier tokens (one: 63 tokens in each run;
 three: 187 before, 183 after). Small pools on this setup do not make three conversations faster than one.
@@ -1615,6 +1655,7 @@ rounds, omitting the option measured median 3.080/2.509 tokens/s against the sav
 The original `strata.exe`, with its own 2 GiB resident budget, measured 1.985/1.879 median standalone tokens/s
 (two rounds). It refuses concurrent batching when both split stages use GPU 0, so its group speed comparison
 needs real cards. The resolved cache sizes differ, so this is not an equal-cache old/new speed comparison.
+These restricted-memory checks do not establish performance at the owner's normal expert residency.
 
 Passed in the final HIP run: two and four concurrent 16-token answers matched standalone with MTP enabled;
 the four included a picture, and two RAM-pool changes completed while decoding. A picture's continuation matched

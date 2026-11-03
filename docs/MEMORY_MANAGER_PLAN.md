@@ -384,6 +384,25 @@ test PC needs care: its commit limit is 127.6 GiB, and DeepSeek has reached it b
 commit charge first, caps each pool so that the pools and a 16 GiB margin fit, and runs with a watchdog that stops
 the engine within 16 GiB of the limit.
 
+## Qwen benchmark correction (2026-11-03)
+
+The suffix (`4c047a0f`), picture (`dce39bcf`) and batch-group (`0b8b86ab`) timings below are
+restricted-memory checks. They do not establish speed at the owner's normal IQ3_S settings. The saved
+`strata-iq3_s.json` uses `--expert-cache auto --resident-experts --prefill auto --spec 4 --spec-min-p 0.5`,
+MTP from `Strata-data/mtp/rt`, `--max-context 204800 --kv int8 --vision --vram-reserve-mib 700`, and
+server `parallel: 2`. Its historical log records 24,576 GPU expert slots (46.84 GiB) and 2.69 GiB of resident
+RAM experts. The suffix check instead requested 6,000 GPU experts with 14 GiB GPU / 2 GiB RAM pools in the
+new engine and a 2 GiB resident budget in the old engine; actual GPU residency differed. The picture check
+used 4 GiB GPU / 2 GiB RAM pools and 400 GPU experts; groups used two 2 GiB stage pools and 2 GiB RAM,
+requesting 400 experts. Their short answers and fixed warm-up counts do not meet a stable-residency,
+two-round, 256-token comparison at realistic budgets.
+
+[DETAILS.md](DETAILS.md#qwen-page-pool-benchmark-budgets) retains the historical suffix table, the saved
+settings and the rerun requirements. That rerun is blocked: Docker Desktop and its backend were running at
+inspection, while the task forbids inference alongside Docker. Available physical RAM was about 21.6 GiB;
+free commit was about 62.6 GiB of 127.3 GiB. No engine or service was started or stopped. Realistic-budget
+measurements, profiling, optimization gains and fresh greedy-identity checks remain pending.
+
 ## Pictures in the replacement engines
 
 `strata-q38` shares the old engine's embedding-file reader and rotary-coordinate builder; `strata-ds41` shares
