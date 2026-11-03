@@ -336,6 +336,28 @@ public:
     bool save_state(const PagedParts& parts, std::vector<uint8_t>& state, std::string& err) const override;
     bool restore_state(const std::vector<uint8_t>& state, const PagedParts& parts, const std::vector<int32_t>& live,
                        std::string& err) const override;
+    bool get_session_identity(strata::core::SessionFileIdentity& id, std::string& err) const override {
+        std::vector<strata::core::SessionModelFile> files;
+        for (const char* name : {"ds4.txt", "tensors.txt", "engram.bin"})
+            files.push_back({name, o_.pack + "/" + name, true});
+        const std::vector<std::string> paths = m_.get_file_paths();
+        for (size_t i = 0; i < paths.size(); ++i)
+            files.push_back({"weights " + std::to_string(i), paths[i]});
+        if (!strata::core::session_model_fingerprint(files, id.model, err))
+            return false;
+        strata::core::SessionIdentityBuilder config(0x44533431434f4e46ull);
+        config.str("slot identity", m_.slot_identity());
+#if defined(STRATA_USE_HIP)
+        config.str("backend", "hip");
+#else
+        config.str("backend", "cuda");
+#endif
+        config.i64("context", facts.context);
+        config.i64("experts per token", m_.get_experts_per_token());
+        config.i64("drafter", facts.has_drafter);
+        id.config = config.digest();
+        return true;
+    }
     std::vector<int64_t> get_rewind_points(const PagedParts& parts) const override;
     bool rewind(const PagedParts& parts, int64_t tokens, std::string& err) override;
     void forget_drafts(int) override {}

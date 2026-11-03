@@ -385,8 +385,10 @@ the engine within 16 GiB of the limit.
   take several consecutive pages where one page would waste much of a page. Open: a conversation's hole wastes the
   pages past its last whole block (a 59-page hole holds 11 blocks of 5 pages, 4 pages unused while the hole is
   partly used); filling a whole hole with K/V units would need a unit table per hole instead of per block.
-- Should a paused conversation's pages on the SSD use the session file format (`conversation_file.hpp`), so
-  "save" and "pause to SSD" are one thing? M5 writes its own (`pool_copy`: the blocks of each region, as the pool
-  holds them), and strata-q38 takes no session files.
+- Both paged engines use one checksummed file per paused conversation: model and settings identity, tokens,
+  checkpoints, model state, the layer cut and each card's pages. `SAVE <path>` persists the most recently used
+  conversation; `RESTORE <path>` puts it in the paused set for token-prefix reuse, including after a restart.
+  Named sessions and automatic SSD pauses share this format. Automatic files remain process-owned; they are not
+  adopted after a restart. Qwen restores require the same number of stages, but the layer cut may differ.
 - What the panel shows for an old engine's settings it cannot change live: greyed out, or "applies after a restart"
   with a restart button?

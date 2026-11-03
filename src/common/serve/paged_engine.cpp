@@ -9,6 +9,7 @@
 #include "strata/common/experts/ram_tier.hpp"
 #include "strata/common/experts/split_rules.hpp"
 #include "strata/common/serve/loop.hpp"
+#include "strata/common/state/pause_file.hpp"
 #include "strata/common/state/progress.hpp"
 #include "strata/common/state/resume_point.hpp"
 
@@ -93,18 +94,17 @@ struct Held {
     }
 };
 
-/// A conversation paused out of the GPU's pool: its pages in the RAM's pool or in a file on the SSD, and what the
+/// A conversation paused out of the GPU's pool: its pages in the RAM's pool or in a pause file on the SSD, and what the
 /// model kept beside them.
 struct Paused {
     uint64_t serial = 0;              ///< its number (LIST_CONVERSATIONS' parked<serial>) and its id in the RAM's pool
-    std::vector<int32_t> live;        ///< the tokens it holds
-    std::vector<int64_t> points;      ///< the positions short of its end it can go back to (get_rewind_points)
-    std::vector<uint8_t> state;       ///< the model's state beside the pages, apart from the layer cut (save_state)
+    /// its tokens, the positions short of its end it can go back to (get_rewind_points), the model's state beside the
+    /// pages (save_state) and, on the SSD, the layer cut its file has the cards' sections at (get_cut)
+    strata::core::PauseHeader head;
     int64_t priority = 0;             ///< its last request's
     uint64_t used = 0;                ///< Held::used
     uint64_t bytes = 0;               ///< its pages' bytes
-    std::string file;                 ///< on the SSD: card 0's file (get_pause_file); empty: in the RAM's pool
-    std::vector<int64_t> file_cut;    ///< on the SSD: the layer cut its files have the cards' parts at (get_cut)
+    std::string file;                 ///< on the SSD: its pause file (get_pause_file); empty: in the RAM's pool
 };
 
 /// The engine once its model is up: its conversations, the pages they share with the experts, the step that decodes
@@ -179,6 +179,28 @@ private:
     uint64_t get_largest_ram() const;
     /// Runs one GEN or BGEN line; false on a failure that ends the engine (its ERR has been printed).
     bool serve_request(const std::string& line);
+    /// Runs one `SAVE <path>` or `RESTORE <path>` line (the path runs to the line's end) between requests, and answers
+    /// with SAVED or RESTORED, or SERR when it refused or failed with nothing changed.  The server's /slots/0 sends
+    /// them; the "session" is the conversation most recently used, on the GPUs or paused.
+    void run_session_command(const std::string& line);
+    /// Writes the conversation most recently used (one that does not decode) to the pause file `path`, so that a
+    /// RESTORE of it, also by another run of the engine, continues that conversation.  When there is none or the file
+    /// could not be written, `path` is as it was.
+    void save_session(const std::string& path);
+    /// Reads the pause file `path` into the paused conversations, as the most recently used: the next request whose
+    /// prompt starts with its tokens continues it, reading only the rest.  When the file was refused or could not be
+    /// copied, nothing changed.
+    void restore_session(const std::string& path);
+    /// Prints a SERR line (SessionError `kind`, `why`) for a refused or failed SAVE or RESTORE `action` of `path`, and
+    /// says it on stderr.
+    void refuse_session(const char* action, const std::string& path, strata::core::SessionError kind,
+                        std::string why) const;
+    /// Announces on stdout a step of a SAVE or RESTORE that blocks without output, over `bytes`: `phase` (one word) and
+    /// the seconds the server allows it (SWAIT).
+    void announce_wait(const char* phase, uint64_t bytes) const;
+    /// Gets the identity files are bound to into identity_ unless it is there: the model's (PagedModel::
+    /// get_session_identity) and the layout of the pages.  False (and `err`) when the model files cannot be read.
+    bool find_identity(std::string& err);
     /// Reads `ids[from, to)` into `h` (the request began at `t0`); `read_to` gets how far it got.  Conversations that
     /// decode meanwhile take steps between the prompt's chunks (kDecodeShare).  False with `err` "cancelled" after a
     /// STOP, else on a failure that ends the engine (`fatal`: a decode step failed, its ERR printed).
@@ -231,8 +253,16 @@ private:
     uint64_t get_paused_bytes(bool in_ram) const;
     /// Gets the bytes the conversations paused in RAM may take: one conversation of --tokens-max tokens.
     uint64_t get_ram_pause_budget() const;
-    /// Gets the file on the SSD of card `card`'s part of the paused conversation of Paused::serial `serial`.
-    std::string get_pause_file(uint64_t serial, size_t card = 0) const;
+    /// Gets the pause file of the conversation of Paused::serial `serial`.
+    std::string get_pause_file(uint64_t serial) const;
+    /// Gets where the pages of the conversation held in place `h` are in each card's pool, for a pause file's sections.
+    std::vector<strata::core::PauseSection> get_gpu_sections(const Held& h) const;
+    /// Gets where the pages of the conversation paused in the RAM's pool as `serial` are, per card at the layer cut.
+    std::vector<strata::core::PauseSection> get_ram_sections(uint64_t serial) const;
+    /// Writes `p`'s pause file `path` at the layer cut p.head.cut, with the pages in `sections` (one per card); false (and
+    /// `err`) when the identity or the write failed.
+    bool save_pause_file(const Paused& p, const std::string& path,
+                         const std::vector<strata::core::PauseSection>& sections, std::string& err);
     /// Gets the paused conversation that goes first, the lowest priority then the least recently used, among those in
     /// RAM (`in_ram`) or on the SSD; paused_.end() when there is none.
     std::vector<Paused>::iterator find_lowest(bool in_ram);
@@ -296,6 +326,9 @@ private:
     std::vector<Paused> paused_;       ///< the conversations paused out of the GPU's pool
     uint64_t serial_ = 0;              ///< the last paused conversation's Paused::serial
     std::string pause_prefix_;         ///< a paused conversation's file is this, its serial and ".bin"
+    /// what pause files are bound to (find_identity): computed at the first pause to the SSD or SAVE, which reads the
+    /// model files
+    std::optional<strata::core::SessionFileIdentity> identity_;
     uint64_t requests_ = 0;            ///< the requests served so far (Held::used)
     const Held* reading_ = nullptr;    ///< the conversation whose prompt read_prompt reads, which make_room keeps
     bool residency_changed_ = false;   ///< the model's residency table changed since the devices' were uploaded
@@ -322,6 +355,18 @@ private:
 /// Gets the layers [lb, le) card `k` runs at layer cut `cut` (PagedEngine::get_cut's form) of a model of `n_layers`.
 std::pair<int64_t, int64_t> get_card_layers(const std::vector<int64_t>& cut, size_t k, int64_t n_layers) {
     return {k == 0 ? 0 : cut[k - 1], k < cut.size() ? cut[k] : n_layers};
+}
+
+/// Tells whether `cut` is a layer cut (PagedEngine::get_cut's form) of a model of `n_layers`: first layers that rise,
+/// each of a card after the first.
+bool is_layer_cut(const std::vector<int64_t>& cut, int64_t n_layers) {
+    int64_t before = 0;
+    for (const int64_t first : cut) {
+        if (first <= before || first >= n_layers)
+            return false;
+        before = first;
+    }
+    return true;
 }
 
 /// Gets how much more may be committed while a tenth of Windows' commit limit, at least 8 GiB, stays uncommitted
@@ -488,10 +533,162 @@ int PagedEngine::serve() {
             if (!serve_request(line)) return 1;
             continue;
         }
-        std::printf("ERR %s does not take %s (no session files)\n", facts_.name.c_str(),
-                    line.substr(0, line.find(' ')).c_str());
+        if (line.rfind("SAVE ", 0) == 0 || line.rfind("RESTORE ", 0) == 0) {
+            run_session_command(line);
+            continue;
+        }
+        std::printf("ERR %s does not take %s\n", facts_.name.c_str(), line.substr(0, line.find(' ')).c_str());
     }
     return loop.is_failed() ? 1 : 0;
+}
+
+void PagedEngine::run_session_command(const std::string& line) {
+    const bool save = line[0] == 'S';
+    const std::string path = line.substr(save ? 5 : 8);
+    try {
+        if (path.empty())
+            refuse_session(save ? "save" : "restore", path, strata::core::SessionError::invalid, "missing path");
+        else if (save)
+            save_session(path);
+        else
+            restore_session(path);
+    } catch (const std::bad_alloc&) {
+        refuse_session(save ? "save" : "restore", path, strata::core::SessionError::memory, "not enough host memory");
+    } catch (const std::filesystem::filesystem_error& e) {
+        refuse_session(save ? "save" : "restore", path, strata::core::SessionError::io, e.what());
+    }
+}
+
+void PagedEngine::save_session(const std::string& path) {
+    using strata::core::SessionError;
+    const Clock::time_point t0 = Clock::now();
+    const auto refuse = [&](SessionError kind, const std::string& why) { refuse_session("save", path, kind, why); };
+    const Held* held = nullptr;
+    for (const std::unique_ptr<Held>& x : held_)
+        if (!x->decoding && !x->live.empty() && (held == nullptr || x->used > held->used))
+            held = x.get();
+    const auto latest = std::max_element(paused_.begin(), paused_.end(),
+                                         [](const Paused& a, const Paused& b) { return a.used < b.used; });
+    const Paused* paused = latest != paused_.end() && (held == nullptr || latest->used > held->used) ? &*latest : nullptr;
+    if (held == nullptr && paused == nullptr)
+        return refuse(SessionError::invalid, "no complete session to save");
+    const size_t tokens = (paused != nullptr ? paused->head.live : held->live).size();
+    const uint64_t pages_bytes = paused != nullptr ? paused->bytes : held->get_bytes();
+    std::error_code ec;
+    const std::filesystem::space_info room = std::filesystem::space(std::filesystem::absolute(std::filesystem::u8path(path)).parent_path(), ec);
+    if (!ec && room.available < pages_bytes)
+        return refuse(SessionError::storage, "not enough room on the drive for " + std::to_string(pages_bytes >> 20) + " MiB");
+    std::string err;
+    if (!identity_)
+        announce_wait("fingerprint", 2u << 20);
+    if (!find_identity(err))
+        return refuse(SessionError::io, err);
+    announce_wait("write", pages_bytes);
+    Paused saved;
+    bool ok = true;
+    if (paused != nullptr && !paused->file.empty()) {
+        ok = strata::core::copy_pause_file(paused->file, path, err);
+    } else {
+        if (paused != nullptr) {
+            saved.head = paused->head;
+        } else {
+            saved.head.live = held->live;
+            saved.head.points = model_.get_rewind_points(held->parts);
+            ok = model_.save_state(held->parts, saved.head.state, err);
+        }
+        saved.head.cut = get_cut();
+        ok = ok && save_pause_file(saved, path, paused != nullptr ? get_ram_sections(paused->serial) : get_gpu_sections(*held),
+                                   err);
+    }
+    if (!ok)
+        return refuse(SessionError::io, err);
+    const uint64_t bytes = std::filesystem::file_size(std::filesystem::u8path(path), ec);
+    say("session saved: %zu tokens, %llu bytes to %s in %.1f ms\n", tokens, (unsigned long long) bytes, path.c_str(),
+        get_ms_since(t0));
+    std::printf("SAVED %zu %llu %.1f\n", tokens, (unsigned long long) bytes, get_ms_since(t0));
+    std::fflush(stdout);
+}
+
+void PagedEngine::restore_session(const std::string& path) {
+    using strata::core::SessionError;
+    const Clock::time_point t0 = Clock::now();
+    const auto refuse = [&](SessionError kind, const std::string& why) { refuse_session("restore", path, kind, why); };
+    std::string err;
+    if (!identity_)
+        announce_wait("fingerprint", 2u << 20);
+    if (!find_identity(err))
+        return refuse(SessionError::io, err);
+    Paused p;
+    std::error_code ec;
+    const uint64_t file_bytes = std::filesystem::file_size(std::filesystem::u8path(path), ec);
+    announce_wait("read", ec ? 0 : file_bytes);
+    strata::core::PauseStream file;
+    if (const SessionError kind = strata::core::open_pause_file(path, *identity_, (uint64_t) facts_.context, file, p.head, err);
+        kind != SessionError::none)
+        return refuse(kind, err);
+    file.reset();
+    if (!is_layer_cut(p.head.cut, facts_.n_layers))
+        return refuse(SessionError::invalid, path + ": damaged");
+    p.bytes = file_bytes;
+    uint64_t protected_bytes = 0;
+    for (const Paused& x : paused_)
+        if (!x.file.empty() && x.priority > p.priority)
+            protected_bytes += x.bytes;
+    if (p.bytes + protected_bytes > ((uint64_t) settings_.ssd_pause_mib << 20))
+        return refuse(SessionError::storage, "not enough room under --ssd-pause-mib after higher-priority conversations");
+    announce_wait("copy", p.bytes);
+    p.serial = ++serial_;
+    p.file = get_pause_file(p.serial);
+    if (!strata::core::copy_pause_file(path, p.file, err)) {
+        drop_pages(p);
+        return refuse(SessionError::io, err);
+    }
+    p.used = ++requests_;   // as if its conversation had just served a request
+    const size_t tokens = p.head.live.size();
+    const uint64_t serial = p.serial, bytes = p.bytes;
+    paused_.push_back(std::move(p));
+    trim_ssd();
+    if (std::none_of(paused_.begin(), paused_.end(), [&](const Paused& x) { return x.serial == serial; }))
+        return refuse(SessionError::storage, "the paused conversations of higher priority take the room");
+    say("session restored: %zu tokens, %llu bytes from %s in %.1f ms\n", tokens, (unsigned long long) bytes, path.c_str(),
+        get_ms_since(t0));
+    std::printf("RESTORED %zu %llu %.1f\n", tokens, (unsigned long long) bytes, get_ms_since(t0));
+    std::fflush(stdout);
+}
+
+void PagedEngine::refuse_session(const char* action, const std::string& path, strata::core::SessionError kind,
+                                 std::string why) const {
+    say("session %s %s: %s\n", action, path.c_str(), why.c_str());
+    std::replace_if(why.begin(), why.end(), [](char c) { return c == '\n' || c == '\r'; }, ' ');
+    std::printf("SERR %s 0 %s\n", strata::core::session_error_name(kind), why.c_str());
+    std::fflush(stdout);
+}
+
+void PagedEngine::announce_wait(const char* phase, uint64_t bytes) const {
+    std::printf("SWAIT %s %lld\n", phase, (long long) strata::core::session_phase_limit_s(bytes));
+    std::fflush(stdout);
+}
+
+bool PagedEngine::find_identity(std::string& err) {
+    if (identity_)
+        return true;
+    strata::core::SessionFileIdentity id;
+    if (!model_.get_session_identity(id, err))
+        return false;
+    // pages of another layout (the drafter's K/V present or not, another page size) are another configuration
+    const strata::core::PagePool& ram = ram_.pages().pool();
+    strata::core::SessionIdentityBuilder layout(id.config);
+    layout.u64("page_bytes", ram.page_bytes());
+    for (size_t r = 0; r < ram.layout().regions.size(); ++r) {
+        const strata::core::StateRegion& region = ram.layout().regions[r];
+        layout.u64("kind", (uint64_t) region.kind);
+        layout.u64("unit_bytes", region.unit_bytes);
+        layout.u64("rows", region.rows);
+        layout.u64("block_bytes", ram.block_bytes(r));
+    }
+    id.config = layout.digest();
+    identity_ = id;
+    return true;
 }
 
 bool PagedEngine::serve_request(const std::string& line) {
@@ -744,7 +941,7 @@ int64_t PagedEngine::take_conversation(size_t target, const std::vector<int64_t>
     }
     auto back = paused_.end();
     for (auto p = paused_.begin(); p != paused_.end(); ++p)
-        if (const int64_t start = get_start(p->live, p->points); start > most) {
+        if (const int64_t start = get_start(p->head.live, p->head.points); start > most) {
             back = p;
             most = start;
         }
@@ -763,7 +960,7 @@ int64_t PagedEngine::take_conversation(size_t target, const std::vector<int64_t>
                 return 0;
         }
     }
-    const bool whole = most == 0 || most == (int64_t) (back == paused_.end() ? h.live : back->live).size();
+    const bool whole = most == 0 || most == (int64_t) (back == paused_.end() ? h.live : back->head.live).size();
     // out of the list first: pausing the conversation in its place changes the list
     std::optional<Paused> p;
     if (back != paused_.end()) {
@@ -850,8 +1047,9 @@ bool PagedEngine::pause(Held& h, std::string& err, bool ram_only) {
     p.serial = ++serial_;
     p.priority = h.dec.priority;
     p.used = h.used;
-    p.points = model_.get_rewind_points(h.parts);
-    if (!model_.save_state(h.parts, p.state, err))
+    p.head.live = h.live;
+    p.head.points = model_.get_rewind_points(h.parts);
+    if (!model_.save_state(h.parts, p.head.state, err))
         return false;
     strata::core::PagePool& ram = ram_.pages().pool();
     const int64_t tokens = h.parts[0]->get_pool_tokens((int64_t) h.live.size());
@@ -866,28 +1064,27 @@ bool PagedEngine::pause(Held& h, std::string& err, bool ram_only) {
     } else if (ram_only) {
         err = "the RAM's pool has no room for a conversation of " + std::to_string(h.live.size()) + " tokens";
         return false;
-    } else {   // the files take every block the cards' pools gave the conversation
+    } else {   // the file takes every block the cards' pools gave the conversation
         p.file = get_pause_file(p.serial);
-        p.file_cut = get_cut();
+        p.head.cut = get_cut();
         p.bytes = h.get_bytes();
     }
     bool ok = true;
-    for (size_t k = 0; ok && k < h.parts.size(); ++k) {
+    for (size_t k = 0; in_ram && ok && k < h.parts.size(); ++k) {
         const PagedCard& card = cards_[k];
         const strata::core::OnDevice on(card.dev);
-        const strata::core::ConversationId id = h.parts[k]->id();
-        ok = in_ram ? strata::core::copy_conversation(card.experts.pool(), id, ram, p.serial, err,
-                                                      model_.get_gpu_span(card), model_.get_ram_span(card.lb, card.le))
-                    : strata::core::save_conversation(card.experts.pool(), id, get_pause_file(p.serial, k), err,
-                                                      model_.get_gpu_span(card));
+        ok = strata::core::copy_conversation(card.experts.pool(), h.parts[k]->id(), ram, p.serial, err,
+                                             model_.get_gpu_span(card), model_.get_ram_span(card.lb, card.le));
     }
+    ok = in_ram ? ok : save_pause_file(p, p.file, get_gpu_sections(h), err);
     if (!ok) {
         drop_pages(p);
         return false;
     }
+    if (!in_ram)
+        p.bytes = std::filesystem::file_size(p.file);
     say("a conversation of %zu tokens is paused %s (%.0f MiB in %.0f ms)\n", h.live.size(),
         p.file.empty() ? "in RAM" : "on the SSD", (double) p.bytes / 1048576.0, get_ms_since(t0));
-    p.live = std::move(h.live);
     h.live.clear();
     for (const std::unique_ptr<PagedPart>& part : h.parts)
         part->release();
@@ -898,21 +1095,27 @@ bool PagedEngine::pause(Held& h, std::string& err, bool ram_only) {
 
 bool PagedEngine::resume(const Paused& p, Held& h, std::string& err) {
     const Clock::time_point t0 = Clock::now();
-    if ((!h.has_pages() && !init_pages(h, err)) || !make_room(h, (int64_t) p.live.size(), err))
+    const std::vector<int32_t>& live = p.head.live;
+    if ((!h.has_pages() && !init_pages(h, err)) || !make_room(h, (int64_t) live.size(), err))
         return false;
     strata::core::PagePool& ram = ram_.pages().pool();
-    // files of the cards' parts at another cut come together in the RAM's pool, whose layout has every layer
-    const bool through_ram = !p.file.empty() && p.file_cut != get_cut();
+    strata::core::PauseStream file;
+    strata::core::PauseHeader unused;   // (p.head is the file's own)
+    if (!p.file.empty() &&
+        (!find_identity(err) || open_pause_file(p.file, *identity_, (uint64_t) facts_.context, file, unused, err) !=
+                                    strata::core::SessionError::none))
+        return false;
+    // sections of cards at another cut come together in the RAM's pool, whose layout has every layer
+    const bool through_ram = !p.file.empty() && p.head.cut != get_cut();
     if (through_ram) {
-        const int64_t tokens = h.parts[0]->get_pool_tokens((int64_t) p.live.size());
+        const int64_t tokens = h.parts[0]->get_pool_tokens((int64_t) live.size());
         if (const std::string why = ram.grow_conversation(p.serial, tokens); !why.empty()) {
             err = "the RAM's pool has no room for a conversation paused before the layer cut moved: " + why;
             return false;
         }
-        for (size_t k = 0; k < cards_.size(); ++k) {
-            const auto [lb, le] = get_card_layers(p.file_cut, k, facts_.n_layers);
-            if (!strata::core::load_conversation(get_pause_file(p.serial, k), ram, p.serial, err,
-                                                 model_.get_ram_span(lb, le))) {
+        for (size_t k = 0; k <= p.head.cut.size(); ++k) {
+            const auto [lb, le] = get_card_layers(p.head.cut, k, facts_.n_layers);
+            if (!strata::core::read_conversation_section(file.get(), ram, p.serial, err, model_.get_ram_span(lb, le))) {
                 ram.remove_conversation(p.serial);
                 return false;
             }
@@ -926,15 +1129,15 @@ bool PagedEngine::resume(const Paused& p, Held& h, std::string& err) {
         ok = p.file.empty() || through_ram
                  ? strata::core::copy_conversation(ram, p.serial, card.experts.pool(), id, err,
                                                    model_.get_ram_span(card.lb, card.le), model_.get_gpu_span(card))
-                 : strata::core::load_conversation(get_pause_file(p.serial, k), card.experts.pool(), id, err,
-                                                   model_.get_gpu_span(card));
+                 : strata::core::read_conversation_section(file.get(), card.experts.pool(), id, err,
+                                                           model_.get_gpu_span(card));
     }
     if (through_ram)
         ram.remove_conversation(p.serial);
-    if (!ok || !model_.restore_state(p.state, h.parts, p.live, err))
+    if (!ok || !model_.restore_state(p.head.state, h.parts, live, err))
         return false;
-    h.live = p.live;
-    say("a conversation of %zu tokens is back from %s (%.0f ms)\n", p.live.size(), p.file.empty() ? "RAM" : "the SSD",
+    h.live = live;
+    say("a conversation of %zu tokens is back from %s (%.0f ms)\n", live.size(), p.file.empty() ? "RAM" : "the SSD",
         get_ms_since(t0));
     return true;
 }
@@ -949,18 +1152,16 @@ bool PagedEngine::move_down() {
 
 void PagedEngine::move_to_ssd(std::vector<Paused>::iterator p) {
     std::string err;
-    bool ok = true;
-    for (size_t k = 0; ok && k < cards_.size(); ++k)
-        ok = strata::core::save_conversation(ram_.pages().pool(), p->serial, get_pause_file(p->serial, k), err,
-                                             model_.get_ram_span(cards_[k].lb, cards_[k].le));
-    drop_pages(*p);
-    p->file = get_pause_file(p->serial);
-    p->file_cut = get_cut();
+    const std::string file = get_pause_file(p->serial);
+    p->head.cut = get_cut();
+    const bool ok = save_pause_file(*p, file, get_ram_sections(p->serial), err);
+    drop_pages(*p);   // (the RAM's pool's: p->file is empty yet)
     if (ok) {
+        p->file = file;
+        p->bytes = std::filesystem::file_size(file);
         trim_ssd();
         return;
     }
-    drop_pages(*p);   // the files written before the one that failed
     say("moving a paused conversation to the SSD failed, so it is forgotten: %s\n", err.c_str());
     paused_.erase(p);
 }
@@ -974,7 +1175,7 @@ void PagedEngine::trim_ssd() {
     const uint64_t budget = (uint64_t) settings_.ssd_pause_mib << 20;
     while (get_paused_bytes(false) > budget) {
         const auto p = find_lowest(false);
-        say("a paused conversation of %zu tokens is forgotten (--ssd-pause-mib %lld)\n", p->live.size(),
+        say("a paused conversation of %zu tokens is forgotten (--ssd-pause-mib %lld)\n", p->head.live.size(),
             (long long) settings_.ssd_pause_mib);
         drop_pages(*p);
         paused_.erase(p);
@@ -983,10 +1184,10 @@ void PagedEngine::trim_ssd() {
 
 void PagedEngine::drop_pages(const Paused& p) {
     std::error_code ec;
-    for (size_t k = 0; !p.file.empty() && k < cards_.size(); ++k)
-        std::filesystem::remove(get_pause_file(p.serial, k), ec);
     if (p.file.empty())
         ram_.pages().pool().remove_conversation(p.serial);
+    else
+        std::filesystem::remove(p.file, ec);
 }
 
 uint64_t PagedEngine::get_paused_bytes(bool in_ram) const {
@@ -1002,8 +1203,27 @@ uint64_t PagedEngine::get_ram_pause_budget() const {
     return ram.pages_for(settings_.tokens_max) * ram.page_bytes();
 }
 
-std::string PagedEngine::get_pause_file(uint64_t serial, size_t card) const {
-    return pause_prefix_ + std::to_string(serial) + (card > 0 ? "-" + std::to_string(card) : "") + ".bin";
+std::string PagedEngine::get_pause_file(uint64_t serial) const {
+    return pause_prefix_ + std::to_string(serial) + ".bin";
+}
+
+std::vector<strata::core::PauseSection> PagedEngine::get_gpu_sections(const Held& h) const {
+    std::vector<strata::core::PauseSection> sections;
+    for (const PagedCard& card : cards_)
+        sections.push_back({&card.experts.pool(), h.parts[card.index]->id(), model_.get_gpu_span(card), card.dev});
+    return sections;
+}
+
+std::vector<strata::core::PauseSection> PagedEngine::get_ram_sections(uint64_t serial) const {
+    std::vector<strata::core::PauseSection> sections;
+    for (const PagedCard& card : cards_)
+        sections.push_back({&ram_.pages().pool(), serial, model_.get_ram_span(card.lb, card.le)});
+    return sections;
+}
+
+bool PagedEngine::save_pause_file(const Paused& p, const std::string& path,
+                                  const std::vector<strata::core::PauseSection>& sections, std::string& err) {
+    return find_identity(err) && strata::core::write_pause_file(path, *identity_, p.head, sections, err);
 }
 
 std::vector<Paused>::iterator PagedEngine::find_lowest(bool in_ram) {
@@ -1133,8 +1353,8 @@ std::vector<strata::core::HeldConversation> PagedEngine::list_conversations() co
         c.id = "parked" + std::to_string(p.serial);
         c.place = p.file.empty() ? "ram" : "disk";
         c.state = "parked";
-        c.ids = p.live.data();
-        c.n = c.capacity = p.live.size();
+        c.ids = p.head.live.data();
+        c.n = c.capacity = p.head.live.size();
         c.bytes = c.used = p.bytes;
         list.push_back(c);
     }

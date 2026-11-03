@@ -44,6 +44,7 @@
 #include "strata/models/qwen38/layer.hpp"
 #include "strata/core/layout.hpp"
 #include "strata/models/qwen38/session.hpp"
+#include "strata/models/qwen38/session_identity.hpp"
 #include "strata/base/gpu/gfx_arch.hpp"
 #include "strata/common/kernels/cpu/pool.hpp"
 #include "strata/base/platform/aux_cpus.hpp"
@@ -1073,7 +1074,6 @@ int main(int argc, char** argv) {
     auto& split_same = model.split_same;
     auto& multi_gpu = model.multi_gpu;
     auto& remote_caches = model.remote_caches;
-    auto& rope_cfg = model.rope_cfg;
     auto& err = model.err;
     auto& native_pack = model.native_pack;
     auto& g = model.g;
@@ -1085,7 +1085,6 @@ int main(int argc, char** argv) {
     auto& d_mrope = model.d_mrope;
     auto& mrope_host = model.mrope_host;
     auto& cvec_summary = model.cvec_summary;
-    auto& cvec_digest = model.cvec_digest;
     auto& ss = model.ss;
     auto& sbuf = model.sbuf;
     auto& main_stream = model.main_stream;
@@ -3214,68 +3213,13 @@ int main(int argc, char** argv) {
         auto session_identity = [&](strata::core::SessionFileIdentity& id, std::string& e,
                                     const std::function<void()>& next_file) -> bool {
             if (!model_fp) {
-                // what the loaders actually resolved: the CLI inputs, the pack's files and - from the expert source
-                // itself - every file its experts were read from (native_experts.txt can name GGUFs per layer/role)
-                strata::core::SessionInputs in;
-                in.native_shards = o.native_shards;
-                in.native_dense = o.native_dense_gguf;
-                in.native_head = o.native_head_shards;
-                in.embedding = o.embd_gguf;
-                in.ple = o.ple_gguf;
-                in.pack = o.pack;
-                in.mtp = o.mtp.empty() ? std::string() : o.mtp + "/dense.bin";
-                if (srcp != nullptr) in.experts = srcp->model_inputs();
-                std::vector<strata::core::SessionModelFile> files = strata::core::session_model_inputs(in);
-                // the pack's other files the loader reads (weights.cpp, expert_layout.cpp)
-                if (!o.pack.empty()) {
-                    for (const char* n : {"index.txt", "dense.bin"}) files.push_back({std::string("pack ") + n, o.pack + "/" + n});
-                    for (const char* n : {"embd.bin", "extra.bin", "manifest.json"})
-                        files.push_back({std::string("pack ") + n, o.pack + "/" + n, true});
-                    if (srcp == nullptr) files.push_back({"pack experts.bin", o.pack + "/experts.bin", true});
-                }
-                if (!o.mtp.empty()) {
-                    for (const char* n : {"dense.txt", "experts.bin"}) files.push_back({std::string("mtp ") + n, o.mtp + "/" + n});
-                    files.push_back({"mtp draft_vocab.bin", o.mtp + "/draft_vocab.bin", true});
-                }
                 uint64_t fp = 0;
-                // each file is one blocking read of at most 2 MiB (head and tail): announced before it starts
-                if (next_file) next_file();
-                if (!strata::core::session_model_fingerprint(files, fp, e, next_file))
+                if (!strata::qwen38::get_session_model_fingerprint(model, srcp, fp, e, next_file))
                     return false;
                 model_fp = fp;
             }
-            if (!config_fp) {
-                strata::core::SessionConfig c;
-                c.engine_version = STRATA_VERSION;
-#if defined(STRATA_USE_HIP)
-                c.backend = "hip";
-#else
-                c.backend = "cuda";
-#endif
-                c.kv = o.kv;
-                c.max_context = o.max_context;
-                c.kv_resident = o.kv_resident;
-                c.mtp_window = o.mtp.empty() ? -1 : o.mtp_window;
-                const char* rot = std::getenv("STRATA_KV_ROT");
-                c.kv_rot = rot != nullptr && rot[0] == '1';
-                c.rope = {(int64_t) rope_cfg.type, rope_cfg.freq_base, rope_cfg.factor, rope_cfg.freq_scale(),
-                          rope_cfg.orig_ctx, rope_cfg.ext_factor, rope_cfg.attn_factor, rope_cfg.beta_fast,
-                          rope_cfg.beta_slow};
-                c.cvec = cvec_digest;
-                c.switches = {
-                    {"no_ple", o.no_ple}, {"native_bf16", o.native_bf16}, {"native_bf16_extra", o.native_bf16_extra},
-                    {"native_ple_key", o.native_ple_key}, {"native_moe_combine", o.native_moe_combine},
-                    {"native_gdn", o.native_gdn}, {"native_flash_attn_short", o.native_flash_attn_short},
-                    {"native_qsa_indexer", o.native_qsa_indexer}, {"native_qsa", o.native_qsa},
-                    {"native_rope", o.native_rope}, {"native_ple_postops", o.native_ple_postops},
-                    {"native_router", o.native_router}, {"cpu_oracle_q8_0", o.cpu_oracle_q8_0},
-                    {"gr_fp32_activations", o.gr_fp32_activations}, {"gr_native_mmvf", o.gr_native_mmvf},
-                    {"native_preset", !o.native_preset.empty()}, {"shared_late", o.shared_late},
-                    {"keep_canonical", o.keep_canonical}, {"no_fused_gr", o.no_fused_gr},
-                    {"no_fast_attn", o.no_fast_attn}, {"no_fused_gdn", o.no_fused_gdn},
-                    {"no_fast_select", o.no_fast_select}, {"vision", o.vision}};
-                config_fp = strata::core::session_config_fingerprint(c);
-            }
+            if (!config_fp)
+                config_fp = strata::qwen38::get_session_config_fingerprint(model);
             id.model = *model_fp;
             id.config = *config_fp;
             return true;

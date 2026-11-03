@@ -592,7 +592,7 @@ if(STRATA_ENABLE_CUDA OR STRATA_ENABLE_HIP)
   add_library(strata_engine STATIC src/base/gpu/vmm.cpp
     src/common/state/conversation_memory.cpp src/common/state/conversation_file.cpp
     src/common/experts/expert_profile.cpp src/common/experts/ram_tier.cpp src/common/experts/expert_pages.cpp
-    src/common/experts/ram_experts.cpp src/common/state/pool_copy.cpp
+    src/common/experts/ram_experts.cpp src/common/state/pool_copy.cpp src/common/state/pause_file.cpp
     src/core/expert_source.cpp src/core/remote_experts.cpp src/core/remote_expert_opt.cu src/core/expert_cache.cpp
     src/core/peer_experts.cpp src/core/arch_defaults.cpp src/core/nv_defaults.cpp
     src/models/qwen38/layer.cpp src/models/qwen38/session.cpp src/models/qwen38/native_head.cpp
@@ -610,7 +610,7 @@ if(STRATA_ENABLE_CUDA OR STRATA_ENABLE_HIP)
   endif()
   if(STRATA_BUILD_TESTS)
     # the memory manager's RAM tier (docs/MEMORY_MANAGER_PLAN.md M5): on host memory, through the runtime's copies
-    foreach(_t common/state/pool_copy common/experts/ram_experts)
+    foreach(_t common/state/pool_copy common/state/pause_file common/experts/ram_experts)
       get_filename_component(_n ${_t} NAME)
       add_executable(${_n}_test src/${_t}_test.cpp)
       target_link_libraries(${_n}_test PRIVATE strata_engine)
@@ -790,7 +790,8 @@ if(STRATA_ENABLE_CUDA OR STRATA_ENABLE_HIP)
   # Qwen3.8's model loader (strata::qwen38::Model), which the `strata` program below calls
   add_library(strata_qwen38 STATIC src/models/qwen38/model.cpp src/models/qwen38/conversation.cpp
               src/models/qwen38/options.cpp src/models/qwen38/conversation_pages.cpp
-              src/models/qwen38/conversation_drafter.cpp src/models/qwen38/paged_model.cpp)
+              src/models/qwen38/conversation_drafter.cpp src/models/qwen38/paged_model.cpp
+              src/models/qwen38/session_identity.cpp)
   target_include_directories(strata_qwen38 PRIVATE ${_strata_gpu_include_directories})
   target_link_libraries(strata_qwen38 PUBLIC strata_engine strata_prefill strata_paged strata_serve strata_spec
                         strata_state strata_split ${_strata_gpu_runtime_target})

@@ -1,4 +1,4 @@
-// src/common/state/pool_copy.cpp - a conversation's pages between page pools and files (pool_copy.hpp).
+// src/common/state/pool_copy.cpp - a conversation's pages between page pools and file sections (pool_copy.hpp).
 #include "strata/common/state/pool_copy.hpp"
 
 #include "strata/base/gpu/runtime.hpp"
@@ -9,13 +9,7 @@
 #include <cstdio>
 #include <cstring>
 #include <filesystem>
-#include <memory>
 #include <vector>
-#if defined(_WIN32)
-#include <io.h>
-#else
-#include <unistd.h>
-#endif
 
 namespace strata::core {
 namespace {
@@ -23,12 +17,10 @@ namespace {
 /// The start of every pause file's name (get_pause_file_prefix).
 constexpr char kPausePrefix[] = "paused-";
 
-/// The file's first bytes; then the region count, and per region its block bytes and block count (uint64_t each).
+/// A section's first bytes; then the piece count, and per piece its block bytes and block count (uint64_t each).
 constexpr char kMagic[8] = {'S', 'T', 'R', 'P', 'A', 'G', 'E', '1'};
 /// The host buffer the bytes of a GPU's pages pass through on their way to and from a file.
 constexpr size_t kBounceBytes = 8u << 20;
-
-using File = std::unique_ptr<std::FILE, int (*)(std::FILE*)>;
 
 /// One region of a span, or the share of a fixed region a span takes: the bytes of each of its blocks from `offset`.
 struct Piece {
@@ -104,46 +96,35 @@ bool copy_conversation(const PagePool& from, ConversationId from_id, const PageP
     return true;
 }
 
-bool save_conversation(const PagePool& pool, ConversationId id, const std::string& path, std::string& err,
-                       RegionSpan span) {
+bool write_conversation_section(std::FILE* file, const PagePool& pool, ConversationId id, std::string& err,
+                                RegionSpan span) {
     std::vector<Piece> pieces;
-    if (!get_pieces(pool, span, pieces, err))
+    if (!file || !get_pieces(pool, span, pieces, err))
         return false;
-    File f(std::fopen(path.c_str(), "wb"), &std::fclose);
     std::vector<uint64_t> head{pieces.size()};
     for (const Piece& c : pieces)
         head.insert(head.end(), {c.bytes, pool.conversation_blocks(id, c.region).size()});
     std::vector<uint8_t> bounce(kBounceBytes);
-    bool ok = f != nullptr && std::fwrite(kMagic, 1, sizeof kMagic, f.get()) == sizeof kMagic &&
-              std::fwrite(head.data(), sizeof(uint64_t), head.size(), f.get()) == head.size();
+    bool ok = std::fwrite(kMagic, 1, sizeof kMagic, file) == sizeof kMagic &&
+              std::fwrite(head.data(), sizeof(uint64_t), head.size(), file) == head.size();
     for (const Piece& c : pieces)
         for (const PageId p : pool.conversation_blocks(id, c.region))
-            ok = ok && copy_through(f.get(), pool.page_address(p) + c.offset, c.bytes, true, bounce);
-#if defined(_WIN32)
-    ok = ok && std::fflush(f.get()) == 0 && _commit(_fileno(f.get())) == 0;
-#else
-    ok = ok && std::fflush(f.get()) == 0 && fsync(fileno(f.get())) == 0;
-#endif
-    if (f != nullptr)
-        ok = std::fclose(f.release()) == 0 && ok;
-    if (ok)
-        return true;
-    std::remove(path.c_str());
-    err = "could not write the paused conversation to " + path;
-    return false;
+            ok = ok && copy_through(file, pool.page_address(p) + c.offset, c.bytes, true, bounce);
+    if (!ok)
+        err = "could not write a conversation page section";
+    return ok;
 }
 
-bool load_conversation(const std::string& path, const PagePool& pool, ConversationId id, std::string& err,
-                       RegionSpan span) {
+bool read_conversation_section(std::FILE* file, const PagePool& pool, ConversationId id, std::string& err,
+                               RegionSpan span) {
     std::vector<Piece> pieces;
-    if (!get_pieces(pool, span, pieces, err))
+    if (!file || !get_pieces(pool, span, pieces, err))
         return false;
-    File f(std::fopen(path.c_str(), "rb"), &std::fclose);
     char magic[sizeof kMagic] = {};
     std::vector<uint64_t> head(1 + 2 * pieces.size());
-    bool ok = f != nullptr && std::fread(magic, 1, sizeof magic, f.get()) == sizeof magic &&
+    bool ok = std::fread(magic, 1, sizeof magic, file) == sizeof magic &&
               std::memcmp(magic, kMagic, sizeof magic) == 0 &&
-              std::fread(head.data(), sizeof(uint64_t), head.size(), f.get()) == head.size() &&
+              std::fread(head.data(), sizeof(uint64_t), head.size(), file) == head.size() &&
               head[0] == pieces.size();
     std::vector<uint8_t> bounce(kBounceBytes);
     for (size_t i = 0; ok && i < pieces.size(); ++i) {
@@ -151,17 +132,17 @@ bool load_conversation(const std::string& path, const PagePool& pool, Conversati
         const std::vector<PageId>& blocks = pool.conversation_blocks(id, pieces[i].region);
         ok = block == pieces[i].bytes && stored >= blocks.size();
         for (size_t b = 0; ok && b < blocks.size(); ++b)
-            ok = copy_through(f.get(), pool.page_address(blocks[b]) + pieces[i].offset, block, false, bounce);
-        // past the file's blocks the conversation does not hold (cells it had for guesses when it was saved)
-        const int64_t skip = ok ? (int64_t) ((stored - blocks.size()) * block) : 0;
-#if defined(_WIN32)
-        ok = ok && _fseeki64(f.get(), skip, SEEK_CUR) == 0;
-#else
-        ok = ok && fseeko(f.get(), (off_t) skip, SEEK_CUR) == 0;
-#endif
+            ok = copy_through(file, pool.page_address(blocks[b]) + pieces[i].offset, block, false, bounce);
+        for (uint64_t b = blocks.size(); ok && b < stored; ++b) {
+            for (uint64_t at = 0; ok && at < block;) {
+                const size_t n = (size_t) std::min<uint64_t>(bounce.size(), block - at);
+                ok = std::fread(bounce.data(), 1, n, file) == n;
+                at += n;
+            }
+        }
     }
     if (!ok)
-        err = "could not read the paused conversation from " + path;
+        err = "could not read a conversation page section";
     return ok;
 }
 

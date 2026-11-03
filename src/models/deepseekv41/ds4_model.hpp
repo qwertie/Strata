@@ -159,6 +159,8 @@ public:
 
     /// Gets the model's shapes (load's).
     const Geometry& geometry() const;
+    /// Gets the resolved number of routed experts used by a trunk token.
+    int get_experts_per_token() const;
     /// Gets the bytes of one routed expert of each layer: the trunk's, then the DSpark blocks' when they are loaded.
     std::vector<uint64_t> get_expert_bytes() const;
     /// Gets where each layer's routed experts (get_expert_bytes' layers) lie in the model's files (a GGUF pack's).

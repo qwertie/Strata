@@ -17,6 +17,7 @@
 #include "strata/models/qwen38/kernels/verify_kernels.hpp"
 #include "strata/models/qwen38/model.hpp"
 #include "strata/models/qwen38/options.hpp"
+#include "strata/models/qwen38/session_identity.hpp"
 
 #include <cuda_runtime.h>
 
@@ -157,6 +158,12 @@ public:
     bool save_state(const PagedParts& parts, std::vector<uint8_t>& state, std::string& err) const override;
     bool restore_state(const std::vector<uint8_t>& state, const PagedParts& parts, const std::vector<int32_t>& live,
                        std::string& err) const override;
+    bool get_session_identity(strata::core::SessionFileIdentity& id, std::string& err) const override {
+        strata::core::SessionIdentityBuilder config(get_session_config_fingerprint(m_));
+        config.u64("stages", cards_.size());
+        id.config = config.digest();
+        return get_session_model_fingerprint(m_, &m_.src, id.model, err);
+    }
     void forget_drafts(int session) override { drafter_->forget(session); }
     int64_t get_prompt_chunk() const override { return conv_.sp.chunk(); }
     bool read_prompt(const PagedParts& parts, const std::vector<int64_t>& ids, int64_t from, int64_t n, bool drafting,
@@ -598,12 +605,20 @@ bool PagedQwen::restore_state(const std::vector<uint8_t>& state, const PagedPart
     const size_t per_layer = z.tail + z.dead + z.block_pos;
     size_t at = 0;
     const size_t qsa = read_size(state, at);
+    if (qsa > state.size() - at) {
+        err = "the paused conversation's QSA state is damaged";
+        return false;
+    }
     const auto qsa_begin = state.begin() + (std::ptrdiff_t) at;
     at += qsa;
     for (const std::unique_ptr<strata::serve::PagedPart>& part : parts) {
         Part& p = get_part(*part);
         const strata::core::OnDevice on(p.dev);
         const size_t n = read_size(state, at);
+        if (n > state.size() - at || (size_t) (p.ss.qsa_ord0 + p.ss.qsa_alloc) * per_layer > qsa) {
+            err = "the paused conversation's running state is damaged";
+            return false;
+        }
         std::vector<uint8_t> one(state.begin() + (std::ptrdiff_t) at, state.begin() + (std::ptrdiff_t) (at + n));
         at += n;
         const auto first = qsa_begin + (std::ptrdiff_t) ((size_t) p.ss.qsa_ord0 * per_layer);
@@ -884,6 +899,8 @@ void append_size(std::vector<uint8_t>& bytes, uint64_t n) {
 /// Reads a size append_size wrote at `at` in `bytes` and moves `at` past it.
 uint64_t read_size(const std::vector<uint8_t>& bytes, size_t& at) {
     uint64_t n = 0;
+    if (at > bytes.size() || bytes.size() - at < sizeof n)
+        return UINT64_MAX;
     std::memcpy(&n, bytes.data() + at, sizeof n);
     at += sizeof n;
     return n;

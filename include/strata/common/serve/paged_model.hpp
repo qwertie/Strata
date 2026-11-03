@@ -13,6 +13,7 @@
 #include "strata/common/experts/layer_split.hpp"
 #include "strata/common/serve/request.hpp"
 #include "strata/common/spec/step.hpp"
+#include "strata/common/state/conversation_file.hpp"
 #include "strata/common/state/pool_copy.hpp"
 
 #include <cstdint>
@@ -216,6 +217,10 @@ public:
     /// its pages are back.
     virtual bool restore_state(const std::vector<uint8_t>& state, const PagedParts& parts,
                                const std::vector<int32_t>& live, std::string& err) const = 0;
+    /// Gets what a conversation saved to a file (a pause file on the SSD, a saved session) is bound to into `id`: a
+    /// fingerprint of the model's files, and one of the settings that change what the saved bytes mean.  False (and
+    /// `err`) when a model file cannot be read.  The engine asks once, when it first needs an identity.
+    virtual bool get_session_identity(strata::core::SessionFileIdentity& id, std::string& err) const = 0;
     /// Gets the positions short of its end that the conversation of `parts` can go back to (rewind), so that a prompt
     /// that leaves it there continues it (strata/common/state/resume_point.hpp): DeepSeek's checkpoints; none by
     /// default (Qwen3.8's GDN state goes only forward).

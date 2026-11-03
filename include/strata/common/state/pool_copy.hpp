@@ -7,6 +7,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <cstdio>
 #include <string>
 #include <vector>
 
@@ -38,10 +39,15 @@ struct RegionSpan {
 /// return.
 bool copy_conversation(const PagePool& from, ConversationId from_id, const PagePool& to, ConversationId to_id,
                        std::string& err, RegionSpan from_span = {}, RegionSpan to_span = {});
-/// Writes the blocks of conversation `id`'s pieces `span` in `pool` to a new file at `path`, flushed to the drive
-/// before it returns.  When that fails, no file is left.
-bool save_conversation(const PagePool& pool, ConversationId id, const std::string& path, std::string& err,
-                       RegionSpan span = {});
+/// Writes the blocks of conversation `id`'s pieces `span` in `pool` as one section at the current position of an open
+/// binary stream (a pause file's, pause_file.hpp): per piece its block bytes and count, then the blocks.
+bool write_conversation_section(std::FILE* file, const PagePool& pool, ConversationId id, std::string& err,
+                                RegionSpan span = {});
+/// Reads the section write_conversation_section wrote at the current position of an open binary stream into the blocks
+/// of conversation `id`'s pieces `span` in `pool`: per piece, as many of the section's first blocks as the conversation
+/// holds, which the section must hold too.  The stream is left after the section.
+bool read_conversation_section(std::FILE* file, const PagePool& pool, ConversationId id, std::string& err,
+                               RegionSpan span = {});
 /// Gets the start of the names of this process's files of paused conversations in folder `dir`: "paused-", its
 /// process id, the time now and "-", so that engines sharing the folder keep apart and remove_stale_pause_files can
 /// tell whose a file is.
@@ -49,9 +55,5 @@ std::string get_pause_file_prefix(const std::string& dir);
 /// Deletes the files of paused conversations in folder `dir` whose process no longer runs (it crashed or was killed
 /// before it could delete them); gets how many.  A file whose process id a new process has taken stays.
 int remove_stale_pause_files(const std::string& dir);
-/// Reads a file save_conversation wrote into the blocks of conversation `id`'s pieces `span` in `pool`: per piece, as
-/// many of the file's first blocks as the conversation holds, which the file must hold too.
-bool load_conversation(const std::string& path, const PagePool& pool, ConversationId id, std::string& err,
-                       RegionSpan span = {});
 
 }  // namespace strata::core

@@ -5430,7 +5430,7 @@ struct Model::Impl {
         if (c.win.size() != L.size() || c.comp.size() != 2 * L.size())
             return "a checkpoint of " + std::to_string(c.win.size()) + " layers, not " + std::to_string(L.size());
         for (size_t i = 0; i < L.size(); ++i) {
-            const size_t group = L[i].c_kv ? (size_t) L[i].ratio * g.hd : 0;
+            const size_t group = L[i].kv_src && L[i].ratio > 1 ? (size_t) L[i].ratio * g.hd : 0;
             if (c.win[i].size() != (size_t) g.win * win_rb() || c.comp[2 * i].size() != group ||
                 c.comp[2 * i + 1].size() != group)
                 return "a checkpoint whose layer " + std::to_string(i) + " is not this model's";
@@ -9759,6 +9759,7 @@ uint64_t Model::slot_save(std::vector<uint8_t>& out, std::string& err) { return 
 bool Model::slot_load(const uint8_t* data, size_t bytes, int64_t n_pos, std::string& err) {
     return p_->slot_load(data, bytes, n_pos, err);
 }
+int Model::get_experts_per_token() const { return p_->L.empty() ? 0 : p_->L[0].k_exp; }
 std::string Model::slot_identity() const { return p_->slot_identity(); }
 void Model::save_profile() const { p_->save_profile(); }
 const Stats& Model::stats() const {
