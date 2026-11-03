@@ -49,9 +49,11 @@ struct FakeModel {
     }
     std::vector<int> asked;   ///< the `n` of each propose call
     void add_drafter(StepModel& m) {
-        m.propose = [this](int, int32_t token, int64_t, int n, int32_t* out) {
+        m.propose = [this](int, int32_t token, int64_t, int n, int32_t* out, DraftContext* draft) {
             check(active > 0 || n == 0, "preparation precedes requests for guesses");
             asked.push_back(n);
+            if (draft && draft->probs)
+                std::fill_n(draft->probs, n, 0.95f);
             for (int i = 0; i < n; ++i)
                 out[i] = i < right ? token + 1 + i : 0;
             return n;
@@ -168,6 +170,126 @@ int main() {
         fm.last.clear();
         Decoding c = conversation(0, 10, 100, 50);
         check(step.run({&c}, err) && std::string(c.finish) == "length" && fm.last.empty(), "no room: no row");
+    }
+    {
+        FakeModel fm;
+        Step step(fm.hooks(), {});
+        step.settings = {2, 8, 3};
+        Decoding a = conversation(0, 12, 8, 20), b = conversation(1, 32, 8, 20);
+        const std::vector<int32_t> ah{10, 11, 12, 13, 14, 15, 10, 11, 12};
+        const std::vector<int32_t> bh{30, 31, 32, 33, 34, 35, 30, 31, 32};
+        a.produced = b.produced = 1;
+        a.planner = std::make_unique<WindowPlanner>(8, 8, 3, 0, 3, 64);
+        b.planner = std::make_unique<WindowPlanner>(8, 8, 3, 0, 3, 64);
+        a.planner->sfx.append(ah.data(), ah.size());
+        b.planner->sfx.append(bh.data(), bh.size());
+        std::string err;
+        check(step.run({&a, &b}, err) && a.emitted == std::vector<int32_t>({13, 14, 15}) &&
+                  b.emitted == std::vector<int32_t>({33, 34, 35}), "independent lookup windows");
+        check(a.suffix_offered == 2 && a.suffix_kept == 2 && a.planner->sfx.history().back() == 15,
+              "lookup counts and history include only accepted tokens");
+        a = conversation(0, 12, 8, 20);
+        a.produced = 1;
+        a.planner = std::make_unique<WindowPlanner>(8, 8, 3, 0, 3, 64);
+        a.planner->sfx.append(ah.data(), ah.size());
+        step.settings.max_draft_conversations = 1;
+        check(step.run({&a, &b}, err) && a.emitted.size() == 1 && a.suffix_offered == 0,
+              "multiple conversations suppress lookup where configured");
+        Decoding first = conversation(0, 12, 8, 20);
+        first.planner = std::make_unique<WindowPlanner>(8, 8, 3, 0, 3, 64);
+        first.planner->sfx.append(ah.data(), ah.size());
+        check(step.run({&first}, err) && first.emitted.size() == 1 && first.suffix_offered == 0,
+              "the first row closes the prompt before lookup begins");
+        Decoding mismatch = conversation(0, 12, 8, 20);
+        mismatch.produced = 1;
+        mismatch.planner = std::make_unique<WindowPlanner>(8, 8, 3, 0, 3, 64);
+        const std::vector<int32_t> wrong{10, 11, 12, 99, 10, 11, 12};
+        mismatch.planner->sfx.append(wrong.data(), wrong.size());
+        check(step.run({&mismatch}, err) && mismatch.emitted == std::vector<int32_t>{13} &&
+                  mismatch.suffix_kept == 0 && mismatch.planner->sfx.history().back() == 13,
+              "rejected lookup guesses never enter history");
+    }
+    {
+        FakeModel fm;
+        fm.right = 3;
+        StepModel hooks = fm.hooks();
+        fm.add_drafter(hooks);
+        Step step(hooks, {});
+        step.settings = {1, 8, 3};
+        Decoding d = conversation(0, 12, 8, 20);
+        d.produced = 1;
+        d.planner = std::make_unique<WindowPlanner>(8, 8, 3, 0, 3, 64);
+        const std::vector<int32_t> history{10, 11, 12, 13, 14, 15, 10, 11, 12};
+        d.planner->sfx.append(history.data(), history.size());
+        std::string err;
+        check(step.run({&d}, err) && fm.asked == std::vector<int>{3} && d.guessed_right == 3,
+              "lookup and model proposals share the planner");
+        check(step.run({&d}, err) && fm.asked == std::vector<int>({3, 3}) &&
+                  d.emitted == std::vector<int32_t>({17, 18, 19, 20}),
+              "model drafting resumes when lookup has no continuation");
+    }
+    {
+        FakeModel fm;
+        fm.right = 1;
+        StepModel hooks = fm.hooks();
+        fm.add_drafter(hooks);
+        Step step(hooks, {});
+        step.settings = {1, 8, 5};
+        step.settings.model_lookahead = 1;
+        Decoding d = conversation(0, 12, 12, 20);
+        d.produced = 1;
+        d.planner = std::make_unique<WindowPlanner>(8, 8, 0, 3, 3, 64);
+        const std::vector<int32_t> history{10, 11, 12, 13, 14, 15, 16, 17, 10, 11, 12};
+        d.planner->sfx.append(history.data(), history.size());
+        const double costs[]{10, 11, 12, 13, 14, 15, 16, 17};
+        d.planner->policy.seed_costs(costs, 8, 4);
+        std::string err;
+        check(step.run({&d}, err) && fm.asked.front() == 1 && d.emitted.size() > 2 &&
+                  d.planner->chained.drafts > 0 && d.suffix_kept == d.suffix_offered,
+              "lookup chain extends the model proposal within its row share");
+    }
+    {
+        FakeModel fm;
+        Step step(fm.hooks(), {});
+        step.settings = {1, 8, 5};
+        Decoding d = conversation(0, 12, 8, 20);
+        d.produced = 1;
+        d.planner = std::make_unique<WindowPlanner>(8, 8, 3, 0, 3, 64);
+        const std::vector<int32_t> history{10, 11, 12, 13, 14, 15, 10, 11, 12};
+        d.planner->sfx.append(history.data(), history.size());
+        const double costly[]{1, 10, 20, 30, 40, 50, 60, 70};
+        d.planner->policy.seed_costs(costly, 8, 4);
+        std::string err;
+        check(step.run({&d}, err) && d.emitted == std::vector<int32_t>{13} && d.suffix_offered == 0,
+              "the shared cost rule rejects an unprofitable lookup without adding rows");
+    }
+    {
+        const float confidence[]{0.99f, 0.9f, 0.8f, 0.6f};
+        check(count_confident_drafts(confidence, 4, 0.65, 0.0f) == 3 &&
+                  count_confident_drafts(confidence, 4, 0.0, 0.75f) == 2,
+              "both model families share individual and cumulative confidence cuts");
+        FakeModel fm;
+        StepModel hooks = fm.hooks();
+        fm.add_drafter(hooks);
+        Step step(hooks, {});
+        step.settings = {1, 8, 3};
+        Decoding d = conversation(0, 12, 8, 20);
+        d.draft_limits.confidence = 0.99f;
+        d.draft_limits.cool_after_rejection = true;
+        std::string err;
+        check(step.run({&d}, err) && d.emitted.size() == 1 && d.draft_cooling,
+              "a rejected model proposal schedules the shared cooldown");
+        check(step.run({&d}, err) && !d.draft_cooling && fm.asked.back() == 0 &&
+                  step.run({&d}, err) && fm.asked.back() == 3,
+              "drafting resumes after one plain cooldown step");
+    }
+    {
+        DraftContext context;
+        check(!context.get_stopping_rule(), "zero floors preserve the native full-chain fast path");
+        context.limits.cumulative = 0.75f;
+        const auto stop = context.get_stopping_rule();
+        check(stop && stop(0, 0.99f) && stop(1, 0.9f) && !stop(2, 0.8f),
+              "incremental and batched networks use the same cumulative cut");
     }
     std::printf(g_fail ? "step_test: %d FAILED\n" : "step_test: all passed\n", g_fail);
     return g_fail ? 1 : 0;

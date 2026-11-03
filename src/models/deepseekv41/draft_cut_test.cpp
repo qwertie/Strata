@@ -1,6 +1,4 @@
-// The drafts' confidence cut that strata-dsv41's rounds and strata-ds41's proposals both make
-// (Model::count_confident): the floor on each draft's confidence, the cut on their product, the most asked for.  No
-// GPU, no model files.
+// Checks the legacy DSpark adapter against the shared confidence cuts; no GPU or model files.
 #include "ds4_model.hpp"
 
 #include <cstdio>

@@ -184,7 +184,7 @@ public:
     bool keep_rows(const std::vector<strata::spec::StepRow>& rows, const std::vector<int>& kept, bool drafting,
                    std::string& err) override;
     int propose(strata::serve::PagedPart& last, int session, int32_t, int64_t, int n, int32_t* out,
-                std::string& err) override;
+                std::string& err, strata::spec::DraftContext* draft) override;
     bool switch_drafter(bool on, std::string& err) override;
     void print_info(int slots, int spec) const override;
     void print_done(const strata::serve::RequestDone& done) const override;
@@ -246,19 +246,20 @@ int run_paged_engine(int argc, char** argv) {
     if (settings.step.concurrent < 0)
         settings.step.concurrent = std::max(o.batch, 1);
     if (settings.step.lookahead < 0)
-        settings.step.lookahead = o.mtp.empty() ? 0 : kDefaultLookahead;
+        settings.step.lookahead = o.mtp.empty() && settings.suffix_draft == 0 && settings.lookup_chain == 0 ?
+                                      0 : kDefaultLookahead;
     if (const std::string why = strata::serve::get_step_settings_problem(settings.step, strata::kernels::kVerifyMaxT);
         !why.empty()) {
         std::fprintf(stderr, "strata-q38: %s\n", why.c_str());
         return 2;
     }
-    const bool drafting = settings.step.lookahead > 0;
+    const bool drafting = settings.step.lookahead > 0 && !o.mtp.empty();
     settings.drafter = settings.drafter && drafting;
-    if (drafting && o.mtp.empty()) {
-        std::fprintf(stderr, "strata-q38: --lookahead %d needs the MTP drafter (--mtp DIR)\n", settings.step.lookahead);
+    if (settings.step.lookahead > 0 && o.mtp.empty() && settings.suffix_draft == 0 && settings.lookup_chain == 0) {
+        std::fprintf(stderr, "strata-q38: --lookahead needs --mtp or --suffix-draft above 0\n");
         return 2;
     }
-    // the MTP drafter only, its weights loaded only with a lookahead; no K/V streaming or elastic K/V (the pool
+    // The MTP's weights are loaded only with a lookahead; no K/V streaming or elastic K/V (the pool
     // replaces them); the batch slots are the engine's own conversations, not the old engine's sessions of the whole
     // context; the experts from the model's files, the RAM's pool in place of the RAM copy or the arena
     o.serve = false;
@@ -355,6 +356,7 @@ PagedQwen::PagedQwen(Model& m, Conversation& conv, const PagedCards& cards, Mode
     facts.max_rows = strata::kernels::kVerifyMaxT;
     facts.end_tokens = o.eos_ids;
     facts.has_drafter = drafter != nullptr;
+    facts.draft_limits.confidence = (float) o.spec_min_p;
     // Decode and QSA's pooled historical keys also read this device-wide table at cell indices. Images shift
     // later text positions per conversation; sharing a step needs session-aware lookup in the kernels and graphs.
     facts.serial_conversations = m.o.vision;
@@ -788,11 +790,11 @@ bool PagedQwen::keep_rows(const std::vector<strata::spec::StepRow>& rows, const 
 }
 
 int PagedQwen::propose(strata::serve::PagedPart& last, int session, int32_t, int64_t, int n, int32_t* out,
-                       std::string& err) {
+                       std::string& err, strata::spec::DraftContext* draft) {
     if (!activate_images(session, err))
         return -1;
     Part& part = get_part(last);
-    return drafter_->propose(session, part.pages, part.ss, conv_.ver.final_R_all(), n, out, err);
+    return drafter_->propose(session, part.pages, part.ss, conv_.ver.final_R_all(), n, out, err, draft);
 }
 
 bool PagedQwen::switch_drafter(bool on, std::string& err) {

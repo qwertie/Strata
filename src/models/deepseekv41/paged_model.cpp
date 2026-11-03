@@ -95,13 +95,7 @@ struct Part final : strata::serve::PagedPart {
     bool prompt_open = false;   ///< its request's prompt is not read to its end, where it keeps two checkpoints
     /// the end of its next prompt becomes its anchor (Model::pin): its conversation started over or went back
     bool pin_next = false;
-    // its request's DSpark keys (the old engine's): spec=0 turns drafting off, dspark_conf=F is the floor on each
-    // draft's confidence, dspark_cum=F (spec_cum=F) the cut on their product, pin=N the shared start
-    bool spec = true;
-    float conf_min = 0, cum_min = 0;
-    int64_t pin = 0;
-    /// its last proposal offered no draft, so that the next one offers none without drafting (the old engine's rule)
-    bool cool = false;
+    int64_t pin = 0; ///< The prompt prefix kept as a shared checkpoint.
 
     Part(Model& model, const ConversationRegions& regions, int device, int index, bool drafter, Part*& seated_part)
         : m(model), at(regions), dev(device), stage(index), has_drafter(drafter), seated(seated_part) {}
@@ -372,9 +366,8 @@ public:
                   std::string& err) override;
     bool keep_rows(const std::vector<strata::spec::StepRow>& rows, const std::vector<int>& kept, bool,
                    std::string& err) override;
-    void begin_step(int count) override { active_conversations_ = count; }
     int propose(strata::serve::PagedPart& last, int session, int32_t token, int64_t pos, int n, int32_t* out,
-                std::string& err) override;
+                std::string& err, strata::spec::DraftContext* draft) override;
     bool switch_drafter(bool on, std::string& err) override;
     void print_info(int slots, int) const override {
         for (const std::string& line : m_.info_lines())
@@ -423,7 +416,6 @@ private:
     bool drafting_ = false;            ///< the drafter is switched on: its experts are wanted in the GPU's pool
     /// the drafter's experts (get_ranking's), which it needs all of on the GPU to draft
     std::vector<strata::core::ExpertKey> drafter_experts_;
-    int active_conversations_ = 1;     ///< The next step's participants; drafting shares rollback scratch.
     int verified_ = 0;                 ///< the rows of the last step's verify window with a pick; 0: a plain step
 };
 
@@ -556,8 +548,9 @@ int run_paged_engine(int argc, char** argv) {
     if (settings.step.concurrent < 0)
         settings.step.concurrent = std::max(x.batch, 1);
     if (settings.step.lookahead < 0)
-        settings.step.lookahead = !has_drafter ? 0 : o.dspark_block > 0 ? o.dspark_block : m.draft_block();
-    if (settings.step.lookahead > 0 && !has_drafter) {
+        settings.step.lookahead = !has_drafter ? ((settings.suffix_draft > 0 || settings.lookup_chain > 0) ? 3 : 0) :
+                                  o.dspark_block > 0 ? o.dspark_block : m.draft_block();
+    if (settings.step.lookahead > 0 && !has_drafter && settings.suffix_draft == 0 && settings.lookup_chain == 0) {
         std::fprintf(stderr, "%s: --lookahead %d needs the DSpark drafter (--dspark on)\n", kProgram.c_str(),
                      settings.step.lookahead);
         return 2;
@@ -650,6 +643,10 @@ PagedDeepSeek::PagedDeepSeek(Model& m, const Options& o, const ProgramOptions& x
         facts.split_ranking.erase(std::remove_if(facts.split_ranking.begin(), facts.split_ranking.end(),
             [&](const strata::core::ExpertKey& key) { return key.layer >= g.nl; }), facts.split_ranking.end());
     }
+    facts.draft_limits.confidence = o.dspark_conf;
+    facts.draft_limits.cumulative = Model::get_default_cum();
+    facts.draft_limits.max_conversations = 1;
+    facts.draft_limits.cool_after_rejection = true;
     facts.gpu_experts = x.gpu_experts;
     facts.ram_headroom = kRamHeadroom;
     facts.adapt_swaps = x.adapt_swaps;
@@ -791,24 +788,9 @@ void PagedDeepSeek::start_request(int session, const strata::serve::RequestStart
     p.smp = r.sampling;
     p.prompt_open = true;
     p.primed_pos = -1;   // (its pick had the last request's sampling)
-    p.spec = true;
-    p.conf_min = o_.dspark_conf;
-    p.cum_min = Model::get_default_cum();
     p.pin = 0;
-    p.cool = false;
-    // a negative floor in a request means the engine's, as in strata-dsv41
-    const auto get_or_default = [](const std::string& value, float fallback) {
-        const float f = std::strtof(value.c_str(), nullptr);
-        return f >= 0 ? f : fallback;
-    };
     for (const auto& [key, value] : r.keys)
-        if (key == "spec")
-            p.spec = std::atoi(value.c_str()) != 0;
-        else if (key == "dspark_conf")
-            p.conf_min = get_or_default(value, p.conf_min);
-        else if (key == "dspark_cum" || key == "spec_cum")
-            p.cum_min = get_or_default(value, p.cum_min);
-        else if (key == "pin")
+        if (key == "pin")
             p.pin = std::atoll(value.c_str());
 }
 
@@ -953,7 +935,7 @@ bool PagedDeepSeek::run_rows(const std::vector<strata::spec::StepRow>& rows, std
     const strata::spec::StepRow& row = rows[0];
     Part& p = *leads_[(size_t) row.session];
     verified_ = 0;
-    if (rows.size() > 1) {   // a token and its drafts (propose's), in one verify window
+    if (rows.size() > 1) {   // A token and its guesses share one verify window.
         std::vector<int> drafts, got;
         for (size_t r = 1; r < rows.size(); ++r)
             drafts.push_back(rows[r].token);
@@ -998,20 +980,13 @@ bool PagedDeepSeek::keep_rows(const std::vector<strata::spec::StepRow>&, const s
     return m_.keep_verified(kept[0], err);
 }
 
-// The old engine's round: the drafter's block after `token`, kept while the confidences hold (Model::count_confident),
-// none for the prompt's last token (which the prompt's read or run_rows feeds), and none, without drafting, after a
-// proposal that offered none.
+// Runs DSpark once its rings and experts are ready; the shared step selects its candidate prefix.
 int PagedDeepSeek::propose(strata::serve::PagedPart& last, int, int32_t token, int64_t pos, int n, int32_t* out,
-                           std::string& err) {
+                           std::string& err, strata::spec::DraftContext* draft) {
     Part& p = *get_part(last).lead;
-    // Independent rows seed their own rings; speculative rollback still uses one window's scratch.
-    if (active_conversations_ > 1 || n <= 0 || !drafting_ || !p.spec || p.prompt_open || p.primed_pos == pos ||
+    if (n <= 0 || !drafting_ || p.prompt_open || p.primed_pos == pos ||
         !is_drafter_ready())
         return 0;
-    if (p.cool) {
-        p.cool = false;
-        return 0;
-    }
     p.take_seat();
     std::vector<int> drafts;
     std::vector<float> conf;
@@ -1019,10 +994,10 @@ int PagedDeepSeek::propose(strata::serve::PagedPart& last, int, int32_t token, i
     if (!go_to(pos, err) ||
         !m_.draft(token, drafts, conf, err, s.temperature, s.top_p, s.top_k, s.min_p, s.seed, counter_))
         return -1;
-    const int keep = Model::count_confident(conf, n, p.conf_min, p.cum_min);
-
-    p.cool = keep == 0;
+    const int keep = std::min({n, (int) drafts.size(), (int) conf.size()});
     std::copy(drafts.begin(), drafts.begin() + keep, out);
+    if (draft && draft->probs)
+        std::copy_n(conf.begin(), keep, draft->probs);
     for (const strata::core::ExpertKey& key : drafter_experts_)   // (every draft uses its blocks: they stay hot)
         drafter_card_->experts.note_use(key);
     return keep;

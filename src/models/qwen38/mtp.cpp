@@ -1,5 +1,6 @@
 // src/models/qwen38/mtp.cpp - see include/strata/models/qwen38/mtp.hpp.
 #include "strata/models/qwen38/mtp.hpp"
+#include "strata/common/spec/confidence.hpp"
 #include "strata/base/gpu/pin_budget.hpp"
 #include "strata/models/qwen38/kernels/qsa_prompt_attn.hpp"
 #include "strata/common/kernels/coupled_draft.hpp"
@@ -1676,7 +1677,8 @@ bool MtpDrafter::draft(int T, const int32_t* tokens, int64_t p, int a, int32_t* 
         if (dt) g_dt.wait0_ms += hms(tl);
         float pj = take(0);
         n = 1;
-        for (int j = 1; j < max_steps && (chain_rule_ ? chain_rule_(j - 1, pj) : pj >= min_p); ++j) {
+        strata::spec::ConfidenceCut cut{min_p};
+        for (int j = 1; j < max_steps && (chain_rule_ ? chain_rule_(j - 1, pj) : cut.keep(pj)); ++j) {
             if (dt) cudaEventRecord(g_dt.eb[j], cs_);
             tl = Clock::now();
             if (cudaGraphLaunch(cp ? step_exec_c_[j] : step_exec_[j], cs_) != cudaSuccess)

@@ -95,6 +95,7 @@ struct PagedModelFacts {
     Sampling sampling;                      ///< a request's sampling before its keys (the old engine's defaults)
     /// a drafter guesses tokens (propose), its state in the conversations' pages; without one the engine never calls
     /// forget_drafts, propose or switch_drafter
+    strata::spec::DraftLimits draft_limits; ///< Defaults for the shared confidence and scheduling rules.
     bool has_drafter = false;
     /// what the start needs for a drafter, for the refusal of `drafter on` without one ("--mtp and ...")
     std::string drafter_start;
@@ -266,9 +267,10 @@ public:
     virtual void begin_step(int) {}
     /// Writes up to `n` guesses of the tokens after `token` at `pos` in `session` to `out` from its state on the last
     /// card (`last`); gets how many, or -1 (and `err`) when the drafter failed.  It is called before each of the
-    /// conversation's steps (spec::StepModel::propose), also with `n` 0.
+    /// conversation's steps (spec::StepModel::propose), also with `n` 0. `draft` supplies the shared window policy
+    /// and receives the proposal's confidences.
     virtual int propose(PagedPart& last, int session, int32_t token, int64_t pos, int n, int32_t* out,
-                        std::string& err) = 0;
+                        std::string& err, strata::spec::DraftContext* draft) = 0;
     /// Loads (`on`) or gives back the drafter's weights; false (and `err`) when loading failed.
     virtual bool switch_drafter(bool on, std::string& err) = 0;
     /// Prints the INFO lines that start the protocol: `slots` batch slots, `spec` rows a conversation's step may run

@@ -1559,10 +1559,28 @@ No new engine-choice flag is needed. Restore the original `exe` path to return t
 
 These engines add live memory settings in the Memory panel, several conversations at once, pausing conversations
 in RAM or on disk, saved sessions, and layer splitting. DeepSeek's layer split is still under test; separate-card
-validation remains open in D9. Pictures, the suffix drafter, `--batch-groups` and `--tp` are unavailable.
+validation remains open in D9. Pictures, `--batch-groups` and `--tp` are unavailable.
 The server keeps context, GPU selection and `parallel` (starting conversations at once). It logs options it leaves
 out. Use `--set gpu-mib=18432 --set ram-mib=8192` to set the pools; `tokens-min` and `tokens-max` bound the token
 pages kept in the pools. These are engine options in the config's `args`, also available through `--set`.
+
+Both page-pool engines can use greedy prompt lookup with `--suffix-draft 3` (`0`, the default, turns it off).
+They use the original Qwen engine's shared `WindowPlanner`, including its measured row costs, lookup acceptance
+rates, and `--lookup-chain K` / `--lookup-chain-min M` extension after model drafts. `--mtp-max-t M` caps the
+model drafter's window, while `--lookahead` and `--rows` bound all guesses and the step's total work.
+`STRATA_SPEC_COST=1` also selects the original planner's probability-based MTP stopping rule; it applies with
+suffix drafting both on and off. The model supplies its confidences, and solo steps teach the planner their full
+draft, verification and commit time. Joint steps keep acceptance tallies but do not teach solo row costs.
+The shared step also applies the configured individual and cumulative confidence floors before the cost choice,
+including with cost mode enabled. It reads the existing `dspark_conf`, `dspark_cum` / `spec_cum`, and `spec`
+request keys; a negative floor uses the engine's default. Model adapters run their networks, bind state, and
+return raw proposals and confidences. DeepSeek's plain step after a rejected model proposal is scheduled here too.
+`--lookahead 0` disables all drafting. `--drafter off` switches off only the model drafter.
+DeepSeek offers no guesses when several conversations share a step, following D8. Each request rebuilds its
+own token index from its full prompt, including after pauses and session restores. Learned costs follow the logical
+conversation through in-process pauses; costs are rebuilt after a process restart. Stderr reports suffix and
+chained guesses kept and offered per request.
+
 
 Measured on Strix Halo on Windows, HIP, the IQ2_XXS pack, 8,192 context, D7: with DSpark, 1,200 trunk experts
 and 384 drafter experts on the GPU, two alternating rounds of 64 tokens per answer, story / code / count decode

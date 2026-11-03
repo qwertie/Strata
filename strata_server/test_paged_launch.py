@@ -17,10 +17,27 @@ class PagedLaunchTests(unittest.TestCase):
                     '--slots', '2', '--tp', '2', '--batch-groups', 'auto', '--suffix-draft', '1',
                     '--vision', '--gpu-mib', '4096', '--ram-mib', '2048']})
                 self.assertEqual(args, ['--pack', 'pack', '--max-context', '8192', '--batch', '2',
-                                        '--vision', *(['on'] if exe == 'strata-ds41.exe' else []),
+                                        '--suffix-draft', '1', '--vision',
+                                        *(['on'] if exe == 'strata-ds41.exe' else []),
                                         '--gpu-mib', '4096', '--ram-mib', '2048'])
                 self.assertIn('unsupported settings', log.getvalue())
                 self.assertIn('--tp 2', log.getvalue())
+
+    def test_lookup_options_reach_both_engines(self):
+        args = ['--suffix-draft', '3', '--lookup-chain', '2', '--lookup-chain-min', '6', '--mtp-max-t', '4']
+        for exe in ('strata-q38', 'strata-ds41'):
+            self.assertEqual(engine_client.engine_args({'exe': exe, 'args': args}), args)
+
+    def test_model_off_keeps_explicit_lookup(self):
+        for exe in ('strata-q38', 'strata-ds41'):
+            cfg = {'exe': exe, 'mtp': False,
+                   'args': ['--mtp', 'weights', '--suffix-draft', '3', '--lookup-chain', '2']}
+            args = engine_client.engine_args(cfg)
+            self.assertNotIn('--mtp', args)
+            self.assertNotIn('--lookahead', args)
+            self.assertEqual(args[:4], ['--suffix-draft', '3', '--lookup-chain', '2'])
+            cfg['drafting'] = 'off'
+            self.assertIn('--lookahead', engine_client.engine_args(cfg))
 
     def test_parallel_and_explicit_scheduling(self):
         args = engine_client.engine_args({'exe': 'strata-ds41', 'args': ['--concurrent', '2'], 'parallel': 3})

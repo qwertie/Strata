@@ -4,8 +4,11 @@
 // (src/common/serve/paged_engine.cpp) decodes through it.
 #pragma once
 
+#include "strata/common/spec/window_planner.hpp"
+
 #include <cstdint>
 #include <functional>
+#include <memory>
 #include <string>
 #include <utility>
 #include <vector>
@@ -17,6 +20,8 @@ struct StepSettings {
     int concurrent = 1;   ///< the most conversations that decode in the same step
     int rows = 8;         ///< the most rows one step computes; at least `concurrent`
     int lookahead = 0;    ///< the most guesses one conversation may add to a step; 0 turns drafting off
+    int model_lookahead = -1; ///< --mtp-max-t minus one; negative leaves the model draft width uncapped.
+    int max_draft_conversations = 0; ///< Above this count guesses are suppressed; 0 imposes no limit.
 };
 
 /// Gets each of `active` conversations' share of the rows a step has left once each has its one row: as even as
@@ -34,6 +39,38 @@ struct StepRow {
     int parent = -1;   ///< the row whose token this one follows; -1: the conversation's last kept token
 };
 
+/// Selects confidence floors and the model's capacity restrictions for the shared step.
+struct DraftLimits {
+    float confidence = 0.0f, cumulative = 0.0f;
+    int max_conversations = 0; ///< Zero imposes no limit on simultaneous drafting.
+    bool cool_after_rejection = false; ///< Allows a plain step after the whole model proposal failed its cut.
+};
+
+/// Supplies the shared stopping rule and receives the model drafter's confidences for one proposal.
+struct DraftContext {
+    WindowPlanner* planner = nullptr;
+    float* probs = nullptr; ///< Receives one confidence per returned token; storage for n floats.
+    DraftLimits limits;
+    ConfidenceCut cut;
+    /// Leaves the network's full-chain fast path available when no stopping rule is configured.
+    std::function<bool(int, float)> get_stopping_rule() {
+        if (limits.confidence <= 0 && limits.cumulative <= 0 && (!planner || !planner->cost_aware))
+            return {};
+        return [this](int idx, float p) { return keep_draft(idx, p); };
+    }
+    /// Applies the shared confidence and cost rules while an iterative network produces its proposal.
+    bool keep_draft(int idx, float p) {
+        if (idx == 0)
+            cut = ConfidenceCut{limits.confidence, limits.cumulative};
+        const bool confident = cut.keep(p);
+        if (!planner || !planner->cost_aware)
+            return confident;
+        cost_planned = true;
+        return planner->keep_draft(idx, p) && confident;
+    }
+    bool cost_planned = false; ///< Prevents replaying an already evaluated cost chain.
+};
+
 /// What the model does for a step.
 struct StepModel {
     /// Prepares the model for the number of conversations sharing this pass.
@@ -49,8 +86,8 @@ struct StepModel {
     /// Writes up to `n` guesses of the tokens that follow `token` at `pos` in `session` to `out`; gets how many.  It
     /// is called before each conversation's rows of a step, also with `n` 0, and with `n` 0 (and `out` null) when
     /// a conversation ends, so that a drafter can read what the conversation's last step kept.  Empty: the model has
-    /// no drafter.
-    std::function<int(int session, int32_t token, int64_t pos, int n, int32_t* out)> propose;
+    /// no drafter. `draft` supplies the window policy and receives probabilities; null only when decoding ends.
+    std::function<int(int session, int32_t token, int64_t pos, int n, int32_t* out, DraftContext* draft)> propose;
 };
 
 /// A conversation that decodes in steps, and what its last step did.
@@ -65,6 +102,12 @@ struct Decoding {
     int64_t priority = 0;
     int64_t guessed = 0;         ///< the guesses its steps ran
     int64_t guessed_right = 0;   ///< the guesses it kept: the model picked the same tokens
+
+    DraftLimits draft_limits; ///< This request's confidence cuts and drafting restrictions.
+    bool draft_enabled = true; ///< The request's spec key; false disables every source.
+    bool draft_cooling = false; ///< The model skips one eligible step after an empty confidence cut.
+    std::unique_ptr<WindowPlanner> planner; ///< Keeps learned costs across requests; its token index is rebuilt.
+    int64_t suffix_offered = 0, suffix_kept = 0; ///< Lookup guesses verified and accepted in this request.
 
     std::vector<int32_t> emitted;   ///< the last step's tokens for the client, in order
     std::vector<int32_t> fed;       ///< the tokens the last step added to its state

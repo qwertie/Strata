@@ -71,6 +71,8 @@ struct PagedSettings {
     std::string pause_dir;                         ///< --pause-dir; empty: the temporary folder's <program name>
     std::string copy_back = "auto";                ///< --copy-back
     std::string remote_experts = "auto";           ///< --remote-experts
+    int64_t lookup_chain = 0, lookup_chain_min = 3; ///< Existing lookup-chain length and match floor.
+    int64_t suffix_draft = 0; ///< --suffix-draft: minimum repeated context; 0 disables prompt lookup.
     bool drafter = true;                           ///< --drafter on|off: its weights loaded (with --lookahead)
     strata::spec::StepSettings step;               ///< --rows, --lookahead and --concurrent (default --batch)
 };

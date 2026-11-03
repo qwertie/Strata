@@ -1,6 +1,8 @@
 """Adapts saved server settings for the opt-in page-pool engines."""
 from pathlib import Path
 
+from . import draft_layer
+
 
 def is_paged_engine(cfg: dict) -> bool:
     """Recognizes the two page-pool programs selected by the saved executable path."""
@@ -10,9 +12,14 @@ def is_paged_engine(cfg: dict) -> bool:
 def translate_args(cfg: dict, args: list[str]) -> list[str]:
     """Keeps supported options and reports settings with no page-pool equivalent."""
     deepseek = get_engine_name(cfg) == "strata-ds41"
+    model_off = cfg.get("mtp") is False or cfg.get("drafting") == "off"
+    if model_off:
+        args, _ = draft_layer.strip(args)
+    lookup_values = {"--suffix-draft": "0", "--lookup-chain": "0"}
     common = set("""pack max-context batch expert-cache expert-profile layer-split split-device
         adapt-every adapt-swaps adapt-min-gain adapt-decay tokens-min tokens-max gpu-mib ram-mib ssd-pause-mib
-        rows lookahead concurrent pause-dir copy-back drafter remote-experts""".split())
+        rows lookahead concurrent pause-dir copy-back drafter remote-experts suffix-draft mtp-max-t
+        lookup-chain lookup-chain-min""".split())
     model = set(("""vision eos gpus reserve-mib cpu-threads dspark dspark-conf experts dspark-block prefill-chunk threads"""
                  if deepseek else """eos-ids native ple-gguf kv prefill mtp spec-min-p gpu pcie-frac pool-cores
                  aux-cpus pool-affinity vram-reserve-mib vram-reserve-later-mib""").split())
@@ -45,6 +52,8 @@ def translate_args(cfg: dict, args: list[str]) -> list[str]:
                 if flag == "--resident-budget-gib":
                     values = [str(int(float(values[0]) * 1024))]
                 out.extend([target, *values])
+                if target in lookup_values:
+                    lookup_values[target] = values[0]
             elif name == "vision" and deepseek:
                 out.extend([target, "on"])
             else:
@@ -52,8 +61,10 @@ def translate_args(cfg: dict, args: list[str]) -> list[str]:
         else:
             omitted.extend([flag, *values])
         i = end
-    if cfg.get("mtp") is False or cfg.get("drafting") == "off":
-        out += ["--drafter", "off", "--lookahead", "0"]
+    if model_off:
+        out += ["--drafter", "off"]
+        if cfg.get("drafting") == "off" or not any(int(value) > 0 for value in lookup_values.values()):
+            out += ["--lookahead", "0"]
         if deepseek:
             out += ["--dspark", "none"]
     ignored = [key for key in ("vram_elastic", "split_skip_if_fits", "batchMtp") if cfg.get(key)]

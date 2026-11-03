@@ -3,7 +3,6 @@
 #include "strata/models/qwen38/conversation_drafter.hpp"
 
 #include "strata/base/gpu/on_device.hpp"
-#include "strata/common/spec/window_planner.hpp"
 
 #include <cuda_runtime.h>
 
@@ -18,7 +17,6 @@ ConversationDrafter::~ConversationDrafter() {
 
 bool ConversationDrafter::init(Model& m, int sessions, std::string& err) {
     mtp_ = &m.mtp;
-    min_p_ = m.o.spec_min_p;
     row_floats_ = (uint64_t) m.g.hc * (uint64_t) m.g.n_embd;
     const int max_t = mtp_->max_t();
     const GpuStage* st = m.get_drafter_stage();
@@ -61,7 +59,8 @@ void ConversationDrafter::note_window(const std::vector<strata::spec::StepRow>& 
 }
 
 int ConversationDrafter::propose(int session, const ConversationPages& pages, strata::core::SessionState& ss,
-                                 const float* window_R, int n, int32_t* out, std::string& err) {
+                                 const float* window_R, int n, int32_t* out, std::string& err,
+                                 strata::spec::DraftContext* draft) {
     Last& l = last_.at((size_t) session);
     if (l.rows == 0)
         return 0;
@@ -74,12 +73,17 @@ int ConversationDrafter::propose(int session, const ConversationPages& pages, st
         return mtp_->prefill(R, l.picks.data(), l.kept, l.pos, err) ? 0 : -1;
     mtp_->set_source_R(R);
     mtp_->set_max_drafts(n);
+    mtp_->set_chain_rule(draft ? draft->get_stopping_rule() : std::function<bool(int, float)>{});
     int got = 0;
-    if (!mtp_->draft(rows, l.picks.data(), l.pos, l.kept - 1, drafts_.data(), err, probs_.data(), (float) min_p_,
-                     &got))
+    const bool ok = mtp_->draft(rows, l.picks.data(), l.pos, l.kept - 1, drafts_.data(), err, probs_.data(),
+                                0.0f, &got);
+    mtp_->set_chain_rule({});
+    if (!ok)
         return -1;
-    const int k = strata::spec::count_confident_drafts(probs_.data(), std::min(got, n), min_p_);
+    const int k = std::min(got, n);
     std::copy_n(drafts_.begin(), k, out);
+    if (draft && draft->probs)
+        std::copy_n(probs_.begin(), k, draft->probs);
     return k;
 }
 

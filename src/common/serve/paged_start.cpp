@@ -29,12 +29,15 @@ int take_paged_options(int& argc, char** argv, const std::string& program, Paged
         int64_t* value;
         std::string* text = nullptr;   ///< instead of `value`, for a word
     };
-    int64_t rows = s.step.rows, lookahead = -1, concurrent = -1;   // -1: chosen once the options are read
+    int64_t rows = s.step.rows, lookahead = -1, concurrent = -1, mtp_rows = 0;   // -1: chosen after parsing
     std::string drafter = "on", gpu_mib;
     const Own own[] = {{"--tokens-min", &s.tokens_min},       {"--tokens-max", &s.tokens_max},
                        {"--gpu-mib", nullptr, &gpu_mib},      {"--ram-mib", &s.ram_mib},
                        {"--ssd-pause-mib", &s.ssd_pause_mib}, {"--rows", &rows},
-                       {"--lookahead", &lookahead},           {"--concurrent", &concurrent},
+                       {"--mtp-max-t", &mtp_rows},            {"--lookup-chain", &s.lookup_chain},
+                       {"--lookup-chain-min", &s.lookup_chain_min},
+                       {"--suffix-draft", &s.suffix_draft},    {"--lookahead", &lookahead},
+                       {"--concurrent", &concurrent},
                        {"--pause-dir", nullptr, &s.pause_dir}, {"--copy-back", nullptr, &s.copy_back},
                        {"--drafter", nullptr, &drafter},      {"--remote-experts", nullptr, &s.remote_experts}};
     const char* const name = program.c_str();
@@ -60,6 +63,10 @@ int take_paged_options(int& argc, char** argv, const std::string& program, Paged
     s.step.lookahead = (int) std::clamp<int64_t>(lookahead, -1, INT32_MAX);
     s.step.concurrent = (int) std::clamp<int64_t>(concurrent, -1, INT32_MAX);   // -1: --batch, set once it is read
     s.drafter = drafter == "on";
+    s.step.model_lookahead = mtp_rows > 0 ? (int) std::min<int64_t>(mtp_rows - 1, 7) : -1;
+    s.suffix_draft = std::clamp<int64_t>(s.suffix_draft, 0, INT32_MAX);
+    s.lookup_chain = std::clamp<int64_t>(s.lookup_chain, 0, 7);
+    s.lookup_chain_min = std::clamp<int64_t>(s.lookup_chain_min, 3, INT32_MAX);
     if (s.copy_back != "auto" && s.copy_back != "on" && s.copy_back != "off") {
         std::fprintf(stderr, "%s: --copy-back takes auto, on or off\n", name);
         return 2;

@@ -3775,12 +3775,7 @@ struct Model::Impl {
                     l.eg_w = qw;
                 }
             }
-            if (g.n_mtp > 0 && !l.mtp) {
-                if (!dalloc(d, l.ring_bak, (size_t) kWin * win_rb(), err)) return false;
-                if (l.kv_src && l.ratio > 1 && (!dalloc(d, l.c_snap, (size_t) 2 * l.ratio * g.hd, err) ||
-                                                !dalloc(d, l.c_rows, (size_t) 2 * kWin * g.hd, err)))
-                    return false;
-            }
+            if (g.n_mtp > 0 && !l.mtp && !init_verify_layer(l, err)) return false;
             if (!dalloc(d, l.vram_tab, (size_t) l.n_exp, err, acct)) return false;
             l.weight_bytes = d.weights - before;
           }
@@ -7121,6 +7116,15 @@ struct Model::Impl {
                      uint64_t seed, uint64_t counter, std::vector<int>& picks, std::string& err) {
         const int n = (int) std::min<size_t>(drafts.size(), (size_t) kWin - 1);
         const int T = n + 1, V = g.vocab;
+        Dev& hd = devs[(size_t) head_dev];
+        cudaSetDevice(hd.id);
+        // Prompt lookup can verify a window without loading DSpark's weights or its proposal buffers.
+        if ((!d_ints && !dalloc(hd, d_ints, 64, err)) || (!d_specq && !dalloc(hd, d_specq, kWin, err)))
+            return false;
+        for (int il = 0; il < g.nl; ++il)
+            for (int m = 0; m < L[(size_t) il].nm; ++m)
+                if (!init_verify_layer(member(L[(size_t) il], m), err))
+                    return false;
         const int64_t p0 = pos;
         int tk[kWin];
         tk[0] = y;
@@ -7133,7 +7137,6 @@ struct Model::Impl {
         if (!ok) return false;
         verified_p0 = p0;
         verified_rows = T;
-        Dev& hd = devs[(size_t) head_dev];
         cudaSetDevice(hd.id);
         int m = 0;
         if (temperature <= 0.0f) {
@@ -7195,6 +7198,18 @@ struct Model::Impl {
             ++st.draft_reached[i];
             if (i < m) ++st.draft_kept[i];
         }
+        return true;
+    }
+
+    /// Gives a trunk layer scratch for restoring state after rejected guesses, independently of DSpark weights.
+    bool init_verify_layer(Layer& l, std::string& err) {
+        Dev& d = devs[(size_t) l.dev];
+        if (!l.ring_bak && !dalloc(d, l.ring_bak, (size_t) kWin * win_rb(), err))
+            return false;
+        if (l.kv_src && l.ratio > 1 &&
+            ((!l.c_snap && !dalloc(d, l.c_snap, (size_t) 2 * l.ratio * g.hd, err)) ||
+             (!l.c_rows && !dalloc(d, l.c_rows, (size_t) 2 * kWin * g.hd, err))))
+            return false;
         return true;
     }
 

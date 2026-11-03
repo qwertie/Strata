@@ -1,8 +1,9 @@
 // include/strata/common/spec/window_planner.hpp - what one verify window holds after its first row: the MTP's drafts,
 // a lookup (suffix) window, or the MTP's drafts with a lookup chain after them; and what the draft policy learns from
-// the window's verdict. Used by both decode loops of src/program/generate.cpp (`--serve` and `--spec`).
+// the window's verdict. Used by the original Qwen decode loops and the shared paged step.
 #pragma once
 
+#include "strata/common/spec/confidence.hpp"
 #include "strata/common/spec/draft_policy.hpp"
 #include "strata/common/spec/draft_source.hpp"
 
@@ -37,14 +38,6 @@ inline int accepted_prefix(const int32_t* drafts, const int32_t* picks, int n) {
     int a = 0;
     while (a < n && drafts[a] == picks[a]) ++a;
     return a;
-}
-
-/// Gets how many of `n` drafts the --spec-min-p rule offers: those before the first whose probability under the
-/// drafter (`probs`) is below `min_p`.
-inline int count_confident_drafts(const float* probs, int n, double min_p) {
-    int k = 0;
-    while (k < n && probs[k] >= (float) min_p) ++k;
-    return k;
 }
 
 /// Chooses the rows of each verify window of a decode loop, and keeps what the choice learns from: the draft sources
@@ -103,9 +96,10 @@ public:
         return w;
     }
     /// Takes a lookup window instead where the policy expects it to pay and its first token agrees with `mtp_drafts`.
-    void pick_lookup(Window& w, const int32_t* mtp_drafts) {
+    /// `room` caps a conversation's share of a joint step; 0 uses the configured window width.
+    void pick_lookup(Window& w, const int32_t* mtp_drafts, int room = 0) {
         if (suffix_draft_ <= 0 || w.first) return;
-        const int k = sfx.propose(rows_ - 1, sbuf_.data());
+        const int k = sfx.propose((room > 0 ? std::min(room, rows_) : rows_) - 1, sbuf_.data());
         w.match = sfx.last_match();
         if (k <= 0 || (w.mtp && sbuf_[0] != mtp_drafts[0])) return;
         const DraftPolicy::Pick pick = policy.choose(w.T, k, w.match);

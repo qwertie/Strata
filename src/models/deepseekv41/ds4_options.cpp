@@ -1,6 +1,7 @@
 // src/models/deepseekv41/ds4_options.cpp - the model's own command-line options (ds4_model.hpp: read_option), which
 // strata-dsv41 and strata-ds41 both read, and the drafts' confidence cut both make.
 #include "ds4_model.hpp"
+#include "strata/common/spec/confidence.hpp"
 
 #include <algorithm>
 #include <cstdlib>
@@ -61,12 +62,8 @@ bool read_option(const std::string& a, const std::function<std::string(const cha
 }
 
 int Model::count_confident(const std::vector<float>& conf, int most, float conf_min, float cum_min) {
-    int keep = 0;
-    float cum = 1.0f;
-    while (keep < (int) conf.size() && keep < most && conf[(size_t) keep] >= conf_min &&
-           (cum *= conf[(size_t) keep]) >= cum_min)
-        ++keep;
-    return keep;
+    return strata::spec::count_confident_drafts(conf.data(), std::min((int) conf.size(), most),
+                                               conf_min, cum_min);
 }
 
 // The drafts' cut on the product of their confidences (DeepInfer's cumulative rule): a draft is verified while the

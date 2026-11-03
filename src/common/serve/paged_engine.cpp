@@ -58,6 +58,7 @@ using SettingValues = std::vector<std::pair<std::string, std::string>>;
 struct Held {
     uint64_t image_key = 0;             ///< the content identity of the pictures in live
     int session = 0;                    ///< its index: its session in the model; its id in each card's pool - 1
+    std::optional<strata::spec::DraftPolicy> policy; ///< Learned window costs of this logical conversation.
     PagedParts parts;                   ///< its state on each card, in the cards' order
     std::vector<int32_t> live;          ///< the tokens its state holds: the prompt, then the fed outputs
     strata::spec::Decoding dec;         ///< its decoding, while `decoding`
@@ -77,6 +78,7 @@ struct Held {
     /// Forgets its tokens and gives back its growing pages.
     void forget() {
         live.clear();
+        policy.reset();
         image_key = 0;
         for (const std::unique_ptr<PagedPart>& p : parts)
             if (p->is_ready())
@@ -99,6 +101,7 @@ struct Held {
 /// A conversation paused out of the GPU's pool: its pages in the RAM's pool or in a pause file on the SSD, and what the
 /// model kept beside them.
 struct Paused {
+    std::optional<strata::spec::DraftPolicy> policy; ///< Restored in-process; session files rebuild the cost history.
     uint64_t serial = 0;              ///< its number (LIST_CONVERSATIONS' parked<serial>) and its id in the RAM's pool
     /// its tokens, the positions short of its end it can go back to (get_rewind_points), the model's state beside the
     /// pages (save_state) and, on the SSD, the layer cut its file has the cards' sections at (get_cut)
@@ -287,7 +290,7 @@ private:
     /// Tells whether any conversation decodes.
     bool is_decoding() const;
     /// Tells whether the drafter is switched on (the model has one and settings_.drafter).
-    bool is_drafting() const { return settings_.drafter && facts_.has_drafter; }
+    bool is_model_drafting() const { return settings_.drafter && facts_.has_drafter; }
     /// Gets the most conversations one step of this model can run.
     int get_most_concurrent() const {
         const int slots = std::min(facts_.max_rows, 8);
@@ -312,6 +315,9 @@ private:
     strata::serve::MemoryReport describe_memory() const;
     /// Gets the step's view of the model: PagedModel's rows over the conversations' state.
     strata::spec::StepModel get_step_model();
+    /// Finds learned costs by token affinity even when the GPU state cannot rewind to that prompt.
+    std::optional<strata::spec::DraftPolicy> find_draft_policy(const std::vector<int64_t>& ids,
+                                                             uint64_t image_key) const;
     /// Says `format`'s line on stderr after the program's name.
     void say(const char* format, ...) const;
 
@@ -516,7 +522,8 @@ bool PagedEngine::init() {
 }
 
 int PagedEngine::serve() {
-    model_.print_info((int) at_.size() - 1, is_drafting() ? settings_.step.lookahead + 1 : 0);
+    model_.print_info((int) at_.size() - 1, step_.settings.lookahead > 0 ?
+                         std::min(step_.settings.rows, step_.settings.lookahead + 1) : 0);
     std::printf("INFO concurrent=%d\n", settings_.step.concurrent);
     std::printf("READY %lld stop conversations memory preempt settings\n", (long long) facts_.context);
     strata::serve::EngineHooks hooks;
@@ -745,12 +752,23 @@ bool PagedEngine::serve_request(const std::string& line) {
     input_.clear_stop();   // a STOP between requests is stale
     const Clock::time_point t0 = Clock::now();
     const size_t target = req.batch ? (size_t) req.slot : slots;
+    const auto policy = find_draft_policy(ids, image_key);
     const int64_t resume = take_conversation(target, ids, image_key);
     Held& h = get_held(target);
     const int session = h.session;
     h.used = ++requests_;
     h.dec = strata::spec::Decoding{};
     h.dec.priority = priority;
+    h.dec.draft_limits = facts_.draft_limits;
+    for (const auto& [key, value] : req.keys) {
+        const float floor = std::strtof(value.c_str(), nullptr);
+        if (key == "spec")
+            h.dec.draft_enabled = std::atoi(value.c_str()) != 0;
+        else if (key == "dspark_conf" || key == "spec_min_p")
+            h.dec.draft_limits.confidence = floor >= 0 ? floor : facts_.draft_limits.confidence;
+        else if (key == "dspark_cum" || key == "spec_cum")
+            h.dec.draft_limits.cumulative = floor >= 0 ? floor : facts_.draft_limits.cumulative;
+    }
     if (facts_.has_drafter)
         model_.forget_drafts(session);
     if (!h.has_pages() && !init_pages(h, err)) {
@@ -762,6 +780,7 @@ bool PagedEngine::serve_request(const std::string& line) {
         for (const std::unique_ptr<PagedPart>& part : h.parts)
             part->clear_state();
     }
+    h.policy = policy;
     std::printf("RESUME %lld\n", (long long) resume);
     h.image_key = image_key;
     model_.attach_images(h.parts);
@@ -792,6 +811,19 @@ bool PagedEngine::serve_request(const std::string& line) {
         h.dec.next = (int32_t) ids[(size_t) (n - 1)];
         h.dec.pos = n - 1;
         h.dec.max_new = std::min<int64_t>(req.max_new, facts_.context - n);
+        // Mixed sampled windows need per-row proposal distributions before lookup can be enabled.
+        const bool lookup = smp.temperature <= 0.0f;
+        if (h.dec.draft_enabled && (facts_.has_drafter ||
+            (lookup && (settings_.suffix_draft > 0 || settings_.lookup_chain > 0))) &&
+            settings_.step.lookahead > 0) {
+            h.dec.planner = std::make_unique<strata::spec::WindowPlanner>(
+                facts_.max_rows, settings_.step.model_lookahead < 0 ? facts_.max_rows :
+                    settings_.step.model_lookahead + 1, lookup ? (int) settings_.suffix_draft : 0,
+                lookup ? (int) settings_.lookup_chain : 0, (int) settings_.lookup_chain_min, facts_.context);
+            if (h.policy)
+                h.dec.planner->policy = *h.policy;
+            h.dec.planner->start(ids);
+        }
 
         h.decoding = true;
         h.slot = -1;
@@ -834,7 +866,7 @@ bool PagedEngine::read_prompt(Held& h, const std::vector<int64_t>& ids, int64_t 
     bool ok = true;
     for (int64_t q = from; ok && q < to; q += piece) {
         const Clock::time_point tq = Clock::now();
-        ok = model_.read_prompt(h.parts, ids, q, std::min(piece, to - q), is_drafting(), on_chunk, err);
+        ok = model_.read_prompt(h.parts, ids, q, std::min(piece, to - q), is_model_drafting(), on_chunk, err);
         const double budget_ms = kDecodeShare * get_ms_since(tq);
         const Clock::time_point td = Clock::now();
         while (ok && q + piece < to && is_decoding() && get_ms_since(td) < budget_ms) {
@@ -884,6 +916,8 @@ bool PagedEngine::decode_step() {
     }
     for (Held* h : going) {
         const strata::spec::Decoding& d = h->dec;
+        if (d.planner)
+            h->policy = d.planner->policy;
         h->live.insert(h->live.end(), d.fed.begin(), d.fed.end());
         for (const int32_t t : d.emitted)
             if (h->slot < 0)
@@ -893,7 +927,10 @@ bool PagedEngine::decode_step() {
         if (d.finish == nullptr)
             continue;
         h->decoding = false;
-        if (facts_.has_drafter && d.guessed > 0)
+        if (d.planner)
+            say("suffix drafts: %lld of %lld kept/offered\n", (long long) d.suffix_kept,
+                (long long) d.suffix_offered);
+        if (d.guessed > 0)
             say("%lld of %lld guesses right (%.0f%%) over %lld tokens\n", (long long) d.guessed_right,
                 (long long) d.guessed, 100.0 * (double) d.guessed_right / (double) d.guessed, (long long) d.produced);
         if (routed_steps_ > 0) {
@@ -1065,6 +1102,7 @@ bool PagedEngine::pause(Held& h, std::string& err, bool ram_only) {
     p.serial = ++serial_;
     p.priority = h.dec.priority;
     p.used = h.used;
+    p.policy = h.policy;
     p.head.live = h.live;
     p.head.image_key = h.image_key;
     p.head.points = model_.get_rewind_points(h.parts);
@@ -1155,6 +1193,7 @@ bool PagedEngine::resume(const Paused& p, Held& h, std::string& err) {
         ram.remove_conversation(p.serial);
     if (!ok || !model_.restore_state(p.head.state, h.parts, live, err))
         return false;
+    h.policy = p.policy;
     h.live = live;
     h.image_key = p.head.image_key;
     say("a conversation of %zu tokens is back from %s (%.0f ms)\n", live.size(), p.file.empty() ? "RAM" : "the SSD",
@@ -1878,7 +1917,8 @@ bool PagedEngine::switch_drafter(bool on, std::string& err) {
 
 void PagedEngine::apply_step_settings() {
     step_.settings = settings_.step;
-    if (!is_drafting())
+    step_.settings.max_draft_conversations = facts_.draft_limits.max_conversations;
+    if (!is_model_drafting() && settings_.suffix_draft == 0 && settings_.lookup_chain == 0)
         step_.settings.lookahead = 0;
 }
 
@@ -1933,22 +1973,50 @@ strata::spec::StepModel PagedEngine::get_step_model() {
         return model_.run_rows(rows, picks, err);
     };
     model.keep = [this](const std::vector<strata::spec::StepRow>& rows, const std::vector<int>& kept,
-                        std::string& err) { return model_.keep_rows(rows, kept, is_drafting(), err); };
+                        std::string& err) { return model_.keep_rows(rows, kept, is_model_drafting(), err); };
     if (facts_.has_drafter)
-        model.propose = [this](int session, int32_t token, int64_t pos, int n, int32_t* out) {
-            if (!is_drafting())
+        model.propose = [this](int session, int32_t token, int64_t pos, int n, int32_t* out,
+                               strata::spec::DraftContext* draft) {
+            if (!is_model_drafting())
                 return 0;
             Held& h = *held_[(size_t) session];
             std::string err;
             if (n > 0 && !make_room(h, pos + 1 + n, err))   // (the drafter writes the guesses' cells)
                 n = 0;
-            const int got = model_.propose(*h.parts.back(), session, token, pos, n, out, err);
+            const int got = model_.propose(*h.parts.back(), session, token, pos, n, out, err, draft);
             if (got >= 0)
                 return got;
             say("the drafter: %s\n", err.c_str());
             return 0;
         };
     return model;
+}
+
+std::optional<strata::spec::DraftPolicy> PagedEngine::find_draft_policy(
+    const std::vector<int64_t>& ids, uint64_t image_key) const {
+    /// Refers to a cached conversation without copying its token history.
+    struct Candidate {
+        const std::vector<int32_t>& live;
+        const std::optional<strata::spec::DraftPolicy>& policy;
+        uint64_t image_key, used;
+    };
+    std::vector<Candidate> candidates;
+    candidates.reserve(held_.size() + paused_.size());
+    for (const auto& h : held_)
+        candidates.push_back({h->live, h->policy, h->image_key, h->used});
+    for (const Paused& p : paused_)
+        candidates.push_back({p.head.live, p.policy, p.head.image_key, p.used});
+    std::optional<strata::spec::DraftPolicy> policy;
+    std::pair<size_t, uint64_t> best{};
+    for (const Candidate& c : candidates) {
+        const size_t n = std::min(c.live.size(), ids.size());
+        if (c.policy && c.image_key == image_key && n > 0 && std::pair{n, c.used} > best &&
+            std::equal(c.live.begin(), c.live.begin() + n, ids.begin())) {
+            policy = c.policy;
+            best = {n, c.used};
+        }
+    }
+    return policy;
 }
 
 void PagedEngine::say(const char* format, ...) const {

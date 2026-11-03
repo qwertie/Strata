@@ -401,3 +401,27 @@ whole prompt. CUDA and SYCL still need validation on their own hardware.
   adopted after a restart. Qwen restores require the same number of stages, but the layer cut may differ.
 - What the panel shows for an old engine's settings it cannot change live: greyed out, or "applies after a restart"
   with a restart button?
+
+
+### Suffix drafting in the page-pool engines (2026-11-03)
+
+Both engines reuse `common/spec/WindowPlanner`: source choice, measured costs, MTP keep/stop and lookup chaining.
+`Step` shares rows, applies individual and cumulative confidence cuts, schedules cooldown, and suppresses guesses
+when the model's declared conversation capacity is exceeded (DeepSeek: one). Model adapters run their drafter
+networks and maintain rings/K/V; they return raw tokens and confidences. `ConfidenceCut` also backs D7's
+`Model::count_confident` wrapper, so the old DeepSeek round and both new engines share the same cuts.
+The existing suffix, chain, confidence and window options are reused; there are no new settings.
+
+`--suffix-draft 3` opts in for greedy decoding; `0` leaves lookup off.
+`--lookup-chain K` / `--lookup-chain-min M` can extend model
+proposals. `--mtp-max-t M` caps model rows, within `--lookahead` and `--rows`.
+`STRATA_SPEC_COST=1` uses the same cost stopping callback with lookup on and off. Confidence floors remain
+active in the new engines' cost mode. Costs follow logical conversations through RAM/SSD pauses, rather than
+leaking between unrelated prompts sharing a GPU slot. Token affinity retains calibration even when GPU state
+cannot rewind. Costs are not serialized; a new process rebuilds them.
+DeepSeek's suffix-only verification allocates rollback scratch without DSpark weights.
+
+Windows HIP, Strix Halo: commands, full two-round old/new Qwen speed tables (with and without MTP), draft counts,
+token arrays, concurrent answers, pause/restore checks, budgets and limitations are recorded in
+`%TEMP%/suffix-drafter/planner/warm/REPORT.md`. CUDA was not compiled; SYCL, Metal, separate GPUs and the excluded
+GPU/lifecycle tests were not run.

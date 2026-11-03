@@ -28,7 +28,7 @@ public:
     ConversationDrafter& operator=(const ConversationDrafter&) = delete;
 
     /// Binds `m`'s drafter (Model::mtp, loaded with set_kv_in_pages) to the head of its card and readies it for
-    /// `sessions` conversations; the guesses keep to --spec-min-p.  Called again for a drafter loaded again.
+    /// `sessions` conversations. Called again for a drafter loaded again.
     bool init(Model& m, int sessions, std::string& err);
     /// Writes the drafter's K/V of the prompt cells [cell0, cell0 + n) of a conversation (its `pages` and session
     /// `ss`) from the prompt path `sp`'s final residual rows `R_rows`: cell i pairs row i with `next[i]`, the token
@@ -47,9 +47,9 @@ public:
     /// Reads what the last window kept of conversation `session` (its `pages` and session `ss`) into its K/V, from
     /// `window_R`, that window's final residual rows; then writes up to `n` guesses of the tokens after its last kept
     /// one to `out` and gets how many (0 also when the window did not hold it).  `n` 0 only reads.  -1 (with `err`)
-    /// when the drafter failed.
+    /// when the drafter failed. `draft` supplies the shared stopping callback and receives raw confidences.
     int propose(int session, const ConversationPages& pages, strata::core::SessionState& ss, const float* window_R,
-                int n, int32_t* out, std::string& err);
+                int n, int32_t* out, std::string& err, strata::spec::DraftContext* draft);
 
 private:
     /// What the last window kept of one conversation.
@@ -65,7 +65,6 @@ private:
     bool select(const ConversationPages& pages, strata::core::SessionState& ss, int64_t prompt_len, std::string& err);
 
     strata::core::MtpDrafter* mtp_ = nullptr;
-    double min_p_ = 0.0;
     uint64_t row_floats_ = 0;   ///< the floats of one residual row
     float* rows_ = nullptr;     ///< the bound residual rows: a conversation's rows of the window, copied in by draft()
     int device_ = 0;            ///< the drafter's GPU, which `rows_` is on (a layer split's last card's)
