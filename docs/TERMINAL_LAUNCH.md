@@ -229,3 +229,13 @@ The exit code is 0 and nothing is started.
 
 - The model download uses `setup.py` in its control mode (no pip, no engine fetch, no compiler), as the desktop app does. It needs internet and room for the files.
 - The Linux SYCL package updates through `strata update`. Do not copy it into the components folder by hand.
+
+### Choose a page-pool engine
+
+The original engines stay the default. To use an installed `strata-ds41` or `strata-q38`, pass its full path with
+`--set exe=C:/engines/strata-ds41.exe` (DeepSeek) or `--set exe=C:/engines/strata-q38.exe` (Qwen3.8).
+This sets the existing server config's `exe`; it is saved with presets. Keep the matching runtime libraries beside
+the program or in the config's `lib_dirs`. `--parallel` sets the starting conversations at once; it can change
+live in the Memory panel. Context and GPU choices carry over. Unsupported options are logged and left out.
+Pool sizes use `--set gpu-mib=18432 --set ram-mib=8192`; `tokens-min` and `tokens-max` are engine options too.
+See [the measured speeds and limits](MODELS.md#try-the-page-pool-engine).

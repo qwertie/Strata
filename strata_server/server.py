@@ -76,6 +76,7 @@ from strata_server import owner_guard  # noqa: E402
 from strata_common import launch_identity  # noqa: E402
 from strata_common import logit_bias as bias_api  # noqa: E402
 from strata_common import engine_client  # noqa: E402
+from strata_common import paged_launch  # noqa: E402
 from strata_common import lifeline  # noqa: E402
 from strata_server.structured import StructuredOutputError, prepare_format, validated_json  # noqa: E402
 from strata_server import responses as responses_api  # noqa: E402
@@ -5846,6 +5847,9 @@ def main(argv=None, *, lifecycle_event=None, interrupt_exit_code: int = 0) -> in
         if not cfg:
             ap.error("--engine strata needs --config")
         cfg = with_component_engine(cfg)
+        if paged_launch.is_paged_engine(cfg) and cfg.get("vision"):
+            print("[strata] paged engine: pictures are unavailable; leaving out the vision encoder", flush=True)
+            cfg = {**cfg, "vision": None}
         vision = None
         # The engine's own environment. It carries the offline policy too: an engine that fetched a
         # missing shard or a plugin would break the promise the flag makes.

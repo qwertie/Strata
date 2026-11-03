@@ -519,7 +519,11 @@ def derive_config(base: dict, s: S.LaunchSettings, *, bool_flags: frozenset[str]
     elif s.mtp == "on":
         cfg["mtp"] = True
     if s.extra:
-        a_changes, e_changes = S.as_argv_changes(s.extra, bool_flags)
+        extra = dict(s.extra)
+        exe = extra.pop("--exe", None)
+        if exe:
+            cfg["exe"] = exe
+        a_changes, e_changes = S.as_argv_changes(extra, bool_flags)
         cfg["args"] = tune_knobs.apply_to_argv([str(x) for x in cfg.get("args") or []], a_changes)
         if e_changes:
             cfg["env"] = tune_knobs.apply_to_env(dict(cfg.get("env") or {}), e_changes)
@@ -663,6 +667,13 @@ class Runner:
 
     # ---- 1. the engine
     def ensure_engine(self) -> None:
+        chosen = self.s.extra.get("--exe")
+        if chosen:
+            if not Path(chosen).is_file():
+                raise LaunchError(f"The chosen engine program is missing: {chosen}",
+                                  "Set exe to the full path of an installed engine program.")
+            self.emit("engine", f"Using the chosen engine program: {chosen}", 100)
+            return
         self.warn_wsl_amd()
         if self.multi_file():                                # DeepSeek: its own engine package (setup fetches it); the Strata engine is not used
             self.emit("engine", "DeepSeek runs on its own engine package, so the Strata engine is not downloaded for it.", 100)
@@ -2059,10 +2070,13 @@ class Runner:
         return self.dsv41_engine_found()[0] is None
 
     def use_own_dsv41_engine(self, cfg: dict) -> None:
-        """DeepSeek: the run config's engine is the DeepSeek engine package of THIS install (engine-dsv41/ here), not the path the installed model's
-        config was written with: that config can come from another Strata install on this computer (the model is shared between installs) or name
-        an older package folder that an update has replaced.  Only when this install has no package does the config's own path stay."""
-        if cfg.get("arch") != "deepseek41":
+        """Keeps explicit program choices; otherwise uses this install's DeepSeek package.
+
+        A shared model's config can name another install or a package an update has replaced. Without an installed
+        package, its saved path stays. The page-pool engine also keeps its saved path.
+        """
+        from strata_common.paged_launch import is_paged_engine
+        if cfg.get("arch") != "deepseek41" or is_paged_engine(cfg) or self.s.extra.get("--exe"):
             return
         found, _known = self.dsv41_engine_found()
         if found is None:

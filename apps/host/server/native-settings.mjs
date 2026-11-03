@@ -1,6 +1,8 @@
 import { validMcpName, MCP_NAME_HELP } from './mcp-names.mjs';
-/** Editable native keys. Unknown config keys and program paths stay intact. */
+/** Editable native keys. Unknown config keys stay intact. */
 export const NATIVE_FIELDS=[
+ {id:'exe',label:'Engine program',group:'Serving',type:'string',
+  hint:'Full path to an installed strata-q38 or strata-ds41 for live memory settings, or to the original engine.'},
  {id:'reasoning_budget_tokens',label:'Thinking token budget',group:'Responses',type:'number',min:0,max:1048576,hint:'Leave blank for the model default.'},
  {id:'fit_max_tokens',label:'Fit output to remaining context',group:'Responses',type:'boolean',hint:'Shortens the requested output cap when the prompt leaves less room.'},
  {id:'anthropic_thinking',label:'Anthropic thinking',group:'Responses',type:'enum',choices:['model','on_request'],hint:'Follow the model default or think only when requested.'},
@@ -43,6 +45,10 @@ export function validateNativeSettings(values){
   if(key==='env'){if(!value||typeof value!=='object'||Array.isArray(value))throw new Error('Engine environment must be an object.');const env={};for(const [name,text] of Object.entries(value)){if(!/^STRATA_[A-Z0-9_]+$/.test(name)||typeof text!=='string'||text.length>4000||text.includes('\0'))throw new Error('Use STRATA_ environment flags with text values.');env[name]=text;}result.env=env;continue;}
   if(key==='sampling'){if(!value||typeof value!=='object'||Array.isArray(value))throw new Error('Sampling must be an object.');const limits={temperature:[0,10],top_p:[Number.MIN_VALUE,1],top_k:[1,64],min_p:[0,1],repetition_penalty:[Number.MIN_VALUE,10],presence_penalty:[0,10],frequency_penalty:[0,10],penalty_last_n:[0,1048576],seed:[1,2147483647]};for(const [name,n] of Object.entries(value)){if(name==='experimental_speed_projection'){if(typeof n!=='boolean')throw new Error('Speed projection must be on or off.');continue;}if(!limits[name]||!Number.isFinite(n)||(['top_k','seed','penalty_last_n'].includes(name)&&!Number.isInteger(n))||n<limits[name][0]||n>limits[name][1])throw new Error(`Choose a valid sampling ${name}.`);}result.sampling={...value};continue;}
   const field=NATIVE_FIELDS.find(f=>f.id===key);if(!field)throw new Error(`Unknown native setting: ${key}`);
+  if(key==='exe'&&(typeof value!=='string'||
+     (value!=='component:strata-engine'&&
+      !/(?:^|[\\/])strata(?:-q38|-ds41|-dsv41|-q36)?(?:\.exe)?$/i.test(value))||/[\r\n\0]/.test(value)))
+   throw new Error('Choose the full path to a Strata engine program.');
   if(value===null||value===''){result[key]=null;continue;}
   if(field.type==='number'&&(!Number.isFinite(value)||value<field.min||value>field.max||!Number.isInteger(value)))throw new Error(`${field.label}: choose a whole number from ${field.min} to ${field.max}.`);
   if(field.type==='boolean'&&typeof value!=='boolean')throw new Error(`${field.label}: choose on or off.`);

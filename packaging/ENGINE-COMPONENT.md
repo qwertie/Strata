@@ -157,3 +157,7 @@ holds the choice; `tools/test_vision_reader.py` the tests.
   "device kernel image is invalid". `package_engine.py` now checks `vision_archs`.
 - **Missing sm_60 / 61 / 70 (#3503):** the first cuda12 package lacked Pascal and Volta code. `package_engine.py` now refuses a cuda12 package without them.
 - **Mac without a reader (#3697):** a macOS package once shipped without `strata-vision`. It is refused unless `--no-picture-reader` is given.
+
+The packager also includes `strata-q38[.exe]` and `strata-ds41[.exe]` when they sit beside `strata`.
+Build those CMake targets and copy them into the staging folder with their matching runtime libraries.
+Their absence leaves the original engines as the only choices. Release build scripts still need to build and stage them.

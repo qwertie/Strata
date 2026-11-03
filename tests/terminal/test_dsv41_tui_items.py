@@ -10,7 +10,7 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "tools"))
 
-from strata_cli.launch import cmd, params as P  # noqa: E402
+from strata_cli.launch import cmd, params as P, settings as S  # noqa: E402
 from strata_cli.launch.catalog import TIGHT, verdict  # noqa: E402
 
 CARD = {"index": 0, "name": "RTX 5070", "vram_gb": 12.0, "vendor": "nvidia", "usable": True}
@@ -126,6 +126,7 @@ class OwnEngine(unittest.TestCase):
         from strata_cli.launch import runner as R
         f = mock.MagicMock()
         f.notices = []
+        f.s = S.LaunchSettings()
         f.dsv41_engine_found.return_value = (found, True)
         f.upgrade_dsv41_engine.side_effect = lambda path: path          # (the upgrade has its own tests: tests/terminal/test_dsv41_upgrade.py)
         return R.Runner.use_own_dsv41_engine, f

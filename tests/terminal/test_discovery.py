@@ -62,6 +62,13 @@ class GuiLayout(unittest.TestCase):
         self.addCleanup(self.tmp.cleanup)
         base = Path(self.tmp.name)
         self.base = base
+        # A source checkout can carry the owner's run configs.
+        checkout = Path(__file__).resolve().parents[2]
+        config_files = discovery.config_files
+        patch = mock.patch.object(discovery, "config_files", side_effect=lambda folder:
+                                  [] if Path(folder).resolve() == checkout else config_files(folder))
+        patch.start()
+        self.addCleanup(patch.stop)
         self.env = {"LOCALAPPDATA": str(base / "local"), "XDG_DATA_HOME": str(base / "local"), "APPDATA": str(base / "roaming"),
                     "XDG_CONFIG_HOME": str(base / "config"), "USERPROFILE": str(base / "home"), "HOME": str(base / "home"),
                     "XDG_STATE_HOME": str(base / "state"), "XDG_DOCUMENTS_DIR": ""}

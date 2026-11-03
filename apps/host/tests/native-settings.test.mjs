@@ -21,3 +21,10 @@ test('chat accepts bounded attached images and rejects remote or oversized image
  const photo={name:'photo.png',url:'data:image/png;base64,aGVsbG8='};assert.deepEqual(validateChatImages([photo]),[photo]);
  assert.throws(()=>validateChatImages([{url:'https://private.test/image.png'}]));assert.throws(()=>validateChatImages(Array(5).fill(photo)));assert.throws(()=>validateChatImages([{url:'data:image/png;base64,'+Buffer.alloc(6*1024*1024+1).toString('base64')}]));
 });
+
+test('native settings reuse the executable path for both page-pool engines',()=>{
+ for(const exe of ['C:/engines/strata-q38.exe','C:/engines/strata-ds41.exe','/opt/strata/strata','strata.exe','component:strata-engine'])
+  assert.deepEqual(validateNativeSettings({exe}),{exe});
+ for(const exe of ['',null,'/tmp/other.exe'])
+  assert.throws(()=>validateNativeSettings({exe}));
+});

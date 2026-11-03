@@ -821,14 +821,14 @@ for its next token; the rows left over go to the drafter's guesses, shared evenl
 conversation ([MEMORY_MANAGER_PLAN.md](MEMORY_MANAGER_PLAN.md#how-rows-are-shared-the-owners-rule)). Both, and the
 conversations at once, change while the engine runs (the Memory panel, `CHANGE_SETTINGS`).
 
-Measured on the Strix Halo (Radeon 8060S, Windows 11), Qwen3.8 IQ3_S, 204,800 context, int8 K/V, the MTP drafter
+Measured on the Strix Halo (Radeon 8060S) on Windows 11, Qwen3.8 IQ3_S, 204,800 context, int8 K/V, the MTP drafter
 (`--spec-min-p 0.5`), temperature 0, 160 tokens per conversation, 2026-11-01. Three prompts: a story, a Python module
 and a travel question ("chat"). One engine start per memory case, the settings changed live between runs, three rounds
 with the order reversed every other round, medians (`tools/measure_rows.py`). The memory cases: **GPU**, a 48 GiB GPU
 pool, every expert on the GPU; **RAM**, a 16 GiB GPU pool and a 32 GiB RAM pool, two thirds of the experts read by the
 GPU from RAM; **SSD**, a 16 GiB GPU pool and a 4 GiB RAM pool, about 26 GiB of experts read from the SSD.
 
-One conversation, tokens/s for story / code / chat. "1x4" is one conversation and 4 rows, so 3 guesses a step:
+One conversation, tokens/s* for story / code / chat. "1x4" is one conversation and 4 rows, so 3 guesses a step:
 
 | Rows (lookahead) | GPU | RAM | SSD |
 |---|---|---|---|
@@ -839,7 +839,7 @@ One conversation, tokens/s for story / code / chat. "1x4" is one conversation an
 
 Of the guesses, 70-72% were kept with 2 a step, 62-64% with 3 and 50-51% with 7.
 
-Several conversations at once, tokens/s of all together (each: story, code, chat):
+Several conversations at once, tokens/s* of all together (each: story, code, chat):
 
 | Conversations x rows | GPU | RAM | SSD |
 |---|---|---|---|
@@ -881,6 +881,8 @@ four alternating runs, medians); and copying an evicted expert back to RAM (`--c
 measures at least twice as fast as an SSD read: 35-41 GB/s against 2.4-2.5 GB/s here) took at most 40 ms in the three
 rounds of any configuration above, as the RAM pool seldom had room for a colder expert. The NVIDIA test PC's numbers are
 to come: `tools/nvidia_session/README.md` says how to repeat the measurement there.
+
+* on Windows (users have seen Strix Halo much faster on Linux)
 
 ---
 
@@ -1529,3 +1531,38 @@ mean KL from the stock model 0.063 nats (max 4.1), perplexity +15% on code, +2.3
   the original 2,682 in 46 s. Speed: 4K IQ2_XS 465 prompt / 78.7 output tokens/s against 467 / 78.3 for the original.
 - UD-Q4_K_XL on a 64 GB PC with a 12 GB RTX 5070: 7-8.5 tok/s, picks the same tokens as llama.cpp on the same file at 97.5-99% of the
   positions of short greedy answers and 90-91% after a 16K prompt ([UNSLOTH_Q4.md](UNSLOTH_Q4.md#quality-against-llamacpp-on-the-same-file)).
+
+### Try the page-pool engine
+
+The original engine stays the default. To try `strata-ds41`, set `exe` in the server's JSON config to its full
+path. In the app, open the model's settings and set **Engine program** to that path. In the Terminal, use:
+
+```sh
+strata launch --family deepseek41 --model ist-das-2.00bpw --set exe=C:/engines/strata-ds41.exe --yes --no-tui
+```
+
+Use `strata-q38` the same way for Qwen3.8. The binary and its matching runtime libraries must already be installed.
+No new engine-choice flag is needed. Restore the original `exe` path to return to the original engine.
+
+These engines add live memory settings in the Memory panel, several conversations at once, pausing conversations
+in RAM or on disk, saved sessions, and layer splitting. DeepSeek's layer split is still under test; separate-card
+validation remains open in D9. Pictures, the suffix drafter, `--batch-groups` and `--tp` are unavailable.
+The server keeps context, GPU selection and `parallel` (starting conversations at once). It logs options it leaves
+out. Use `--set gpu-mib=18432 --set ram-mib=8192` to set the pools; `tokens-min` and `tokens-max` bound the token
+pages kept in the pools. These are engine options in the config's `args`, also available through `--set`.
+
+Measured on Strix Halo on Windows, HIP, the IQ2_XXS pack, 8,192 context, D7: with DSpark, 1,200 trunk experts
+and 384 drafter experts on the GPU, two alternating rounds of 64 tokens per answer, story / code / count decode
+was 3.62 / 4.06 / 7.92 tok/s* with `strata-dsv41`, against 3.80 / 4.79 / 9.41 tok/s* with `strata-ds41`.
+The new engine used 18,432 MiB GPU and 8,192 MiB RAM pools; the old engine used `DS4_COMMIT_CAP_GB=26.10`,
+`--no-expert-cache --ssd-cache 0`. Both used `--dspark-conf 0.65`. Equal expert totals placed different experts
+on the GPU, so this compares those placements too.
+
+On the same hardware and pack on Windows, commit `ff7e608e`, 8,192 context, default adaptive placement,
+48 GiB GPU and 6 GiB RAM pools, DSpark off, 64-token code / story / count answers: three conversations gave
+8.98 / 10.38 aggregate tok/s* in two rounds, against 6.69 / 7.51 tok/s* for one. That is 34–38% more aggregate
+speed. Timing starts after the last admission and excludes prefill. With DSpark on, three were slower than one
+(7.10 / 7.15 against 8.61 / 7.55 tok/s*); mixed-conversation steps do not draft yet.
+Sources and limits: [D7, D8 and M12](MEMORY_MANAGER_PLAN.md).
+
+* on Windows (users have seen Strix Halo much faster on Linux)

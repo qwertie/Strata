@@ -115,7 +115,8 @@ def add_parsers(sp: argparse._SubParsersAction) -> list[argparse.ArgumentParser]
     g.add_argument("--tune", type=_choice("a tuning mode", S.TUNE_MODES), metavar="quick|thorough|skip", help="find the fastest settings first (default: skip here; the guided screens suggest quick the first time)")
     g.add_argument("--tune-allow-small", action="store_true", help="let the tuner also try settings that can change answers very slightly")
     g.add_argument("--set", action="append", default=[], metavar="KEY=VALUE",
-                   help="an advanced engine setting or STRATA_* variable, e.g. prefill=65536 (repeat); unknown names get a warning, not a refusal")
+                   help="an advanced engine setting, exe=PATH, or STRATA_* variable, e.g. prefill=65536 (repeat); "
+                        "unknown names get a warning, not a refusal")
     g.add_argument("--pool-cores", metavar="LIST",
                    help="experimental: pin the CPU workers to exactly these logical processors, e.g. 2,4,6,8 or 2-14:2 (the numbers Task Manager or "
                         "lscpu show). The default is one worker per physical core, which the engine's start line names; "

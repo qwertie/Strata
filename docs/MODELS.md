@@ -64,6 +64,41 @@ It uses its own engine, a separate download that the app and `strata launch` fet
 The download includes the shared n-gram (Engram) table and the DSpark drafter. Pick 2.25 for coding and agent work if
 you have the disk. Perplexity is measured on a fixed set of 4,995 test texts; lower is closer to the original.
 
+### Try the page-pool engine
+
+The original engine stays the default. To try `strata-ds41`, set `exe` in the server's JSON config to its full
+path. In the app, open the model's settings and set **Engine program** to that path. In the Terminal, use:
+
+```sh
+strata launch --family deepseek41 --model ist-das-2.00bpw --set exe=C:/engines/strata-ds41.exe --yes --no-tui
+```
+
+Use `strata-q38` the same way for Qwen3.8. The binary and its matching runtime libraries must already be installed.
+No new engine-choice flag is needed. Restore the original `exe` path to return to the original engine.
+
+These engines add live memory settings in the Memory panel, several conversations at once, pausing conversations
+in RAM or on disk, saved sessions, and layer splitting. DeepSeek's layer split is still under test; separate-card
+validation remains open in D9. Pictures, the suffix drafter, `--batch-groups` and `--tp` are unavailable.
+The server keeps context, GPU selection and `parallel` (starting conversations at once). It logs options it leaves
+out. Use `--set gpu-mib=18432 --set ram-mib=8192` to set the pools; `tokens-min` and `tokens-max` bound the token
+pages kept in the pools. These are engine options in the config's `args`, also available through `--set`.
+
+Measured on Strix Halo on Windows, HIP, the IQ2_XXS pack, 8,192 context, D7: with DSpark, 1,200 trunk experts
+and 384 drafter experts on the GPU, two alternating rounds of 64 tokens per answer, story / code / count decode
+was 3.62 / 4.06 / 7.92 tok/s* with `strata-dsv41`, against 3.80 / 4.79 / 9.41 tok/s* with `strata-ds41`.
+The new engine used 18,432 MiB GPU and 8,192 MiB RAM pools; the old engine used `DS4_COMMIT_CAP_GB=26.10`,
+`--no-expert-cache --ssd-cache 0`. Both used `--dspark-conf 0.65`. Equal expert totals placed different experts
+on the GPU, so this compares those placements too.
+
+On the same hardware and pack on Windows, commit `ff7e608e`, 8,192 context, default adaptive placement,
+48 GiB GPU and 6 GiB RAM pools, DSpark off, 64-token code / story / count answers: three conversations gave
+8.98 / 10.38 aggregate tok/s* in two rounds, against 6.69 / 7.51 tok/s* for one. That is 34–38% more aggregate
+speed. Timing starts after the last admission and excludes prefill. With DSpark on, three were slower than one
+(7.10 / 7.15 against 8.61 / 7.55 tok/s*); mixed-conversation steps do not draft yet.
+Sources and limits: [D7, D8 and M12](MEMORY_MANAGER_PLAN.md).
+
+* on Windows (users have seen Strix Halo much faster on Linux)
+
 **Supported hardware**
 
 | Hardware | Systems |
@@ -72,7 +107,8 @@ you have the disk. Perplexity is measured on a fixed set of 4,995 test texts; lo
 | AMD Radeon AI PRO R9700 | Linux |
 
 Tested on an RTX 3060 (Linux), an RTX 5070 (Windows) and four R9700 cards (Linux). The RTX 30 kernels were also checked
-on an RTX A4000. Windows on RTX 30 and the RX 9070 are built but were not run. Mac and Strix Halo do not run it yet.
+on an RTX A4000. Windows on RTX 30 and the RX 9070 are built but were not run. Mac does not run it yet.
+The opt-in page-pool engine was also tested on Strix Halo on Windows (above).
 
 **What you need:** a graphics card with 12 GB or more, 46 GB of RAM at least (64 GB is the tested comfortable size),
 an NVMe SSD, and the disk space above. Setup warns when disk or RAM is short and does not stop you.

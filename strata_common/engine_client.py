@@ -29,6 +29,7 @@ from strata_common import gpu_roles
 from strata_common import lifeline
 from strata_common import logit_bias as bias_api
 from strata_common import user_args
+from strata_common import paged_launch
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -822,7 +823,7 @@ class StrataEngine:
         # it admits (INFO batch_slots=N). Paged engines expose their full step capacity; --batch only seeds scheduling.
         asked = next((int(args[args.index(k) + 1]) for k in ("--batch", "--slots") if k in args), 0)
         self.batch = int(self.info.get("batch_slots") or 0)
-        if asked and self.batch != asked:
+        if asked and self.batch != asked and not self.can_change_settings:
             print(f"[strata] parallel requests: {asked} asked, the engine runs {self.batch or 'one at a time'} "
                   "(its log says why)", flush=True)
         _bg = args[args.index("--batch-groups") + 1] if "--batch-groups" in args else "default"
@@ -2475,6 +2476,11 @@ def engine_args(cfg: dict) -> list[str]:
     # so a setup run or the app rewriting "args" cannot undo them (#3216 #3215 #3270)
     if cfg.get("user_args"):
         args = user_args.merge(args, cfg["user_args"])
+    if paged_launch.is_paged_engine(cfg):
+        if layer_split_of(cfg) and "--layer-split" not in args:
+            args += ["--layer-split", layer_split_value(cfg)]
+        args += parallel_args(cfg, args)
+        return paged_launch.translate_args(cfg, args)
     # "drafting": auto | mtp | dflash2 | off (strata_common/drafting.py; the Models screen and `strata launch --drafting` write it): which drafter
     # guesses ahead. A choice that cannot be applied starts the MTP and says why in the engine's /metrics ("drafting_note").
     if cfg.get("drafting") is not None or drafting.suggest(drafting_card_class()) != "mtp":

@@ -191,7 +191,7 @@ def build_rows(engine_help: str | None, base_args: list[Any], tuned_args: list[A
 
 def check_name(name: str, engine_flags: list[str] | None) -> str | None:
     """A warning (never a refusal) for a flag the engine's list does not have."""
-    if not name.startswith("--") or not engine_flags:
+    if name == "--exe" or not name.startswith("--") or not engine_flags:
         return None
     if name in engine_flags:
         return None

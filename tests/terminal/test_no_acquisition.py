@@ -71,15 +71,23 @@ def _sources():
 class ImportGraphTests(unittest.TestCase):
     def test_start_and_serve_modules_do_not_load_installer_code(self):
         script = (
-            "import sys, os, json\n"
+            "import sys, os, json, sysconfig\n"
+            "from pathlib import Path\n"
             "sys.path.insert(0, os.getcwd())\n"
             "import strata_cli.cli as c\n"
             "import strata_server.server\n"
             "from strata_control import runtime\n"
             "c.parser()\n"
-            "root = os.getcwd()\n"
-            "mods = {n: os.path.relpath(m.__file__, root).replace(os.sep, '/') for n, m in list(sys.modules.items())\n"
-            "        if getattr(m, '__file__', None) and os.path.abspath(m.__file__).startswith(root)}\n"
+            "root = Path.cwd().resolve()\n"
+            "dependencies = {Path(sysconfig.get_path(k)).resolve() for k in ('purelib', 'platlib')}\n"
+            "mods = {}\n"
+            "for name, module in list(sys.modules.items()):\n"
+            "    file = getattr(module, '__file__', None)\n"
+            "    if not file:\n"
+            "        continue\n"
+            "    file = Path(file).resolve()\n"
+            "    if file.is_relative_to(root) and not any(file.is_relative_to(d) for d in dependencies):\n"
+            "        mods[name] = file.relative_to(root).as_posix()\n"
             "print(json.dumps({'mods': mods, 'names': sorted(sys.modules)}))\n")
         r = subprocess.run([sys.executable, "-c", script], cwd=ROOT, capture_output=True, text=True, timeout=120)
         self.assertEqual(r.returncode, 0, r.stderr[-1000:])
