@@ -255,6 +255,8 @@ public:
     /// reads them when `drafting`.
     virtual bool keep_rows(const std::vector<strata::spec::StepRow>& rows, const std::vector<int>& kept,
                            bool drafting, std::string& err) = 0;
+    /// Prepares model-specific drafting for the conversations sharing the next pass.
+    virtual void begin_step(int) {}
     /// Writes up to `n` guesses of the tokens after `token` at `pos` in `session` to `out` from its state on the last
     /// card (`last`); gets how many, or -1 (and `err`) when the drafter failed.  It is called before each of the
     /// conversation's steps (spec::StepModel::propose), also with `n` 0.

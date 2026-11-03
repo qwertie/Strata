@@ -861,6 +861,11 @@ struct Model::Impl {
     unsigned* mk_slots = nullptr;
     unsigned mk_seq = 0;
     int d_dev = 0;                    // the drafter's first block's device
+    /// The paged engine binds each row's pages without swapping host state or waiting on the stream.
+    std::function<void(int)> select_row;
+    /// Absolute token positions and indexer limits for the independent rows of a shared pass.
+    int64_t row_positions[8] = {};
+    WinPlan row_plans[8];
     bool spec_win = false;            // the window being run is a draft's verification (layer() keeps backups)
     float* h_taps = nullptr;          // pinned [kWin][targets][dim]: the last window's taps
     cudaEvent_t ev_seed = nullptr;    // the drafter's seeding read h_taps: the next window's taps wait for it
@@ -8654,9 +8659,9 @@ struct Model::Impl {
     }
 
     // the window's plan, in window order (the indexer's and the candidate source's sizes carry from window to window)
-    void plan_window(int64_t p0, int T, WinPlan& wp) {
-        wp.par = par;
-        wp.async = par || (!sync_decode && T <= async_max_t);
+    void plan_window(int64_t p0, int T, WinPlan& wp, bool host_routed = false) {
+        wp.par = !host_routed && par;
+        wp.async = !host_routed && (par || (!sync_decode && T <= async_max_t));
         wp.vl = 0;
         for (int t = 0; t < T && !imgs.empty(); ++t)
             if (in_image(p0 + t)) wp.vl |= 1u << t;
@@ -8827,6 +8832,62 @@ struct Model::Impl {
         st.tokens += T;
         cache_tick(T);
         if (seed_rows != 0 && !seed_drafter(p0, seed_rows < 0 ? T : seed_rows, 0, err)) return false;
+        return true;
+    }
+
+    /// Runs independent rows through each layer once, batching their routed and shared experts.
+    bool step_conversations(const std::vector<int>& tokens, const std::function<void(int)>& select,
+                            const std::function<void(int)>& bind, std::string& err) {
+        const int T = (int) tokens.size();
+        if (T < 1 || T > 8 || std::any_of(groups.begin(), groups.end(),
+                                         [](const Group& group) { return group.mem.size() != 1; })) {
+            err = "independent rows require 1 to 8 rows and layer-parallel stages";
+            return false;
+        }
+        for (int row = 0; row < T; ++row) {
+            select(row);
+            if (pos >= o.max_context || tokens[row] < 0 || tokens[row] >= g.vocab) {
+                err = "independent row outside the context or vocabulary";
+                return false;
+            }
+            const int64_t p0 = pos;
+            row_positions[row] = p0;
+            toks.push_back(tokens[row]);
+            ctoks.push_back(ctok(p0, tokens[row]));
+            pos = (int64_t) toks.size();
+            slot_held = false;
+            std::memcpy(h_emb + (size_t) row * g.dim, emb_row(p0, tokens[row]), (size_t) g.dim * 2);
+            const double te = now_ms();
+            for (int li = 0; li < pk.eg_layers; ++li) {
+                const size_t per = (size_t) (pk.eg_ngram - 1) * pk.eg_heads * (pk.eg_hd + pk.eg_hd / 32);
+                engram_rows(p0, 1, li, h_eg + ((size_t) li * eg_cap + row) * per);
+            }
+            st.engram_ms += now_ms() - te;
+            plan_window(p0, 1, row_plans[row], true);
+        }
+        plan_window(0, T, wplan);
+        wplan.par = false;
+        n_logits = T;
+        prof_window = false;
+        eg_stats();
+        select_row = bind;
+        const double tl = now_ms();
+        const bool ok = forward_serial(0, T, err);
+        st.layer_ms += now_ms() - tl;
+        select_row = {};
+        if (!ok)
+            return false;
+        for (Dev& d : devs) {
+            cudaSetDevice(d.id);
+            CK(cudaStreamSynchronize(d.st));
+        }
+        for (int row = 0; row < T; ++row) {
+            select(row);
+            if (!seed_drafter(row_positions[row], 1, row, err))
+                return false;
+        }
+        st.tokens += T;
+        cache_tick(T);
         return true;
     }
 
@@ -9037,17 +9098,20 @@ struct Model::Impl {
         });
     }
 
-    // layer L0 for the window, as group member mi (its share of the heads, of the output projection and of the FFNs;
-    // the partial sums all-reduced across the group)
+    /// Computes one layer for the shared window, with state selected independently for each attention row.
     bool layer(Layer& L0, int mi, int64_t p0, int T, const WinPlan& wp, std::string& err) {
+        return run_attention(L0, mi, p0, T, wp, err) && run_moe(L0, mi, T, wp, err);
+    }
+
+    /// Shares the dense projections across rows before and after their position-dependent attention.
+    bool run_attention(Layer& L0, int mi, int64_t p0, int T, const WinPlan& wp, std::string& err) {
         Layer& l = member(L0, mi);
         Dev& d = devs[(size_t) l.dev];
         cudaSetDevice(d.id);
         cudaStream_t s = d.st;
         const int nm = L0.nm;
-        const int D = g.dim, H = g.hc, HD = g.hd, NHL = l.ahn, HQ = NHL * HD, OG = l.ogn, FF = l.ffn;
+        const int D = g.dim, H = g.hc, HD = g.hd, NHL = l.ahn, HQ = NHL * HD, OG = l.ogn;
         const ArGroup& ag = groups[(size_t) L0.grp].ar;
-        const float* freqs = l.ratio ? d.freqs_comp : d.freqs_win;
         prof_mark(d, 0);
         // Engram
         if (l.eg >= 0) {
@@ -9085,6 +9149,60 @@ struct Model::Impl {
         finish(d.qr, T, g.q_lora, g.q_lora, fq, s);
         if (NHL > 0) {
             if (!mv(d, {job(l.wq_b, d.qr, d.q, T, g.q_lora, HQ)}, err)) return false;
+        }
+        if (!select_row) {
+            if (!run_attention_state(L0, mi, p0, T, wp, err))
+                return false;
+        } else {
+            float** fields[] = {&d.qr, &d.q, &d.kvr, &d.ckr, &d.cgr, &d.x, &d.o};
+            const size_t strides[] = {(size_t) g.q_lora, (size_t) HQ, (size_t) HD, (size_t) HD,
+                                      (size_t) HD, (size_t) D, (size_t) HQ};
+            float* bases[7];
+            for (int i = 0; i < 7; ++i)
+                bases[i] = *fields[i];
+            int* topk = d.topk;
+            int* cand = d.cand;
+            for (int row = 0; row < T; ++row) {
+                select_row(row);
+                for (int i = 0; i < 7; ++i)
+                    *fields[i] = bases[i] + (size_t) row * strides[i];
+                d.topk = topk + (size_t) row * topk_stride();
+                d.cand = cand + (size_t) row * cand_stride();
+                const bool ok = run_attention_state(L0, mi, row_positions[row], 1, row_plans[row], err);
+                for (int i = 0; i < 7; ++i)
+                    *fields[i] = bases[i];
+                d.topk = topk;
+                d.cand = cand;
+                if (!ok)
+                    return false;
+            }
+        }
+        if (NHL > 0) {
+            x3::MvJob j[16];
+            const int per = HQ / OG;
+            for (int gi = 0; gi < OG; ++gi)
+                j[gi] = job(l.wo_a[gi], d.o + (size_t) gi * per, d.oa + (size_t) gi * g.o_lora,
+                            T, HQ, (size_t) OG * g.o_lora);
+            if (!mv_n(d, j, OG, err)) return false;
+            if (!mv(d, {job(l.wo_b, d.oa, d.ao, T, (size_t) OG * g.o_lora, D)}, err)) return false;
+        } else CK(cudaMemsetAsync(d.ao, 0, (size_t) T * D * sizeof(*d.ao), s));   // (no heads: nothing to add)
+        if (nm > 1) allreduce(d.ao, T * D, ag, mi, ++d.ar_seq, d.xcnt, s);
+        hc_post(d.ao, d.h, d.a_post, d.a_comb, D, H, T, d.h2, s);
+        std::swap(d.h, d.h2);
+        if (dump_l != nullptr && mi == 0) dump_layer(d, d.h, 1000 + l.il, p0, T);   // (DS4_DUMP_L: after the attention)
+        prof_mark(d, 1);
+        return true;
+    }
+
+    /// Updates the selected conversation's rings and compressors and reads its paged attention sources.
+    bool run_attention_state(Layer& L0, int mi, int64_t p0, int T, const WinPlan& wp, std::string& err) {
+        Layer& l = member(L0, mi);
+        Dev& d = devs[(size_t) l.dev];
+        cudaSetDevice(d.id);
+        cudaStream_t s = d.st;
+        const int D = g.dim, HD = g.hd, NHL = l.ahn;
+        const float* freqs = l.ratio ? d.freqs_comp : d.freqs_win;
+        if (NHL > 0) {
             Finish fr;
             fr.rd = g.rd;
             fr.pos = (int) p0;
@@ -9254,18 +9372,18 @@ struct Model::Impl {
             fo.inverse = 1;
             fo.quant = 1;
             finish(d.o, T * NHL, HD, HD, fo, s);
-            x3::MvJob j[16];
-            const int per = HQ / OG;
-            for (int gi = 0; gi < OG; ++gi)
-                j[gi] = job(l.wo_a[gi], d.o + (size_t) gi * per, d.oa + (size_t) gi * g.o_lora, T, HQ, (size_t) OG * g.o_lora);
-            if (!mv_n(d, j, OG, err)) return false;
-            if (!mv(d, {job(l.wo_b, d.oa, d.ao, T, (size_t) OG * g.o_lora, D)}, err)) return false;
-        } else CK(cudaMemsetAsync(d.ao, 0, (size_t) T * D * sizeof(*d.ao), s));   // (no heads: nothing to add)
-        if (nm > 1) allreduce(d.ao, T * D, ag, mi, ++d.ar_seq, d.xcnt, s);
-        hc_post(d.ao, d.h, d.a_post, d.a_comb, D, H, T, d.h2, s);
-        std::swap(d.h, d.h2);
-        if (dump_l != nullptr && mi == 0) dump_layer(d, d.h, 1000 + l.il, p0, T);   // (DS4_DUMP_L: after the attention)
-        prof_mark(d, 1);
+        }
+        return true;
+    }
+
+    /// Computes the shared and routed experts for all rows in this layer.
+    bool run_moe(Layer& L0, int mi, int T, const WinPlan& wp, std::string& err) {
+        Dev& d = devs[(size_t) member(L0, mi).dev];
+        Layer& l = member(L0, mi);
+        cudaSetDevice(d.id);
+        cudaStream_t s = d.st;
+        const int nm = L0.nm, D = g.dim, H = g.hc, FF = l.ffn;
+        const ArGroup& ag = groups[(size_t) L0.grp].ar;
         // the MoE
         hc_mix_split(d.h, l.hcf_fn, H * D, (2 + H) * H, T, g.eps, d.mix, d.hccnt, l.hcf_scale, l.hcf_base, H, g.sinkhorn, g.hc_eps,
                      d.f_pre, d.f_post, d.f_comb, s);
@@ -9681,6 +9799,13 @@ void Model::use_state_memory(int dev, uint8_t* fixed, uint8_t* drafter, const Co
     for (Layer& l : p.L)   // Paged stages are layer-parallel, with no tensor-parallel members.
         if (l.dev == dev)
             l.win = (l.mtp ? drafter : fixed) + at.ring[(size_t) l.il];
+}
+bool Model::step_conversations(const std::vector<int>& tokens, const std::function<void(int)>& select,
+                               const std::function<void(int)>& bind, std::string& err) {
+    return p_->step_conversations(tokens, select, bind, err);
+}
+int Model::sample_row(int row, float t, float tp, int tk, float mp, uint64_t seed, uint64_t counter) {
+    return p_->sample_row(row, t, tp, tk, mp, seed, counter, nullptr);
 }
 bool Model::step(int token, bool logits, std::string& err) { return p_->step(token, logits, err); }
 bool Model::feed(const int* tokens, int n, int logits_rows, std::string& err) {

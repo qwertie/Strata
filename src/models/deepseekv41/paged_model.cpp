@@ -45,13 +45,13 @@ constexpr int kBeforeLastCheck = 1;
 constexpr int kSharedStartCheck = 3;
 /// The shortest shared start pin=N keeps a checkpoint of (the old engine's).
 constexpr int64_t kShortestPin = 256;
-/// The most rows of one window (the model's kWin): a token and up to 15 drafts.
-constexpr int kWindowRows = 16;
+/// The shared step supports at most eight rows, including guesses.
+constexpr int kWindowRows = 8;
 
 /// strata-ds41's options beside the paged engine's and the model's: the batch slots, the GPU pool's experts and the
 /// adaptive tier (as strata-q38's options of the same names).
 struct ProgramOptions {
-    int batch = 0;              ///< --batch: the conversations held beside the one a GEN uses (one decodes at a time)
+    int batch = 0;              ///< --batch: the conversation slots held beside the one a GEN uses
     int64_t gpu_experts = -1;   ///< --expert-cache: the most experts the GPU's pool holds; -1 (auto): as many as fit
     int adapt_every = 4;        ///< --adapt-every: decode steps between two rounds of the tier
     /// --adapt-swaps: the most experts a round moves into the GPU's pool (0: the tier is off).  The old engine's expert
@@ -76,7 +76,7 @@ struct Part final : strata::serve::PagedPart {
     Part* lead = this;                         ///< Owns the conversation host state shared by all its stages.
     std::vector<Part*> peers;                  ///< The lead reconnects every stage when it takes the seat.
     const bool has_drafter;                    ///< Only the last stage keeps DSpark's rings.
-    Part*& seated;                              ///< the part the model computes (PagedDeepSeek::seated_), or null
+    Part*& seated;                             ///< Owns the host side currently in Model, or null.
     strata::core::PagePool* pool = nullptr;     ///< null before init
     strata::core::ConversationId cid = 0;
     /// per region of the layout (empty for a fixed one): the first address of each of its blocks, on the host, and
@@ -281,15 +281,15 @@ struct Part final : strata::serve::PagedPart {
     }
 };
 
-/// DeepSeek for the paged engine: the conversations of the batch slots and "main", which the Model computes one at a
-/// time (the seated Part's: its memory the Part's pages), one row a step; the GPU computes the experts of the card's
+/// DeepSeek for the paged engine: the conversations of the batch slots and "main", whose attention reads each row's
+/// Part pages; independent rows share the expert pass; the GPU computes the experts of the card's
 /// pool, the CPU the others from the RAM's pool (Options::expert_pages).  A paused conversation's checkpoints are its
 /// state beside the pages (save_state), and a prompt that leaves a conversation before its end goes back to one of
 /// them (rewind).  The DSpark drafter guesses (propose) as the old engine's rounds draft, a step verifies them in one
 /// window (run_rows) and rolls the rejected ones back (keep_rows); its rings are a fixed region of the conversation,
 /// its experts in the GPU's pool before the trunk's (the RAM's pool holds none: it drafts only while all of them are
 /// on the GPU). Stages use Model's existing serial or chunked hand-offs; each stage owns a pool, while the lead
-/// part owns the conversation's host state. Several conversations in a step remain the plan's step D8.
+/// part owns the conversation's host state.
 class PagedDeepSeek final : public strata::serve::PagedModel {
 public:
     /// `drafting`: the drafter is switched on at the start; `files`: the experts on the SSD; `ram`: the RAM's pool,
@@ -368,6 +368,7 @@ public:
                   std::string& err) override;
     bool keep_rows(const std::vector<strata::spec::StepRow>& rows, const std::vector<int>& kept, bool,
                    std::string& err) override;
+    void begin_step(int count) override { active_conversations_ = count; }
     int propose(strata::serve::PagedPart& last, int session, int32_t token, int64_t pos, int n, int32_t* out,
                 std::string& err) override;
     bool switch_drafter(bool on, std::string& err) override;
@@ -416,6 +417,7 @@ private:
     bool drafting_ = false;            ///< the drafter is switched on: its experts are wanted in the GPU's pool
     /// the drafter's experts (get_ranking's), which it needs all of on the GPU to draft
     std::vector<strata::core::ExpertKey> drafter_experts_;
+    int active_conversations_ = 1;     ///< The next step's participants; drafting shares rollback scratch.
     int verified_ = 0;                 ///< the rows of the last step's verify window with a pick; 0: a plain step
 };
 
@@ -447,7 +449,6 @@ int run_paged_engine(int argc, char** argv) {
         x.layer_split = "auto";
     if (settings.step.lookahead == 0)   // (no guesses: the drafter is not loaded, as --dspark none)
         o.dspark = false;
-    settings.step.concurrent = 1;   // one conversation a step until step D8
     std::string err;
     std::vector<int> stage_devices = o.gpus;
     if (!x.layer_split.empty()) {
@@ -626,7 +627,6 @@ PagedDeepSeek::PagedDeepSeek(Model& m, const Options& o, const ProgramOptions& x
     facts.n_expert = g.n_exp;
     facts.context = o.max_context;
     facts.max_rows = kWindowRows;
-    facts.max_concurrent = 1;
     facts.end_tokens.assign(eos.begin(), eos.end());
     facts.sampling.top_k = kDefaultTopK;
     facts.has_drafter = m.draft_block() > 0;
@@ -861,14 +861,48 @@ bool PagedDeepSeek::read_prompt(const PagedParts& parts, const std::vector<int64
 
 bool PagedDeepSeek::run_rows(const std::vector<strata::spec::StepRow>& rows, std::vector<int32_t>& picks,
                              std::string& err) {
+    if (rows.front().session != rows.back().session) {
+        verified_ = 0;
+        std::vector<int> tokens;
+        std::vector<size_t> pending;
+        for (size_t r = 0; r < rows.size(); ++r) {
+            Part& p = *leads_[(size_t) rows[r].session];
+            const bool primed = p.primed_pos == rows[r].pos && p.primed_token == rows[r].token &&
+                                p.get_pos() == rows[r].pos + 1;
+            p.primed_pos = -1;
+            if (primed) {
+                picks[r] = p.primed_pick;
+                continue;
+            }
+            p.take_seat();
+            if (!go_to(rows[r].pos, err))
+                return false;
+            if (p.prompt_open)
+                m_.checkpoint(kBeforeLastCheck);
+            pending.push_back(r);
+            tokens.push_back(rows[r].token);
+        }
+        if (!pending.empty() && !m_.step_conversations(tokens, [&](int r) {
+                leads_[(size_t) rows[pending[(size_t) r]].session]->take_seat();
+            }, [&](int r) {
+                for (Part* part : leads_[(size_t) rows[pending[(size_t) r]].session]->peers)
+                    part->point_model();
+            }, err))
+            return false;
+        for (size_t r = 0; r < pending.size(); ++r) {
+            Part& p = *leads_[(size_t) rows[pending[r]].session];
+            p.take_seat();
+            if (p.prompt_open)
+                end_prompt(p);
+            const auto& s = p.smp;
+            picks[pending[r]] = m_.sample_row((int) r, s.temperature, s.top_p, s.top_k, s.min_p, s.seed, counter_++);
+        }
+        return true;
+    }
     const strata::spec::StepRow& row = rows[0];
     Part& p = *leads_[(size_t) row.session];
     verified_ = 0;
     if (rows.size() > 1) {   // a token and its drafts (propose's), in one verify window
-        if (rows.back().session != row.session) {
-            err = "strata-ds41 runs one conversation a step (several are step D8)";
-            return false;
-        }
         std::vector<int> drafts, got;
         for (size_t r = 1; r < rows.size(); ++r)
             drafts.push_back(rows[r].token);
@@ -919,7 +953,9 @@ bool PagedDeepSeek::keep_rows(const std::vector<strata::spec::StepRow>&, const s
 int PagedDeepSeek::propose(strata::serve::PagedPart& last, int, int32_t token, int64_t pos, int n, int32_t* out,
                            std::string& err) {
     Part& p = *get_part(last).lead;
-    if (n <= 0 || !drafting_ || !p.spec || p.prompt_open || p.primed_pos == pos || !is_drafter_ready())
+    // Independent rows seed their own rings; speculative rollback still uses one window's scratch.
+    if (active_conversations_ > 1 || n <= 0 || !drafting_ || !p.spec || p.prompt_open || p.primed_pos == pos ||
+        !is_drafter_ready())
         return 0;
     if (p.cool) {
         p.cool = false;

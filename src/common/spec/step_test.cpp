@@ -26,9 +26,11 @@ struct FakeModel {
     int64_t room_limit = 1 << 20;
     int poisoned = -1;
     int right = 0;
+    int active = 0;   ///< Conversations reported before drafting begins.
 
     StepModel hooks() {
         StepModel m;
+        m.begin = [this](int count) { active = count; };
         m.make_room = [this](int session, int64_t tokens) {
             room[session] = tokens;
             return tokens <= room_limit;
@@ -48,6 +50,7 @@ struct FakeModel {
     std::vector<int> asked;   ///< the `n` of each propose call
     void add_drafter(StepModel& m) {
         m.propose = [this](int, int32_t token, int64_t, int n, int32_t* out) {
+            check(active > 0 || n == 0, "preparation precedes requests for guesses");
             asked.push_back(n);
             for (int i = 0; i < n; ++i)
                 out[i] = i < right ? token + 1 + i : 0;
@@ -105,6 +108,7 @@ int main() {
         c.stop = true;
         std::string err;
         check(step.run({&a, &b, &c}, err), "a step runs");
+        check(fm.active == 2, "preparation excludes stopped conversations");
         check(fm.last.size() == 2 && fm.last[0].session == 0 && fm.last[1].session == 1, "one row each, none for c");
         check(fm.last[0].parent == -1 && fm.last[1].pos == 7, "rows start at the conversations' positions");
         check(fm.kept == std::vector<int>{1, 1}, "each keeps its row");

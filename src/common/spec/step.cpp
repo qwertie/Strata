@@ -31,6 +31,8 @@ bool Step::run(const std::vector<Decoding*>& active, std::string& err) {
     }
     if (going.empty())
         return true;
+    if (model_.begin)
+        model_.begin((int) going.size());
     const int ties = (int) (std::find_if(going.begin(), going.end(),
                                          [&](const Decoding* d) { return d->priority != going[0]->priority; }) -
                             going.begin());

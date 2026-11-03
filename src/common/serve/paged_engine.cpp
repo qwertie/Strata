@@ -1896,6 +1896,7 @@ uint64_t PagedEngine::get_largest_ram() const {
 
 strata::spec::StepModel PagedEngine::get_step_model() {
     strata::spec::StepModel model;
+    model.begin = [this](int count) { model_.begin_step(count); };
     model.make_room = [this](int session, int64_t tokens) {
         std::string err;
         if (make_room(*held_[(size_t) session], tokens, err))

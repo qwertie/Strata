@@ -36,6 +36,8 @@ struct StepRow {
 
 /// What the model does for a step.
 struct StepModel {
+    /// Prepares the model for the number of conversations sharing this pass.
+    std::function<void(int)> begin;
     /// Gives `session` room for its first `tokens` tokens; false when there is none (the conversation then ends).
     std::function<bool(int session, int64_t tokens)> make_room;
     /// Runs `rows` in one pass through the model: picks[r] gets the token that follows row r, or -1 when row r's
