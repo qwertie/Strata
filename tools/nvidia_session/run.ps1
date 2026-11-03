@@ -231,6 +231,8 @@ function Initialize-Worktree([string]$Side, [string]$Src, [string]$Rev) {
         Write-Host "    portability.patch and gguf-py into $Src"
         return $true
     }
+    # The calls Visual Studio rejects; a file without them was made portable another way (strata::platform::set_env).
+    $Rejected = '\b(setenv|unsetenv|__builtin_popcount)\('
     $patchText = Get-Content -Raw "$PSScriptRoot\portability.patch"
     foreach ($section in ($patchText -split '(?m)^(?=diff --git )' | Select-Object -Skip 1)) {
         $file = [regex]::Match($section, '^diff --git a/(\S+)').Groups[1].Value
@@ -240,7 +242,9 @@ function Initialize-Worktree([string]$Side, [string]$Src, [string]$Rev) {
             git -c "safe.directory=$Src" -C $Src apply --ignore-whitespace $patch 2>$null
             if ($LASTEXITCODE -eq 0) { 'patched' } else {
                 git -c "safe.directory=$Src" -C $Src apply --reverse --check --ignore-whitespace $patch 2>$null
-                if ($LASTEXITCODE -eq 0) { 'fixed already' } else { 'PATCH FAILED' }
+                if ($LASTEXITCODE -eq 0) { 'fixed already' }
+                elseif (-not (Select-String -Quiet -Pattern $Rejected -Path "$Src\$file")) { 'not needed' }
+                else { 'PATCH FAILED' }
             }
         }
         Remove-Item $patch

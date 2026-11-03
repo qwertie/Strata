@@ -1,6 +1,6 @@
 Makes the test and bench sources that Visual Studio rejects (setenv, unsetenv, __builtin_popcount) compile, at
 their paths before B1 (87d20a5c) and after it. run.ps1 applies each file's section where that file is, unless it is
-applied already. No engine code.
+applied already or the file no longer has those calls. No engine code.
 
 diff --git a/bench/gdn_chunk_bench.cpp b/bench/gdn_chunk_bench.cpp
 index 22f7d3d5..f39ec582 100644
