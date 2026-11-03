@@ -1,7 +1,10 @@
 """Tests of report.py, the NVIDIA session's judge: masking, request-by-request verdicts, speeds, builds, ctest logs,
 the samples and the table."""
+import json
 import tempfile
 import unittest
+from types import SimpleNamespace
+from unittest.mock import patch
 from pathlib import Path
 
 import report as R
@@ -208,6 +211,86 @@ class Build(unittest.TestCase):
                 "FAIL", "engines missing: strata.exe; not built: gdn_chunk_bench, native_hadamard_test"))
             (Path(d) / "strata.exe").touch()
             self.assertEqual(R.judge_build(Path(d) / "build.log", Path(d))[0], "PASS")
+
+
+class RowMeasurements(unittest.TestCase):
+    def test_missing_corrupt_and_incomplete_measurements_each_get_a_failure_row(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            paths = [root / f"rows-{case}.json" for case in ("card", "ram", "ssd")]
+            paths[1].write_text("not json", encoding="utf-8")
+            paths[2].write_text('{"rounds": []}', encoding="utf-8")
+            status, note = R.aggregate_rows(root, paths)
+            self.assertEqual(status, "FAIL")
+            rows = json.loads((root / "summary.json").read_text())
+            self.assertEqual(set(rows), {"memory-rows-card", "memory-rows-ram", "memory-rows-ssd"})
+            self.assertTrue(all(row[0] == "FAIL" for row in rows.values()))
+            self.assertIn("0/3 complete", note)
+
+    def test_partial_results_are_aggregated_and_a_report_error_is_recorded(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            good, missing = root / "rows-card.json", root / "rows-ram.json"
+            good.write_text('{"rounds": [{"sample": 1}], "memory_at_end": {}}', encoding="utf-8")
+            with patch("report.subprocess.run", return_value=SimpleNamespace(
+                    returncode=0, stdout="table", stderr="")) as run:
+                status, note = R.aggregate_rows(root, [good, missing])
+            self.assertEqual(status, "FAIL")
+            self.assertIn("1/2 complete", note)
+            self.assertEqual(run.call_args.args[0][-1], str(good))
+            self.assertNotIn(str(missing), run.call_args.args[0])
+            self.assertEqual((root / "rows-report.txt").read_text(), "table")
+            with patch("report.subprocess.run", return_value=SimpleNamespace(
+                    returncode=1, stdout="", stderr="bad data")):
+                self.assertIn("aggregation exited 1", R.aggregate_rows(root, [good])[1])
+            with patch("report.subprocess.run", side_effect=OSError("unavailable")):
+                self.assertEqual(R.aggregate_rows(root, [good])[0], "FAIL")
+            with patch("report.subprocess.run", return_value=SimpleNamespace(
+                    returncode=0, stdout="table", stderr="")):
+                self.assertEqual(R.aggregate_rows(root, [good])[0], "PASS")
+
+
+class ExerciseEvidence(unittest.TestCase):
+    def test_hop_checks_require_computed_experts_in_every_hop_run(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            for side in ("before", "after"):
+                (root / f"{side}-1.out").write_text(RUN, encoding="utf-8")
+                (root / f"{side}-1.out.stderr").write_text(
+                    "placed 100 experts for one hop\ncomputed 0 experts of other cards' layers\n", encoding="utf-8")
+            check = "memory-hop-SB"
+            self.assertIn("no hops", R.get_exercise_problem(root, check))
+            (root / "after-1.out.stderr").write_text(
+                "strata-q38: so far gpu1 computed 27 experts of other cards' layers (40 rows)\n", encoding="utf-8")
+            self.assertEqual(R.get_exercise_problem(root, check), "")
+            self.assertIn("before-1", R.get_exercise_problem(root, "memory-ds41-hop-default-queues-SB"))
+            (root / "after-2.out").write_text(RUN, encoding="utf-8")
+            self.assertIn("after-2", R.get_exercise_problem(root, check))
+            R.main(["runs", str(root), check])
+            self.assertEqual(json.loads((root / "summary.json").read_text())[check][0], "FAIL")
+
+    def test_report_rejects_a_saved_cut_run_with_a_failed_restore(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            check = "memory-cut-move-SB"
+            run_dir = root / check
+            run_dir.mkdir()
+            for side in ("before", "after"):
+                (run_dir / f"{side}-1.out").write_text(RUN, encoding="utf-8")
+            (run_dir / "after-1.out.settings").write_text("ERR restoring settings\n", encoding="utf-8")
+            R.main(["runs", str(root), check])
+            self.assertEqual(json.loads((root / "summary.json").read_text())[check][0], "FAIL")
+
+    def test_a_failed_engine_target_cannot_pass_with_an_old_executable(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            for exe in R.ENGINES:
+                (root / exe).touch()
+            log = root / "build.log"
+            log.write_text("FAILED: strata-q38.exe\n", encoding="utf-8")
+            self.assertEqual(R.judge_build(log, root)[0], "FAIL")
+            log.unlink()
+            self.assertEqual(R.judge_build(log, root)[0], "FAIL")
 
 
 class Ctest(unittest.TestCase):

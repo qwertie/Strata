@@ -2,6 +2,7 @@
 
     report.py runs <results> <check>                       <results>/<check>/before-N.out against after-N.out
     report.py build <results> <check> <build log> <build folder> [note]
+    report.py rows <results> <check> <measurement JSON> ...
     report.py ctest <results> <check> <before log> <after log>
     report.py row <results> <check> <status> [note]
     report.py summary <results>
@@ -17,6 +18,7 @@ import csv
 import json
 import re
 import statistics
+import subprocess
 import sys
 from collections import Counter
 from itertools import zip_longest
@@ -90,8 +92,12 @@ def main(argv: list[str]) -> int:
         files = {s: [p.read_text(encoding="utf-8", errors="replace")
                      for p in sorted((results / check).glob(f"{s}-*.out"))] for s in ("before", "after")}
         status, note = compare_runs(files["before"], files["after"], check)
+        if problem := get_exercise_problem(results / check, check):
+            status, note = "FAIL", problem
         note = "; ".join(filter(None, [note, explain_slow_decode(results / check)])) + describe_telemetry(
             results / check)
+    elif cmd == "rows":
+        status, note = aggregate_rows(results, [Path(p) for p in argv[3:]])
     elif cmd == "build":
         status, note = judge_build(Path(argv[3]), Path(argv[4]))
         note = "; ".join(filter(None, [" ".join(argv[5:]), note]))
@@ -104,6 +110,77 @@ def main(argv: list[str]) -> int:
     add_row(results, check, status, note)
     print(f"{check}: {status} {note}")
     return 0
+
+
+def aggregate_rows(results: Path, paths: list[Path]) -> tuple[str, str]:
+    """Produces the rows table from complete measurements while retaining a failure for each unusable case."""
+    valid, problems = [], []
+    for path in paths:
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+            if not isinstance(data, dict) or not data.get("rounds") or "memory_at_end" not in data:
+                raise ValueError("incomplete measurement")
+            valid.append(path)
+        except (OSError, ValueError) as error:
+            note = f"{path.name}: {error}; see steps/memory-{path.stem}.log"
+            problems.append(note)
+            add_row(results, "memory-" + path.stem, "FAIL", note)
+    if valid:
+        try:
+            result = subprocess.run(
+                [sys.executable, str(Path(__file__).resolve().parents[1] / "measure_rows.py"),
+                 "--report", *map(str, valid)], capture_output=True, text=True, encoding="utf-8", errors="replace",
+                timeout=120, check=False)
+            (results / "rows-report.txt").write_text(result.stdout + result.stderr, encoding="utf-8")
+            if result.returncode:
+                problems.append(f"aggregation exited {result.returncode}; see rows-report.txt")
+        except (OSError, subprocess.TimeoutExpired) as error:
+            problems.append(f"aggregation unavailable: {error}")
+    else:
+        problems.append("no complete row measurements to aggregate")
+    note = f"{len(valid)}/{len(paths)} complete measurements; " + "; ".join(problems or ["see rows-report.txt"])
+    return ("FAIL" if problems else "PASS"), note
+
+
+def get_cut_move_problem(out: Path) -> str:
+    """Gets why a cut-move check did not exercise a successful move, even if generation completed."""
+    settings = out.with_suffix(out.suffix + ".settings")
+    if not settings.exists():
+        return "no settings answers recorded during decoding"
+    text = settings.read_text(encoding="utf-8")
+    if re.search(r"\b(ERR|SHORTFALL)\b", text):
+        return "a memory resize failed; see the settings answers"
+    changes = re.findall(r"^>>> after (\d+) tokens: CHANGE_SETTINGS .*?\n(.*?)(?=^>>>|\Z)", text, re.M | re.S)
+    if [int(token) for token, _ in changes] != [24, 48] or any(
+            not re.search(r"^END_MEMORY\b", answer, re.M) for _, answer in changes):
+        return "shrink or restore settings answer missing or incomplete"
+    stderr_path = out.with_suffix(out.suffix + ".stderr")
+    stderr = stderr_path.read_text(encoding="utf-8", errors="replace") if stderr_path.exists() else ""
+    moves = re.findall(r"layer cut moved: K=(\d+) -> K=(\d+)", stderr)
+    if not any(before != after for before, after in moves):
+        return "no layer cut moved; see stderr and the settings answers"
+    return ""
+
+
+def get_exercise_problem(folder: Path, check: str) -> str:
+    """Requires real hop execution and completed settings changes before comparing memory checks."""
+    if "hop" in check:
+        sides = ("before", "after") if "default-queues" in check else ("after",)
+        for side in sides:
+            runs = list(folder.glob(f"{side}-*.out"))
+            if not runs:
+                return f"no hops: no {side} runs"
+            for run in runs:
+                stderr = Path(str(run) + ".stderr")
+                text = stderr.read_text(encoding="utf-8", errors="replace") if stderr.exists() else ""
+                if not any(int(n) > 0 for n in re.findall(
+                        r"computed (\d+) experts of other cards' layers", text)):
+                    return f"no hops: {run.name} has no nonzero computed-expert counter in stderr"
+    if "cut-move" in check:
+        for run in folder.glob("after-*.out"):
+            if problem := get_cut_move_problem(run):
+                return f"{run.name}: {problem}"
+    return ""
 
 
 def compare_runs(before: list[str], after: list[str], check: str = "") -> tuple[str, str]:
@@ -330,13 +407,16 @@ def startup_lines(stderr: str) -> str:
 
 def judge_build(log: Path, build: Path) -> tuple[str, str]:
     """Reads a build's log for the targets that failed in its last attempt (the build keeps going past a failure)
-    and says which engines are missing: FAIL only for a missing engine. Returns (status, note)."""
+    and says which engines are missing or failed. Returns (status, note)."""
     text = log.read_text(encoding="utf-8", errors="replace").rsplit(RETRY_MARK, 1)[-1] if log.exists() else ""
     failed = sorted({target_of(p) for p in re.findall(r"^FAILED: (?:\[code=\d+\] )?(\S+)", text, re.M)})
     missing = [e for e in ENGINES if not (build / e).exists()]
     notes = ([f"engines missing: {', '.join(missing)}"] if missing else []) + (
         [f"not built: {', '.join(failed)}"] if failed else [])
-    return ("FAIL" if missing else "PASS"), "; ".join(notes)
+    failed_engines = sorted(set(failed) & {Path(e).stem for e in ENGINES + ("strata-q38.exe", "strata-ds41.exe")})
+    if not log.exists():
+        notes.append("no build log")
+    return ("FAIL" if missing or failed_engines or not log.exists() else "PASS"), "; ".join(notes)
 
 
 def target_of(output: str) -> str:

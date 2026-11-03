@@ -60,8 +60,16 @@ powershell -ExecutionPolicy Bypass -File tools\nvidia_session\run.ps1 -DataDir E
 - Builds go to `C:\sn` (`-Work`): two git worktrees and up to six build folders (a CUDA build of every target
   took 2.2 GB on Linux). Before the first build, `run.ps1` checks each worktree out again at its commit, applies
   `portability.patch` (test sources Visual Studio does not compile at the older commit) and copies llama.cpp's
-  `gguf-py` from this checkout into it. A target that does not compile no longer stops the others; the build's row
-  names it.
+  `gguf-py` from this checkout into it. Ninja tries all targets even if one fails. A failed build gets a FAIL row and
+  blocks its dependent checks; the build log names the failed targets.
+- Every kit Git command trusts only the exact checkout or worktree path through `-c safe.directory=<path>`.
+  The kit does not change global Git settings. A checkout, preparation or revision-query failure blocks that side's
+  build and dependent checks with FAIL. The old HEAD comparison could compare two empty results when both Git
+  commands failed; the kit now checks both exit codes and requires two nonempty matching full SHAs.
+- Preflight records the kit checkout's full commit. Build rows record the verified source HEAD; the matching
+  `build-<side>-<tag>.json` records each executable's SHA256. Dependent checks require that revision and unchanged
+  executable. Existing builds without this record need a build phase. A failed build blocks dependent checks.
+  Use fresh results when changing revisions: `-Results` intentionally preserves completed runs.
 
 | Phase | What | Default | `-Quick` |
 |---|---|---:|---:|
@@ -117,14 +125,16 @@ M7 (`4fa1d1cf`), so it takes `-Before 4fa1d1cf`, and needs both builds:
 
 ```powershell
 git checkout memory-manager
-powershell -ExecutionPolicy Bypass -File tools\nvidia_session\run.ps1 -Only preflight, build, memory -Before 4fa1d1cf -DataDir E:\Strata-data
+powershell -ExecutionPolicy Bypass -File tools\nvidia_session\run.ps1 -Only preflight,build,memory -Before 4fa1d1cf -DataDir E:\Strata-data -DeepSeekDir E:\DeepSeek-V4.1-Flash -Work C:\sn-mm-fresh
 ```
 
-To run only the memory checks again, in a new results folder, after `git pull` on the branch (the build after is
-rebuilt in its folder, the build before is kept):
+For a new memory session, update the `memory-manager` checkout first. Use a fresh local `-Work` folder and include
+`preflight`. Enter the actual DeepSeek folder when prompted:
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File tools\nvidia_session\run.ps1 -Only build, memory -Before 4fa1d1cf -DataDir G:\AI-stuff\Strata-data -Work "Z:\C++\strata-builds-mm"
+$ds = Read-Host 'Full DeepSeek GGUF and Engram folder path'
+$work = "C:\sn-mm-$(Get-Date -Format yyyyMMdd-HHmmss)"
+& .\tools\nvidia_session\run.ps1 -Only preflight,build,memory -Before 4fa1d1cf -DataDir 'G:\AI-stuff\Strata-data' -DeepSeekDir $ds -Work $work -Runs 4
 ```
 
 `strata-q38` gets `--ram-mib 20480`: its RAM pool is page-locked and by default takes what RAM has free, which on 48 GB
@@ -138,7 +148,7 @@ leaves Windows' commit limit too little. Each check runs 2 times a build (`-Runs
 | `memory-q38-2cards-SB`, `-BS` | `strata-q38` on the bigger card against `strata-q38 --layer-split auto` on both cards, both with `--expert-cache 400 --pcie-frac 0 --lookahead 0` and `STRATA_PREFILL_CPU_SHARE=0` (the same experts on the GPUs: the profile's first 400, each on the card of its layer, few enough for the 3060's pool of under 1 GiB as the second card; no drafting, which on a split changes tokens at near-ties; no CPU share of a prompt) | the same tokens on two cards as on one (step M8): each card its own page pool, the verify windows and the prompt path handing their rows from card to card, a conversation paused and resumed across both cards |
 | `memory-hop-SB`, `-BS` | `strata-q38` on the bigger card against `strata-q38 --layer-split 24 --gpu-mib 512,8192 --remote-experts on` on both cards, both with the settings of `memory-q38-2cards` | the second card holds the experts of the first card's layers that its 512 MiB pool has no room for and computes them in one hop (step M8): the same tokens as one card, or a DIFF from rounding (see below) |
 | `memory-cut-move-SB`, `-BS` | `strata-q38` on both cards (`--expert-cache 3000 --pcie-frac 0`, pools of 12 GiB on the bigger card and 5 GiB on the smaller), a 96-token story in a batch slot, against the same with the first card's memory halved after 24 tokens and set back after 48 (`CHANGE_SETTINGS`; the answers to the changes go to `*.out.settings`) | the layer cut moves while the story decodes (step M9) and the tokens stay the same: the planner runs again on the cards' new pool sizes, the conversations' state for the moved layers goes to the other card, and each card takes its new layers' experts before the next step |
-| `memory-rows-card`, `-ram`, `-ssd` | `tools\measure_rows.py` on the bigger card: as many experts on the card as fit, most of them in RAM, about half on the SSD, with the kit's own run config (`rows-config.json`: `drive.py config`, the model's files from `-DataDir`) | M7's table of conversations at once and rows per step on NVIDIA (docs/DETAILS.md has the Strix Halo's numbers). PASS: measured; FAIL: `steps\memory-rows-<case>.log` says why |
+| `memory-rows-card`, `-ram`, `-ssd` | `tools\measure_rows.py` on the bigger card: as many experts on the card as fit, most of them in RAM, about half on the SSD, with the kit's own run config (`rows-config.json`: `drive.py config`, the model's files from `-DataDir`) | M7's table of conversations at once and rows per step on NVIDIA (docs/DETAILS.md has the Strix Halo's numbers). PASS: measured; FAIL: `steps\memory-rows-<case>.log` says why. `memory-rows-report` records aggregation status; incomplete or invalid files fail their case and complete files still contribute to `rows-report.txt` |
 
 `strata-q38` runs on several cards since M8's second part (only tested on one GPU with two stages so far: the
 Strix Halo has one). What the session must confirm, beyond the table's PASS:
@@ -177,6 +187,9 @@ should now agree within about 10% (the first session's link lines read 3.4-6.8 G
 The `memory` phase also prepares D9's DeepSeek checks. They use the build after on both sides, reset
 the copied pack's profile before every start, disable drafting and adaptive placement, and cap the GPU and RAM pools.
 `DS4_COMMIT_CAP_GB=30` is explicit. They never use port 8080.
+Pass `-DeepSeekDir` for these D9 checks, even when running only `memory`. It names the folder containing the
+DeepSeek GGUF shards and Engram, separate from the small pack under `-DataDir`. Without it, the summary includes
+`memory-ds41 SKIP` and says which argument is missing. Missing model files also produce a visible SKIP.
 
 | Check | What it compares | Required evidence |
 |---|---|---|
@@ -199,7 +212,10 @@ the other build printed it too, or both builds vary: chance, not a change. **DIF
 of the other build printed, while at least one build repeated itself; or every run after decoded more than 5% slower
 than every run before (at least two runs a build). The note names each run that differs, from which answer token,
 and "(new)" where no run of the other build printed it. **FAIL**: a run did not finish, an engine was not built, or a
-test failed or was not built. **SKIP**: files or a second card missing.
+test failed or was not built. **SKIP**: files or a second card missing. Hop checks require a nonzero
+`computed N experts of other cards' layers` counter in every hop run (both sides of a queue comparison).
+Missing proof is FAIL with a `no hops` reason. Cut-move checks require completed shrink and restore replies,
+no `ERR` or `SHORTFALL`, and at least one changed cut; saved runs are checked again when reporting.
 
 Under the table, a line per run says what the cards and the PC did while it ran (`drive.py` samples `nvidia-smi`, the
 CPU, RAM, page file and disk once a second): SM clock, temperature, load, PCIe link, throttling. A DeepSeek check
@@ -208,7 +224,13 @@ that decodes below 3 tokens/s also says how many experts a token its CPU lane re
 ## Afterwards
 
 Send back `tools\nvidia_session\results\<time>.zip` (the summary is `summary.txt` inside; each run's samples are its
-`.gpu.csv` and `.sys.csv` files). Under the table it lists the commits that changed engine code, to bisect a DIFF by
+`.gpu.csv` and `.sys.csv` files). Protocol runs also keep `.out.memory`: full `GET_MEMORY_USE` replies after
+READY and after the scenario, plus `nvidia-smi` per-process GPU UUID, PID and memory at those points. The engine PID
+is recorded. Cut-move `.out.settings` keeps the initial memory report and every resize reply, including per-card
+fields. Windows drivers may report process memory as N/A; unavailable queries and their errors stay in the file.
+These are allocation snapshots, not a complete allocator ledger; the kit cannot attribute an unreported remainder. Under the table it lists the commits that changed engine code, to bisect a DIFF by
 building them one at a time.
 
-To clean up: `git worktree remove --force C:\sn\before`, the same for `C:\sn\after`, then delete `C:\sn`.
+To clean up, from the checkout: `git -c safe.directory=<checkout> worktree remove --force C:\sn\before`,
+then the equivalent command for `after`. Replace `<checkout>` with the checkout's full path, and use your `-Work`
+folder's paths.

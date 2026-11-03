@@ -40,7 +40,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "tools"))
 from dsv41.smoke import tokenizer  # noqa: E402
-from report import GPU_FIELDS, startup_lines  # noqa: E402
+from report import GPU_FIELDS, get_cut_move_problem, startup_lines  # noqa: E402
 
 #: Never 8080, where the owner's own server runs
 PORT = 8091
@@ -77,9 +77,11 @@ def run_engine(a, env: dict[str, str]) -> int:
     e = Engine([a.exe, "--serve", *model_args(a), *a.args.split()], env, a.out)
     try:
         e.until("READY")
+        e.record_memory("ready")
         SCENARIOS[a.scenario](e, a)
+        e.record_memory("after scenario")
         e.send("QUIT")
-    except (SystemExit, queue.Empty, OSError) as x:
+    except (SystemExit, queue.Empty, OSError, ValueError, TypeError) as x:
         e.note(f"STOPPED: {x or 'no output for 15 minutes'}")
     code = e.finish(a.scenario == "multi")
     if code == 0 and a.move_cut and a.scenario in ("cutmove", "dscutmove"):
@@ -88,20 +90,6 @@ def run_engine(a, env: dict[str, str]) -> int:
                 out.write(f"STOPPED: {problem}\nexit 1\n")
             return 1
     return code
-
-
-def get_cut_move_problem(out: Path) -> str:
-    """Gets why a cut-move check did not exercise a successful move, even if generation completed."""
-    settings = out.with_suffix(out.suffix + ".settings")
-    if not settings.exists():
-        return "no settings answers recorded during decoding"
-    if re.search(r"\b(ERR|SHORTFALL)\b", settings.read_text(encoding="utf-8")):
-        return "a memory resize failed; see the settings answers"
-    stderr = out.with_suffix(out.suffix + ".stderr").read_text(encoding="utf-8", errors="replace")
-    moves = re.findall(r"layer cut moved: K=(\d+) -> K=(\d+)", stderr)
-    if not any(before != after for before, after in moves):
-        return "no layer cut moved; see stderr and the settings answers"
-    return ""
 
 
 class Engine:
@@ -160,6 +148,22 @@ class Engine:
         with open(self.err_path.removesuffix(".stderr") + ".settings", "a", encoding="utf-8") as f:
             f.write(text)
 
+    def record_memory(self, point: str):
+        """Keeps allocation fields and driver process usage beside this run for VRAM accounting."""
+        path = Path(self.err_path.removesuffix(".stderr") + ".memory")
+        with path.open("a", encoding="utf-8") as out:
+            out.write(f">>> {point}: GET_MEMORY_USE\n")
+            out.writelines(self.ask_quietly("GET_MEMORY_USE", "END_MEMORY"))
+            out.write(f">>> nvidia-smi processes; engine PID {self.p.pid}\n")
+            try:
+                result = subprocess.run(
+                    ["nvidia-smi", "--query-compute-apps=gpu_uuid,pid,process_name,used_gpu_memory", "--format=csv"],
+                    capture_output=True, text=True, timeout=10, check=False)
+                out.write(result.stdout + result.stderr)
+                out.write(f"nvidia-smi exit {result.returncode}\n")
+            except (OSError, subprocess.TimeoutExpired) as error:
+                out.write(f"process VRAM unavailable: {error}\n")
+
     def ask_quietly(self, cmd: str, end: str) -> list[str]:
         """Sends `cmd` and returns its answer's lines up to `end` (or ERR) without copying them to the output."""
         self.p.stdin.write(cmd + "\n")
@@ -199,6 +203,14 @@ class Engine:
                     self.p.stdin.flush()
                     answering = True
             elif f[0] == "ERR" or f[0] == "BDONE" and f[1] == str(slot) or f[0] == "BADM" and f[2] == "0":
+                if answering:
+                    while True:
+                        reply = self.lines.get(timeout=900)
+                        if reply is None:
+                            raise SystemExit("the engine ended before its settings answer")
+                        self.note_settings(reply)
+                        if reply.startswith(("END_MEMORY", "ERR")):
+                            break
                 self.out.flush()
                 return ids + got
 
@@ -345,7 +357,11 @@ def cutmove(e: Engine, a):
     changes = {}
     if a.move_cut:
         report = "".join(e.ask_quietly("GET_MEMORY_USE", "END_MEMORY"))
-        mib = int(re.search(r"memory_mib\.gpu0=(\d+)", report)[1])
+        e.note_settings(">>> initial GET_MEMORY_USE\n" + report)
+        match = re.search(r"memory_mib\.gpu0=(\d+)", report)
+        if not match:
+            raise SystemExit("GET_MEMORY_USE did not report memory_mib.gpu0")
+        mib = int(match[1])
         changes = {24: f"memory_mib.gpu0={mib // 2}", 48: f"memory_mib.gpu0={mib}"}
     e.bgen(0, 96, story, changes)
 

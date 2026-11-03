@@ -62,12 +62,16 @@ function Main {
     # a trailing backslash would escape the closing quote of "...\" in the steps' command lines
     $DataDir, $DeepSeekDir = @($DataDir, $DeepSeekDir) | ForEach-Object { $_ -replace '[\\/]+$', '\.' }
     $Py = "$Root\.venv\Scripts\python.exe"
-    $After = (git -C $Root rev-parse --short HEAD)
+    $After = (git -c "safe.directory=$Root" -C $Root rev-parse HEAD)
+    if ($LASTEXITCODE -ne 0 -or -not $After) {
+        throw "Cannot identify the kit checkout at $Root"
+    }
     if (-not $Results) { $Results = "$PSScriptRoot\results\$(Get-Date -Format yyyyMMdd-HHmm)" }
     $Steps = "$Results\steps"
     New-Item -ItemType Directory -Force $Steps | Out-Null
     if (-not $Runs) { $Runs = if ($Followup) { 4 } elseif ($Quick) { 1 } else { 2 } }
     if ($Followup -and -not $PSBoundParameters.ContainsKey('Only')) { $Only = 'preflight', 'build', 'unit', 'followup' }
+    $Blocked = @{}
     $Prepared = @{}                            # the worktrees Initialize-Worktree has seen in this session
     $env:CUDA_DEVICE_ORDER = 'PCI_BUS_ID'      # cards numbered as nvidia-smi numbers them
     $env:CUDA_CACHE_MAXSIZE = '4294967296'     # room for the code the emulated builds compile when they start
@@ -110,7 +114,7 @@ function Main {
     Invoke-Report summary $Results
     if ($DryRun) { return }
     "`nCommits that changed engine code, to bisect a DIFF ($Before..$After):" | Add-Content "$Results\summary.txt"
-    git -C $Root log --format='%h %s' "$Before..$After" -- src include CMakeLists.txt cmake |
+    git -c "safe.directory=$Root" -C $Root log --format='%h %s' "$Before..$After" -- src include CMakeLists.txt cmake |
         Add-Content "$Results\summary.txt"
     Get-ChildItem $Results -Recurse -Include *.ses, dspack | Remove-Item -Recurse -Force   # big, and of no use later
     Compress-Archive -Force -Path $Results -DestinationPath "$Results.zip"
@@ -131,8 +135,9 @@ function Test-Preflight {
         ('nvidia-smi --query-gpu=index,pcie.link.gen.max,pcie.link.gen.current,pcie.link.width.max,' +
          'pcie.link.width.current --format=csv'),
         'nvidia-smi topo -p2p r',
-        "`"$($tools['nvcc (CUDA 13)'])`" --version", 'git --version', "`"$Py`" --version",
-        "`"$($tools.cmake)`" --version", "echo Visual Studio: $VsDir", "echo Before $Before, after $After")
+        "`"$($tools['nvcc (CUDA 13)'])`" --version", "git -c `"safe.directory=$Root`" --version", "`"$Py`" --version",
+        "`"$($tools.cmake)`" --version", "echo Visual Studio: $VsDir", "echo Before $Before, after $After",
+        "echo Kit commit: $After")
     if ($DryRun) { return }
     $os = Get-CimInstance Win32_OperatingSystem
     $ram = [math]::Round((Get-CimInstance Win32_ComputerSystem).TotalPhysicalMemory / 1GB)
@@ -148,7 +153,7 @@ function Test-Preflight {
     if ($ram -lt 46) { $notes += "$ram GB of RAM: Qwen3.8 IQ3_S and DeepSeek were planned for 48" }
     if ($Cards.Count -lt 2) { $notes += 'one card: the multi-GPU checks are skipped' }
     Add-Row preflight $(if ($notes -match '^missing') { 'FAIL' } else { 'PASS' }) (
-        ($notes + "cards $($Cards -join ','), the bigger first; RAM $ram GB") -join '; ')
+        ($notes + "kit commit $After" + "cards $($Cards -join ','), the bigger first; RAM $ram GB") -join '; ')
 }
 
 # Builds the engines and tests before and after the refactor for one CUDA architecture list, each from its own git
@@ -159,14 +164,24 @@ function Invoke-Builds([string]$Arch, [string]$Tag) {
         $src, $bd = "$Work\$side", "$Work\$side-$Tag"
         $rev = @{ before = $Before; after = $After }[$side]
         $start = Get-Date
-        Initialize-Worktree $side $src $rev
-        if (-not $DryRun -and (git -C $src rev-parse HEAD 2>$null) -ne (git -C $Root rev-parse "$rev^{commit}" 2>$null)) {
-            Invoke-Report row $Results "build-$side-$Tag" FAIL ("$src is not at $rev (a worktree made from another " +
-                "checkout? use a new -Work folder; see steps\worktree-$side.log)")
+        $Blocked["$side-$Tag"] = $true
+        if (-not (Initialize-Worktree $side $src $rev)) {
+            Add-Row "build-$side-$Tag" FAIL "worktree preparation failed: see steps\worktree-$side.log"
             continue
         }
+        $actual = git -c "safe.directory=$src" -C $src rev-parse HEAD 2>$null
+        $actualCode = $LASTEXITCODE
+        $wanted = git -c "safe.directory=$Root" -C $Root rev-parse "$rev^{commit}" 2>$null
+        if (-not $DryRun -and ($actualCode -ne 0 -or $LASTEXITCODE -ne 0 -or -not $actual -or
+                              -not $wanted -or $actual -ne $wanted)) {
+            Add-Row "build-$side-$Tag" FAIL "cannot verify $src at $rev; use a fresh -Work folder"
+            continue
+        }
+        if (-not $DryRun) {
+            Remove-Item "$bd\kit-build.json" -ErrorAction SilentlyContinue
+        }
         $build ="$cmake --build `"$bd`" -j $Jobs -- -k 0"
-        $null = Invoke-Step "build-$side-$Tag" @(
+        $buildCode = Invoke-Step "build-$side-$Tag" @(
             "call `"$VsDir\VC\Auxiliary\Build\vcvars64.bat`" >nul || exit /b 1",
             ("if not exist `"$bd\CMakeCache.txt`" $cmake -G Ninja -S `"$src`" -B `"$bd`" -DCMAKE_BUILD_TYPE=Release " +
              "`"-DCMAKE_MAKE_PROGRAM=$Root\.venv\Scripts\ninja.exe`" " +
@@ -176,8 +191,22 @@ function Invoke-Builds([string]$Arch, [string]$Tag) {
             # CUDA 13.0's ptxas now and then fails on a file it just wrote; the same command then gets past it.
             # report.py judges the last attempt, after the line echoed here.
             "$build || (echo retrying the build & $build)")
+        if ($buildCode -ne 0) {
+            Add-Row "build-$side-$Tag" FAIL "build failed at source HEAD $actual; see steps\build-$side-$Tag.log"
+            continue
+        }
+        if (-not $DryRun) {
+            $hashes = @{}
+            foreach ($exe in Get-ChildItem "$bd\strata*.exe" -ErrorAction SilentlyContinue) {
+                $hashes[$exe.Name] = (Get-FileHash $exe.FullName -Algorithm SHA256).Hash
+            }
+            @{ revision = $actual; hashes = $hashes } | ConvertTo-Json | Set-Content "$bd\kit-build.json"
+            Copy-Item "$bd\kit-build.json" "$Results\build-$side-$Tag.json"
+        }
+        $Blocked["$side-$Tag"] = $false
         Invoke-Report build $Results "build-$side-$Tag" "$Steps\build-$side-$Tag.log" $bd (
-            "$rev, $([int]((Get-Date) - $start).TotalMinutes) min")
+            "source HEAD $actual; binary SHA256: build-$side-$Tag.json; " +
+            "$([int]((Get-Date) - $start).TotalMinutes) min")
     }
 }
 
@@ -185,14 +214,22 @@ function Invoke-Builds([string]$Arch, [string]$Tag) {
 # file's section of portability.patch where it applies (the before tree has the files at their old paths), and gives
 # it llama.cpp's gguf-py for the iq_parity fixtures: the main checkout's copy, else setup's download.
 function Initialize-Worktree([string]$Side, [string]$Src, [string]$Rev) {
-    if ($Prepared[$Side]) { return }
-    $Prepared[$Side] = $true
+    if ($Prepared.ContainsKey($Side)) {
+        return $Prepared[$Side]
+    }
     $log = "$Steps\worktree-$Side.log"
-    $null = Invoke-Step "worktree-$Side" @(
-        "if not exist `"$Src\.git`" git -C `"$Root`" worktree add --detach `"$Src`" $Rev || exit /b 1",
-        "git -C `"$Src`" checkout --force --detach $Rev || exit /b 1")
+    $code = Invoke-Step "worktree-$Side" @(
+        ("if not exist `"$Src\.git`" git -c `"safe.directory=$Root`" -C `"$Root`" " +
+         "worktree add --detach `"$Src`" $Rev || exit /b 1"),
+        "git -c `"safe.directory=$Src`" -C `"$Src`" checkout --force --detach $Rev || exit /b 1")
+    if ($code -ne 0) {
+        $Prepared[$Side] = $false
+        return $false
+    }
+    $Prepared[$Side] = $true
     if ($DryRun) {
-        return Write-Host "    portability.patch and gguf-py into $Src"
+        Write-Host "    portability.patch and gguf-py into $Src"
+        return $true
     }
     $patchText = Get-Content -Raw "$PSScriptRoot\portability.patch"
     foreach ($section in ($patchText -split '(?m)^(?=diff --git )' | Select-Object -Skip 1)) {
@@ -200,17 +237,21 @@ function Initialize-Worktree([string]$Side, [string]$Src, [string]$Rev) {
         $patch = New-TemporaryFile
         [IO.File]::WriteAllText($patch, $section)
         $result = if (-not (Test-Path "$Src\$file")) { 'not at this path' } else {
-            git -C $Src apply --ignore-whitespace $patch 2>$null
+            git -c "safe.directory=$Src" -C $Src apply --ignore-whitespace $patch 2>$null
             if ($LASTEXITCODE -eq 0) { 'patched' } else {
-                git -C $Src apply --reverse --check --ignore-whitespace $patch 2>$null
+                git -c "safe.directory=$Src" -C $Src apply --reverse --check --ignore-whitespace $patch 2>$null
                 if ($LASTEXITCODE -eq 0) { 'fixed already' } else { 'PATCH FAILED' }
             }
         }
         Remove-Item $patch
         "portability.patch, $file`: $result" | Add-Content $log
+        if ($result -eq 'PATCH FAILED') {
+            $Prepared[$Side] = $false
+            return $false
+        }
     }
     $gguf = "$Src\third_party\llama.cpp\gguf-py"
-    if (Test-Path "$gguf\gguf") { return }
+    if (Test-Path "$gguf\gguf") { return $true }
     if (Test-Path "$Root\third_party\llama.cpp\gguf-py\gguf") {
         New-Item -ItemType Directory -Force (Split-Path $gguf) | Out-Null
         Copy-Item -Recurse "$Root\third_party\llama.cpp\gguf-py" $gguf
@@ -219,10 +260,16 @@ function Initialize-Worktree([string]$Side, [string]$Src, [string]$Rev) {
     }
     "gguf-py: $(if (Test-Path "$gguf\gguf") { 'in place' } else { 'MISSING (iq_parity will not run)' })" |
         Add-Content $log
+    return $true
 }
 
 # Runs ctest in both builds of a tag (with STRATA_EMULATE_CC=$Emulate when given) and compares the per-test results.
 function Invoke-Unit([string]$Tag, [string]$Filter = '', [string]$Emulate = '') {
+    foreach ($side in 'before', 'after') {
+        if (-not (Test-BuildReady $side $Tag)) {
+            return Add-Row "unit-$Tag" FAIL "$side-$Tag build is unverified or failed; run build first"
+        }
+    }
     foreach ($side in 'before', 'after') {
         $null = Invoke-Step "unit-$side-$Tag" @("set CUDA_VISIBLE_DEVICES=$($Cards -join ',')",
             "set STRATA_EMULATE_CC=$Emulate",
@@ -271,6 +318,9 @@ function Invoke-Multi([string[]]$Names) {
 # The B2 checks: DeepSeek's answers without the expert cache (where they repeat), with and without its drafter, and
 # its decode speed with the shipped hot-expert profile.
 function Invoke-DeepSeek {
+    if (-not $DeepSeekDir -and -not $DryRun) {
+        return Add-Row deepseek SKIP 'needs -DeepSeekDir: folder containing the DeepSeek GGUF shards and Engram'
+    }
     $ds = "$DataDir\packs\deepseek-v4.1-flash-ist-das-2.00bpw"
     if (-not (Test-Need deepseek @($ds, $DeepSeekDir))) { return }
     $base = "--cards $Big --deepseek `"$DeepSeekDir`""
@@ -341,10 +391,14 @@ function Invoke-Memory {
     # strata-iq3_s.json in the checkout: one copied from another PC names paths this PC may not have
     $exe = "$Work\after-86\strata-q38.exe"
     $config = "$Results\rows-config.json"
-    $null = Invoke-Step memory-rows-config ("`"$Py`" `"$PSScriptRoot\drive.py`" config --out `"$config`" " +
+    $configCode = Invoke-Step memory-rows-config ("`"$Py`" `"$PSScriptRoot\drive.py`" config --out `"$config`" " +
         "--data `"$DataDir`" --exe `"$exe`"")
     foreach ($case in @(@('card', ''), @('ram', '--gpu-mib 8192'), @('ssd', '--gpu-mib 8192 --ram-mib 4096'))) {
         $name = "memory-rows-$($case[0])"
+        if ($configCode -ne 0 -or -not (Test-BuildReady after 86 strata-q38.exe)) {
+            Add-Row $name FAIL 'row config failed or after-86 build is unverified; see steps'
+            continue
+        }
         $code = Invoke-Step $name ("`"$Py`" `"$Root\tools\measure_rows.py`" --config `"$config`" --exe `"$exe`" " +
             "--case $($case[0]) --out `"$Results\rows-$($case[0])`" -- --gpu $Big $Q38Memory $($case[1])")
         if ($code -eq 0) {
@@ -353,13 +407,16 @@ function Invoke-Memory {
             Add-Row $name FAIL "measure_rows.py stopped (exit $code): see steps\$name.log"
         }
     }
-    $null = Invoke-Step memory-rows-report ("`"$Py`" `"$Root\tools\measure_rows.py`" --report " +
-        "`"$Results\rows-card.json`" `"$Results\rows-ram.json`" `"$Results\rows-ssd.json`"")
+    Invoke-Report rows $Results memory-rows-report "$Results\rows-card.json" "$Results\rows-ram.json" (
+        "$Results\rows-ssd.json")
 }
 
 # D9's checks use only the build after: DeepSeek's paged engine did not exist at M7. Small, fixed expert sets leave
 # room for both cards to keep their layers' experts as the cut moves, without drafting or adaptive placement.
 function Invoke-DeepSeekMemory {
+    if (-not $DeepSeekDir -and -not $DryRun) {
+        return Add-Row memory-ds41 SKIP 'D9 needs -DeepSeekDir: folder containing the DeepSeek GGUF shards and Engram'
+    }
     if ($null -eq $Small) {
         return Add-Row memory-ds41 SKIP 'two NVIDIA cards needed'
     }
@@ -406,6 +463,14 @@ function Invoke-Pairs([string]$Check, [string]$Scenario, [string]$Exe, [string]$
 # $Count times each, then judges the check. Runs that finished earlier are kept. Skipped when strata-q38 refuses what
 # the check asks for as not built yet.
 function Invoke-Sides([string]$Check, [string]$Scenario, [string]$BeforeArgs, [string]$AfterArgs, [int]$Count) {
+    foreach ($drive in $BeforeArgs, $AfterArgs) {
+        $exePath = [regex]::Match($drive, '--exe "([^"]+)"').Groups[1].Value
+        $folder = Split-Path (Split-Path $exePath) -Leaf
+        $side, $tag = $folder -split '-', 2
+        if (-not (Test-BuildReady $side $tag (Split-Path $exePath -Leaf))) {
+            return Add-Row $Check FAIL "$folder build is unverified or failed; run build first"
+        }
+    }
     $dir = "$Results\$Check"
     New-Item -ItemType Directory -Force $dir | Out-Null
     foreach ($r in 1..$Count) {
@@ -423,6 +488,28 @@ function Invoke-Sides([string]$Check, [string]$Scenario, [string]$BeforeArgs, [s
     Invoke-Report runs $Results $Check
 }
 
+# Verifies that a dependent check uses an unchanged executable from an identified source revision.
+function Test-BuildReady([string]$Side, [string]$Tag, [string]$Exe = 'strata.exe') {
+    if ($DryRun) {
+        return $true
+    }
+    if ($Blocked["$Side-$Tag"]) {
+        return $false
+    }
+    $bd = "$Work\$Side-$Tag"
+    try {
+        $stamp = Get-Content -Raw "$bd\kit-build.json" -ErrorAction Stop | ConvertFrom-Json
+        $rev = @{ before = $Before; after = $After }[$Side]
+        $wanted = git -c "safe.directory=$Root" -C $Root rev-parse "$rev^{commit}" 2>$null
+        if ($LASTEXITCODE -ne 0 -or -not $wanted -or $stamp.revision -ne $wanted) {
+            return $false
+        }
+        return $stamp.hashes.$Exe -eq (Get-FileHash "$bd\$Exe" -Algorithm SHA256 -ErrorAction Stop).Hash
+    } catch {
+        return $false
+    }
+}
+
 # Says whether a check's files are there; if not, records the check as skipped (-DryRun goes on anyway).
 function Test-Need([string]$Check, [string[]]$Paths) {
     $missing = @($Paths | Where-Object { -not $_ -or -not (Test-Path $_) })
@@ -433,6 +520,9 @@ function Test-Need([string]$Check, [string[]]$Paths) {
 # Gets the cards' nvidia-smi numbers, the one with the most memory first; with no nvidia-smi (a dry run elsewhere),
 # the plan's PC: an RTX 3060 as card 0 and the bigger 3080 as card 1.
 function Get-Cards {
+    if ($DryRun) {
+        return @(1, 0)
+    }
     $rows = if (Get-Command nvidia-smi -ErrorAction SilentlyContinue) {
         nvidia-smi --query-gpu=index,memory.total --format=csv,noheader,nounits
     }
