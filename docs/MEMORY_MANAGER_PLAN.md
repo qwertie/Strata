@@ -367,9 +367,19 @@ the engine within 16 GiB of the limit.
 `strata-q38` shares the old engine's embedding-file reader and rotary-coordinate builder; `strata-ds41` shares
 DeepSeek's RGB reader, span cache and built-in encoder. The server keeps the selected picture reader.
 Picture identity travels with paused pages and saved sessions and prevents reuse across different pictures.
-Qwen keeps its coordinates beside the pages and switches the device table between conversations. With vision on,
-it runs one conversation per step while keeping several requests active. Changing the picture set rereads the
-whole prompt. CUDA and SYCL still need validation on their own hardware.
+Qwen keeps its coordinates beside the pages and stages each verify row's own coordinates. Picture and text
+conversations share a step; pooled indexer keys use stable per-conversation device tables. Changing the picture set
+rereads the whole prompt. CUDA and SYCL still need validation on their own hardware.
+
+The 3 November 2026 Windows HIP check on Strix Halo, IQ3_S, 8K context, 4,096/2,048 MiB GPU/RAM pools
+keeps all three 64-token mixed answers identical to standalone and 4c047a0f. Sixteen greedy tokens each match
+`strata` on the picture, Python and story prompts. Picture RAM pause/resume and saved restore in a fresh process
+keep the next eight tokens. With MTP and suffix drafting, three mixed 32-token answers match standalone; the
+picture answer also matches with drafting disabled, and its concurrent suffix guesses keep seven of seven.
+The throughput setup and before/after numbers are in [DETAILS.md](DETAILS.md#pictures-in-the-page-pool-engines).
+The architecture tests (5), `step_test` and `prompt_images_test` pass. PID watchdogs enforce 16 GiB free commit
+and 4 GiB free physical RAM; no trips. Logs, scripts and token lists are in `%TEMP%/pictures/batch-*`.
+No CUDA, SYCL, Metal or real multi-GPU validation was run.
 
 ## Later
 

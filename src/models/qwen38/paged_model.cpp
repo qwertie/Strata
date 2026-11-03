@@ -9,6 +9,7 @@
 #include "strata/common/experts/expert_pages.hpp"
 #include "strata/common/experts/ram_experts.hpp"
 #include "strata/common/kernels/cpu/expert_layout.hpp"
+#include "strata/common/kernels/mrope.hpp"
 #include "strata/common/serve/paged_engine.hpp"
 #include "strata/common/serve/paged_model.hpp"
 #include "strata/common/serve/penalty_history.hpp"
@@ -88,9 +89,12 @@ struct Part final : strata::serve::PagedPart {
     /// where its GDN state was when the card's verify windows' graphs last saw it (their graphs hold the address)
     const float* gdn_seen = nullptr;
 
+    bool image_table_ready = false; ///< Whether all cards have this conversation's current coordinates.
+    int32_t* image_table = nullptr; ///< Stable coordinates for this card's indexer graph launches.
     Part(const Model& model, const ModelCard& on_card, int device) : m(model), card(on_card), dev(device) {}
     ~Part() override {
         const strata::core::OnDevice on(dev);
+        strata::core::gpu_free(image_table);
         strata::core::session_release(ss);
         (void) cudaFree(mem);
     }
@@ -140,7 +144,9 @@ public:
     bool prepare_images(const strata::serve::RequestLine& request, const std::vector<int64_t>& ids,
                         uint64_t& key, std::string& err) override;
     void attach_images(const PagedParts& parts) override {
-        get_part(*parts.front()).image_positions = std::move(pending_positions_);
+        Part& lead = get_part(*parts.front());
+        lead.image_positions = std::move(pending_positions_);
+        lead.image_table_ready = false;
     }
     PagedParts make_parts(PagedCard& card, size_t count, std::string& err) override;
     bool get_card_layout(const PagedCard& card, int64_t lb, int64_t le, strata::core::StateLayout& layout,
@@ -190,12 +196,13 @@ public:
     void print_done(const strata::serve::RequestDone& done) const override;
 
 private:
-    /// Switches the shared rotary table before computing a conversation's rows.
-    bool activate_images(int session, std::string& err);
+    /// Uploads changed indexer coordinates and, when shared, activates the prompt/drafter table.
+    bool activate_images(int session, std::string& err, bool shared = true);
     std::vector<int32_t> pending_positions_;
     std::vector<float> image_rows_;
     std::vector<const float*> image_row_ptrs_;
     std::vector<Part*> leads_;
+    std::vector<std::vector<int32_t*>> image_tables_;
     Model& m_;
     Conversation& conv_;   ///< card 0's prompt path and verify windows, shared by every conversation
     const PagedCards& pcards_;
@@ -357,9 +364,6 @@ PagedQwen::PagedQwen(Model& m, Conversation& conv, const PagedCards& cards, Mode
     facts.end_tokens = o.eos_ids;
     facts.has_drafter = drafter != nullptr;
     facts.draft_limits.confidence = (float) o.spec_min_p;
-    // Decode and QSA's pooled historical keys also read this device-wide table at cell indices. Images shift
-    // later text positions per conversation; sharing a step needs session-aware lookup in the kernels and graphs.
-    facts.serial_conversations = m.o.vision;
     facts.drafter_start = "--mtp and a --lookahead above 0";
     facts.expert_bytes = get_blob_bytes(m);
     for (size_t i = 0; i < m.profile_all.size() && (int64_t) i < o.expert_cache; ++i)
@@ -383,6 +387,7 @@ PagedParts PagedQwen::make_parts(PagedCard& card, size_t count, std::string& err
     const uint64_t bytes = session_bytes(m_.g, m_.o.max_context, m_.K, 0, -1, false);
     mc.sessions_bytes = session_bytes(m_.g, m_.o.max_context, m_.K) + count * bytes;
     std::vector<SessionState*> sessions;
+    std::vector<int32_t*> image_tables;
     PagedParts parts;
     for (size_t i = 0; i < count; ++i) {
         auto part = std::make_unique<Part>(m_, mc, card.dev);
@@ -393,6 +398,15 @@ PagedParts PagedQwen::make_parts(PagedCard& card, size_t count, std::string& err
                           card.id.c_str(), (double) bytes / 1048576.0);
             err = text;
             return {};
+        }
+        if (m_.o.vision) {
+            part->image_table = static_cast<int32_t*>(gpu_alloc_zeroed(m_.mrope_host.size() * sizeof(int32_t)));
+            if (!part->image_table) {
+                err = "no room for the conversation's image coordinates";
+                return {};
+            }
+            image_tables.push_back(part->image_table);
+            mc.sessions_bytes += m_.mrope_host.size() * sizeof(int32_t);
         }
         session_set_layers(part->ss, m_.g, card.lb, card.le);
         PleRun& ple = part->ss.ple;   // the engine's PLE weights and buffers, with this conversation's history
@@ -410,6 +424,8 @@ PagedParts PagedQwen::make_parts(PagedCard& card, size_t count, std::string& err
         err = "the conversations' sessions on " + card.id + ": " + err;
         return {};
     }
+    mc.ver->set_slot_image_tables({image_tables.begin(), image_tables.end()});
+    image_tables_.push_back(std::move(image_tables));
     return parts;
 }
 
@@ -612,10 +628,13 @@ bool PagedQwen::prepare_images(const strata::serve::RequestLine& request, const 
     return true;
 }
 
-bool PagedQwen::activate_images(int session, std::string& err) {
+bool PagedQwen::activate_images(int session, std::string& err, bool shared) {
     if (!m_.o.vision)
         return true;
-    const auto& positions = leads_[(size_t) session]->image_positions;
+    Part& lead = *leads_[(size_t) session];
+    if (!shared && lead.image_table_ready)
+        return true;
+    const auto& positions = lead.image_positions;
     if (positions.empty()) {
         for (size_t i = 0; i < m_.mrope_host.size(); ++i)
             m_.mrope_host[i] = (int32_t) (i / 3);
@@ -625,11 +644,16 @@ bool PagedQwen::activate_images(int session, std::string& err) {
     for (size_t k = 0; k < cards_.size(); ++k) {
         const strata::core::OnDevice on(pcards_[k].dev);
         int32_t* table = k == 0 ? m_.d_mrope : cards_[k].stage->mrope;
-        if (!strata::core::gpu_copy(table, m_.mrope_host.data(), m_.mrope_host.size() * sizeof(int32_t))) {
+        strata::kernels::mrope_table_set(table);
+        const size_t bytes = m_.mrope_host.size() * sizeof(int32_t);
+        if ((shared && !strata::core::gpu_copy(table, m_.mrope_host.data(), bytes)) ||
+            (!lead.image_table_ready && !strata::core::gpu_copy(image_tables_[k][(size_t) session],
+                                                               m_.mrope_host.data(), bytes))) {
             err = "the image position upload failed";
             return false;
         }
     }
+    lead.image_table_ready = true;
     return true;
 }
 
@@ -702,7 +726,9 @@ bool PagedQwen::restore_state(const std::vector<uint8_t>& state, const PagedPart
         if (!strata::core::conversation_unpaged_restore(one, p.ss, m_.g, live, err))
             return false;
     }
-    auto& positions = get_part(*parts.front()).image_positions;
+    Part& lead = get_part(*parts.front());
+    lead.image_table_ready = false;
+    auto& positions = lead.image_positions;
     positions.clear();
     if (at < state.size()) {
         const uint64_t n = read_size(state, at);
@@ -743,8 +769,6 @@ bool PagedQwen::read_prompt(const PagedParts& parts, const std::vector<int64_t>&
 
 bool PagedQwen::run_rows(const std::vector<strata::spec::StepRow>& rows, std::vector<int32_t>& picks,
                          std::string& err) {
-    if (!activate_images(rows.front().session, err))
-        return false;
     int sessions[strata::kernels::kVerifyMaxT] = {};
     int32_t tokens[strata::kernels::kVerifyMaxT] = {};
     int64_t pos[strata::kernels::kVerifyMaxT] = {};
@@ -764,6 +788,25 @@ bool PagedQwen::run_rows(const std::vector<strata::spec::StepRow>& rows, std::ve
         sessions[r] = row.session;
         tokens[r] = row.token;
         pos[r] = row.pos;
+    }
+    if (m_.o.vision) {
+        std::vector<int32_t> coordinates((size_t) S * 3);
+        for (int r = 0; r < S; ++r) {
+            if ((r == 0 || sessions[r] != sessions[r - 1]) && !activate_images(sessions[r], err, false))
+                return false;
+            const auto& table = leads_[(size_t) sessions[r]]->image_positions;
+            for (int axis = 0; axis < 3; ++axis)
+                coordinates[(size_t) r * 3 + axis] = table.empty() ? (int32_t) pos[r]
+                    : table[(size_t) pos[r] * 3 + axis];
+        }
+        for (size_t k = 0; k < cards_.size(); ++k) {
+            const strata::core::OnDevice on(pcards_[k].dev);
+            int32_t* table = k == 0 ? m_.d_mrope : cards_[k].stage->mrope;
+            if (!strata::core::gpu_copy(table, coordinates.data(), coordinates.size() * sizeof(int32_t))) {
+                err = "the step's image position upload failed";
+                return false;
+            }
+        }
     }
     conv_.ver.set_batch_histories(strata::serve::get_penalty_histories(rows, histories_, history_lengths_));
     if (!conv_.run_rows(sessions, S, tokens, pos, picks.data(), err))

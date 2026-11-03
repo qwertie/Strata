@@ -9,7 +9,9 @@
 // The table: nullptr (the default) keeps every kernel exactly as before - the position a caller passes is the
 // rotary position.  Set, it is a DEVICE int32 [cells][3] (t, h, w) and the position a caller passes is read as a
 // CELL index; pair i rotates by tab[cell * 3 + mrope_sector(i)].  Every caller in the engine passes cell indices
-// (pos_base is 0 everywhere), so the table covers the prompt path, the verify window and the MTP drafter at once.
+// (pos_base is 0 everywhere). Paged vision verify windows stage [rows][3] here and pass row indices for
+// query/K rotation; their pooled indexer keys capture a separate full cell table for each conversation.
+// Prompt ingestion and MTP use the full cell table.
 // The pointer must be set before any CUDA graph is captured (kernels take it as an argument); the contents may
 // change between requests.
 #pragma once
@@ -26,6 +28,17 @@ namespace strata::kernels {
 /// The table of the CURRENT device (a layer split sets one per device; null = the identity).
 void mrope_table_set(const int32_t* device_table);
 const int32_t* mrope_table();
+
+/// Selects a conversation's coordinates while recording its indexer kernels, then restores the row table.
+class MropeTableScope {
+public:
+    explicit MropeTableScope(const int32_t* table) : previous_(mrope_table()) { mrope_table_set(table); }
+    ~MropeTableScope() { mrope_table_set(previous_); }
+    MropeTableScope(const MropeTableScope&) = delete;
+    MropeTableScope& operator=(const MropeTableScope&) = delete;
+private:
+    const int32_t* previous_;
+};
 
 /// #280, opt-in (STRATA_ROPE_TABLE=1): the rotation angles, 32 pairs of a 64-wide rotary slice, from the session's
 /// float64 table (build_rope_table, [max_pos][32] cos and sin in VRAM, the rope scaling inside) of the CURRENT

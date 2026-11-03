@@ -1535,10 +1535,18 @@ mean KL from the stock model 0.063 nats (max 4.1), perplexity +15% on code, +2.3
 ### Pictures in the page-pool engines
 
 `strata-q38` reads the same `GENI` embedding files as `strata`, using the same prompt row and M-RoPE builder.
-The server keeps the configured CPU or GPU encoder. With vision enabled, conversations take turns between steps:
-the rotary kernels share one position table per device. Several requests can still be active.
+The server keeps the configured CPU or GPU encoder. Picture and text conversations decode together in one step.
+Each row uses its conversation's rotary coordinates; pooled indexer keys keep a separate table per conversation.
 `strata-ds41` uses DeepSeek's existing RGB reader, span cache and built-in vision tower. A model without a tower
 refuses pictures. Existing vision settings still apply; there are no new picture settings.
+
+Measured on 3 November 2026, Windows HIP, Strix Halo (gfx1151), Qwen3.8 IQ3_S, 8K context, vision on,
+4,096 MiB GPU and 2,048 MiB RAM pools, 400 GPU experts, adaptation off, no drafting, temperature zero:
+one conversation gave 2.55 before / 2.65 after tokens/s; three gave 2.01 / 2.15 aggregate tokens/s.
+This is one round of 64-token answers: a picture with counting, then Python and story prompts alongside it.
+Timing starts after the last admission and excludes prefill and earlier tokens (one: 63 tokens in each run;
+three: 187 before, 183 after). Small pools on this setup do not make three conversations faster than one.
+The before binary is 4c047a0f. All three answers match standalone and that binary exactly.
 
 Both engines bind prefix reuse to a hash of all pictures and their positions. A different picture set reads the
 prompt again from token zero. Pauses and saved sessions keep that identity; Qwen also keeps rotary coordinates.

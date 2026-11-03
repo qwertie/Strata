@@ -222,6 +222,9 @@ public:
     /// Commit an accepted prefix in each contiguous slot group of the last window. `keep` has
     /// one entry per slot (indexed by slot ID), each in 1..that slot's group length.
     bool commit_slot_prefixes(const int* keep, std::string& err);
+    /// Sets stable per-slot tables before capture; paged vision query/K rows use the shared table's row indices.
+    void set_slot_image_tables(const std::vector<const int32_t*>& tables) { slot_image_tables_ = tables; }
+
     /// --batch-mtp: slot rotation makes many row layouts, so bound the captured batch graph pairs (LRU). 0 = unbounded.
     void set_batch_graph_limit(size_t n) { batch_graph_limit_ = n; }
     /// Frees every captured batch window graph; they are captured again when used.  For a slot whose state the
@@ -378,6 +381,7 @@ public:
     std::string route_stats_report();
 
 private:
+    std::vector<const int32_t*> slot_image_tables_; ///< Coordinates used by each slot's pooled indexer keys.
     RemoteExpertOpt* remote_opt_ = nullptr;
     bool capture(int T, std::string& err);
     // batch windows (see init_slots)

@@ -51,6 +51,7 @@
 #include "strata/models/qwen38/kernels/qsa_select.hpp"
 #include "strata/common/kernels/quantize_act.hpp"
 #include "strata/common/kernels/rope.hpp"
+#include "strata/common/kernels/mrope.hpp"
 #include "strata/models/qwen38/kernels/s2_expert_grouped.hpp"
 #include "strata/common/kernels/sampler.hpp"
 #include "strata/common/state/progress.hpp"
@@ -1645,6 +1646,8 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
                                                         rope_scaling(), ns);
                     } else {
                         for (int t = tb; t < te; ++t) {
+                            const MropeTableScope image_table(slot_image_tables_.empty() || !batch_rec_
+                                ? mrope_table() : slot_image_tables_[(size_t) brow_[t]]);
                             const QsaState& sx = slot_ss(t).qsa_states[qi];
                             const QsaIndexerBuffers ib = qsa_indexer_buffers(sx);
                             native_qsa_indexer_append(idx_raw + t * ID, step_ + t * kStepCount + kStepPos, 0,
@@ -3609,6 +3612,8 @@ bool Verifier::capture_commit_batch(const int* rows, int S, int hbase, std::stri
                 for (int t = 0; t < S;) {
                     const int first = t;
                     while (t < S && rows[t] == rows[first]) ++t;
+                    const MropeTableScope image_table(slot_image_tables_.empty()
+                        ? mrope_table() : slot_image_tables_[(size_t) rows[first]]);
                     const QsaState& st = slots_[(size_t) rows[first]]->qsa_states[qsa_index];
                     copy_from_mapped(st.idx_tail, tail_snap_b_ + ((size_t) rows[first] * nQ + qsa_index) * TS,
                                      TS, cs_);
@@ -3739,13 +3744,14 @@ bool Verifier::stage_batch(const int* rows, int S, int hbase, const int32_t* tok
     const Clock::time_point t0 = Clock::now();
     const QsaShapes s = shapes_of(g);
     for (int t = 0; t < S; ++t) {
+        const int32_t rotary = slot_image_tables_.empty() ? (int32_t) pos[t] : t;
         h_tok_[t] = tokens[t];
         qsa_step_fill(h_step_ + t * kStepCount, pos[t], s);
-        for (int64_t h = 0; h < g.n_head; ++h) h_pos_[t * g.n_head + h] = (int32_t) pos[t];
+        for (int64_t h = 0; h < g.n_head; ++h) h_pos_[t * g.n_head + h] = rotary;
         int32_t* pk = h_pos_ + (size_t) max_t_ * g.n_head;
         int32_t* pi = pk + (size_t) max_t_ * g.n_head_kv;
-        for (int64_t h = 0; h < g.n_head_kv; ++h) pk[t * g.n_head_kv + h] = (int32_t) pos[t];
-        for (int64_t h = 0; h < g.idx_q_heads; ++h) pi[t * g.idx_q_heads + h] = (int32_t) pos[t];
+        for (int64_t h = 0; h < g.n_head_kv; ++h) pk[t * g.n_head_kv + h] = rotary;
+        for (int64_t h = 0; h < g.idx_q_heads; ++h) pi[t * g.idx_q_heads + h] = rotary;
     }
     if (ss_->ple.ready() && ple_stage()) {
         uint32_t ple_rows[kVerifyMaxT * PLE_N_HEADS];   // (not `rows`: that is the slots of the window's rows)
