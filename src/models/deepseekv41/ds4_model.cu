@@ -9771,7 +9771,10 @@ bool Model::set_stage_layers(int stage, int lb, int le, std::string& err) {
 }
 std::vector<float>& Model::get_usage() { return p_->usage; }
 uint64_t Model::get_weight_bytes(int dev) const { return p_->devs[(size_t) dev].weights; }
-uint64_t Model::get_scratch_bytes(int dev) const { return p_->devs[(size_t) dev].scratch; }
+uint64_t Model::get_scratch_bytes(int dev) const {
+    return p_->devs[(size_t) dev].scratch +
+           (p_->vt.device() == p_->devs[(size_t) dev].id ? p_->vt.device_bytes() : 0);
+}
 const Geometry& Model::geometry() const { return p_->g; }
 std::vector<uint64_t> Model::get_expert_bytes() const {
     std::vector<uint64_t> bytes;

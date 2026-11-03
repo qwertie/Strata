@@ -13,11 +13,11 @@ def translate_args(cfg: dict, args: list[str]) -> list[str]:
     common = set("""pack max-context batch expert-cache expert-profile layer-split split-device
         adapt-every adapt-swaps adapt-min-gain adapt-decay tokens-min tokens-max gpu-mib ram-mib ssd-pause-mib
         rows lookahead concurrent pause-dir copy-back drafter remote-experts""".split())
-    model = set(("""eos gpus reserve-mib cpu-threads dspark dspark-conf experts dspark-block prefill-chunk threads"""
+    model = set(("""vision eos gpus reserve-mib cpu-threads dspark dspark-conf experts dspark-block prefill-chunk threads"""
                  if deepseek else """eos-ids native ple-gguf kv prefill mtp spec-min-p gpu pcie-frac pool-cores
                  aux-cpus pool-affinity vram-reserve-mib vram-reserve-later-mib""").split())
     switches = {"serve", "trim-stage-weights"} | ({"no-expert-cache"} if deepseek else
-                 {"no-ple", "no-prefill-borrow", "no-host-worker", "no-ple-prefetch", "stop-eos"})
+                 {"vision", "no-ple", "no-prefill-borrow", "no-host-worker", "no-ple-prefetch", "stop-eos"})
     aliases = {"--slots": "--batch"}
     aliases["--gpu" if deepseek else "--gpus"] = "--gpus" if deepseek else "--gpu"
     if deepseek:
@@ -45,6 +45,8 @@ def translate_args(cfg: dict, args: list[str]) -> list[str]:
                 if flag == "--resident-budget-gib":
                     values = [str(int(float(values[0]) * 1024))]
                 out.extend([target, *values])
+            elif name == "vision" and deepseek:
+                out.extend([target, "on"])
             else:
                 raise ValueError(f"{flag} needs a value")
         else:

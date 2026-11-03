@@ -362,6 +362,15 @@ test PC needs care: its commit limit is 127.6 GiB, and DeepSeek has reached it b
 commit charge first, caps each pool so that the pools and a 16 GiB margin fit, and runs with a watchdog that stops
 the engine within 16 GiB of the limit.
 
+## Pictures in the replacement engines
+
+`strata-q38` shares the old engine's embedding-file reader and rotary-coordinate builder; `strata-ds41` shares
+DeepSeek's RGB reader, span cache and built-in encoder. The server keeps the selected picture reader.
+Picture identity travels with paused pages and saved sessions and prevents reuse across different pictures.
+Qwen keeps its coordinates beside the pages and switches the device table between conversations. With vision on,
+it runs one conversation per step while keeping several requests active. Changing the picture set rereads the
+whole prompt. CUDA and SYCL still need validation on their own hardware.
+
 ## Later
 
 - Qwen3.8's paged verifier applies request penalties to each row's conversation and earlier drafts. On the Strix Halo,

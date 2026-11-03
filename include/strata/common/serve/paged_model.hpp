@@ -100,6 +100,7 @@ struct PagedModelFacts {
     std::string drafter_start;
     /// the most conversations one step may run; 0: as many as the step has rows
     int max_concurrent = 0;
+    bool serial_conversations = false;     ///< the model switches shared inputs between conversations
     std::vector<uint64_t> expert_bytes;     ///< per layer: one expert's bytes
     /// on a layer split, the first --expert-cache experts of the whole model's profile, hottest first (what one GPU
     /// would hold); empty without a split
@@ -143,6 +144,12 @@ public:
 
     /// What the engine reads of the model; the model fills it before serve_paged_model.
     PagedModelFacts facts;
+
+    /// Validates a request's pictures before taking a conversation; key identifies their content and positions.
+    virtual bool prepare_images(const RequestLine& request, const std::vector<int64_t>& ids,
+                                uint64_t& key, std::string& err) = 0;
+    /// Attaches the validated pictures to the selected conversation.
+    virtual void attach_images(const PagedParts& parts) = 0;
 
     // ---- per card
 

@@ -17,6 +17,7 @@ class PagedLaunchTests(unittest.TestCase):
                     '--slots', '2', '--tp', '2', '--batch-groups', 'auto', '--suffix-draft', '1',
                     '--vision', '--gpu-mib', '4096', '--ram-mib', '2048']})
                 self.assertEqual(args, ['--pack', 'pack', '--max-context', '8192', '--batch', '2',
+                                        '--vision', *(['on'] if exe == 'strata-ds41.exe' else []),
                                         '--gpu-mib', '4096', '--ram-mib', '2048'])
                 self.assertIn('unsupported settings', log.getvalue())
                 self.assertIn('--tp 2', log.getvalue())

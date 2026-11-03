@@ -5847,9 +5847,6 @@ def main(argv=None, *, lifecycle_event=None, interrupt_exit_code: int = 0) -> in
         if not cfg:
             ap.error("--engine strata needs --config")
         cfg = with_component_engine(cfg)
-        if paged_launch.is_paged_engine(cfg) and cfg.get("vision"):
-            print("[strata] paged engine: pictures are unavailable; leaving out the vision encoder", flush=True)
-            cfg = {**cfg, "vision": None}
         vision = None
         # The engine's own environment. It carries the offline policy too: an engine that fetched a
         # missing shard or a plugin would break the promise the flag makes.

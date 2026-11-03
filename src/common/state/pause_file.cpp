@@ -75,6 +75,8 @@ bool write_pause_file(const std::string& path, const SessionFileIdentity& identi
     append_list(body, head.points);
     append_list(body, head.state);
     append_list(body, head.cut);
+    if (head.image_key != 0)
+        append_bytes(body, &head.image_key, sizeof head.image_key);
     const uint64_t size = body.size(), hash = session_hash64(body.data(), body.size(), kHashSeed);
     const std::string temporary = path + ".tmp";
     PauseStream f;
@@ -155,7 +157,8 @@ SessionError open_pause_file(const std::string& path, const SessionFileIdentity&
     SessionFileIdentity bound;
     PauseHeader read;
     if (!r.get(&bound, sizeof bound) || !r.get_list(read.live) || !r.get_list(read.points) || !r.get_list(read.state) ||
-        !r.get_list(read.cut) || r.at != body.size())
+        !r.get_list(read.cut) ||
+        (r.at != body.size() && !r.get(&read.image_key, sizeof read.image_key)) || r.at != body.size())
         return refuse(SessionError::invalid, "damaged");
     if (bound.model != identity.model || bound.config != identity.config)
         return refuse(SessionError::invalid, "saved by another model or with other settings");

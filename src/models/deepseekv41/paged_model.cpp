@@ -3,6 +3,7 @@
 #include "strata/models/deepseekv41/paged_model.hpp"
 
 #include "ds4_model.hpp"
+#include "ds4_images.hpp"
 #include "expert_files.hpp"
 #include "strata/base/gpu/on_device.hpp"
 #include "strata/base/gpu/runtime.hpp"
@@ -332,6 +333,9 @@ public:
     }
     void set_hop_holders(const int32_t*) override {}
     void report_hops() const override {}
+    bool prepare_images(const strata::serve::RequestLine& request, const std::vector<int64_t>& ids,
+                        uint64_t& key, std::string& err) override;
+    void attach_images(const PagedParts&) override {}
     void start_request(int session, const strata::serve::RequestStart& r) override;
     bool save_state(const PagedParts& parts, std::vector<uint8_t>& state, std::string& err) const override;
     bool restore_state(const std::vector<uint8_t>& state, const PagedParts& parts, const std::vector<int32_t>& live,
@@ -401,6 +405,8 @@ private:
     bool copy_expert(const PagedCard& card, strata::core::ExpertKey key, int32_t first, bool from_ram,
                      std::string& err);
 
+    SpanCache image_cache_;
+    std::vector<Image> pending_images_;
     Model& m_;
     const Options& o_;
     const ProgramOptions x_;
@@ -743,6 +749,43 @@ PagedParts PagedDeepSeek::make_parts(PagedCard& card, size_t count, std::string&
     return parts;
 }
 
+bool PagedDeepSeek::prepare_images(const strata::serve::RequestLine& request, const std::vector<int64_t>& ids,
+                                    uint64_t& key, std::string& err) {
+    pending_images_.clear();
+    if (!request.pictures)
+        return true;
+    if (m_.image_token() < 0) {
+        err = "this engine has no vision tower, so it cannot read pictures";
+        return false;
+    }
+    std::vector<Pic> pictures;
+    if (!read_pics(request.file, pictures, err))
+        return false;
+    strata::core::SessionHasher hash(1469598103934665603ull);
+    int64_t end = 0;
+    for (const Pic& picture : pictures) {
+        auto rows = image_cache_.get(m_, picture, err);
+        if (!rows)
+            return false;
+        const int64_t n = (int64_t) rows->size() / m_.dim();
+        if (picture.start < end || picture.start < 0 || picture.start >= (int64_t) ids.size() ||
+            n >= (int64_t) ids.size() - picture.start ||
+            !std::all_of(ids.begin() + picture.start, ids.begin() + picture.start + n,
+                         [&](int64_t token) { return token == m_.image_token(); })) {
+            err = "a picture's span is not a run of image tokens in the prompt";
+            return false;
+        }
+        end = picture.start + n;
+        hash.update(&picture.start, sizeof picture.start);
+        hash.update(&picture.hash, sizeof picture.hash);
+        pending_images_.push_back({picture.start, rows});
+    }
+    key = hash.digest();
+    if (key == 0)
+        key = 1;
+    return true;
+}
+
 void PagedDeepSeek::start_request(int session, const strata::serve::RequestStart& r) {
     Part& p = *leads_[(size_t) session];
     p.smp = r.sampling;
@@ -822,6 +865,12 @@ strata::core::LayerSizes PagedDeepSeek::get_layer_sizes(uint64_t page) const {
 
 bool PagedDeepSeek::read_prompt(const PagedParts& parts, const std::vector<int64_t>& ids, int64_t from, int64_t n,
                                 bool, const ChunkDone& on_chunk, std::string& err) {
+    /// Keeps another conversation's decode positions from selecting this prompt's image rows.
+    struct ClearPromptImages {
+        Model& model;
+        ~ClearPromptImages() { model.set_images({}); }
+    } clear{m_};
+    m_.set_images(pending_images_);
     Part& p = get_part(*parts[0]);
     p.take_seat();
     if (!go_to(from, err))

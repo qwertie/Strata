@@ -56,6 +56,7 @@ using SettingValues = std::vector<std::pair<std::string, std::string>>;
 /// A place for a conversation on the GPUs: its state on each card and the tokens in it.  Its state on each card is the
 /// model's part of the same index there (PagedModel::make_parts).
 struct Held {
+    uint64_t image_key = 0;             ///< the content identity of the pictures in live
     int session = 0;                    ///< its index: its session in the model; its id in each card's pool - 1
     PagedParts parts;                   ///< its state on each card, in the cards' order
     std::vector<int32_t> live;          ///< the tokens its state holds: the prompt, then the fed outputs
@@ -76,6 +77,7 @@ struct Held {
     /// Forgets its tokens and gives back its growing pages.
     void forget() {
         live.clear();
+        image_key = 0;
         for (const std::unique_ptr<PagedPart>& p : parts)
             if (p->is_ready())
                 p->truncate(0);
@@ -217,7 +219,7 @@ private:
     /// comes back) in place `target` of `at_`, pausing the one there unless that is it.  A conversation whose tokens
     /// `ids` leave before their end comes back at the latest point it can go back to (get_resume_tokens), and stays
     /// paused whole as well, as strata-dsv41's slots keep it.  Gets how many of `ids` it holds.
-    int64_t take_conversation(size_t target, const std::vector<int64_t>& ids);
+    int64_t take_conversation(size_t target, const std::vector<int64_t>& ids, uint64_t image_key);
     /// Gives `h` the pages for `tokens` tokens on every card, pausing idle conversations (the lowest priority, then
     /// the least recently used, first) while a pool has no room, and tells the kernels about the experts that left
     /// those pages.
@@ -597,6 +599,7 @@ void PagedEngine::save_session(const std::string& path) {
             saved.head = paused->head;
         } else {
             saved.head.live = held->live;
+            saved.head.image_key = held->image_key;
             saved.head.points = model_.get_rewind_points(held->parts);
             ok = model_.save_state(held->parts, saved.head.state, err);
         }
@@ -708,10 +711,6 @@ bool PagedEngine::serve_request(const std::string& line) {
         std::printf("ERR %s\n", err.empty() ? "malformed request (or max_new < 1)" : err.c_str());
         return true;
     }
-    if (req.pictures) {
-        std::printf("ERR %s reads no pictures\n", facts_.name.c_str());
-        return true;
-    }
     if (req.batch && (req.slot < 0 || (size_t) req.slot >= slots)) {
         std::printf("ERR BGEN: no such slot (capacity %zu)\n", slots);
         return true;
@@ -738,10 +737,15 @@ bool PagedEngine::serve_request(const std::string& line) {
                     (long long) get_held((size_t) req.slot).dec.priority);
         return true;
     }
+    uint64_t image_key = 0;
+    if (!model_.prepare_images(req, ids, image_key, err)) {
+        std::printf("ERR %s\n", err.c_str());
+        return true;
+    }
     input_.clear_stop();   // a STOP between requests is stale
     const Clock::time_point t0 = Clock::now();
     const size_t target = req.batch ? (size_t) req.slot : slots;
-    const int64_t resume = take_conversation(target, ids);
+    const int64_t resume = take_conversation(target, ids, image_key);
     Held& h = get_held(target);
     const int session = h.session;
     h.used = ++requests_;
@@ -759,6 +763,8 @@ bool PagedEngine::serve_request(const std::string& line) {
             part->clear_state();
     }
     std::printf("RESUME %lld\n", (long long) resume);
+    h.image_key = image_key;
+    model_.attach_images(h.parts);
     model_.start_request(session, {smp, req.keys});
     const char* finish = "length";
     int64_t read_to = resume;   // the prompt tokens the session holds
@@ -854,6 +860,8 @@ bool PagedEngine::decode_step() {
     });
     if (going.size() > (size_t) settings_.step.concurrent)
         going.resize((size_t) settings_.step.concurrent);
+    if (facts_.serial_conversations && going.size() > 1)
+        going.resize(1);
     ++steps_;
     for (Held* h : going)
         h->stepped = steps_;
@@ -932,22 +940,26 @@ void PagedEngine::end_preempted(size_t slot) {
     std::printf("BDONE %zu %lld preempted %.1f\n", slot, (long long) h.dec.produced, get_ms_since(h.t0));
 }
 
-int64_t PagedEngine::take_conversation(size_t target, const std::vector<int64_t>& ids) {
-    const auto get_start = [&](const std::vector<int32_t>& live, const std::vector<int64_t>& points) {
+int64_t PagedEngine::take_conversation(size_t target, const std::vector<int64_t>& ids, uint64_t image_key) {
+    const auto get_start = [&](const std::vector<int32_t>& live, const std::vector<int64_t>& points, uint64_t key) {
+        if (key != image_key)
+            return int64_t{0};
         return (int64_t) strata::core::get_resume_tokens(live, points, ids);
     };
     size_t best = target;
-    int64_t most = get_start(get_held(target).live, model_.get_rewind_points(get_held(target).parts));
+    const Held& initial = get_held(target);
+    int64_t most = get_start(initial.live, model_.get_rewind_points(initial.parts), initial.image_key);
     for (size_t i = 0; i < at_.size(); ++i) {
         const Held& h = get_held(i);
-        if (const int64_t start = get_start(h.live, model_.get_rewind_points(h.parts)); !h.decoding && start > most) {
+        if (const int64_t start = get_start(h.live, model_.get_rewind_points(h.parts), h.image_key);
+            !h.decoding && start > most) {
             best = i;
             most = start;
         }
     }
     auto back = paused_.end();
     for (auto p = paused_.begin(); p != paused_.end(); ++p)
-        if (const int64_t start = get_start(p->head.live, p->head.points); start > most) {
+        if (const int64_t start = get_start(p->head.live, p->head.points, p->head.image_key); start > most) {
             back = p;
             most = start;
         }
@@ -1054,6 +1066,7 @@ bool PagedEngine::pause(Held& h, std::string& err, bool ram_only) {
     p.priority = h.dec.priority;
     p.used = h.used;
     p.head.live = h.live;
+    p.head.image_key = h.image_key;
     p.head.points = model_.get_rewind_points(h.parts);
     if (!model_.save_state(h.parts, p.head.state, err))
         return false;
@@ -1143,6 +1156,7 @@ bool PagedEngine::resume(const Paused& p, Held& h, std::string& err) {
     if (!ok || !model_.restore_state(p.head.state, h.parts, live, err))
         return false;
     h.live = live;
+    h.image_key = p.head.image_key;
     say("a conversation of %zu tokens is back from %s (%.0f ms)\n", live.size(), p.file.empty() ? "RAM" : "the SSD",
         get_ms_since(t0));
     return true;

@@ -65,6 +65,7 @@ int main() {
     head.points = {2, 4};
     head.state = {9, 8, 7};
     head.cut = {12};
+    head.image_key = 0x123456789abcdef0ull;
     Pool first, second;
     first.fill(1, 40, 1);
     second.fill(3, 12, 100);
@@ -75,7 +76,8 @@ int main() {
     PauseStream file;
     PauseHeader got;
     check(open_pause_file(path, identity, 100, file, got, err) == SessionError::none && got.live == head.live &&
-              got.points == head.points && got.state == head.state && got.cut == head.cut,
+              got.points == head.points && got.state == head.state && got.cut == head.cut &&
+              got.image_key == head.image_key,
           "the header comes back as written");
     Pool first_back, second_back;
     check(first_back.pool->grow_conversation(5, 40).empty() && second_back.pool->grow_conversation(5, 12).empty() &&
@@ -106,6 +108,7 @@ int main() {
           "a file cut short is refused before restoration");
     file.reset();
 
+    head.image_key = 0;
     check(write_pause_file(path, identity, head, {{first.pool.get(), 1}}, err), "the file is written again");
     {
         std::FILE* f = std::fopen(path.c_str(), "r+b");

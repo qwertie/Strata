@@ -69,6 +69,7 @@
 #endif
 #include "strata/models/qwen38/conversation.hpp"
 #include "strata/models/qwen38/model.hpp"
+#include "strata/models/qwen38/prompt_images.hpp"
 #include "strata/program/batch_read.hpp"
 #include "strata/models/qwen38/logits_selection.hpp"
 #include "strata/program/conv_cache.hpp"
@@ -6027,57 +6028,8 @@ int main(int argc, char** argv) {
                 if (!geni) {
                     for (int64_t c = 0; c < cells; ++c) put(c, c, c, c);
                 } else {
-                    struct Img { int64_t n, nx, ny; size_t off; };
-                    std::vector<Img> imgs;
-                    img_rows.clear();
-                    std::FILE* f = std::fopen(emb_path.c_str(), "rb");
-                    if (!f) ve = "cannot open " + emb_path;
-                    while (f && ve.empty()) {
-                        int32_t hdr[5];
-                        const size_t got = std::fread(hdr, sizeof(int32_t), 5, f);
-                        if (got == 0) break;
-                        if (got != 5 || hdr[0] != 0x31455653 || hdr[1] < 1 || hdr[2] < 1 || hdr[3] < 1 ||
-                            (int64_t) hdr[2] * hdr[3] != hdr[1] || hdr[4] != (int32_t) g.n_embd) {
-                            ve = "bad embeddings file (expected strata-vision records of width " +
-                                 std::to_string((long long) g.n_embd) + ")";
-                            break;
-                        }
-                        const size_t off = img_rows.size(), cnt = (size_t) hdr[1] * (size_t) hdr[4];
-                        img_rows.resize(off + cnt);
-                        if (std::fread(img_rows.data() + off, sizeof(float), cnt, f) != cnt) { ve = "short embeddings file"; break; }
-                        imgs.push_back({hdr[1], hdr[2], hdr[3], off});
-                    }
-                    if (f) std::fclose(f);
-                    int64_t p = 0, i = 0;
-                    size_t k = 0;
-                    while (ve.empty() && i < n) {
-                        if (ids[(size_t) i] != kImagePad) { put(i, p, p, p); ++p; ++i; continue; }
-                        if (k >= imgs.size()) { ve = "the prompt has more images than the embeddings file"; break; }
-                        const Img& im = imgs[k++];
-                        {   // what the conversation cache compares: a picture is its grid and its embeddings
-                            const int64_t grid[3] = {im.n, im.nx, im.ny};
-                            uint64_t h = fnv1a(grid, sizeof grid);
-                            if (req_img_keys.size() == imgs.size())   // #2228: the server's key for picture k
-                                h = fnv1a(&req_img_keys[k - 1], sizeof(uint64_t), h);
-                            else
-                                h = fnv1a(img_rows.data() + im.off, (size_t) im.n * (size_t) g.n_embd * sizeof(float), h);
-                            req_imgs.push_back({i, h});
-                        }
-                        for (int64_t j = 0; j < im.n && ve.empty(); ++j)
-                            if (i + j >= n || ids[(size_t) (i + j)] != kImagePad)
-                                ve = "image " + std::to_string(k) + " has " + std::to_string((long long) im.n) +
-                                     " rows but fewer <|image_pad|> tokens";
-                        for (int64_t j = 0; j < im.n && ve.empty(); ++j) {
-                            const int64_t y = j / im.nx, x = j % im.nx;
-                            put(i + j, p, p + y, p + x);
-                            row_ptr[(size_t) (i + j)] = img_rows.data() + im.off + (size_t) j * (size_t) g.n_embd;
-                        }
-                        i += im.n;
-                        p += std::max(im.nx, im.ny);
-                    }
-                    if (ve.empty() && k != imgs.size()) ve = "the embeddings file has more images than the prompt";
-                    if (ve.empty() && n > 0 && ids[(size_t) (n - 1)] == kImagePad) ve = "the prompt cannot end in an image";
-                    for (int64_t c = n; ve.empty() && c < cells; ++c) put(c, p + (c - n), p + (c - n), p + (c - n));
+                    strata::qwen38::read_prompt_images(emb_path, ids, g.n_embd, req_img_keys, mrope_host,
+                                                       img_rows, row_ptr, req_imgs, ve);
                 }
                 tr("positions built", (long long) img_rows.size());
                 cudaDeviceSynchronize();

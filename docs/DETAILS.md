@@ -1532,6 +1532,19 @@ mean KL from the stock model 0.063 nats (max 4.1), perplexity +15% on code, +2.3
 - UD-Q4_K_XL on a 64 GB PC with a 12 GB RTX 5070: 7-8.5 tok/s, picks the same tokens as llama.cpp on the same file at 97.5-99% of the
   positions of short greedy answers and 90-91% after a 16K prompt ([UNSLOTH_Q4.md](UNSLOTH_Q4.md#quality-against-llamacpp-on-the-same-file)).
 
+### Pictures in the page-pool engines
+
+`strata-q38` reads the same `GENI` embedding files as `strata`, using the same prompt row and M-RoPE builder.
+The server keeps the configured CPU or GPU encoder. With vision enabled, conversations take turns between steps:
+the rotary kernels share one position table per device. Several requests can still be active.
+`strata-ds41` uses DeepSeek's existing RGB reader, span cache and built-in vision tower. A model without a tower
+refuses pictures. Existing vision settings still apply; there are no new picture settings.
+
+Both engines bind prefix reuse to a hash of all pictures and their positions. A different picture set reads the
+prompt again from token zero. Pauses and saved sessions keep that identity; Qwen also keeps rotary coordinates.
+The DeepSeek tower's allocated memory is counted as scratch. An external encoder is included in system use
+(the panel's Other), rather than the language engine's weights.
+
 ### Try the page-pool engine
 
 The original engine stays the default. To try `strata-ds41`, set `exe` in the server's JSON config to its full
