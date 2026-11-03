@@ -2,10 +2,12 @@
 // (docs/MEMORY_MANAGER_PLAN.md, step M4, "Guesses in the page pool").
 //
 // One drafter (Model::mtp: its weights, buffers and graphs) serves every conversation in turn.  Its K/V, the only
-// state it keeps per conversation, is one more region of each conversation in the page pool (ConversationPages), so
-// a conversation's guesses write into its own pages and a rejected guess's cells are simply written again later.
+// persistent model state it keeps per conversation, is one more region of each conversation in the page pool
+// (ConversationPages), so a conversation's guesses write into its own pages and a rejected guess's cells are simply
+// written again later.
 // The drafter reads a step's rows one step late: what a conversation's last step kept is read into its K/V when the
 // next step asks it for guesses (the same pass drafts them), so that the guesses' count is the next step's share.
+// Pipelined groups retain transient residual snapshots until that read, since later groups reuse verifier scratch.
 #pragma once
 
 #include "strata/common/spec/step.hpp"
@@ -39,9 +41,17 @@ public:
                      std::string& err);
     /// Remembers what the verify window that just ran kept of each conversation in it: `rows` (a conversation's rows
     /// consecutive), the rows each kept (`kept`, in the order of `rows`), and `picks`, the window's token after each
-    /// row.  Forgets the windows before it.
-    void note_window(const std::vector<strata::spec::StepRow>& rows, const std::vector<int>& kept,
-                     const int32_t* picks);
+    /// row. With residuals, preserves other conversations and copies these rows for the next proposal; otherwise
+    /// forgets earlier windows.
+    bool note_window(const std::vector<strata::spec::StepRow>& rows, const std::vector<int>& kept,
+                     const int32_t* picks, std::string& err, const float* residuals = nullptr);
+    /// Gets device bytes retained for per-conversation residual snapshots.
+    uint64_t get_snapshot_bytes() const {
+        return saved_rows_ ? last_.size() * (size_t) max_rows_ * row_floats_ * sizeof(float) : 0;
+    }
+    /// Reserves per-conversation copies before a wave, preserving pending rows from the last synchronous
+    /// verifier output in `residuals`. Ownership remains with each conversation through live concurrency changes.
+    bool reserve_snapshots(const float* residuals, std::string& err);
     /// Forgets what the last window kept of conversation `session` (its state is about to change otherwise).
     void forget(int session) { last_.at((size_t) session).rows = 0; }
     /// Reads what the last window kept of conversation `session` (its `pages` and session `ss`) into its K/V, from
@@ -54,6 +64,7 @@ public:
 private:
     /// What the last window kept of one conversation.
     struct Last {
+        bool saved = false; ///< Uses its owned residual rows rather than the verifier's current scratch.
         int row0 = 0;       ///< its first row in the window
         int rows = 0;       ///< its rows; 0: the window did not hold it, or it was read already
         int kept = 0;
@@ -61,11 +72,15 @@ private:
         std::vector<int32_t> picks;   ///< the window's token after each of its rows
     };
 
+    /// Preserves one conversation's pending verifier output before scratch is reused.
+    bool save_residuals(int session, const float* residuals, std::string& err);
     /// Points the drafter at a conversation's K/V, PLE history and prompt length (0 when decoding).
     bool select(const ConversationPages& pages, strata::core::SessionState& ss, int64_t prompt_len, std::string& err);
 
     strata::core::MtpDrafter* mtp_ = nullptr;
     uint64_t row_floats_ = 0;   ///< the floats of one residual row
+    float* saved_rows_ = nullptr; ///< Per-session residual snapshots for pipelined windows.
+    int max_rows_ = 0;
     float* rows_ = nullptr;     ///< the bound residual rows: a conversation's rows of the window, copied in by draft()
     int device_ = 0;            ///< the drafter's GPU, which `rows_` is on (a layer split's last card's)
     std::vector<Last> last_;    ///< per session

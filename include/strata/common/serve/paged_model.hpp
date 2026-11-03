@@ -259,6 +259,19 @@ public:
     /// finite.
     virtual bool run_rows(const std::vector<strata::spec::StepRow>& rows, std::vector<int32_t>& picks,
                           std::string& err) = 0;
+    /// Gets the independently driven stage count; zero leaves pipeline groups unavailable.
+    virtual int get_pipeline_stages() const { return 0; }
+    /// Captures a group's graphs and stores its immutable row inputs before any stage launches.
+    virtual bool prepare_group(int, const std::vector<strata::spec::StepRow>&, std::string&) { return false; }
+    /// Starts one prepared group on an idle stage without waiting for its GPU.
+    virtual bool launch_group(int, int, std::string&) { return false; }
+    /// Services a running stage; returns 1 when complete, 0 while busy, or -1 on error.
+    virtual int poll_group(int, int, std::vector<int32_t>&, std::string&) { return -1; }
+    /// Finalizes a group's picks after all stages drain; models may defer sampling until this point.
+    virtual bool finish_group(int, std::vector<int32_t>&, std::string&) { return true; }
+    /// Commits one group's rows after every stage has drained.
+    virtual bool keep_group(int, const std::vector<strata::spec::StepRow>&, const std::vector<int>&,
+                            bool, std::string&) { return false; }
     /// Keeps the first kept[c] of the c-th conversation's rows of the last run (spec::StepModel::keep); the drafter
     /// reads them when `drafting`.
     virtual bool keep_rows(const std::vector<strata::spec::StepRow>& rows, const std::vector<int>& kept,

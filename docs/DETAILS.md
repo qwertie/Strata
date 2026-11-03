@@ -1567,10 +1567,76 @@ No new engine-choice flag is needed. Restore the original `exe` path to return t
 
 These engines add live memory settings in the Memory panel, several conversations at once, pausing conversations
 in RAM or on disk, saved sessions, and layer splitting. DeepSeek's layer split is still under test; separate-card
-validation remains open in D9. Pictures, `--batch-groups` and `--tp` are unavailable.
+validation remains open in D9. `--tp` is unavailable; DeepSeek's groups still run serially (below).
 The server keeps context, GPU selection and `parallel` (starting conversations at once). It logs options it leaves
 out. Use `--set gpu-mib=18432 --set ram-mib=8192` to set the pools; `tokens-min` and `tokens-max` bound the token
 pages kept in the pools. These are engine options in the config's `args`, also available through `--set`.
+
+The original Qwen3.8 engine (`strata`) implements `--batch-groups G`: groups of slots move through separate
+GPU stages, allowing different cards to work on different groups at once. `G` must divide `--batch`; `1` uses
+one group. `auto` selects the largest divisor no greater than the stage count, subject to the original engine's
+feature gates. Original DeepSeek (`strata-dsv41`) and Qwen3.6 (`strata-q36`) do not implement this option.
+See [BATCHING.md](BATCHING.md) for the original engine's settings and measurements.
+
+`strata-q38` now runs pipeline groups through the shared paged step. `--batch-groups 1` keeps its synchronous
+path, which remains the default when the option is omitted. `auto` selects the largest divisor of the live
+Conversations at once value up to the number of stages. An explicit number must divide that live value, otherwise
+it runs one group. `--batch` sets only the initial concurrency. Rows per step and lookahead apply within each group;
+MTP, suffix lookup and pictures use the
+same acceptance and row-sharing rules as the synchronous path.
+
+Groups have separate hand-off rows, picture coordinates, sampling histories, deferred commit inputs and MTP
+residuals. Graphs, sampler space and conversation pages are prepared before any group launches. The shared
+scheduler serves each occupied stage without blocking on another stage. Snapshot copies are polled too. It drains
+the whole wave before sampling the saved logits, before accepted prefixes are committed and before
+it returns to the serve loop. Pauses, saved restores, pool changes and cut moves therefore happen with no groups
+in flight. Deferred commit buffers and MTP residuals count as model scratch outside the page pools. Several
+stages can work on different groups within one wave; this version drains between waves. Group waves do not
+update the drafter's learned single-conversation timing, since their elapsed time covers several groups.
+
+`strata-ds41` accepts the option through the same launcher and parser, but runs one group and notes an explicit
+request for more. Its `PagedDeepSeek::run_rows` calls `Model::step_conversations`, which owns the complete pass
+and its mutable host state (`src/models/deepseekv41/ds4_model.cu`). That pass needs to expose independent stage
+operations before it can use the shared scheduler; wrapping the adapter alone would not overlap cards.
+
+The NVIDIA session kit adds `memory-groups-q38-SB` / `-BS` and `memory-groups-old-SB` / `-BS`. Each compares
+`--batch-groups 1` with `auto` on two actual cards, using four conversations, a cut at layer 24, the fixed
+`--expert-cache 400` budget and no drafting. Four 96-token standalone answers must equal two rounds of concurrent answers. Decode
+speed counts tokens emitted after the final admission, excluding prompt reads and earlier tokens. The new
+engine must also report two stages occupied together. These checks have not been run on real NVIDIA cards here.
+
+Validation limits (3 November 2026): on Windows HIP, Ryzen AI Max+ 395 / Radeon 8060S, native IQ3_S, two stages on
+GPU 0 (`--layer-split 24 --split-device 0`), the two 64-token code/count standalone answers and their concurrent
+32-token prefixes matched with `1` and `auto`. Standalone answers matched the saved pre-change binary. With 2 GiB
+per stage, 2 GiB RAM, 400 requested experts, no adaptation or PCIe expert work, rows 8 and drafting off, one final
+round measured 2.216 aggregate tokens/s with `1`, 2.220 with `auto`. Standalone code/count rates were 3.162/2.864
+and 3.000/2.468 respectively. These are same-GPU scheduling checks, not evidence of a two-card gain. In two earlier
+rounds, omitting the option measured median 3.080/2.509 tokens/s against the saved binary's 3.043/2.532.
+The original `strata.exe`, with its own 2 GiB resident budget, measured 1.985/1.879 median standalone tokens/s
+(two rounds). It refuses concurrent batching when both split stages use GPU 0, so its group speed comparison
+needs real cards. The resolved cache sizes differ, so this is not an equal-cache old/new speed comparison.
+
+Passed in the final HIP run: two and four concurrent 16-token answers matched standalone with MTP enabled;
+the four included a picture, and two RAM-pool changes completed while decoding. A picture's continuation matched
+after an SSD pause/resume and after restoring its saved file in a fresh engine. Seeded sampling with repetition,
+frequency and presence penalties also matched standalone for two concurrent 16-token requests with `1` and `2`.
+Separate suffix-only runs exercised accepted lookup drafts with two groups, including a picture, without a live
+concurrency change. All inference starts checked free commit and physical RAM and had a PID-scoped 16/4 GiB
+watchdog; no memory watchdog tripped. The user's server was not used.
+
+Build checks passed for `strata-q38`, `strata-ds41`, `strata` and `step_test` on Windows HIP and Linux CUDA 13
+(sm_86, compile only). `step_test` passed on both; 57 Python tests and 5 subtests passed for the launcher, NVIDIA
+kit and architecture checks. CUDA inference, Metal/SYCL builds and a grouped live cut move were not run here.
+
+Failed checks: exact answer identity is not established for every request sequence. A three-conversation picture
+answer after earlier rounds differs from standalone in both the saved pre-change binary and `1`, with identical tokens in those
+two builds. A suffix-only picture request with sparse slots and live concurrency 2 -> 1 -> 2 differs with groups:
+at output token 38 it repeats a color instead of ending. The corresponding serial control passes, and groups
+without that live change pass. The restored logits themselves select the emitted token (19.817 for `white`,
+19.693 for the end token); the cause is unresolved. One grouped story run also differed after three tokens while
+a repeat passed. The final MTP run's three-conversation picture check also failed. These failures prevent claiming
+universal concurrent/standalone identity. Keep the option opt-in while investigating them; the NVIDIA kit records
+identity failures separately from the measured speeds.
 
 Both page-pool engines can use greedy prompt lookup with `--suffix-draft 3` (`0`, the default, turns it off).
 They use the original Qwen engine's shared `WindowPlanner`, including its measured row costs, lookup acceptance

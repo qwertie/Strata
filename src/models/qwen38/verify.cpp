@@ -606,6 +606,11 @@ void Verifier::diag(std::FILE* f) const {
 
 
 Verifier::~Verifier() {
+    {
+        const OnDevice on_device(device_);
+        for (auto& entry : group_scratch_)
+            (void) cudaFree(entry.second.data);
+    }
 #if defined(STRATA_GPU_METAL)
     strata::metal_engine::window_destroy(metal_);
     metal_ = nullptr;
@@ -3715,7 +3720,7 @@ bool Verifier::instantiate_evicting(cudaGraphExec_t& ex, cudaGraph_t graph, cons
 }
 
 bool Verifier::stage_batch(const int* rows, int S, int hbase, const int32_t* tokens, const int64_t* pos,
-                           std::string& err) {
+                           std::string& err, bool capture) {
     using namespace strata::kernels;
     // the row layout: a slot may own a contiguous group of rows (--batch-mtp), also across the stages of a layer split,
     // whose hand-off buffers hold kVerifyMaxT rows, or set_handoff_rows' (a stage that hands rows on or takes them)
@@ -3736,11 +3741,19 @@ bool Verifier::stage_batch(const int* rows, int S, int hbase, const int32_t* tok
     // pairs, evicting the least recently used layout.  Without a limit the same eviction frees VRAM for a capture.
     const auto key = bkey(rows, S, hbase);
     bool evicted = false;
-    if (batch_graph_limit_ > 0 && exec_bm_.find(key) == exec_bm_.end() && exec_bm_.size() >= batch_graph_limit_ &&
+    if (capture && batch_graph_limit_ > 0 && exec_bm_.find(key) == exec_bm_.end() &&
+        exec_bm_.size() >= batch_graph_limit_ &&
         !evict_batch_graph(key, evicted, err))
         return false;
     bm_used_[key] = ++bm_tick_;
-    if (!capture_batch(rows, S, hbase, err) || !capture_commit_batch(rows, S, hbase, err)) return false;
+    if (capture) {
+        if (!capture_batch(rows, S, hbase, err) || !capture_commit_batch(rows, S, hbase, err))
+            return false;
+    } else if (exec_bm_.find(key) == exec_bm_.end() ||
+               (!batch_self_commits(rows, S) && commit_bm_.find(key) == commit_bm_.end())) {
+        err = "verify: a prepared pipeline graph was evicted before launch";
+        return false;
+    }
     const Clock::time_point t0 = Clock::now();
     const QsaShapes s = shapes_of(g);
     for (int t = 0; t < S; ++t) {
@@ -3804,6 +3817,7 @@ bool Verifier::run_slot_rows(const int* rows, int S, const int32_t* tokens, cons
     using namespace strata::kernels;
     const OnDevice on_device(device_);
     const ModelGeometry& g = *g_;
+    b_snapshot_ = false;
     if (pre_launch_ && !pre_launch_(cs_, err)) return false;
     if (!stage_batch(rows, S, 0, tokens, pos, err)) return false;
     const cudaError_t le = cudaGraphLaunch(exec_bm_[bkey(rows, S, 0)], cs_);
@@ -3910,7 +3924,7 @@ bool Verifier::commit_slots(std::string& err) {
     return commit_slot_prefixes(keep.data(), err);
 }
 
-bool Verifier::commit_slot_prefixes(const int* keep, std::string& err) {
+bool Verifier::commit_slot_prefixes(const int* keep, std::string& err, bool chain) {
     const OnDevice on_device(device_);
     if (!last_batch_ || last_t_ < 1) { err = "verify: commit_slots without a batch window"; return false; }
     const int S = last_t_;
@@ -3949,7 +3963,23 @@ bool Verifier::commit_slot_prefixes(const int* keep, std::string& err) {
             }
         }
     ms_commit += ms_since(t0);
-    return next_ == nullptr || next_->commit_slot_prefixes(keep, err);
+    return !chain || next_ == nullptr || next_->commit_slot_prefixes(keep, err);
+}
+
+bool Verifier::reserve_batch_history(size_t tokens, std::string& err) {
+    const OnDevice on_device(device_);
+    if (tokens <= batch_history_capacity_)
+        return true;
+    if (batch_history_device_)
+        (void) cudaFree(batch_history_device_);
+    batch_history_device_ = nullptr;
+    batch_history_capacity_ = 0;
+    if (cudaMalloc(&batch_history_device_, tokens * sizeof(int32_t)) != cudaSuccess) {
+        err = "verify batch: the sampler's history does not fit";
+        return false;
+    }
+    batch_history_capacity_ = tokens;
+    return true;
 }
 
 bool Verifier::sample_rows(int S, std::string& err) {
@@ -3965,19 +3995,13 @@ bool Verifier::sample_rows(int S, std::string& err) {
         }
     }
     if (!history.empty()) {
-        cudaError_t e = cudaSuccess;
-        if (history.size() > batch_history_capacity_) {
-            if (batch_history_device_)
-                cudaFree(batch_history_device_);
-            batch_history_device_ = nullptr;
-            batch_history_capacity_ = 0;
-            e = cudaMalloc(&batch_history_device_, history.size() * sizeof(int32_t));
-            if (e == cudaSuccess)
-                batch_history_capacity_ = history.size();
-        }
-        if (e == cudaSuccess)
-            e = cudaMemcpy(batch_history_device_, history.data(), history.size() * sizeof(int32_t),
-                           cudaMemcpyHostToDevice);
+        if (!reserve_batch_history(history.size(), err))
+            return false;
+        const cudaError_t e = b_snapshot_ ?
+            cudaMemcpyAsync(batch_history_device_, history.data(), history.size() * sizeof(int32_t),
+                            cudaMemcpyHostToDevice, cs_) :
+            cudaMemcpy(batch_history_device_, history.data(), history.size() * sizeof(int32_t),
+                       cudaMemcpyHostToDevice);
         if (e != cudaSuccess) {
             err = std::string("verify batch: penalty history: ") + cudaGetErrorString(e);
             return false;
@@ -4012,6 +4036,130 @@ bool Verifier::sample_rows(int S, std::string& err) {
     return true;
 }
 
+bool Verifier::prepare_slot_rows(const int* rows, int S, int base, const int32_t* tokens, const int64_t* pos,
+                                 std::string& err) {
+    const OnDevice on_device(device_);
+    if (!stage_batch(rows, S, base, tokens, pos, err))
+        return false;
+    GroupScratch& scratch = group_scratch_[base];
+    if (scratch.data == nullptr) {
+        size_t bytes = 0;
+        for (const auto& buffer : get_group_buffers())
+            bytes += buffer.second;
+        if (cudaMalloc((void**) &scratch.data, bytes) != cudaSuccess) {
+            err = "the pipeline's deferred commit buffers do not fit";
+            return false;
+        }
+        scratch.bytes = bytes;
+    }
+    return true;
+}
+
+bool Verifier::restore_slot_commit_inputs(const int* rows, int S, int base, const int32_t* tokens, const int64_t* pos,
+                                std::string& err) {
+    last_t_ = S;
+    row_base_ = base;
+    last_batch_ = true;
+    std::copy_n(rows, S, last_rows_);
+    std::copy_n(tokens, S, last_tokens_);
+    std::copy_n(pos, S, last_pos_b_);
+    if (last_stage()) {
+        nf_mask_ = group_scratch_.at(base).nonfinite;
+        nf_row_ = -1;
+        nf_pos_ = -1;
+        for (int row = 0; row < S; ++row)
+            if ((nf_mask_ & (1u << row)) && nf_row_ < 0) {
+                nf_row_ = row;
+                nf_pos_ = pos[row];
+            }
+    }
+    const OnDevice on_device(device_);
+    if (!copy_group_scratch(base, false, err))
+        return false;
+    if (cudaStreamSynchronize(cs_) != cudaSuccess) {
+        err = "the group's restored inputs did not finish copying";
+        return false;
+    }
+    return true;
+}
+
+bool Verifier::finish_slot_rows(int base, std::vector<int32_t>& picks, std::string& err) {
+    const OnDevice on_device(device_);
+    const auto& snapshot = group_scratch_.at(base);
+    std::copy_n(snapshot.greedy, last_t_, h_out_);
+    if (!sample_rows(last_t_, err))
+        return false;
+    for (int row = 0; row < last_t_; ++row) {
+        b_out_[row] = ((volatile int32_t*) h_out_)[row];
+        picks[(size_t) row] = (snapshot.nonfinite & (1u << row)) ? -1 : b_out_[row];
+    }
+    return true;
+}
+
+uint64_t Verifier::get_pipeline_scratch_bytes() const {
+    uint64_t bytes = 0;
+    for (const auto& entry : group_scratch_)
+        bytes += entry.second.bytes;
+    return bytes;
+}
+
+std::vector<std::pair<void*, size_t>> Verifier::get_group_buffers() const {
+    const auto& g = *g_;
+    const size_t T = (size_t) max_t_, C = (size_t) g.ssm_conv_channels, HV = (size_t) g.ssm_v_heads;
+    const size_t nG = (size_t) g.n_gdn_layers(), nQ = (size_t) g.n_qsa_layers();
+    std::vector<std::pair<void*, size_t>> buffers{
+            {qkv_L_, nG * T * C * sizeof(float)}, {h_L_, nG * T * C * sizeof(float)},
+            {gate_L_, nG * T * HV * sizeof(float)}, {beta_L_, nG * T * HV * sizeof(float)},
+            {idx_raw_L_, nQ * T * (size_t) g.idx_key_dim * sizeof(float)},
+            {hist_snap_, T * (size_t) strata::kernels::NG_HIST * strata::kernels::NG_HC_DIM * sizeof(float)},
+            {z_, T * (size_t) g.ssm_value_dim * sizeof(float)}};
+    if (last_stage()) {
+        buffers.emplace_back(head_logits_, T * (size_t) n_vocab_ * sizeof(float));
+        buffers.emplace_back(R_, T * (size_t) g.hc * g.n_embd * sizeof(float));
+    }
+    return buffers;
+}
+
+bool Verifier::copy_group_scratch(int base, bool save, std::string& err) {
+    const GroupScratch& scratch = group_scratch_.at(base);
+    size_t at = 0;
+    for (const auto& buffer : get_group_buffers()) {
+        void* destination = save ? scratch.data + at : buffer.first;
+        const void* source = save ? buffer.first : scratch.data + at;
+        if (cudaMemcpyAsync(destination, source, buffer.second, cudaMemcpyDeviceToDevice, cs_) != cudaSuccess) {
+            err = "the pipeline's deferred commit copy failed";
+            return false;
+        }
+        at += buffer.second;
+    }
+    return true;
+}
+
+bool Verifier::launch_slot_rows(const int* rows, int S, int base, const int32_t* tokens, const int64_t* pos,
+                                std::string& err) {
+    const OnDevice on_device(device_);
+    if (b_running_) {
+        err = "verify: stage already has a group in flight";
+        return false;
+    }
+    if (pre_launch_ && !pre_launch_(cs_, err))
+        return false;
+    if (!stage_batch(rows, S, base, tokens, pos, err, false))
+        return false;
+    const cudaError_t e = cudaGraphLaunch(exec_bm_[bkey(rows, S, base)], cs_);
+    if (e != cudaSuccess) {
+        err = std::string("verify: stage launch: ") + cudaGetErrorString(e);
+        return false;
+    }
+    b_snapshot_ = true;
+    b_snapshot_queued_ = false;
+    b_k_ = 0;
+    b_steps_ = le_ - lb_;
+    ring_now();
+    b_running_.store(true, std::memory_order_release);
+    return true;
+}
+
 bool Verifier::batch_launch(int base, int S, const int32_t* tokens, const int64_t* pos, std::string& err) {
     const OnDevice on_device(device_);
     if (b_running_) { err = "verify: batch_launch while this stage is busy"; return false; }
@@ -4030,6 +4178,7 @@ bool Verifier::batch_launch(int base, int S, const int32_t* tokens, const int64_
             sx.ple_prev[0] = sx.ple_prev[1];
             sx.ple_prev[1] = tokens[t];
         }
+    b_snapshot_ = false;
     b_k_ = 0;
     b_steps_ = le_ - lb_;
     ring_now();
@@ -4142,8 +4291,25 @@ int Verifier::batch_poll(PoolMultiFn pool, void* user, std::string& err) {
     if (q != cudaSuccess) { err = std::string("verify batch: ") + cudaGetErrorString(q); b_running_ = false; return -1; }
     const cudaError_t qc = cudaStreamQuery(copy_);   // no host function of this window may raise flag B in the next
     if (qc == cudaErrorNotReady) return 0;
-    if (prof_on_) collect_profile();
-    if (last_stage()) {
+    if (prof_on_ && (!b_snapshot_ || !b_snapshot_queued_))
+        collect_profile();
+    if (b_snapshot_) {
+        if (!b_snapshot_queued_) {
+            if (last_stage()) {
+                auto& snapshot = group_scratch_.at(row_base_);
+                for (int row = 0; row < S; ++row)
+                    snapshot.greedy[row] = ((volatile int32_t*) h_out_)[row];
+                note_nonfinite(S, last_pos_b_);
+                snapshot.nonfinite = nf_mask_;
+            }
+            if (!copy_group_scratch(row_base_, true, err)) {
+                b_running_ = false;
+                return -1;
+            }
+            b_snapshot_queued_ = true;
+            return 0;
+        }
+    } else if (last_stage()) {
         if (!sample_rows(S, err)) { b_running_ = false; return -1; }
         for (int t = 0; t < S; ++t) b_out_[t] = ((volatile int32_t*) h_out_)[t];
         note_nonfinite(S, last_pos_b_);

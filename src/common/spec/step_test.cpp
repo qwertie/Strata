@@ -73,6 +73,95 @@ Decoding conversation(int session, int32_t next, int64_t pos, int64_t max_new) {
 
 int main() {
     {
+        std::vector<StepGroup> groups(1);
+        std::string err;
+        check(!run_stage_groups({}, groups, err), "missing stages are rejected without polling");
+    }
+    for (int failure : {-1, 0, 1, 2}) {
+        StageModel model;
+        model.stages = 2;
+        std::vector<StepGroup> groups(2);
+        for (auto& group : groups) {
+            group.rows.push_back({});
+            group.picks.resize(1);
+        }
+        int prepared = 0, busy[2] = {-1, -1}, polls[2] = {};
+        bool overlap = false;
+        model.prepare = [&](int, StepGroup&, std::string&) {
+            ++prepared;
+            return true;
+        };
+        model.launch = [&](int stage, int group, std::string& err) {
+            check(prepared == 2, "all captures and page reservations precede launches");
+            check(busy[stage] < 0, "each stage owns at most one group");
+            if (stage == 0 && group == 1 && failure == 0) {
+                err = "launch failed";
+                return false;
+            }
+            busy[stage] = group;
+            polls[stage] = 0;
+            overlap |= busy[0] >= 0 && busy[1] >= 0;
+            return true;
+        };
+        model.poll = [&](int stage, int group, StepGroup&, std::string& err) {
+            check(busy[stage] == group, "polls refer to the stage's owner");
+            if (++polls[stage] < 3)
+                return 0;
+            busy[stage] = -1;
+            if (failure == 1 && stage == 1 && group == 0) {
+                err = "poll failed";
+                return -1;
+            }
+            return 1;
+        };
+        model.finish = [&](int group, StepGroup& g, std::string& err) {
+            check(busy[0] < 0 && busy[1] < 0, "sampling waits for every stage to drain");
+            if (failure == 2) {
+                err = "sampling failed";
+                return false;
+            }
+            g.picks[0] = group + 10;
+            return true;
+        };
+        std::string err;
+        check(run_stage_groups(model, groups, err) == (failure < 0), "pipeline propagates launch and poll failures");
+        check(busy[0] < 0 && busy[1] < 0, "every stage drains on success and failure");
+        if (failure < 0) {
+            check(overlap, "different groups run on both stages at once");
+            check(groups[0].picks[0] == 10 && groups[1].picks[0] == 11, "each group keeps its own picks");
+        }
+    }
+    {
+        FakeModel fm;
+        auto hooks = fm.hooks();
+        fm.add_drafter(hooks);
+        fm.right = 2;
+        hooks.run_groups = [&](std::vector<StepGroup>& groups, std::string&) {
+            check(groups.size() == 2 && groups[0].rows.size() == 4 && groups[1].rows.size() == 4,
+                  "each group shares its own row budget with drafts");
+            for (auto& g : groups)
+                for (size_t r = 0; r < g.rows.size(); ++r)
+                    g.picks[r] = g.rows[r].token + 1;
+            return true;
+        };
+        int commits = 0;
+        hooks.keep_group = [&](int, const std::vector<StepRow>&, const std::vector<int>& kept, std::string&) {
+            check(kept == std::vector<int>{3}, "each group commits its accepted draft prefix");
+            ++commits;
+            return true;
+        };
+        Step step(hooks, {});
+        step.settings = {2, 8, 3};
+        step.settings.groups = 2;
+        auto a = conversation(0, 10, 0, 32), b = conversation(1, 30, 0, 32);
+        std::string err;
+        check(step.run({&a, &b}, err) && commits == 2, "grouped drafts run through shared acceptance");
+        check(a.emitted == std::vector<int32_t>{11, 12, 13} && b.emitted == std::vector<int32_t>{31, 32, 33},
+              "grouped conversations emit their standalone accepted tokens");
+        step.settings.groups = 1;
+        check(step.run({&a, &b}, err), "live scheduling returns to one group");
+    }
+    {
         const std::vector<int32_t> a{1, 2}, b{7};
         const std::vector<StepRow> rows{{0, 3, 2, -1}, {0, 4, 3, 0}, {1, 8, 1, -1}, {1, 9, 2, 2}};
         const std::vector<const std::vector<int32_t>*> tails{&a, &a, &b, &b};
@@ -80,6 +169,30 @@ int main() {
         check(histories == std::vector<std::vector<int32_t>>{{1, 2, 3}, {2, 3, 4}, {-1, -1, 7, 8},
                                                               {-1, 7, 8, 9}},
               "each conversation and draft row has its own penalty history");
+    }
+    {
+        FakeModel fm;
+        auto hooks = fm.hooks();
+        fm.add_drafter(hooks);
+        fm.right = 7;
+        hooks.run_groups = [](std::vector<StepGroup>& groups, std::string&) {
+            for (auto& group : groups)
+                for (size_t r = 0; r < group.rows.size(); ++r)
+                    group.picks[r] = group.rows[r].token + 1;
+            return true;
+        };
+        hooks.keep_group = [](int, const std::vector<StepRow>&, const std::vector<int>&, std::string&) {
+            return true;
+        };
+        Step step(hooks, {});
+        step.settings = {4, 7, 7};
+        step.settings.groups = 2;
+        auto a = conversation(0, 10, 0, 32), b = conversation(1, 20, 0, 32);
+        auto c = conversation(2, 30, 0, 32), d = conversation(3, 40, 0, 32);
+        std::string err;
+        check(step.run({&a, &b, &c, &d}, err) && step.run({&a, &b, &c, &d}, err), "uneven grouped shares run");
+        check(a.guessed == 5 && b.guessed == 5 && c.guessed == 5 && d.guessed == 5,
+              "equal-priority conversations rotate the extra row within every group");
     }
     {   // the plan's table: 3 conversations at once, 8 rows
         StepSettings s{3, 8, 8};

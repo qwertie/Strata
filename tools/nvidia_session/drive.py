@@ -8,6 +8,7 @@ Scenarios (the engine's --serve protocol unless said otherwise):
   q38state  Qwen3.8: prefix reuse, parking, SAVE / RESTORE, and a RESTORE of --other (the build before's file)
   q36       Qwen3.6: the same for its engine (strata-q36)
   multi     Qwen3.8: a 2,000-token prompt, a 128-token answer, a second turn; the startup lines appended
+  groups    Qwen3.8: four standalone answers against two rounds of four batch answers and aggregate decode speed
   cutmove   strata-q38: a 96-token story in a batch slot; with --move-cut the first card's memory is halved after 24
             tokens and set back after 48 (the layer cut moves between two steps); the answers go to FILE.settings
   ds        DeepSeek V4.1: greedy and seeded answers, a 128-token one for the speed
@@ -23,6 +24,7 @@ FILE.gpu.csv and FILE.sys.csv get what the cards and the PC were doing, once a s
 from __future__ import annotations
 
 import argparse
+import ctypes
 import json
 import os
 import queue
@@ -51,7 +53,7 @@ QWEN_USER, QWEN_ANSWER = "<|im_start|>user\n", "<|im_end|>\n<|im_start|>assistan
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("scenario", choices=["q38", "q38state", "q36", "multi", "cutmove", "ds", "dsmemory",
-                                        "dscutmove", "server", "config"])
+                                        "dscutmove", "groups", "server", "config"])
     ap.add_argument("--exe", required=True)
     ap.add_argument("--out", required=True)
     ap.add_argument("--data", required=True)
@@ -70,11 +72,51 @@ def main() -> int:
         return serve(a, env) if a.scenario == "server" else run_engine(a, env)
 
 
+def get_windows_free_memory() -> tuple[int, int]:
+    """Gets free commit charge and physical RAM for the Windows kit's group checks."""
+    class Status(ctypes.Structure):
+        _fields_ = [("length", ctypes.c_ulong), ("load", ctypes.c_ulong)] + [
+            (name, ctypes.c_ulonglong) for name in ("total_phys", "avail_phys", "total_page", "avail_page",
+                                                   "total_virtual", "avail_virtual", "avail_extended")]
+    status = Status()
+    status.length = ctypes.sizeof(status)
+    if not ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(status)):
+        raise OSError("GlobalMemoryStatusEx failed")
+    return status.avail_page, status.avail_phys
+
+
+def watch_group_memory(process: subprocess.Popen, output: str) -> threading.Event:
+    """Kills only this check's engine if commit or physical RAM crosses the owner's margins."""
+    stop = threading.Event()
+    def watch():
+        while not stop.wait(0.25) and process.poll() is None:
+            try:
+                commit, physical = get_windows_free_memory()
+                if commit >= 16 * 2**30 and physical >= 4 * 2**30:
+                    continue
+                reason = f"free commit {commit / 2**30:.2f} GiB, free physical RAM {physical / 2**30:.2f} GiB"
+            except OSError as error:
+                reason = str(error)
+            with open(output + ".watchdog", "a", encoding="utf-8") as log:
+                log.write(f"PID {process.pid}: {reason}\n")
+            process.kill()
+            return
+    threading.Thread(target=watch, daemon=True).start()
+    return stop
+
+
 def run_engine(a, env: dict[str, str]) -> int:
     """Runs a scenario of the engine's --serve protocol. Returns 0 if the engine got through it and exited with 0."""
     if a.cards:
         env.update(CUDA_DEVICE_ORDER="PCI_BUS_ID", CUDA_VISIBLE_DEVICES=a.cards)
+    if a.scenario == "groups":
+        commit, physical = get_windows_free_memory()
+        print(f"[groups] before start: free commit {commit / 2**30:.2f} GiB; "
+              f"free physical RAM {physical / 2**30:.2f} GiB", flush=True)
+        if commit < 40 * 2**30 or physical < 16 * 2**30:
+            raise ValueError("group check needs 40 GiB free commit and 16 GiB free physical RAM before start")
     e = Engine([a.exe, "--serve", *model_args(a), *a.args.split()], env, a.out)
+    stop_guard = watch_group_memory(e.p, a.out) if a.scenario == "groups" else None
     try:
         e.until("READY")
         e.record_memory("ready")
@@ -84,6 +126,8 @@ def run_engine(a, env: dict[str, str]) -> int:
     except (SystemExit, queue.Empty, OSError, ValueError, TypeError) as x:
         e.note(f"STOPPED: {x or 'no output for 15 minutes'}")
     code = e.finish(a.scenario == "multi")
+    if stop_guard:
+        stop_guard.set()
     if code == 0 and a.move_cut and a.scenario in ("cutmove", "dscutmove"):
         if problem := get_cut_move_problem(Path(a.out)):
             with open(a.out, "a", encoding="utf-8") as out:
@@ -252,16 +296,16 @@ def model_args(a) -> list[str]:
         return ["--pack", str(deepseek_pack(a)), "--max-context", "8192", "--eos", "1", "--dspark-conf", "0.65",
                 *(["--batch", "1"] if a.scenario == "dscutmove" else [])]
     more = {"q38": ["--batch", "2"], "q38state": ["--conversation-cache-mib", "4096"], "cutmove": ["--batch", "1"]}
-    return qwen38_args(d) + more.get(a.scenario, [])
+    return qwen38_args(d, drafting=a.scenario != "groups") + more.get(a.scenario, [])
 
 
-def qwen38_args(d: Path) -> list[str]:
+def qwen38_args(d: Path, drafting: bool = True) -> list[str]:
     """Gets Qwen3.8 IQ3_S's arguments as setup writes them, at a 32K context; the drafter when mtp/rt is there."""
     shards = sorted((d / "models/IQ3_S").glob("*IQ3_S-0000?-of-00002.gguf"))
     args = ["--pack", d / "packs/iq3_s", "--native", shards[0], "--ple-gguf", shards[1], "--expert-profile",
             ROOT / "data/expert-profile.bin", "--expert-cache", "auto", "--prefill", "auto", "--max-context", "32768",
             "--kv", "int8"]
-    if (d / "mtp/rt").is_dir():
+    if drafting and (d / "mtp/rt").is_dir():
         args += ["--spec", "4", "--spec-min-p", "0.5", "--mtp", d / "mtp/rt"]
     return [str(x) for x in args]
 
@@ -348,6 +392,54 @@ def multi(e: Engine, a):
     e.gen("128", x + chat("<|im_end|>\n" + QWEN_USER + "Now name three open questions it leaves." + QWEN_ANSWER))
 
 
+def check_groups(e: Engine, a):
+    """Compares four concurrent greedy answers with standalone and times decoding after the last admission."""
+    tok = tokenizer(Path(a.data) / "packs/iq3_s")
+    prompts = [tok.encode(QWEN_USER + text + QWEN_ANSWER, parse_special=True) for text in (
+        "Write a Python function to compute Fibonacci numbers, with comments.",
+        "Tell a long story about a sailor who discovers a hidden island.",
+        "Count from one to one hundred, separated by commas.",
+        "Explain how a bicycle works in detail.")]
+    standalone = [e.gen("96 temperature=0", ids)[len(ids):] for ids in prompts]
+    for round_index in range(2):
+        answers = [[] for _ in prompts]
+        done = set()
+        remaining = 0
+        for slot, ids in enumerate(prompts):
+            e.send(f"BGEN {slot} 96 temperature=0 " + ",".join(map(str, ids)))
+            while True:
+                line = e.until("T ", "BT ", "BDONE ", "BADM ", "ERR")
+                if line.startswith("ERR"):
+                    raise ValueError(line)
+                if line.startswith("T "):
+                    answers[slot].append(int(line.split()[1]))
+                elif line.startswith("BT "):
+                    _, index, token = line.split()
+                    answers[int(index)].append(int(token))
+                elif line.startswith("BDONE "):
+                    done.add(int(line.split()[1]))
+                elif int(line.split()[1]) == slot:
+                    break
+        started = time.perf_counter()
+        while len(done) < len(prompts):
+            line = e.until("BT ", "BDONE ", "ERR")
+            if line.startswith("ERR"):
+                raise ValueError(line)
+            if line.startswith("BT "):
+                _, slot, token = line.split()
+                answers[int(slot)].append(int(token))
+                remaining += 1
+            else:
+                done.add(int(line.split()[1]))
+        elapsed = time.perf_counter() - started
+        e.note(f"SPEED groups decode={remaining / elapsed:.4f} prompt=0")
+        different = [str(slot) for slot, (answer, expected) in enumerate(zip(answers, standalone))
+                     if answer != expected]
+        e.note("GROUP_IDENTITY differs slots=" + ",".join(different) if different else
+               "GROUP_IDENTITY passed slots=4")
+        e.note(f"GROUP_TOKENS {round_index} " + json.dumps(answers, separators=(",", ":")))
+
+
 def cutmove(e: Engine, a):
     deepseek = a.scenario == "dscutmove"
     tok = tokenizer(Path(a.data) / (DS_PACK if deepseek else "packs/iq3_s"))
@@ -391,7 +483,8 @@ def render_deepseek_prompt(text: str) -> str:
     return f"<｜begin▁of▁sentence｜><｜User｜>{text}<｜Assistant｜></think>"
 
 
-SCENARIOS = {"q38": q38, "q38state": q38state, "q36": q36, "multi": multi, "cutmove": cutmove, "ds": ds,
+SCENARIOS = {"q38": q38, "q38state": q38state, "q36": q36, "multi": multi, "groups": check_groups,
+             "cutmove": cutmove, "ds": ds,
              "dsmemory": dsmemory, "dscutmove": cutmove}
 
 

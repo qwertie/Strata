@@ -37,7 +37,7 @@ int take_paged_options(int& argc, char** argv, const std::string& program, Paged
                        {"--mtp-max-t", &mtp_rows},            {"--lookup-chain", &s.lookup_chain},
                        {"--lookup-chain-min", &s.lookup_chain_min},
                        {"--suffix-draft", &s.suffix_draft},    {"--lookahead", &lookahead},
-                       {"--concurrent", &concurrent},
+                       {"--concurrent", &concurrent}, {"--batch-groups", nullptr, &s.batch_groups},
                        {"--pause-dir", nullptr, &s.pause_dir}, {"--copy-back", nullptr, &s.copy_back},
                        {"--drafter", nullptr, &drafter},      {"--remote-experts", nullptr, &s.remote_experts}};
     const char* const name = program.c_str();
@@ -67,6 +67,13 @@ int take_paged_options(int& argc, char** argv, const std::string& program, Paged
     s.suffix_draft = std::clamp<int64_t>(s.suffix_draft, 0, INT32_MAX);
     s.lookup_chain = std::clamp<int64_t>(s.lookup_chain, 0, 7);
     s.lookup_chain_min = std::clamp<int64_t>(s.lookup_chain_min, 3, INT32_MAX);
+    if (s.batch_groups != "auto" && (s.batch_groups.empty() ||
+        s.batch_groups.find_first_not_of("0123456789") != std::string::npos ||
+        std::strtoull(s.batch_groups.c_str(), nullptr, 10) < 1 ||
+        std::strtoull(s.batch_groups.c_str(), nullptr, 10) > INT32_MAX)) {
+        std::fprintf(stderr, "%s: --batch-groups takes auto or a positive integer\n", name);
+        return 2;
+    }
     if (s.copy_back != "auto" && s.copy_back != "on" && s.copy_back != "off") {
         std::fprintf(stderr, "%s: --copy-back takes auto, on or off\n", name);
         return 2;

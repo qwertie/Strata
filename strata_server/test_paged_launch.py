@@ -17,11 +17,17 @@ class PagedLaunchTests(unittest.TestCase):
                     '--slots', '2', '--tp', '2', '--batch-groups', 'auto', '--suffix-draft', '1',
                     '--vision', '--gpu-mib', '4096', '--ram-mib', '2048']})
                 self.assertEqual(args, ['--pack', 'pack', '--max-context', '8192', '--batch', '2',
-                                        '--suffix-draft', '1', '--vision',
+                                        '--batch-groups', 'auto', '--suffix-draft', '1', '--vision',
                                         *(['on'] if exe == 'strata-ds41.exe' else []),
                                         '--gpu-mib', '4096', '--ram-mib', '2048'])
                 self.assertIn('unsupported settings', log.getvalue())
                 self.assertIn('--tp 2', log.getvalue())
+
+    def test_group_options_reach_both_engines(self):
+        for exe in ('strata-q38', 'strata-ds41'):
+            for groups in ('1', '2', 'auto'):
+                args = ['--batch-groups', groups, '--batch', '2']
+                self.assertEqual(engine_client.engine_args({'exe': exe, 'args': args}), args)
 
     def test_lookup_options_reach_both_engines(self):
         args = ['--suffix-draft', '3', '--lookup-chain', '2', '--lookup-chain-min', '6', '--mtp-max-t', '4']

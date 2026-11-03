@@ -1,5 +1,5 @@
-// include/strata/common/spec/step.hpp - the decode step for several conversations at once: one pass through the
-// model computes a row for each active conversation's next token and for its guesses (docs/MEMORY_MANAGER_PLAN.md,
+// include/strata/common/spec/step.hpp - the decode step for several conversations at once: each group makes one
+// pass through the model for its conversations' next tokens and guesses (docs/MEMORY_MANAGER_PLAN.md,
 // "The step" and "How rows are shared").  It is model-neutral: the model runs the rows (StepModel).  The paged engine
 // (src/common/serve/paged_engine.cpp) decodes through it.
 #pragma once
@@ -18,10 +18,11 @@ namespace strata::spec {
 /// The settings that shape a step.
 struct StepSettings {
     int concurrent = 1;   ///< the most conversations that decode in the same step
-    int rows = 8;         ///< the most rows one step computes; at least `concurrent`
+    int rows = 8;         ///< the most rows each group computes; at least its active conversation count
     int lookahead = 0;    ///< the most guesses one conversation may add to a step; 0 turns drafting off
     int model_lookahead = -1; ///< --mtp-max-t minus one; negative leaves the model draft width uncapped.
     int max_draft_conversations = 0; ///< Above this count guesses are suppressed; 0 imposes no limit.
+    int groups = 1;       ///< The pipeline groups selected from live concurrency; 1 keeps the serial path.
 };
 
 /// Gets each of `active` conversations' share of the rows a step has left once each has its one row: as even as
@@ -71,6 +72,27 @@ struct DraftContext {
     bool cost_planned = false; ///< Prevents replaying an already evaluated cost chain.
 };
 
+/// Owns one pipeline group's rows and the tokens picked after them.
+struct StepGroup {
+    std::vector<StepRow> rows;
+    std::vector<int32_t> picks;
+};
+
+/// Supplies nonblocking stage operations to the shared pipeline scheduler.
+struct StageModel {
+    int stages = 0;
+    int* peak_in_flight = nullptr; ///< Receives the most stages occupied together in this wave.
+    std::function<bool(int, StepGroup&, std::string&)> prepare;
+    std::function<bool(int stage, int group, std::string&)> launch;
+    /// Returns 1 when complete, 0 while running, or -1 on failure.
+    std::function<int(int stage, int group, StepGroup&, std::string&)> poll;
+    /// Finalizes picks once every stage is idle; optional for models that already returned them from poll.
+    std::function<bool(int group, StepGroup&, std::string&)> finish;
+};
+
+/// Prepares every group before launching, then drains all stages before returning, including on failure.
+bool run_stage_groups(StageModel model, std::vector<StepGroup>& groups, std::string& err);
+
 /// What the model does for a step.
 struct StepModel {
     /// Prepares the model for the number of conversations sharing this pass.
@@ -80,6 +102,10 @@ struct StepModel {
     /// Runs `rows` in one pass through the model: picks[r] gets the token that follows row r, or -1 when row r's
     /// logits were not finite.  A conversation's rows are consecutive.  False (with `err`) ends the engine.
     std::function<bool(const std::vector<StepRow>& rows, std::vector<int32_t>& picks, std::string& err)> run;
+    /// Runs disjoint conversation groups through the model's stages, returning only after they drain; needs keep_group.
+    std::function<bool(std::vector<StepGroup>&, std::string&)> run_groups;
+    /// Commits one drained group's accepted prefixes.
+    std::function<bool(int, const std::vector<StepRow>&, const std::vector<int>&, std::string&)> keep_group;
     /// Makes the first `kept[c]` rows of the c-th conversation in `rows` (the last run's) part of its state and
     /// forgets the rest.  False (with `err`) ends the engine.
     std::function<bool(const std::vector<StepRow>& rows, const std::vector<int>& kept, std::string& err)> keep;
@@ -126,10 +152,22 @@ public:
 
     /// Runs one step over `active` (in Decoding::priority order, highest first; at most settings.concurrent): shares
     /// the rows, asks the drafter for guesses, runs the rows, keeps each conversation's accepted ones and updates it.
-    /// A conversation that has `stop` set, or no room, ends without a row.  False (with `err`) when the model failed.
+    /// Pipeline groups prepare separately and all drain before acceptance. A conversation that has `stop` set,
+    /// or no room, ends without a row. False (with `err`) when the model failed.
     bool run(const std::vector<Decoding*>& active, std::string& err);
 
 private:
+    /// Keeps proposals alive until every group's stages have drained.
+    struct Work {
+        StepGroup group;
+        std::vector<Window> windows;
+        std::vector<Decoding*> stepping;
+        std::vector<size_t> start;
+    };
+    /// Builds a group's windows before any pipeline work starts; -1 uses the serial rotation.
+    void prepare(const std::vector<Decoding*>& active, Work& work, int group = -1);
+    /// Applies the model's picks after its stages have drained.
+    bool complete(Work& work, int group, double ms, std::string& err);
     /// Gets how many of the `n` rows of `d` (its token, then its guesses) from `picks` it keeps, and sets its
     /// emitted tokens and finish.
     int accept(Decoding& d, const StepRow* rows, const int32_t* picks, int n) const;
@@ -140,6 +178,8 @@ private:
 
     StepModel model_;
     std::vector<int64_t> end_;
+    /// Keeps each group's extra-row rotation independent of the number of groups.
+    std::vector<int> group_turns_;
     int turn_ = 0;   ///< share_guess_rows' turn: which of the highest-priority equals gets the next extra row
 };
 

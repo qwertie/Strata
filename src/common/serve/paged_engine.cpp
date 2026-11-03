@@ -343,6 +343,7 @@ private:
     /// Per layer, the card whose pool holds the layer's experts that its own card's does not (the model's hop
     /// holders), or -1; empty while the cards lend no pages (one card, or --remote-experts off)
     std::vector<int32_t> holder_;
+    int pipeline_peak_ = 0; ///< The most stages occupied together, reported when it increases.
     int64_t steps_ = 0;                ///< the decode steps so far (adapt_experts' rounds)
     /// decode_step refills experts too, until none are wanted: a pool grew, or is filling after the start
     /// (ExpertPages::open)
@@ -525,6 +526,12 @@ int PagedEngine::serve() {
     model_.print_info((int) at_.size() - 1, step_.settings.lookahead > 0 ?
                          std::min(step_.settings.rows, step_.settings.lookahead + 1) : 0);
     std::printf("INFO concurrent=%d\n", settings_.step.concurrent);
+    if (settings_.batch_groups != "1") {
+        std::printf("INFO batch_groups=%d\n", step_.settings.groups);
+        if (step_.settings.groups == 1)
+            say("--batch-groups %s: one group (needs stage launch/poll support and a divisor of live concurrency)\n",
+                settings_.batch_groups.c_str());
+    }
     std::printf("READY %lld stop conversations memory preempt settings\n", (long long) facts_.context);
     strata::serve::EngineHooks hooks;
     hooks.is_busy = [this] { return is_decoding() || is_refill_wanted(); };
@@ -1917,6 +1924,15 @@ bool PagedEngine::switch_drafter(bool on, std::string& err) {
 
 void PagedEngine::apply_step_settings() {
     step_.settings = settings_.step;
+    const int stages = model_.get_pipeline_stages();
+    const int concurrent = settings_.step.concurrent;
+    int groups = settings_.batch_groups == "auto" ? std::min(stages, concurrent) :
+                 std::atoi(settings_.batch_groups.c_str());
+    if (settings_.batch_groups == "auto") {
+        while (groups > 1 && concurrent % groups != 0)
+            --groups;
+    }
+    step_.settings.groups = stages > 1 && groups > 1 && concurrent % groups == 0 ? groups : 1;
     step_.settings.max_draft_conversations = facts_.draft_limits.max_conversations;
     if (!is_model_drafting() && settings_.suffix_draft == 0 && settings_.lookup_chain == 0)
         step_.settings.lookahead = 0;
@@ -1972,6 +1988,45 @@ strata::spec::StepModel PagedEngine::get_step_model() {
         model_.set_step_histories(histories);
         return model_.run_rows(rows, picks, err);
     };
+    if (model_.get_pipeline_stages() > 1) {
+        model.run_groups = [this](std::vector<strata::spec::StepGroup>& groups, std::string& err) {
+            strata::spec::StageModel stages;
+            stages.stages = model_.get_pipeline_stages();
+            stages.prepare = [this](int group, strata::spec::StepGroup& g, std::string& err) {
+                std::vector<const std::vector<int32_t>*> histories;
+                for (const auto& row : g.rows)
+                    histories.push_back(&held_[(size_t) row.session]->live);
+                model_.set_step_histories(histories);
+                return g.rows.empty() || model_.prepare_group(group, g.rows, err);
+            };
+            stages.launch = [this](int stage, int group, std::string& err) {
+                return model_.launch_group(stage, group, err);
+            };
+            stages.poll = [this](int stage, int group, strata::spec::StepGroup& g, std::string& err) {
+                return model_.poll_group(stage, group, g.picks, err);
+            };
+            stages.finish = [this](int group, strata::spec::StepGroup& g, std::string& err) {
+                return model_.finish_group(group, g.picks, err);
+            };
+            step_rows_ = 0;
+            for (const auto& g : groups)
+                step_rows_ += (int) g.rows.size();
+            // No admission, page trade, restore or settings command runs until this wave has drained.
+            int peak = 0;
+            stages.peak_in_flight = &peak;
+            const bool ok = strata::spec::run_stage_groups(std::move(stages), groups, err);
+            if (peak > pipeline_peak_) {
+                pipeline_peak_ = peak;
+                say("pipeline: groups=%zu stages=%d peak_in_flight=%d\n", groups.size(),
+                    model_.get_pipeline_stages(), peak);
+            }
+            return ok;
+        };
+        model.keep_group = [this](int group, const std::vector<strata::spec::StepRow>& rows,
+                                  const std::vector<int>& kept, std::string& err) {
+            return model_.keep_group(group, rows, kept, is_model_drafting(), err);
+        };
+    }
     model.keep = [this](const std::vector<strata::spec::StepRow>& rows, const std::vector<int>& kept,
                         std::string& err) { return model_.keep_rows(rows, kept, is_model_drafting(), err); };
     if (facts_.has_drafter)

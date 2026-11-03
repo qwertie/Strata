@@ -16,7 +16,7 @@ def translate_args(cfg: dict, args: list[str]) -> list[str]:
     if model_off:
         args, _ = draft_layer.strip(args)
     lookup_values = {"--suffix-draft": "0", "--lookup-chain": "0"}
-    common = set("""pack max-context batch expert-cache expert-profile layer-split split-device
+    common = set("""pack max-context batch batch-groups expert-cache expert-profile layer-split split-device
         adapt-every adapt-swaps adapt-min-gain adapt-decay tokens-min tokens-max gpu-mib ram-mib ssd-pause-mib
         rows lookahead concurrent pause-dir copy-back drafter remote-experts suffix-draft mtp-max-t
         lookup-chain lookup-chain-min""".split())

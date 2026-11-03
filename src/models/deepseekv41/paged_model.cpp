@@ -362,6 +362,8 @@ public:
     int64_t get_prompt_chunk() const override { return m_.feed_unit(); }
     bool read_prompt(const PagedParts& parts, const std::vector<int64_t>& ids, int64_t from, int64_t n, bool drafting,
                      const ChunkDone& on_chunk, std::string& err) override;
+    // Model::step_conversations owns the complete pass and mutable host state; independent stage launch/poll
+    // requires factoring that pass before this adapter can opt into the shared pipeline scheduler.
     bool run_rows(const std::vector<strata::spec::StepRow>& rows, std::vector<int32_t>& picks,
                   std::string& err) override;
     bool keep_rows(const std::vector<strata::spec::StepRow>& rows, const std::vector<int>& kept, bool,

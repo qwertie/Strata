@@ -25,6 +25,7 @@
 #include <cuda_runtime.h>
 
 #include <algorithm>
+#include <array>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -164,7 +165,14 @@ public:
     strata::core::RegionSpan get_gpu_span(const PagedCard& card) const override;
     strata::core::RegionSpan get_ram_span(int64_t lb, int64_t le) const override;
     uint64_t get_weight_bytes(const PagedCard& card) const override;
-    uint64_t get_scratch_bytes(const PagedCard& card) const override { return cards_[card.index].sessions_bytes; }
+    uint64_t get_scratch_bytes(const PagedCard& card) const override {
+        uint64_t bytes = cards_[card.index].sessions_bytes + cards_[card.index].ver->get_pipeline_scratch_bytes();
+        if (card.index + 1 == cards_.size()) {
+            if (drafter_)
+                bytes += drafter_->get_snapshot_bytes();
+        }
+        return bytes;
+    }
     bool attach_hop(PagedCard& card, std::string& err) override;
     void set_hop_holders(const int32_t* holder) override { split_.holder = holder; }
     void report_hops() const override;
@@ -187,6 +195,13 @@ public:
     }
     bool run_rows(const std::vector<strata::spec::StepRow>& rows, std::vector<int32_t>& picks,
                   std::string& err) override;
+    int get_pipeline_stages() const override { return (int) cards_.size(); }
+    bool prepare_group(int group, const std::vector<strata::spec::StepRow>& rows, std::string& err) override;
+    bool launch_group(int stage, int group, std::string& err) override;
+    int poll_group(int stage, int group, std::vector<int32_t>& picks, std::string& err) override;
+    bool finish_group(int group, std::vector<int32_t>& picks, std::string& err) override;
+    bool keep_group(int group, const std::vector<strata::spec::StepRow>& rows, const std::vector<int>& kept,
+                    bool drafting, std::string& err) override;
     bool keep_rows(const std::vector<strata::spec::StepRow>& rows, const std::vector<int>& kept, bool drafting,
                    std::string& err) override;
     int propose(strata::serve::PagedPart& last, int session, int32_t, int64_t, int n, int32_t* out,
@@ -196,6 +211,29 @@ public:
     void print_done(const strata::serve::RequestDone& done) const override;
 
 private:
+    /// Holds the chain layout consumed by both synchronous and pipelined verifier calls.
+    struct RowInputs {
+        std::array<int, strata::kernels::kVerifyMaxT> sessions{};
+        std::array<int32_t, strata::kernels::kVerifyMaxT> tokens{};
+        std::array<int64_t, strata::kernels::kVerifyMaxT> positions{};
+        int count = 0;
+    };
+    /// Keeps row arguments, picture coordinates and sampler histories alive through the wave.
+    struct Group : RowInputs {
+        std::vector<int32_t> picks;
+        std::vector<std::vector<int32_t>> histories;
+        int32_t* coordinates = nullptr;
+        int device = 0;
+        ~Group() {
+            const strata::core::OnDevice on(device);
+            (void) cudaFreeHost(coordinates);
+        }
+    };
+    std::vector<std::unique_ptr<Group>> groups_;
+    /// Converts the shared step's chains to the verifier's row arguments.
+    static bool get_row_inputs(const std::vector<strata::spec::StepRow>& rows, RowInputs& inputs, std::string& err);
+    /// Gets this window's rotary coordinates after ensuring its conversations' indexer tables are current.
+    bool get_row_coordinates(const std::vector<strata::spec::StepRow>& rows, int32_t* out, std::string& err);
     /// Uploads changed indexer coordinates and, when shared, activates the prompt/drafter table.
     bool activate_images(int session, std::string& err, bool shared = true);
     std::vector<int32_t> pending_positions_;
@@ -224,7 +262,7 @@ bool open_pages(Model& m, PagedCard& card, ModelCard& mc, int64_t tokens_min, in
 bool open_ram(Model& m, const PagedCards& cards, const ModelCards& model_cards, const PagedSettings& s,
               strata::core::RamExperts& ram, bool& copy_back, std::string& err);
 bool init_card_paths(Model& m, Conversation& conv, PagedCards& cards, ModelCards& model_cards, SplitDrive& split,
-                     std::string& err);
+                     int handoff_rows, std::string& err);
 std::string get_unsupported_reason(const Model& m);
 void append_size(std::vector<uint8_t>& bytes, uint64_t n);
 uint64_t read_size(const std::vector<uint8_t>& bytes, size_t& at);
@@ -335,11 +373,15 @@ int run_paged_engine(int argc, char** argv) {
     m.arm_prompt_cpu_share();
     ConversationDrafter drafter;
     SplitDrive split;
-    if (!init_card_paths(m, conv, cards, model_cards, split, err) || (drafting && !drafter.init(m, slots + 1, err))) {
+    const int handoff_rows = strata::kernels::kVerifyMaxT *
+                             (settings.batch_groups == "1" ? 1 : strata::kernels::kVerifyMaxT);
+    if (!init_card_paths(m, conv, cards, model_cards, split, handoff_rows, err) ||
+        (drafting && !drafter.init(m, slots + 1, err))) {
         std::fprintf(stderr, "strata-q38: %s\n", err.c_str());
         return 1;
     }
-    if (drafting)   // the conversations' guesses make many row layouts: the verify windows keep the recent ones' graphs
+    // Proposals and changing group membership create many layouts; keep only recent captured graphs.
+    if (drafting || settings.batch_groups != "1")
         for (const ModelCard& mc : model_cards)
             mc.ver->set_batch_graph_limit(kWindowGraphs);
     if (drafting && !settings.drafter)   // loaded for the pool's layout of the drafter's K/V, switched on later
@@ -769,36 +811,14 @@ bool PagedQwen::read_prompt(const PagedParts& parts, const std::vector<int64_t>&
 
 bool PagedQwen::run_rows(const std::vector<strata::spec::StepRow>& rows, std::vector<int32_t>& picks,
                          std::string& err) {
-    int sessions[strata::kernels::kVerifyMaxT] = {};
-    int32_t tokens[strata::kernels::kVerifyMaxT] = {};
-    int64_t pos[strata::kernels::kVerifyMaxT] = {};
-    const int S = (int) rows.size();
-    if (S > strata::kernels::kVerifyMaxT) {
-        err = "a step of " + std::to_string(S) + " rows exceeds the verify window";
+    RowInputs inputs;
+    if (!get_row_inputs(rows, inputs, err))
         return false;
-    }
-    for (int r = 0; r < S; ++r) {
-        const strata::spec::StepRow& row = rows[(size_t) r];
-        // the verify windows take a conversation's rows as a chain (Verifier::run_slot_rows), not as a tree
-        const bool follows = r > 0 && rows[(size_t) r - 1].session == row.session;
-        if (row.parent != (follows ? r - 1 : -1)) {
-            err = "strata-q38's verify windows take each conversation's rows as a chain";
-            return false;
-        }
-        sessions[r] = row.session;
-        tokens[r] = row.token;
-        pos[r] = row.pos;
-    }
+    const int S = inputs.count;
     if (m_.o.vision) {
         std::vector<int32_t> coordinates((size_t) S * 3);
-        for (int r = 0; r < S; ++r) {
-            if ((r == 0 || sessions[r] != sessions[r - 1]) && !activate_images(sessions[r], err, false))
-                return false;
-            const auto& table = leads_[(size_t) sessions[r]]->image_positions;
-            for (int axis = 0; axis < 3; ++axis)
-                coordinates[(size_t) r * 3 + axis] = table.empty() ? (int32_t) pos[r]
-                    : table[(size_t) pos[r] * 3 + axis];
-        }
+        if (!get_row_coordinates(rows, coordinates.data(), err))
+            return false;
         for (size_t k = 0; k < cards_.size(); ++k) {
             const strata::core::OnDevice on(pcards_[k].dev);
             int32_t* table = k == 0 ? m_.d_mrope : cards_[k].stage->mrope;
@@ -809,13 +829,99 @@ bool PagedQwen::run_rows(const std::vector<strata::spec::StepRow>& rows, std::ve
         }
     }
     conv_.ver.set_batch_histories(strata::serve::get_penalty_histories(rows, histories_, history_lengths_));
-    if (!conv_.run_rows(sessions, S, tokens, pos, picks.data(), err))
+    if (!conv_.run_rows(inputs.sessions.data(), S, inputs.tokens.data(), inputs.positions.data(), picks.data(), err))
         return false;
     for (int r = 0; r < S; ++r)
         if (conv_.ver.nonfinite_in(r))
             picks[(size_t) r] = -1;
     picks_ = picks;
     return true;
+}
+
+bool PagedQwen::prepare_group(int group, const std::vector<strata::spec::StepRow>& rows, std::string& err) {
+    if (groups_.size() <= (size_t) group)
+        groups_.resize((size_t) group + 1);
+    if (!groups_[(size_t) group])
+        groups_[(size_t) group] = std::make_unique<Group>();
+    Group& g = *groups_[(size_t) group];
+    if (!get_row_inputs(rows, g, err))
+        return false;
+    g.histories = strata::serve::get_penalty_histories(rows, histories_, history_lengths_);
+    size_t history_tokens = 0;
+    for (const auto& history : g.histories)
+        history_tokens += history.size();
+    if (!cards_.back().ver->reserve_batch_history(history_tokens, err))
+        return false;
+    g.device = pcards_.back().dev;
+    if (drafter_) {
+        const strata::core::OnDevice on(g.device);
+        if (!drafter_->reserve_snapshots(conv_.ver.final_R_all(), err))
+            return false;
+    }
+    if (m_.o.vision) {
+        if (g.coordinates == nullptr && cudaHostAlloc((void**) &g.coordinates,
+            (size_t) strata::kernels::kVerifyMaxT * 3 * sizeof(int32_t), cudaHostAllocPortable) != cudaSuccess) {
+            err = "the group's picture coordinates do not fit";
+            return false;
+        }
+        if (!get_row_coordinates(rows, g.coordinates, err))
+            return false;
+    }
+    for (size_t k = 0; k < cards_.size(); ++k)
+        if (!cards_[k].ver->prepare_slot_rows(g.sessions.data(), (int) rows.size(),
+            group * strata::kernels::kVerifyMaxT, g.tokens.data(), g.positions.data(), err))
+            return false;
+    return true;
+}
+
+bool PagedQwen::launch_group(int stage, int group, std::string& err) {
+    Group& g = *groups_[(size_t) group];
+    auto& v = *cards_[(size_t) stage].ver;
+    const strata::core::OnDevice on(pcards_[(size_t) stage].dev);
+    if (g.coordinates) {
+        int32_t* table = stage == 0 ? m_.d_mrope : cards_[(size_t) stage].stage->mrope;
+        if (cudaMemcpyAsync(table, g.coordinates, (size_t) g.count * 3 * sizeof(int32_t),
+                            cudaMemcpyHostToDevice, v.stream()) != cudaSuccess) {
+            err = "the pipeline's picture coordinate upload failed";
+            return false;
+        }
+    }
+    v.set_batch_histories(g.histories, false);
+    return v.launch_slot_rows(g.sessions.data(), g.count, group * strata::kernels::kVerifyMaxT,
+                              g.tokens.data(), g.positions.data(), err);
+}
+
+int PagedQwen::poll_group(int stage, int, std::vector<int32_t>&, std::string& err) {
+    return cards_[(size_t) stage].ver->batch_poll(&drive_pool_split, &split_, err);
+}
+
+bool PagedQwen::finish_group(int group, std::vector<int32_t>& picks, std::string& err) {
+    Group& g = *groups_[(size_t) group];
+    auto& verifier = *cards_.back().ver;
+    if (!verifier.restore_slot_commit_inputs(g.sessions.data(), g.count,
+            group * strata::kernels::kVerifyMaxT, g.tokens.data(), g.positions.data(), err))
+        return false;
+    verifier.set_batch_histories(g.histories, false);
+    if (!verifier.finish_slot_rows(group * strata::kernels::kVerifyMaxT, picks, err))
+        return false;
+    g.picks = picks;
+    return true;
+}
+
+bool PagedQwen::keep_group(int group, const std::vector<strata::spec::StepRow>& rows,
+                          const std::vector<int>& kept, bool drafting, std::string& err) {
+    Group& g = *groups_[(size_t) group];
+    std::vector<int> keep((size_t) sessions_, 0);
+    for (size_t r = 0, c = 0; r < rows.size(); ++r)
+        if (r == 0 || rows[r].session != rows[r - 1].session)
+            keep[(size_t) rows[r].session] = kept[c++];
+    for (auto& card : cards_) {
+        if (!card.ver->restore_slot_commit_inputs(g.sessions.data(), (int) rows.size(),
+                group * strata::kernels::kVerifyMaxT, g.tokens.data(), g.positions.data(), err) ||
+            !card.ver->commit_slot_prefixes(keep.data(), err, false))
+            return false;
+    }
+    return !drafting || drafter_->note_window(rows, kept, g.picks.data(), err, cards_.back().ver->final_R_all());
 }
 
 bool PagedQwen::keep_rows(const std::vector<strata::spec::StepRow>& rows, const std::vector<int>& kept, bool drafting,
@@ -827,9 +933,9 @@ bool PagedQwen::keep_rows(const std::vector<strata::spec::StepRow>& rows, const 
     const bool all = rows.size() == kept.size();   // one row each, kept
     if (!(all ? conv_.ver.commit_slots(err) : conv_.ver.commit_slot_prefixes(keep.data(), err)))
         return false;
-    if (drafting)
-        drafter_->note_window(rows, kept, picks_.data());
-    return true;
+    // Serial turns must preserve the owned rows of conversations that are waiting for their next turn.
+    return !drafting || drafter_->note_window(rows, kept, picks_.data(), err,
+        drafter_->get_snapshot_bytes() ? conv_.ver.final_R_all() : nullptr);
 }
 
 int PagedQwen::propose(strata::serve::PagedPart& last, int session, int32_t, int64_t, int n, int32_t* out,
@@ -838,6 +944,38 @@ int PagedQwen::propose(strata::serve::PagedPart& last, int session, int32_t, int
         return -1;
     Part& part = get_part(last);
     return drafter_->propose(session, part.pages, part.ss, conv_.ver.final_R_all(), n, out, err, draft);
+}
+
+bool PagedQwen::get_row_inputs(const std::vector<strata::spec::StepRow>& rows, RowInputs& inputs,
+                               std::string& err) {
+    if (rows.size() > strata::kernels::kVerifyMaxT) {
+        err = "a step of " + std::to_string(rows.size()) + " rows exceeds the verify window";
+        return false;
+    }
+    inputs.count = (int) rows.size();
+    for (size_t r = 0; r < rows.size(); ++r) {
+        const auto& row = rows[r];
+        const bool follows = r > 0 && rows[r - 1].session == row.session;
+        if (row.parent != (follows ? (int) r - 1 : -1)) {
+            err = "strata-q38's verify windows take each conversation's rows as a chain";
+            return false;
+        }
+        inputs.sessions[r] = row.session;
+        inputs.tokens[r] = row.token;
+        inputs.positions[r] = row.pos;
+    }
+    return true;
+}
+
+bool PagedQwen::get_row_coordinates(const std::vector<strata::spec::StepRow>& rows, int32_t* out, std::string& err) {
+    for (size_t r = 0; r < rows.size(); ++r) {
+        if ((r == 0 || rows[r - 1].session != rows[r].session) && !activate_images(rows[r].session, err, false))
+            return false;
+        const auto& table = leads_[(size_t) rows[r].session]->image_positions;
+        for (int axis = 0; axis < 3; ++axis)
+            out[r * 3 + axis] = table.empty() ? (int32_t) rows[r].pos : table[(size_t) rows[r].pos * 3 + axis];
+    }
+    return true;
 }
 
 bool PagedQwen::switch_drafter(bool on, std::string& err) {
@@ -981,11 +1119,11 @@ std::string get_unsupported_reason(const Model& m) {
 /// the windows going to the card that runs each layer (`split`, which must outlive them).  The Model's stages run in
 /// the order of their layers, as the old engine's layer split runs them.
 bool init_card_paths(Model& m, Conversation& conv, PagedCards& cards, ModelCards& model_cards, SplitDrive& split,
-                     std::string& err) {
+                     int handoff_rows, std::string& err) {
     const Options& o = m.o;
     const size_t n = cards.size();
     std::vector<float*> hand(n - 1, nullptr);
-    if (!alloc_split_handoffs(m.g, strata::kernels::kVerifyMaxT, hand)) {
+    if (!alloc_split_handoffs(m.g, handoff_rows, hand)) {
         err = "the layer split's hand-offs do not fit";
         return false;
     }
@@ -1016,6 +1154,7 @@ bool init_card_paths(Model& m, Conversation& conv, PagedCards& cards, ModelCards
     split.n = (int) n;
     for (size_t k = 0; k < n; ++k) {
         const ModelCard& mc = model_cards[k];
+        mc.ver->set_handoff_rows(handoff_rows);
         split.end[k] = cards[k].le;
         split.plan[k] = mc.ver->plan_sink();
         split.cache_base[k] = mc.stage != nullptr ? mc.cache->device_slot(0) : m.drive.d.cache_base;

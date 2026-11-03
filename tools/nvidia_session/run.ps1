@@ -375,6 +375,17 @@ function Invoke-Memory {
         foreach ($order in 'SB', 'BS') {
             $cards = Get-CardList $order
             Invoke-Versus "memory-q38-2cards-$order" multi $oneSame "strata-q38.exe --cards $cards $split"
+            $groupCommon = "--layer-split 24 --batch 4 --expert-cache 400 --pcie-frac 0 --adapt-swaps 0"
+            $groupEnv = "$sameEnv --env DS4_COMMIT_CAP_GB=30"
+            $pagedGroups = ("--ram-mib 8192 --gpu-mib 4096,4096 $groupCommon " +
+                '--lookahead 0 --rows 8 --remote-experts off')
+            Invoke-Versus "memory-groups-q38-$order" groups (
+                "strata-q38.exe --cards $cards `"--args=$pagedGroups --batch-groups 1`" $groupEnv") (
+                "strata-q38.exe --cards $cards `"--args=$pagedGroups --batch-groups auto`" $groupEnv")
+            $oldGroups = "$groupCommon --resident-budget-gib 8 --suffix-draft 0"
+            Invoke-Versus "memory-groups-old-$order" groups (
+                "strata.exe --cards $cards `"--args=$oldGroups --batch-groups 1`" $groupEnv") (
+                "strata.exe --cards $cards `"--args=$oldGroups --batch-groups auto`" $groupEnv")
             # the first card's pool too small for its share of those experts: the second card holds the rest and
             # computes them in one hop, so that the GPUs still hold what one card does
             $hop = "`"--args=$Q38Memory $same --layer-split 24 --gpu-mib 512,8192 --remote-experts on`" $sameEnv"

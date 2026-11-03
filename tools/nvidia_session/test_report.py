@@ -352,6 +352,37 @@ class Summary(unittest.TestCase):
                "strata generate: layer split: CUDA1 runs layers 12-47, expert cache 4096 slots\n")
         self.assertEqual(R.startup_lines(err), err.splitlines()[1] + "\n")
 
+class PipelineGroups(unittest.TestCase):
+    def test_group_rates_exclude_standalone_and_admission_times(self):
+        text = "DONE 96 12 20 1000 length\nSPEED groups decode=12.5 prompt=0\n"
+        self.assertEqual(R.speeds(text), {"decode": [12.5], "prompt": []})
+
+    def test_group_tokens_ignore_cross_admission_interleaving(self):
+        tokens = "GROUP_TOKENS 0 [[1],[2],[3],[4]]\nGROUP_TOKENS 1 [[1],[2],[3],[4]]\nexit 0\n"
+        before = ">>> BGEN 0 x\nBT 0 1\n>>> BGEN 1 y\nBT 1 2\n" + tokens
+        after = ">>> BGEN 0 x\n>>> BGEN 1 y\nBT 0 1\nBT 1 2\n" + tokens
+        self.assertEqual(R.compare_runs([before], [after], "memory-groups-q38-SB")[0], "PASS")
+        self.assertEqual(R.compare_runs([before], [after.replace('[[1]', '[[9]')],
+                                        "memory-groups-q38-SB")[0], "DIFF")
+
+    def test_group_check_requires_identity_speed_and_occupied_stages(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            for side in ('before', 'after'):
+                (root / f'{side}-1.out').write_text(
+                    ('GROUP_IDENTITY passed slots=4\nSPEED groups decode=10 prompt=0\n' * 2) +
+                    'GROUP_TOKENS 0 [[1],[2],[3],[4]]\nGROUP_TOKENS 1 [[1],[2],[3],[4]]\n', encoding='utf-8')
+                (root / f'{side}-1.out.stderr').write_text('', encoding='utf-8')
+            self.assertIn('no evidence', R.get_exercise_problem(root, 'memory-groups-q38-SB'))
+            (root / 'after-1.out.stderr').write_text(
+                'strata-q38: pipeline: groups=2 stages=2 peak_in_flight=2\n', encoding='utf-8')
+            self.assertEqual(R.get_exercise_problem(root, 'memory-groups-q38-SB'), '')
+            path = root / 'after-1.out'
+            path.write_text(path.read_text().replace('passed slots=4', 'differs slots=2'), encoding='utf-8')
+            self.assertIn('answers differ', R.get_exercise_problem(root, 'memory-groups-q38-SB'))
+            (root / 'before-1.out').write_text('GROUP_IDENTITY passed slots=4\n', encoding='utf-8')
+            self.assertIn('missing', R.get_exercise_problem(root, 'memory-groups-q38-SB'))
+
 
 if __name__ == "__main__":
     unittest.main()

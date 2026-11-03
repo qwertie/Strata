@@ -94,6 +94,10 @@ def main(argv: list[str]) -> int:
         status, note = compare_runs(files["before"], files["after"], check)
         if problem := get_exercise_problem(results / check, check):
             status, note = "FAIL", problem
+            if "memory-groups-" in check and all(
+                    len(re.findall(r"^SPEED groups ", run, re.M)) == 2
+                    for runs in files.values() for run in runs):
+                note = "; ".join([note, *compare_speeds(files["before"], files["after"])[1]])
         note = "; ".join(filter(None, [note, explain_slow_decode(results / check)])) + describe_telemetry(
             results / check)
     elif cmd == "rows":
@@ -163,7 +167,31 @@ def get_cut_move_problem(out: Path) -> str:
 
 
 def get_exercise_problem(folder: Path, check: str) -> str:
-    """Requires real hop execution and completed settings changes before comparing memory checks."""
+    """Requires workload-specific evidence before comparing memory checks."""
+    if "memory-groups-" in check:
+        for side in ("before", "after"):
+            runs = list(folder.glob(f"{side}-*.out"))
+            if not runs:
+                return f"no {side} group runs"
+            for run in runs:
+                if Path(str(run) + ".watchdog").exists():
+                    return f"{run.name}: memory watchdog tripped"
+                text = run.read_text(encoding="utf-8", errors="replace")
+                tokens = re.findall(r"^GROUP_TOKENS \d+ (.*)$", text, re.M)
+                try:
+                    valid = len(tokens) == 2 and all(len(json.loads(row)) == 4 for row in tokens)
+                except (ValueError, TypeError):
+                    valid = False
+                identity = re.findall(r"^GROUP_IDENTITY (?:passed slots=4|differs slots=\S+)$", text, re.M)
+                if not valid or len(identity) != 2 or len(speeds(text)["decode"]) != 2:
+                    return f"{run.name}: missing concurrent identity or aggregate speed evidence"
+                if text.count("GROUP_IDENTITY passed slots=4") != 2:
+                    return f"{run.name}: concurrent answers differ from standalone"
+                if "q38" in check and side == "after":
+                    path = Path(str(run) + ".stderr")
+                    stderr = path.read_text(encoding="utf-8", errors="replace") if path.exists() else ""
+                    if not re.search(r"pipeline: groups=2 stages=2 peak_in_flight=2", stderr):
+                        return f"{run.name}: no evidence of two occupied stages"
     if "hop" in check:
         sides = ("before", "after") if "default-queues" in check else ("after",)
         for side in sides:
@@ -283,6 +311,10 @@ def speeds(text: str) -> dict[str, list[float]]:
     """Gets the tokens/s of the answers in an output: decode from each DONE line of 64 tokens or more (its fields:
     tokens, prompt tokens, prompt ms, decode ms), decode and prompt from the server client's SPEED lines."""
     out: dict[str, list[float]] = {"decode": [], "prompt": []}
+    group_rates = re.findall(r"^SPEED groups decode=([\d.]+) prompt=0$", text, re.M)
+    if group_rates:
+        out["decode"] = [float(rate) for rate in group_rates]
+        return out
     for m in re.finditer(r"^DONE (\d+) \d+ [\d.]+ ([\d.]+)", text, re.M):
         if int(m[1]) >= 64 and float(m[2]) > 0:
             out["decode"].append(int(m[1]) * 1000 / float(m[2]))
@@ -303,6 +335,9 @@ def mask(text: str, check: str = "") -> str:
 def split_parts(text: str, check: str = "") -> list[str]:
     """Splits a masked output at the lines the driver writes for each request and for the start (">>> ..."), each
     part with its batch slots' lines put after the others, slot by slot (SLOT_LINE)."""
+    if "memory-groups-" in check:
+        return [f">>> GROUP {index}\n{tokens}\n" for index, tokens in
+                re.findall(r"^GROUP_TOKENS (\d+) (.*)$", text, re.M)]
     parts = [b for b in re.split(r"^(?=>>> )", mask(text, check), flags=re.M) if b]
     return [group_slot_lines(p) for p in parts]
 

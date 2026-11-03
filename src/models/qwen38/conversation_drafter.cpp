@@ -13,12 +13,13 @@ namespace strata::qwen38 {
 ConversationDrafter::~ConversationDrafter() {
     const strata::core::OnDevice on(device_);
     (void) cudaFree(rows_);
+    (void) cudaFree(saved_rows_);
 }
 
 bool ConversationDrafter::init(Model& m, int sessions, std::string& err) {
     mtp_ = &m.mtp;
     row_floats_ = (uint64_t) m.g.hc * (uint64_t) m.g.n_embd;
-    const int max_t = mtp_->max_t();
+    const int max_t = max_rows_ = mtp_->max_t();
     const GpuStage* st = m.get_drafter_stage();
     const strata::core::OnDevice on(device_ = mtp_->device());
     if (rows_ == nullptr && cudaMalloc((void**) &rows_, (size_t) max_t * row_floats_ * sizeof(float)) != cudaSuccess) {
@@ -42,10 +43,25 @@ bool ConversationDrafter::read_prompt(strata::prefill::Prefill& sp, const Conver
            (err.empty() && mtp_->prefill(R_rows, next, n, cell0, err));
 }
 
-void ConversationDrafter::note_window(const std::vector<strata::spec::StepRow>& rows, const std::vector<int>& kept,
-                                      const int32_t* picks) {
-    for (Last& l : last_)
-        l.rows = 0;
+bool ConversationDrafter::reserve_snapshots(const float* residuals, std::string& err) {
+    const strata::core::OnDevice on(device_);
+    if (saved_rows_ == nullptr && cudaMalloc((void**) &saved_rows_,
+        last_.size() * (size_t) max_rows_ * row_floats_ * sizeof(float)) != cudaSuccess) {
+        err = "the drafter's per-conversation residual snapshots do not fit";
+        return false;
+    }
+    for (size_t session = 0; session < last_.size(); ++session)
+        if (last_[session].rows > 0 && !last_[session].saved && !save_residuals((int) session, residuals, err))
+            return false;
+    return true;
+}
+
+bool ConversationDrafter::note_window(const std::vector<strata::spec::StepRow>& rows, const std::vector<int>& kept,
+                                      const int32_t* picks, std::string& err, const float* residuals) {
+    const strata::core::OnDevice on(device_);
+    if (residuals == nullptr)
+        for (Last& l : last_)
+            l.rows = 0;
     for (size_t r = 0, c = 0; r < rows.size(); ++c) {
         Last& l = last_.at((size_t) rows[r].session);
         l.row0 = (int) r;
@@ -55,7 +71,11 @@ void ConversationDrafter::note_window(const std::vector<strata::spec::StepRow>& 
             ++r;
         l.rows = (int) r - l.row0;
         l.picks.assign(picks + l.row0, picks + r);
+        l.saved = false;
+        if (residuals && !save_residuals(rows[(size_t) l.row0].session, residuals, err))
+            return false;
     }
+    return true;
 }
 
 int ConversationDrafter::propose(int session, const ConversationPages& pages, strata::core::SessionState& ss,
@@ -68,7 +88,8 @@ int ConversationDrafter::propose(int session, const ConversationPages& pages, st
     l.rows = 0;
     if (!select(pages, ss, 0, err))
         return -1;
-    const float* R = window_R + (size_t) l.row0 * row_floats_;
+    const float* R = l.saved ? saved_rows_ + (size_t) session * max_rows_ * row_floats_ :
+                              window_R + (size_t) l.row0 * row_floats_;
     if (n == 0)   // its kept rows' cells only: row t pairs with the token picked after it
         return mtp_->prefill(R, l.picks.data(), l.kept, l.pos, err) ? 0 : -1;
     mtp_->set_source_R(R);
@@ -85,6 +106,18 @@ int ConversationDrafter::propose(int session, const ConversationPages& pages, st
     if (draft && draft->probs)
         std::copy_n(probs_.begin(), k, draft->probs);
     return k;
+}
+
+bool ConversationDrafter::save_residuals(int session, const float* residuals, std::string& err) {
+    Last& last = last_.at((size_t) session);
+    if (cudaMemcpy(saved_rows_ + (size_t) session * max_rows_ * row_floats_,
+        residuals + (size_t) last.row0 * row_floats_, (size_t) last.rows * row_floats_ * sizeof(float),
+        cudaMemcpyDeviceToDevice) != cudaSuccess) {
+        err = "the drafter's conversation residual snapshot failed";
+        return false;
+    }
+    last.saved = true;
+    return true;
 }
 
 bool ConversationDrafter::select(const ConversationPages& pages, strata::core::SessionState& ss, int64_t prompt_len,

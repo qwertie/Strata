@@ -213,15 +213,30 @@ public:
     /// One batch window over slots [0, S): tokens[s] at positions pos[s]; out[s] = the greedy pick after it.
     bool run_slots(int S, const int32_t* tokens, const int64_t* pos, PoolMultiFn pool, void* user, int32_t* out,
                    std::string& err);
-    /// The same over the S slots `rows` (row t is slot rows[t], any distinct slots in any order): the slots not
-    /// listed are not touched, so an idle slot keeps its state (a finished conversation it may continue later).
+    /// Runs S rows with one contiguous chain per slot in `rows`; unlisted slots keep their state, so a finished
+    /// conversation can continue later.
     bool run_slot_rows(const int* rows, int S, const int32_t* tokens, const int64_t* pos, PoolMultiFn pool, void* user,
                        int32_t* out, std::string& err);
     /// Keep every row of the last batch window.
     bool commit_slots(std::string& err);
     /// Commit an accepted prefix in each contiguous slot group of the last window. `keep` has
-    /// one entry per slot (indexed by slot ID), each in 1..that slot's group length.
-    bool commit_slot_prefixes(const int* keep, std::string& err);
+    /// one entry per slot (indexed by slot ID), each in 1..that slot's group length. With chain=false only this stage
+    /// commits; the paged scheduler restores each stage's saved inputs separately.
+    bool commit_slot_prefixes(const int* keep, std::string& err, bool chain = true);
+    /// Captures one stage's arbitrary-row window before any pipeline group starts. `base` selects hand-off
+    /// rows independently of the conversation slots in `rows`.
+    bool prepare_slot_rows(const int* rows, int S, int base, const int32_t* tokens, const int64_t* pos,
+                           std::string& err);
+    /// Starts a prepared window without committing speculative rows or chaining to the next stage.
+    bool launch_slot_rows(const int* rows, int S, int base, const int32_t* tokens, const int64_t* pos,
+                          std::string& err);
+    /// Restores a drained group's commit and sampling inputs without relaunching its window.
+    bool restore_slot_commit_inputs(const int* rows, int S, int base, const int32_t* tokens, const int64_t* pos,
+                          std::string& err);
+    /// Samples restored group logits after every stage has drained; restore_slot_commit_inputs selects them first.
+    bool finish_slot_rows(int base, std::vector<int32_t>& picks, std::string& err);
+    /// Gets device bytes retained for drained groups' deferred commits.
+    uint64_t get_pipeline_scratch_bytes() const;
     /// Sets stable per-slot tables before capture; paged vision query/K rows use the shared table's row indices.
     void set_slot_image_tables(const std::vector<const int32_t*>& tables) { slot_image_tables_ = tables; }
 
@@ -238,7 +253,8 @@ public:
     // runs group g-1.  Rows of group `base` use hand-off rows [base, base + S), so groups never share a hand-off row.
     bool batch_launch(int base, int S, const int32_t* tokens, const int64_t* pos, std::string& err);
     /// 1 = this stage's window and commit are done (the last stage's picks are in batch_out), 0 = still running,
-    /// -1 = an error (err).  Serves every layer that has rung so far.
+    /// -1 = an error (err). Serves every layer that has rung so far. Windows started with launch_slot_rows defer
+    /// their sampling to finish_slot_rows, after every stage drains.
     int batch_poll(PoolMultiFn pool, void* user, std::string& err);
     bool batch_busy() const { return b_running_.load(std::memory_order_acquire); }
     /// Serves the layers of this stage's window that have rung (the CPU pool and the flags), with no CUDA call: 1 once
@@ -255,10 +271,12 @@ public:
         if (slot >= 0 && slot < (int) slot_sp_.size()) slot_sp_[(size_t) slot] = sp;
         if (next_) next_->set_slot_sampling(slot, sp);
     }
+    /// Reserves the sampler's device history before a pipeline wave starts.
+    bool reserve_batch_history(size_t tokens, std::string& err);
     /// Supplies host penalty histories in the order of the next batch window's rows.
-    void set_batch_histories(const std::vector<std::vector<int32_t>>& histories) {
+    void set_batch_histories(const std::vector<std::vector<int32_t>>& histories, bool chain = true) {
         batch_histories_ = histories;
-        if (next_)
+        if (chain && next_)
             next_->set_batch_histories(histories);
     }
     const int32_t* batch_out() const { return b_out_; }
@@ -409,6 +427,20 @@ private:
     }
     // batch_launch / batch_poll (with external serving, batch_serve runs on another thread: running and the served
     // layer count are atomics, set by batch_launch before running)
+    /// Preserves commit and sampling inputs until the shared scheduler drains every stage.
+    struct GroupScratch {
+        uint8_t* data = nullptr;
+        size_t bytes = 0;
+        int32_t greedy[8] = {};
+        uint32_t nonfinite = 0;
+    };
+    std::map<int, GroupScratch> group_scratch_;
+    bool b_snapshot_ = false; ///< Defers sampling and preserves scratch for a paged pipeline window.
+    bool b_snapshot_queued_ = false; ///< Waits for the saved scratch before releasing this stage to another group.
+    /// Gets the transient arrays needed to commit or sample a completed group.
+    std::vector<std::pair<void*, size_t>> get_group_buffers() const;
+    /// Queues transfers to or from one group's device allocation on this stage's stream.
+    bool copy_group_scratch(int base, bool save, std::string& err);
     std::atomic<bool> b_running_{false};
     std::atomic<int64_t> b_k_{0};
     int64_t b_steps_ = 0;
@@ -458,7 +490,8 @@ private:
     int32_t pl_prev_[2] = {-1, -1};
     std::vector<uint32_t> pl_ple_rows_;   ///< the window's PLE rows (T x PLE_N_HEADS), gathered when layer 0 is served
     bool capture_commit_batch(const int* rows, int S, int hbase, std::string& err);
-    bool stage_batch(const int* rows, int S, int hbase, const int32_t* tokens, const int64_t* pos, std::string& err);
+    bool stage_batch(const int* rows, int S, int hbase, const int32_t* tokens, const int64_t* pos,
+                     std::string& err, bool capture = true);
     strata::kernels::SamplerParams sampling_ = [] {
         strata::kernels::SamplerParams s;
         s.greedy = true;

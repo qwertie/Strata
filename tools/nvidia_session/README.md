@@ -137,11 +137,18 @@ $work = "C:\sn-mm-$(Get-Date -Format yyyyMMdd-HHmmss)"
 & .\tools\nvidia_session\run.ps1 -Only preflight,build,memory -Before 4fa1d1cf -DataDir 'G:\AI-stuff\Strata-data' -DeepSeekDir $ds -Work $work -Runs 4
 ```
 
+The groups checks use 8,192 MiB of RAM and 4,096 MiB per GPU for the new engine, and an 8 GiB resident
+budget with `--expert-cache 400` for the old engine. They require 40 GiB free commit and 16 GiB free physical RAM
+before each start. A PID-scoped watchdog stops that check's engine below 16 GiB free commit or 4 GiB free RAM.
+`DS4_COMMIT_CAP_GB=30` is explicit. No server is started. All other memory checks below use the existing budgets.
+
 `strata-q38` gets `--ram-mib 20480`: its RAM pool is page-locked and by default takes what RAM has free, which on 48 GB
 leaves Windows' commit limit too little. Each check runs 2 times a build (`-Runs N` for another count).
 
 | Check | What it compares | It confirms |
 |---|---|---|
+| `memory-groups-q38-SB`, `-BS` | This build's `strata-q38`, two cards, cut 24, four conversations: `--batch-groups 1` against `auto`, drafting off, fixed --expert-cache 400 | Four 96-token standalone answers equal two rounds of concurrent answers; aggregate decode speed after the final admission; stderr proves two stages occupied together |
+| `memory-groups-old-SB`, `-BS` | This build's original `strata.exe` with the same split, prompts, groups and expert budget | The same identity checks and speed scope, for comparison with the new engine; no old/new token identity is assumed |
 | `memory-q38-1card` | `strata-q38` on the bigger card, M7's build against this one | its answers and speed did not change (it now measures the card's link at start and paces the experts it puts back by it) |
 | `multi-split-auto-SB`, `-BS` | the old engine's `--layer-split auto`, both card orders, M7's build against this one | the old engine is unchanged now that its split planner is shared code (`src/common/experts/layer_split.cpp`): the same answers, and the same `layer split auto: K=...` line (the startup lines are compared too) |
 | `memory-speed-split-q38` | the old engine's `--layer-split auto` on both cards ("before") against `strata-q38` on the bigger card ("after") | today's split's speed against the new engine's; DIFF here only means `strata-q38` decoded more than 5% slower |

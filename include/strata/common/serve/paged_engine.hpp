@@ -8,10 +8,12 @@
 // prompt read never gives way).  Each conversation's state takes page-pool pages as it grows; the experts are in the
 // same pool (ExpertPages): a growing conversation takes the least-used experts' pages, and between requests the
 // experts take back the pages conversations left.  Up to `concurrent` conversations decode together, each step one
-// pass through the model with a row per conversation and the rows left over shared among their guesses
-// (strata::spec::Step); a prompt is read in passes of its own, a chunk at a time between the others' steps.  A request
-// continues the conversation that holds the longest start of its prompt, reading only the rest; a conversation the
-// prompt leaves before its end goes back to a point it keeps (PagedModel::get_rewind_points), and stays paused whole
+// pass per group through the model with a row per conversation and the rows left over shared among their guesses
+// (strata::spec::Step). Opt-in --batch-groups overlaps groups on separate stages; every wave drains before the
+// serve loop can admit, pause, restore or change settings. A prompt is read in passes of its own, a chunk at a time
+// between the others' steps. A request continues the conversation that holds the longest start of its prompt,
+// reading only the rest; a conversation the prompt leaves before its end goes back to a point it keeps
+// (PagedModel::get_rewind_points), and stays paused whole
 // as well.  A request's `priority=N` key (default 0) orders the conversations of a step, higher first.
 //
 // The RAM is a second page pool (RamExperts): the experts the GPU's pool does not hold, then copies of those it does
@@ -70,6 +72,7 @@ struct PagedSettings {
     int64_t ssd_pause_mib = kDefaultSsdPauseMib;   ///< --ssd-pause-mib
     std::string pause_dir;                         ///< --pause-dir; empty: the temporary folder's <program name>
     std::string copy_back = "auto";                ///< --copy-back
+    std::string batch_groups = "1";             ///< --batch-groups: live-concurrency divisor or auto.
     std::string remote_experts = "auto";           ///< --remote-experts
     int64_t lookup_chain = 0, lookup_chain_min = 3; ///< Existing lookup-chain length and match floor.
     int64_t suffix_draft = 0; ///< --suffix-draft: minimum repeated context; 0 disables prompt lookup.

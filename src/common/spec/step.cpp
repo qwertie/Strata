@@ -19,7 +19,111 @@ std::vector<int> share_guess_rows(const StepSettings& s, int active, int ties, i
     return share;
 }
 
+bool run_stage_groups(StageModel model, std::vector<StepGroup>& groups, std::string& err) {
+    if (model.stages < 1) {
+        err = "pipeline needs at least one stage";
+        return false;
+    }
+    for (size_t g = 0; g < groups.size(); ++g)
+        if (!model.prepare((int) g, groups[g], err))
+            return false;
+    std::vector<int> owner((size_t) model.stages, -1), next(groups.size(), 0);
+    int left = (int) groups.size();
+    for (size_t g = 0; g < groups.size(); ++g)
+        if (groups[g].rows.empty()) {
+            next[g] = model.stages;
+            --left;
+        }
+    bool ok = true;
+    while (left > 0 || std::any_of(owner.begin(), owner.end(), [](int g) { return g >= 0; })) {
+        for (int stage = model.stages; stage-- > 0;) {
+            int& g = owner[(size_t) stage];
+            if (g < 0)
+                continue;
+            std::string problem;
+            const int done = model.poll(stage, g, groups[(size_t) g], problem);
+            if (done == 0)
+                continue;
+            if (done < 0) {
+                if (ok)
+                    err = problem;
+                ok = false;
+            }
+            next[(size_t) g] = stage + 1;
+            if (stage + 1 == model.stages)
+                --left;
+            g = -1;
+        }
+        if (!ok) {
+            left = 0;
+            continue;
+        }
+        for (int stage = model.stages; stage-- > 0;) {
+            if (owner[(size_t) stage] >= 0)
+                continue;
+            for (size_t g = 0; g < groups.size(); ++g) {
+                if (next[g] != stage || std::find(owner.begin(), owner.end(), (int) g) != owner.end())
+                    continue;
+                if (!model.launch(stage, (int) g, err)) {
+                    ok = false;
+                    break;
+                }
+                owner[(size_t) stage] = (int) g;
+                break;
+            }
+            if (!ok)
+                break;
+        }
+        if (model.peak_in_flight)
+            *model.peak_in_flight = std::max(*model.peak_in_flight,
+                (int) std::count_if(owner.begin(), owner.end(), [](int g) { return g >= 0; }));
+    }
+    if (ok && model.finish)
+        for (size_t group = 0; group < groups.size(); ++group)
+            if (!groups[group].rows.empty() && !model.finish((int) group, groups[group], err))
+                return false;
+    return ok;
+}
+
 bool Step::run(const std::vector<Decoding*>& active, std::string& err) {
+    const int count = model_.run_groups ? std::min(settings.groups, (int) active.size()) : 1;
+    if (count <= 1) {
+        Work work;
+        const auto t0 = std::chrono::steady_clock::now();
+        prepare(active, work);
+        auto& g = work.group;
+        if (g.rows.empty())
+            return true;
+        if (!model_.run(g.rows, g.picks, err))
+            return false;
+        const double ms = std::chrono::duration<double, std::milli>(
+            std::chrono::steady_clock::now() - t0).count();
+        return complete(work, -1, ms, err);
+    }
+    std::vector<Work> work((size_t) count);
+    group_turns_.resize((size_t) count);
+    std::vector<StepGroup> groups;
+    // Picture/suffix answers can differ across live group changes; see docs/DETAILS.md's validation limits.
+    for (int i = 0; i < count; ++i) {
+        const size_t first = active.size() * (size_t) i / count;
+        const size_t end = active.size() * (size_t) (i + 1) / count;
+        prepare({active.begin() + first, active.begin() + end}, work[(size_t) i], i);
+        groups.push_back(std::move(work[(size_t) i].group));
+    }
+    const auto t0 = std::chrono::steady_clock::now();
+    if (!model_.run_groups(groups, err))
+        return false;
+    const double ms = std::chrono::duration<double, std::milli>(
+        std::chrono::steady_clock::now() - t0).count();
+    for (int i = 0; i < count; ++i) {
+        work[(size_t) i].group = std::move(groups[(size_t) i]);
+        if (!work[(size_t) i].group.rows.empty() && !complete(work[(size_t) i], i, ms, err))
+            return false;
+    }
+    return true;
+}
+
+void Step::prepare(const std::vector<Decoding*>& active, Work& work, int group) {
     std::vector<Decoding*> going;
     for (Decoding* d : active) {
         d->emitted.clear();
@@ -31,20 +135,20 @@ bool Step::run(const std::vector<Decoding*>& active, std::string& err) {
             end_drafting(*d);
     }
     if (going.empty())
-        return true;
+        return;
     if (model_.begin)
         model_.begin((int) going.size());
     const int ties = (int) (std::find_if(going.begin(), going.end(),
                                          [&](const Decoding* d) { return d->priority != going[0]->priority; }) -
                             going.begin());
-    const int turn = turn_ % ties;
-    turn_ = turn + 1;
+    int& rotation = group < 0 ? turn_ : group_turns_[(size_t) group];
+    const int turn = rotation % ties;
+    rotation = turn + 1;
     const std::vector<int> share = share_guess_rows(settings, (int) going.size(), ties, turn);
-    std::vector<StepRow> rows;
-    std::vector<Window> windows;
-    const auto t0 = std::chrono::steady_clock::now();
-    std::vector<Decoding*> stepping;
-    std::vector<size_t> start;   ///< each stepping conversation's first row
+    auto& rows = work.group.rows;
+    auto& windows = work.windows;
+    auto& stepping = work.stepping;
+    auto& start = work.start;
     std::vector<int32_t> guesses((size_t) std::max(settings.rows, 1));
     const bool draft = settings.max_draft_conversations == 0 ||
                        (int) going.size() <= settings.max_draft_conversations;
@@ -94,21 +198,26 @@ bool Step::run(const std::vector<Decoding*>& active, std::string& err) {
         for (int j = 0; j < n; ++j)
             rows.push_back({d.session, guesses[(size_t) j], d.pos + 1 + j, (int) rows.size() - 1});
     }
-    if (rows.empty())
-        return true;
-    std::vector<int32_t> picks(rows.size());
-    if (!model_.run(rows, picks, err))
-        return false;
+    work.group.picks.resize(rows.size());
+}
+
+bool Step::complete(Work& work, int group, double ms, std::string& err) {
+    auto& rows = work.group.rows;
+    auto& picks = work.group.picks;
+    auto& stepping = work.stepping;
+    auto& windows = work.windows;
+    auto& start = work.start;
+    const auto commit_start = std::chrono::steady_clock::now();
     std::vector<int> kept;
     for (size_t c = 0; c < stepping.size(); ++c) {
         const size_t end = c + 1 < stepping.size() ? start[c + 1] : rows.size();
         Decoding& d = *stepping[c];
         kept.push_back(accept(d, rows.data() + start[c], picks.data() + start[c], (int) (end - start[c])));
     }
-    if (!model_.keep(rows, kept, err))
+    if (!(group < 0 ? model_.keep(rows, kept, err) : model_.keep_group(group, rows, kept, err)))
         return false;
-    const double ms = std::chrono::duration<double, std::milli>(
-        std::chrono::steady_clock::now() - t0).count();
+    ms += std::chrono::duration<double, std::milli>(
+        std::chrono::steady_clock::now() - commit_start).count();
     for (size_t c = 0; c < stepping.size(); ++c) {
         Decoding& d = *stepping[c];
         const size_t end = c + 1 < stepping.size() ? start[c + 1] : rows.size();
@@ -120,7 +229,7 @@ bool Step::run(const std::vector<Decoding*>& active, std::string& err) {
         const int accepted = d.planner->accept(windows[c], tokens.data(), picks.data() + start[c]);
         // This step's timing excludes later cache effects of speculative expert traffic.
         // Joint passes do not measure the cost of one conversation's window width.
-        if (stepping.size() == 1)
+        if (stepping.size() == 1 && group < 0)
             d.planner->observe(windows[c], accepted, ms, d.finish != nullptr);
         for (int32_t token : d.emitted)
             d.planner->append(token);

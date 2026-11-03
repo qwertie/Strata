@@ -7,8 +7,9 @@ import tempfile
 from types import SimpleNamespace
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
+import drive
 from drive import Engine, get_cut_move_problem
 
 
@@ -159,6 +160,72 @@ if (Test-BuildReady after 86 strata-q38.exe) { throw 'Unknown revision accepted'
 Write-Output 'verified'
 ''')
         self.assertIn("verified", output)
+
+
+class PipelineScenario(unittest.TestCase):
+    def test_admission_tokens_and_both_rounds_are_verified(self):
+        self.check_rounds(False)
+
+    def test_identity_failure_keeps_both_rounds_and_timings(self):
+        self.check_rounds(True)
+
+    def check_rounds(self, different):
+        """Exercises admission tokens and preserves measurements when an answer differs."""
+        class Tokens:
+            def __init__(self):
+                self.index = -1
+
+            def encode(self, text, parse_special=False):
+                self.index += 1
+                return [self.index]
+
+        class Engine:
+            def __init__(self):
+                self.lines = []
+                self.notes = []
+
+            def gen(self, head, ids):
+                return ids + [10 + ids[0], (30 if different else 20) + ids[0]]
+
+            def send(self, command):
+                slot = int(command.split()[1])
+                self.lines += [f"T {10 + slot}", f"BADM {slot} 1"]
+                if slot == 3:
+                    for index in range(4):
+                        self.lines += [f"BT {index} {20 + index}", f"BDONE {index} 2 length"]
+
+            def until(self, *ends):
+                return self.lines.pop(0)
+
+            def note(self, text):
+                self.notes.append(text)
+
+        engine = Engine()
+        with patch.object(drive, 'tokenizer', return_value=Tokens()):
+            drive.check_groups(engine, SimpleNamespace(data='unused'))
+        identity = 'differs slots=0,1,2,3' if different else 'passed slots=4'
+        self.assertEqual(engine.notes.count('GROUP_IDENTITY ' + identity), 2)
+        self.assertEqual(len([line for line in engine.notes if line.startswith('SPEED groups')]), 2)
+        self.assertIn('[[10,20],[11,21],[12,22],[13,23]]', engine.notes[-1])
+
+
+class PipelineMemorySafety(unittest.TestCase):
+    def test_low_commit_or_physical_ram_kills_only_the_owned_process(self):
+        for commit, physical in [(15, 8), (32, 3), (32, 8)]:
+            with self.subTest(commit=commit, physical=physical), tempfile.TemporaryDirectory() as folder:
+                process = SimpleNamespace(pid=123, poll=lambda: None, kill=Mock())
+                stop = SimpleNamespace(wait=Mock(side_effect=[False, True]))
+                output = str(Path(folder) / 'run.out')
+                with patch.object(drive, 'get_windows_free_memory', return_value=(commit * 2**30, physical * 2**30)), \
+                        patch.object(drive.threading, 'Event', return_value=stop), \
+                        patch.object(drive.threading, 'Thread') as thread:
+                    drive.watch_group_memory(process, output)
+                    thread.call_args.kwargs['target']()
+                low = commit < 16 or physical < 4
+                self.assertEqual(process.kill.call_count, int(low))
+                self.assertEqual(Path(output + '.watchdog').exists(), low)
+                if low:
+                    self.assertIn('PID 123:', Path(output + '.watchdog').read_text())
 
 
 if __name__ == "__main__":
