@@ -98,7 +98,7 @@ struct PagedModelFacts {
     bool has_drafter = false;
     /// what the start needs for a drafter, for the refusal of `drafter on` without one ("--mtp and ...")
     std::string drafter_start;
-    /// the most conversations one step may run; 0: as many as the batch slots
+    /// the most conversations one step may run; 0: as many as the step has rows
     int max_concurrent = 0;
     std::vector<uint64_t> expert_bytes;     ///< per layer: one expert's bytes
     /// on a layer split, the first --expert-cache experts of the whole model's profile, hottest first (what one GPU

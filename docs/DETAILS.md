@@ -868,7 +868,13 @@ What follows:
 
 The defaults chosen from this: rows per step 8; lookahead 3 when the engine has the drafter (`--mtp`; before, it was 0
 unless `--lookahead` was given, so no guesses), which gives one conversation the 4 rows that measured best and several
-conversations the 8; conversations at once, all the batch slots. Two more defaults were checked and kept: the
+conversations the 8; conversations at once, initially `--batch` (or 1 without it).
+For `strata-q38` and `strata-ds41`, `--concurrent` overrides that initial value. The server's `--parallel` sets
+the initial `--batch` value too. The live memory panel can raise it without restarting, up to the rows per step
+(at most 8) and the model's own limit. These engines report that
+capacity as `slots`; the server can admit that many requests, and the live setting decides how many decode in a step.
+
+Two more defaults were checked and kept: the
 conversation token minimum (8,192 tokens, about 0.24 GiB of the pool) made no measurable difference to a new 4,000-token
 prompt with three idle conversations in a 16 GiB GPU pool (prompt 8.5 s against 8.7 s without it and 8.7 s with 32,768,
 four alternating runs, medians); and copying an evicted expert back to RAM (`--copy-back auto`, chosen when the copy

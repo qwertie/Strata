@@ -49,7 +49,7 @@ const CHANGED_KEY = "strata.memoryPanel.changed";
 const SETTINGS = {context: "Context", concurrent: "Conversations at once", rows: "Rows per step",
                   lookahead: "Lookahead", tokens_min: "Conversation tokens, minimum",
                   tokens_max: "Conversation tokens, maximum", ssd_pause_mib: "SSD for paused conversations (MiB)",
-                  drafter: "Drafter", slots: "Batch slots"};
+                  drafter: "Drafter", slots: "Maximum conversations at once"};
 /** Settings the engine reports that the panel shows elsewhere (the bars) or not at all. */
 const UNLISTED = /^memory_mib\.|^token_bytes$|^conversation_bytes$/;
 /**
@@ -58,7 +58,7 @@ const UNLISTED = /^memory_mib\.|^token_bytes$|^conversation_bytes$/;
  * @type {[key: string, smallest: (s: Record<string, number>) => number,
  *   largest: (s: Record<string, number>) => number][]}
  */
-const CONTROLS = [["concurrent", () => 1, (s) => s.slots ?? 8],
+const CONTROLS = [["concurrent", () => 1, (s) => Math.min(s.slots ?? 8, s.rows ?? 8)],
                   ["rows", (s) => s.concurrent ?? 1, () => 8],
                   ["lookahead", () => 0, (s) => s.drafter ? (s.rows ?? 1) - 1 : 0],
                   ["tokens_min", () => 0, (s) => s.tokens_max ?? Infinity],

@@ -819,7 +819,7 @@ class StrataEngine:
         # the engine's stdout on a thread, so a request can wait with a timeout (heartbeats, cancel checks)
         self.lines: queue.Queue = queue.Queue()
         # --batch: concurrent requests in the engine's batch slots (see generate_batched).  The engine says how many
-        # it runs (INFO batch_slots=N: it may have fewer than asked, or none, when they do not fit)
+        # it admits (INFO batch_slots=N). Paged engines expose their full step capacity; --batch only seeds scheduling.
         asked = next((int(args[args.index(k) + 1]) for k in ("--batch", "--slots") if k in args), 0)
         self.batch = int(self.info.get("batch_slots") or 0)
         if asked and self.batch != asked:
@@ -1173,6 +1173,8 @@ class StrataEngine:
                              "allocated_pct": share["allocated"], "fragmented_pct": share["fragmented"],
                              **{k: keys.pop(k, None) for k in ("setting", "smallest", "largest", "mapped")},
                              "uses": keys})
+        if "concurrent" in self.info and "concurrent" in settings:
+            self.info["concurrent"] = settings["concurrent"]
         return {"memories": memories, "settings": settings, **({"conversations": held} if held else {}),
                 **({"shortfall": shortfall} if shortfall else {})}
 
@@ -2523,9 +2525,9 @@ PARALLEL_MAX = 8      # the engine's batch window holds at most 8 rows (kVerifyM
 
 
 def parallel_args(cfg: dict, args: list[str]) -> list[str]:
-    """#465 (opt-in): "parallel": N in the config - up to N requests decode together in the engine's batch slots
-    (--batch N); more wait their turn.  1 or absent: one request at a time, as before.  A value the engine cannot use
-    is said and passed on: the engine warns and adjusts (recommend, never force)."""
+    """Passes the requested concurrency to the engine as --batch. Paged engines use it as the initial scheduling
+    limit; older engines allocate fixed slots. A value the engine cannot use is said and passed on so the engine
+    can explain its limit."""
     if "--batch" in args or "--slots" in args:
         return []
     n = cfg.get("parallel")

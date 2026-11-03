@@ -64,6 +64,15 @@ class MemorySettings(FakeEngineCase):
         self.assertEqual(got["settings"]["memory_mib.gpu0"], 3000)
         self.assertEqual(self.sent(), ["CHANGE_SETTINGS memory_mib.gpu0=3000 drafter=on memory_mib.gpu1=100"])
 
+    def test_status_follows_live_concurrency(self):
+        """Paged engines distinguish their scheduling limit from their protocol capacity."""
+        self.start()
+        self.engine.info["concurrent"] = 1
+        self.assertEqual(self.get("/v1/status")["concurrency"]["serving"], 1)
+        status, _ = self.post({"set": {"concurrent": 2}})
+        self.assertEqual(status, 200)
+        self.assertEqual(self.get("/v1/status")["concurrency"]["serving"], 2)
+
     def test_a_change_that_got_less_than_asked(self):
         self.start()
         status, got = self.post({"set": {"memory_mib.ram": 9000}})

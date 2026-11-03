@@ -2241,8 +2241,9 @@ class Service:
             "started": int(self.started_at), "uptime_s": int(time.time() - self.started_at),
             "cache_max_tokens": ctx,
             "context": {"native": ctx, "max_positions": ctx},
-            # one request at a time (more wait their turn), or "parallel": N batch slots (#465)
-            "concurrency": {"serving": max(1, int(getattr(self.engine, "batch", 0) or 0)),
+            # Paged engines report their live scheduling limit; older engines use their fixed slot count.
+            "concurrency": {"serving": int((getattr(self.engine, "info", {}) or {}).get("concurrent") or
+                                            max(1, int(getattr(self.engine, "batch", 0) or 0))),
                             "requested": getattr(self, "requested_slots", max(1, int(getattr(self.engine, "batch", 0) or 0)))},
             "dialects": ["/v1/chat/completions", "/v1/messages", "/v1/responses"],
             "vision": {"enabled": images, "available": images, "error": None},

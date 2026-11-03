@@ -78,10 +78,9 @@ struct PagedSettings {
 /// Runs the engine over `model`, whose start made `cards` (the GPUs' pools) and `ram` (the RAM's pool: experts and
 /// paused conversations, its conversation layout the whole model's regions): carves each conversation's state on each
 /// card, then answers the server's commands until QUIT or the end of stdin.  `copy_back`: an expert a GPU's pool
-/// evicts is copied to `ram`.  `slots`: the batch slots (--batch; 0: one conversation at a time).  Gets the exit
-/// status.
+/// evicts is copied to `ram`. Gets the exit status.
 int serve_paged_model(PagedModel& model, PagedCards& cards, strata::core::RamExperts& ram, bool copy_back,
-                      const PagedSettings& settings, int slots);
+                      const PagedSettings& settings);
 
 // ---- a model's start (paged_start.cpp): what every model's start does before serve_paged_model
 

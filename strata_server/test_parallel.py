@@ -51,6 +51,7 @@ LISTS = "--lists" in args   # READY ... conversations: it answers LIST_CONVERSAT
 PREEMPT = "--preempt" in args   # READY ... preempt: a BGEN of a higher priority= ends a busy slot's request
 # READY ... memory settings: it answers GET_MEMORY_USE and CHANGE_SETTINGS (a GPU pool under 1000 MiB is refused; a
 # RAM size gets a SHORTFALL)
+concurrent = 1
 SETTINGS = "--settings" in args
 print("READY 4096 stop" + (" conversations" if LISTS else "") + (" preempt" if PREEMPT else "") +
       (" memory settings" if SETTINGS else ""), flush=True)
@@ -252,7 +253,9 @@ while True:
         pool_mib, rows = int(new.get("memory_mib.gpu0", pool_mib)), int(new.get("rows", rows))
         print(f"MEMORY gpu0 total={8000 << 20} free={1000 << 20} experts={pool_mib << 20} setting={pool_mib << 20} "
               f"smallest={1000 << 20} largest={7000 << 20} name=card", flush=True)
-        print(f"SETTINGS rows={rows} memory_mib.gpu0={pool_mib}", flush=True)
+        if "concurrent" in new:
+            concurrent = int(new["concurrent"])
+        print(f"SETTINGS rows={rows} concurrent={concurrent} memory_mib.gpu0={pool_mib}", flush=True)
         if "memory_mib.ram" in new:
             print("SHORTFALL the RAM's pool: out of memory", flush=True)
         print("END_MEMORY", flush=True)
@@ -558,6 +561,14 @@ class ParallelService(FakeEngineCase):
         self.start(4, fit=2)
         self.assertEqual(self.engine.batch, 2)
         self.assertEqual(self.get("/v1/status")["concurrency"]["serving"], 2)
+
+    def test_reported_capacity_can_exceed_initial_batch(self):
+        """Paged engines expose their step capacity even when started with --batch 1."""
+        self.start(1, fit=8)
+        self.assertEqual(self.engine.batch, 8)
+        self.assertEqual(len(self.engine.slot_q), 8)
+        self.svc.max_queue = 1
+        self.assertEqual(self.svc.admission_limit(), 9)
 
     def test_admission_cap_uses_effective_slots_and_rejects_before_stream(self):
         self.start(4, fit=2)

@@ -51,7 +51,7 @@ constexpr int kWindowRows = 8;
 /// strata-ds41's options beside the paged engine's and the model's: the batch slots, the GPU pool's experts and the
 /// adaptive tier (as strata-q38's options of the same names).
 struct ProgramOptions {
-    int batch = 0;              ///< --batch: the conversation slots held beside the one a GEN uses
+    int batch = 0;              ///< --batch: the initial number of conversations scheduled together
     int64_t gpu_experts = -1;   ///< --expert-cache: the most experts the GPU's pool holds; -1 (auto): as many as fit
     int adapt_every = 4;        ///< --adapt-every: decode steps between two rounds of the tier
     /// --adapt-swaps: the most experts a round moves into the GPU's pool (0: the tier is off).  The old engine's expert
@@ -547,6 +547,8 @@ int run_paged_engine(int argc, char** argv) {
     const std::vector<int> devices = m.get_devices();
     // --dspark-block N is the lookahead's default, else the drafter's block; --dspark off is --drafter off
     const bool has_drafter = m.draft_block() > 0;
+    if (settings.step.concurrent < 0)
+        settings.step.concurrent = std::max(x.batch, 1);
     if (settings.step.lookahead < 0)
         settings.step.lookahead = !has_drafter ? 0 : o.dspark_block > 0 ? o.dspark_block : m.draft_block();
     if (settings.step.lookahead > 0 && !has_drafter) {
@@ -607,7 +609,7 @@ int run_paged_engine(int argc, char** argv) {
         std::fprintf(stderr, "%s: %s\n", kProgram.c_str(), err.c_str());
         return 1;
     }
-    const int status = strata::serve::serve_paged_model(model, cards, ram, copy_back, settings, x.batch);
+    const int status = strata::serve::serve_paged_model(model, cards, ram, copy_back, settings);
     m.save_profile();
     return status;
 }

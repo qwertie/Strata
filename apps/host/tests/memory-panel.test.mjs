@@ -205,7 +205,7 @@ test('the controls change the other settings within their ranges', async () => {
   await settle();
   assert.deepEqual(calls, [[{ concurrent: 2 }, 'session'], [{ drafter: false }, 'session']]);
   // the controls' settings are not listed again in the line under the panel
-  assert.match(element.innerHTML, /<p class="mem-note">Context: 32.768 tokens · Batch slots: 4<\/p>/);
+  assert.match(element.innerHTML, /<p class="mem-note">Context:.*Maximum conversations at once: 4<\/p>/);
 });
 
 test('every segment of a bar says in its tooltip what it is', () => {
@@ -240,4 +240,11 @@ test('the SSD\'s divider is the end of the room for paused conversations', async
   fire('pointerup', {});
   await settle();
   assert.deepEqual(calls, [[{ ssd_pause_mib: 4096 }, 'session']]);
+});
+
+
+test('live concurrency uses the step capacity and available rows', () => {
+  const view = { ...live, settings: { ...live.settings, concurrent: 1, slots: 8, rows: 3 } };
+  const html = mount(view, recorder().onChange).element.innerHTML;
+  assert.match(html, /data-setting="concurrent" value="1" min="1" max="3"/);
 });

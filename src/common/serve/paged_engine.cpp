@@ -113,7 +113,7 @@ class PagedEngine {
 public:
     /// See serve_paged_model.
     PagedEngine(PagedModel& model, PagedCards& cards, strata::core::RamExperts& ram, bool copy_back,
-                const PagedSettings& settings, int slots);
+                const PagedSettings& settings);
     /// Deletes the paused conversations' files.
     ~PagedEngine();
 
@@ -286,9 +286,9 @@ private:
     bool is_decoding() const;
     /// Tells whether the drafter is switched on (the model has one and settings_.drafter).
     bool is_drafting() const { return settings_.drafter && facts_.has_drafter; }
-    /// Gets the most conversations that may decode at once: the batch slots, or 1 without any.
+    /// Gets the most conversations one step of this model can run.
     int get_most_concurrent() const {
-        const int slots = (int) std::max<size_t>(at_.size() - 1, 1);
+        const int slots = std::min(facts_.max_rows, 8);
         return facts_.max_concurrent > 0 ? std::min(slots, facts_.max_concurrent) : slots;
     }
     /// Gives the step settings_' step settings, the lookahead 0 while the drafter is off.
@@ -389,8 +389,8 @@ uint64_t round_to_chunks(const strata::core::PagePool& pool, uint64_t bytes) {
 }  // namespace
 
 int serve_paged_model(PagedModel& model, PagedCards& cards, strata::core::RamExperts& ram, bool copy_back,
-                      const PagedSettings& settings, int slots) {
-    PagedEngine engine(model, cards, ram, copy_back, settings, slots);
+                      const PagedSettings& settings) {
+    PagedEngine engine(model, cards, ram, copy_back, settings);
     return engine.init() ? engine.serve() : 1;
 }
 
@@ -425,13 +425,13 @@ uint64_t get_ram_room(uint64_t headroom) {
 namespace {
 
 PagedEngine::PagedEngine(PagedModel& model, PagedCards& cards, strata::core::RamExperts& ram, bool copy_back,
-                         const PagedSettings& settings, int slots)
+                         const PagedSettings& settings)
     : model_(model), facts_(model.facts), cards_(cards), ram_(ram), settings_(settings),
       step_(get_step_model(), model.facts.end_tokens) {
     if (settings_.tokens_max < 0)
         settings_.tokens_max = facts_.context;
     apply_step_settings();
-    for (int i = 0; i <= slots; ++i) {
+    for (int i = 0; i <= get_most_concurrent(); ++i) {
         held_.push_back(std::make_unique<Held>());
         held_.back()->session = i;
         at_.push_back((size_t) i);
@@ -515,6 +515,7 @@ bool PagedEngine::init() {
 
 int PagedEngine::serve() {
     model_.print_info((int) at_.size() - 1, is_drafting() ? settings_.step.lookahead + 1 : 0);
+    std::printf("INFO concurrent=%d\n", settings_.step.concurrent);
     std::printf("READY %lld stop conversations memory preempt settings\n", (long long) facts_.context);
     strata::serve::EngineHooks hooks;
     hooks.is_busy = [this] { return is_decoding() || is_refill_wanted(); };
@@ -707,7 +708,7 @@ bool PagedEngine::serve_request(const std::string& line) {
         return true;
     }
     if (req.batch && (req.slot < 0 || (size_t) req.slot >= slots)) {
-        std::printf("ERR BGEN: no such slot (--batch %zu)\n", slots);
+        std::printf("ERR BGEN: no such slot (capacity %zu)\n", slots);
         return true;
     }
     if (!req.batch && slots > 0 &&
@@ -1474,9 +1475,7 @@ std::string PagedEngine::change_settings(const SettingValues& values, std::strin
     const int slots = get_most_concurrent();
     if (s.step.concurrent < 1 || s.step.concurrent > slots)
         return "the conversations at once may be 1 to " + std::to_string(slots) +
-               (slots == facts_.max_concurrent ? " (the most one step of this model runs)"
-                                               : " (the batch slots it started with; more need a restart with a "
-                                                 "larger --batch)");
+               " (the most one step of this model runs)";
     if (const std::string why = get_step_settings_problem(s.step, facts_.max_rows); !why.empty())
         return why;
     if (s.drafter && !facts_.has_drafter)

@@ -228,9 +228,9 @@ int run_paged_engine(int argc, char** argv) {
     strata::serve::set_paged_runtime_env(settings, !o.layer_split.empty() && hop_refusal.empty());
     prime_gpu_queues();
     if (const int status = apply_device_defaults(o); status >= 0) return status;
-    const int slots = std::max(o.batch, 0);
-    if (settings.step.concurrent < 0 || settings.step.concurrent > std::max(slots, 1))
-        settings.step.concurrent = std::max(slots, 1);
+    const int slots = strata::kernels::kVerifyMaxT;
+    if (settings.step.concurrent < 0)
+        settings.step.concurrent = std::max(o.batch, 1);
     if (settings.step.lookahead < 0)
         settings.step.lookahead = o.mtp.empty() ? 0 : kDefaultLookahead;
     if (const std::string why = strata::serve::get_step_settings_problem(settings.step, strata::kernels::kVerifyMaxT);
@@ -323,7 +323,7 @@ int run_paged_engine(int argc, char** argv) {
     if (drafting && !settings.drafter)   // loaded for the pool's layout of the drafter's K/V, switched on later
         m.unload_drafter();
     PagedQwen model(m, conv, cards, model_cards, split, ram, drafting ? &drafter : nullptr, slots + 1);
-    return strata::serve::serve_paged_model(model, cards, ram, copy_back, settings, slots);
+    return strata::serve::serve_paged_model(model, cards, ram, copy_back, settings);
 }
 
 namespace {
