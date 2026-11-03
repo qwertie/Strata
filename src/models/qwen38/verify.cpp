@@ -3949,10 +3949,14 @@ bool Verifier::commit_slot_prefixes(const int* keep, std::string& err) {
 bool Verifier::sample_rows(int S, std::string& err) {
     std::vector<int32_t> history;
     std::vector<size_t> offsets((size_t) S);
+    std::vector<int> lengths((size_t) S);
     for (int t = 0; t < S; ++t) {
         offsets[(size_t) t] = history.size();
-        if ((size_t) t < batch_histories_.size())
-            history.insert(history.end(), batch_histories_[(size_t) t].begin(), batch_histories_[(size_t) t].end());
+        if ((size_t) t < batch_histories_.size()) {
+            const auto& tokens = batch_histories_[(size_t) t];
+            lengths[(size_t) t] = (int) tokens.size();
+            history.insert(history.end(), tokens.begin(), tokens.end());
+        }
     }
     if (!history.empty()) {
         cudaError_t e = cudaSuccess;
@@ -3976,10 +3980,10 @@ bool Verifier::sample_rows(int S, std::string& err) {
     bool any = false;
     for (int t = 0; t < S;) {
         strata::kernels::SamplerParams sp = slot_sp_[(size_t) last_rows_[t]];
-        const int h = (size_t) t < batch_histories_.size() ? (int) batch_histories_[(size_t) t].size() : 0;
+        const int h = lengths[(size_t) t];
         int end = t + 1;
         while (end < S && last_rows_[end] == last_rows_[t] && last_pos_b_[end] == last_pos_b_[end - 1] + 1 &&
-               ((size_t) end < batch_histories_.size() ? (int) batch_histories_[(size_t) end].size() : 0) == h)
+               lengths[(size_t) end] == h)
             ++end;
         if ((sp.greedy || sp.temperature <= 0.0f) && h == 0) {
             t = end;

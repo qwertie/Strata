@@ -40,17 +40,15 @@ public:
 };
 
 /// Writes the pause file `path`: `head`, bound to `identity`, then each of `sections`.  It is written beside `path`
-/// under
-/// another name, flushed to the drive and renamed over it, so that a failure leaves an existing file at `path` as it
-/// was.  False (and `err`) on a failure.
+/// under another name, flushed to the drive and renamed over it, so a failure preserves an existing destination.
+/// Returns false with `err` on failure.
 bool write_pause_file(const std::string& path, const SessionFileIdentity& identity, const PauseHeader& head,
                       const std::vector<PauseSection>& sections, std::string& err);
 /// Copies a complete pause file through a temporary file, flushed and published as write_pause_file does.
 bool copy_pause_file(const std::string& from, const std::string& to, std::string& err);
 /// Opens the pause file `path` and reads its header into `head`, leaving `file` at the first section.  Gets none, or
-/// why
-/// the file was refused: invalid for a file that is not a pause file, is damaged, was written for another `identity`,
-/// or holds more than `max_tokens` tokens; io when it cannot be read.
+/// the reason the file was refused: invalid for a file that is not a pause file, is damaged, was written for another
+/// `identity`, or holds more than `max_tokens` tokens; io when it cannot be read.
 SessionError open_pause_file(const std::string& path, const SessionFileIdentity& identity, uint64_t max_tokens,
                              PauseStream& file, PauseHeader& head, std::string& err);
 

@@ -259,8 +259,8 @@ private:
     std::vector<strata::core::PauseSection> get_gpu_sections(const Held& h) const;
     /// Gets where the pages of the conversation paused in the RAM's pool as `serial` are, per card at the layer cut.
     std::vector<strata::core::PauseSection> get_ram_sections(uint64_t serial) const;
-    /// Writes `p`'s pause file `path` at the layer cut p.head.cut, with the pages in `sections` (one per card); false (and
-    /// `err`) when the identity or the write failed.
+    /// Writes the paused conversation at its saved layer cut, with one section per card.
+    /// Returns false with `err` when fingerprinting or writing fails.
     bool save_pause_file(const Paused& p, const std::string& path,
                          const std::vector<strata::core::PauseSection>& sections, std::string& err);
     /// Gets the paused conversation that goes first, the lowest priority then the least recently used, among those in
@@ -570,15 +570,18 @@ void PagedEngine::save_session(const std::string& path) {
             held = x.get();
     const auto latest = std::max_element(paused_.begin(), paused_.end(),
                                          [](const Paused& a, const Paused& b) { return a.used < b.used; });
-    const Paused* paused = latest != paused_.end() && (held == nullptr || latest->used > held->used) ? &*latest : nullptr;
+    const Paused* paused =
+        latest != paused_.end() && (held == nullptr || latest->used > held->used) ? &*latest : nullptr;
     if (held == nullptr && paused == nullptr)
         return refuse(SessionError::invalid, "no complete session to save");
     const size_t tokens = (paused != nullptr ? paused->head.live : held->live).size();
     const uint64_t pages_bytes = paused != nullptr ? paused->bytes : held->get_bytes();
     std::error_code ec;
-    const std::filesystem::space_info room = std::filesystem::space(std::filesystem::absolute(std::filesystem::u8path(path)).parent_path(), ec);
+    const auto parent = std::filesystem::absolute(std::filesystem::u8path(path)).parent_path();
+    const std::filesystem::space_info room = std::filesystem::space(parent, ec);
     if (!ec && room.available < pages_bytes)
-        return refuse(SessionError::storage, "not enough room on the drive for " + std::to_string(pages_bytes >> 20) + " MiB");
+        return refuse(SessionError::storage,
+                      "not enough room on the drive for " + std::to_string(pages_bytes >> 20) + " MiB");
     std::string err;
     if (!identity_)
         announce_wait("fingerprint", 2u << 20);
@@ -598,8 +601,8 @@ void PagedEngine::save_session(const std::string& path) {
             ok = model_.save_state(held->parts, saved.head.state, err);
         }
         saved.head.cut = get_cut();
-        ok = ok && save_pause_file(saved, path, paused != nullptr ? get_ram_sections(paused->serial) : get_gpu_sections(*held),
-                                   err);
+        ok = ok && save_pause_file(
+                   saved, path, paused != nullptr ? get_ram_sections(paused->serial) : get_gpu_sections(*held), err);
     }
     if (!ok)
         return refuse(SessionError::io, err);
@@ -624,7 +627,8 @@ void PagedEngine::restore_session(const std::string& path) {
     const uint64_t file_bytes = std::filesystem::file_size(std::filesystem::u8path(path), ec);
     announce_wait("read", ec ? 0 : file_bytes);
     strata::core::PauseStream file;
-    if (const SessionError kind = strata::core::open_pause_file(path, *identity_, (uint64_t) facts_.context, file, p.head, err);
+    if (const SessionError kind = strata::core::open_pause_file(
+            path, *identity_, (uint64_t) facts_.context, file, p.head, err);
         kind != SessionError::none)
         return refuse(kind, err);
     file.reset();
@@ -636,7 +640,8 @@ void PagedEngine::restore_session(const std::string& path) {
         if (!x.file.empty() && x.priority > p.priority)
             protected_bytes += x.bytes;
     if (p.bytes + protected_bytes > ((uint64_t) settings_.ssd_pause_mib << 20))
-        return refuse(SessionError::storage, "not enough room under --ssd-pause-mib after higher-priority conversations");
+        return refuse(SessionError::storage,
+                      "not enough room under --ssd-pause-mib after higher-priority conversations");
     announce_wait("copy", p.bytes);
     p.serial = ++serial_;
     p.file = get_pause_file(p.serial);

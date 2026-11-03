@@ -4,12 +4,12 @@ from pathlib import Path
 
 def is_paged_engine(cfg: dict) -> bool:
     """Recognizes the two page-pool programs selected by the saved executable path."""
-    return Path(str(cfg.get("exe", "")).replace("\\", "/")).stem.lower() in ("strata-q38", "strata-ds41")
+    return get_engine_name(cfg) in ("strata-q38", "strata-ds41")
 
 
 def translate_args(cfg: dict, args: list[str]) -> list[str]:
     """Keeps supported options and reports settings with no page-pool equivalent."""
-    deepseek = Path(str(cfg["exe"]).replace("\\", "/")).stem.lower() == "strata-ds41"
+    deepseek = get_engine_name(cfg) == "strata-ds41"
     common = set("""pack max-context batch expert-cache expert-profile layer-split split-device
         adapt-every adapt-swaps adapt-min-gain adapt-decay tokens-min tokens-max gpu-mib ram-mib ssd-pause-mib
         rows lookahead concurrent pause-dir copy-back drafter remote-experts""".split())
@@ -62,3 +62,8 @@ def translate_args(cfg: dict, args: list[str]) -> list[str]:
     if omitted:
         print("[strata] paged engine: leaving out unsupported settings: " + " ".join(omitted), flush=True)
     return out
+
+
+def get_engine_name(cfg: dict) -> str:
+    """Gets the executable basename from config paths saved on either operating system."""
+    return Path(str(cfg.get("exe", "")).replace("\\", "/")).stem.lower()

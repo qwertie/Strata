@@ -9183,8 +9183,10 @@ struct Model::Impl {
             for (int gi = 0; gi < OG; ++gi)
                 j[gi] = job(l.wo_a[gi], d.o + (size_t) gi * per, d.oa + (size_t) gi * g.o_lora,
                             T, HQ, (size_t) OG * g.o_lora);
-            if (!mv_n(d, j, OG, err)) return false;
-            if (!mv(d, {job(l.wo_b, d.oa, d.ao, T, (size_t) OG * g.o_lora, D)}, err)) return false;
+            if (!mv_n(d, j, OG, err))
+                return false;
+            if (!mv(d, {job(l.wo_b, d.oa, d.ao, T, (size_t) OG * g.o_lora, D)}, err))
+                return false;
         } else CK(cudaMemsetAsync(d.ao, 0, (size_t) T * D * sizeof(*d.ao), s));   // (no heads: nothing to add)
         if (nm > 1) allreduce(d.ao, T * D, ag, mi, ++d.ar_seq, d.xcnt, s);
         hc_post(d.ao, d.h, d.a_post, d.a_comb, D, H, T, d.h2, s);
