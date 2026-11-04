@@ -248,3 +248,14 @@ test('live concurrency uses the step capacity and available rows', () => {
   const html = mount(view, recorder().onChange).element.innerHTML;
   assert.match(html, /data-setting="concurrent" value="1" min="1" max="3"/);
 });
+
+
+test('draft experts have their own segment and legend without changing the pool total', () => {
+  const card = { id: 'gpu0', name: 'GPU', total: 16 * 2 ** 30, free: 4 * 2 ** 30,
+    uses: { experts: 4 * 2 ** 30, drafter_experts: 7 * 2 ** 30, weights: 2 ** 30 } };
+  const [row] = rows(draw({ available: true, memories: [card], settings: {} }));
+  assert.match(row, /data-use="drafter_experts"/);
+  assert.match(row, /Drafter experts 7.00 GiB/);
+  assert.match(row, /Experts 4.00 GiB/);
+  assert.ok(Math.abs(widths(row).reduce((sum, width) => sum + width, 0) - 100) < 1e-9);
+});

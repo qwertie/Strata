@@ -92,6 +92,7 @@ struct Part final : strata::serve::PagedPart {
     /// may have taken the logits since)
     int64_t primed_pos = -1;
     int32_t primed_token = 0, primed_pick = 0;
+    uint64_t drafter_epoch = 0; ///< Last dense-weight generation whose rings this conversation rebuilt.
     bool prompt_open = false;   ///< its request's prompt is not read to its end, where it keeps two checkpoints
     /// the end of its next prompt becomes its anchor (Model::pin): its conversation started over or went back
     bool pin_next = false;
@@ -299,6 +300,19 @@ public:
         return describe_conversation(m_.geometry(), (int) lb, (int) le,
                                      facts.has_drafter && card.index + 1 == cards_.size(), layout, at, err);
     }
+    uint64_t get_drafter_weight_bytes(const PagedCard& card) const override {
+        return m_.get_drafter_weight_bytes((int) card.index);
+    }
+    uint64_t get_drafter_expert_bytes(const PagedCard& card) const override {
+        uint64_t bytes = 0;
+        const auto& pool = card.experts.pool();
+        for (const auto& key : drafter_experts_)
+            if (residency_[(size_t) key.layer * facts.n_expert + key.expert] >= 0 &&
+                card.index + 1 == cards_.size())
+                bytes += (blobs_[(size_t) key.layer] + pool.page_bytes() - 1) /
+                         pool.page_bytes() * pool.page_bytes();
+        return bytes;
+    }
     uint64_t get_gpu_keep(const PagedCard&) const override { return (uint64_t) o_.reserve_mib << 20; }
     std::vector<strata::core::ExpertKey> get_card_ranking(int64_t lb, int64_t le, int64_t& max_experts) const override;
     bool load_expert(const PagedCard& card, strata::core::ExpertKey key, int32_t first, std::string& err) override;
@@ -353,6 +367,7 @@ public:
         config.i64("context", facts.context);
         config.i64("experts per token", m_.get_experts_per_token());
         config.i64("drafter", facts.has_drafter);
+        config.i64("drafter taps", facts.has_drafter ? m_.geometry().d_targets.size() : 0);
         id.config = config.digest();
         return true;
     }
@@ -415,6 +430,7 @@ private:
     PagedCard* drafter_card_ = nullptr; ///< The last stage, which owns DSpark and its experts.
     Part* seated_ = nullptr;           ///< the conversation the model computes (Part::take_seat), or null
     uint64_t counter_ = 0;             ///< the sampler's draw count, which the old engine keeps across requests
+    uint64_t drafter_epoch_ = 0; ///< Increases when DSpark dense weights return.
     bool drafting_ = false;            ///< the drafter is switched on: its experts are wanted in the GPU's pool
     /// the drafter's experts (get_ranking's), which it needs all of on the GPU to draft
     std::vector<strata::core::ExpertKey> drafter_experts_;
@@ -587,6 +603,10 @@ int run_paged_engine(int argc, char** argv) {
         if (std::find(devices.begin(), devices.begin() + i, card.dev) != devices.begin() + i)
             card.id += "." + std::to_string(i);
         strata::serve::measure_card(card, kProgram, *std::max_element(blobs.begin(), blobs.end()));
+    }
+    if (has_drafter && !settings.drafter && !m.switch_drafter_weights(false, err)) {
+        std::fprintf(stderr, "%s: %s\n", kProgram.c_str(), err.c_str());
+        return 1;
     }
     PagedDeepSeek model(m, o, x, settings.drafter, parse_ids(eos), files, ram, cards);
     for (PagedCard& card : cards) {
@@ -990,6 +1010,11 @@ int PagedDeepSeek::propose(strata::serve::PagedPart& last, int, int32_t token, i
         !is_drafter_ready())
         return 0;
     p.take_seat();
+    if (p.drafter_epoch != drafter_epoch_) {
+        if (!m_.reseed_drafter(pos, err))
+            return -1;
+        p.drafter_epoch = drafter_epoch_;
+    }
     std::vector<int> drafts;
     std::vector<float> conf;
     const strata::serve::Sampling& s = p.smp;
@@ -1005,10 +1030,11 @@ int PagedDeepSeek::propose(strata::serve::PagedPart& last, int, int32_t token, i
     return keep;
 }
 
-// Off, the drafter's experts leave the GPU's pool to the trunk's; on, they come back in place of the coldest of the
-// trunk's (the engine's refill brings them in), and it drafts once all of them are there.  Its dense weights stay (the
-// rings are seeded while it is off, so its first drafts are as good as ever).
 bool PagedDeepSeek::switch_drafter(bool on, std::string& err) {
+    if (!m_.switch_drafter_weights(on, err))
+        return false;
+    if (on && !drafting_)
+        ++drafter_epoch_;
     drafting_ = on;
     for (PagedCard* card : cards_) {
         const auto ranking = get_pool_ranking(card->lb, card->le);

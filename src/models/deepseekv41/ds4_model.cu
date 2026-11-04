@@ -23,6 +23,8 @@
 #include "ds4_kernels.cuh"
 #include "strata/models/deepseekv41/geometry.hpp"
 #include "strata/base/gpu/memory_info.hpp"
+#include "strata/base/gpu/runtime.hpp"
+#include "strata/base/gpu/on_device.hpp"
 #include "strata/base/platform/os.hpp"
 #include "strata/core/expert_source.hpp"
 #include "ds4_pool.hpp"
@@ -423,6 +425,10 @@ struct Dev {
     cudaEvent_t ev = nullptr;
     size_t free0 = 0, total = 0, weights = 0, experts = 0, caches = 0, scratch = 0;
     std::vector<void*> allocs;
+    /// Reloadable DSpark tensors; null addresses retain their size while unloaded.
+    std::vector<std::pair<void*, size_t>> draft_allocations;
+    bool loading_drafter = false; ///< Tags dense allocations while this device loads DSpark.
+    uint64_t drafter_bytes = 0; ///< Full reload size, preserved after a failed reload.
     // a window's scratch, rows of up to kWin tokens (the routed experts' rows: kWin * kPicks)
     float *h = nullptr, *h2 = nullptr, *x = nullptr, *qr = nullptr, *q = nullptr, *kvr = nullptr, *ckr = nullptr,
           *cgr = nullptr, *latent = nullptr, *ikr = nullptr, *iq = nullptr, *iw = nullptr, *scores = nullptr,
@@ -1261,6 +1267,8 @@ struct Model::Impl {
         }
     }
     std::vector<std::pair<void*, size_t>> host_maps;
+    bool drafter_loaded = true; ///< Whether DSpark projections can be used to seed or draft.
+    float* draft_taps = nullptr; ///< Pool-owned recent trunk inputs for rebuilding DSpark rings.
 
     template <class T>
     bool dalloc(Dev& d, T*& p, size_t n, std::string& err, size_t* acct = nullptr) {
@@ -1279,6 +1287,8 @@ struct Model::Impl {
             return false;
         }
         d.allocs.push_back(v);
+        if (d.loading_drafter && acct == &d.weights)
+            d.draft_allocations.emplace_back(v, b);
         if (acct) *acct += b;
         else d.scratch += b;
         p = (T*) v;
@@ -3713,14 +3723,15 @@ struct Model::Impl {
         return true;
     }
 
-    bool load_dense(int di, std::string& err) {
+    bool load_dense(int di, std::string& err, bool drafter_only = false) {
         Dev& d = devs[(size_t) di];
         cudaSetDevice(d.id);
         size_t* acct = &d.weights;
         for (Layer& l0 : L)
           for (int mi = 0; mi < l0.nm; ++mi) {
             Layer& l = member(l0, mi);
-            if (l.dev != di) continue;
+            if (l.dev != di || (drafter_only && !l.mtp)) continue;
+            d.loading_drafter = l.mtp;
             const size_t before = d.weights;
             // (a group's member: its share of the heads (wq_b columns, the sinks), of wo_a's groups and wo_b's rows,
             // of the shared expert's FFN; the rest whole)
@@ -3780,15 +3791,19 @@ struct Model::Impl {
                 }
             }
             if (g.n_mtp > 0 && !l.mtp && !init_verify_layer(l, err)) return false;
-            if (!dalloc(d, l.vram_tab, (size_t) l.n_exp, err, acct)) return false;
+            d.loading_drafter = false;
+            if (!drafter_only && !dalloc(d, l.vram_tab, (size_t) l.n_exp, err, acct)) return false;
             l.weight_bytes = d.weights - before;
           }
-        if (d.grp == devs[(size_t) head_dev].grp) {   // the head: each member of its group a share of the columns
+        // The head: each member of its group holds a share of the columns.
+        if (!drafter_only && d.grp == devs[(size_t) head_dev].grp) {
             const int hn = head_nm();
             if (!mat(d, "head", d.head, err, acct, d.mi, hn, true) || !f32(d, "norm.weight", d.norm_w, err, acct, (size_t) g.dim))
                 return false;
+            d.loading_drafter = true;
             if (g.n_mtp > 0 && !f32(d, "mtp." + std::to_string(g.n_mtp - 1) + ".norm.weight", d.d_norm, err, acct, (size_t) g.dim))
                 return false;
+            d.loading_drafter = false;
             if (!dalloc(d, d.logits_part, (size_t) kWin * ((g.vocab / 128 + hn - 1) / hn * 128), err)) return false;
             if (g.n_mtp > 0 && hn > 1) {   // the markov steps over the group (mk_split): this member's rows of the head
                 const Tensor* th = pk.get("mtp." + std::to_string(g.n_mtp - 1) + ".markov_head.head.weight");
@@ -3811,6 +3826,11 @@ struct Model::Impl {
                 }
             }
         }
+        d.loading_drafter = true;
+        if (drafter_only && di == head_dev &&
+            !f32(d, "mtp." + std::to_string(g.n_mtp - 1) + ".norm.weight",
+                 d.d_norm, err, acct, (size_t) g.dim))
+            return false;
         if (di == head_dev) {
             head = d.head;
             norm_w = d.norm_w;
@@ -3835,6 +3855,10 @@ struct Model::Impl {
                 !f32(d, "mtp.0.main_norm.weight", d_main_norm, err, acct, (size_t) g.dim))
                 return false;
         }
+        d.loading_drafter = false;
+        if (!drafter_only)
+            for (const auto& allocation : d.draft_allocations)
+                d.drafter_bytes += allocation.second;
         return true;
     }
 
@@ -5024,7 +5048,7 @@ struct Model::Impl {
             Layer& l = L[i];
             Dev& d = devs[(size_t) l.dev];
             cudaSetDevice(d.id);
-            c.win[i].resize((size_t) g.win * win_rb());
+            c.win[i].resize(get_checkpoint_ring_bytes(i));
             cudaMemcpyAsync(c.win[i].data(), l.win, c.win[i].size(), cudaMemcpyDeviceToHost, d.st);
             if (l.c_kv) {
                 c.comp[2 * i].resize((size_t) l.ratio * g.hd);
@@ -5073,6 +5097,11 @@ struct Model::Impl {
             if (ck[i].pos > 0 && ck[i].pos <= pos && ck[i].win.size() == L.size()) v.push_back(i);
         return v;
     }
+    /// Includes recent trunk inputs after the final DSpark ring in paged conversations.
+    size_t get_checkpoint_ring_bytes(size_t layer) const {
+        return (size_t) g.win * win_rb() + (draft_taps != nullptr && layer + 1 == L.size()
+            ? (size_t) g.win * g.d_targets.size() * g.dim * sizeof(float) : 0);
+    }
     size_t check_bytes() const {
         size_t n = 16;
         for (const Layer& l : L) n += (size_t) g.win * win_rb() + (l.c_kv ? 2 * (size_t) l.ratio * g.hd * 4 : 0);
@@ -5098,6 +5127,11 @@ struct Model::Impl {
         for (Dev& d : devs) {
             cudaSetDevice(d.id);
             cudaStreamSynchronize(d.st);
+        }
+        if (draft_taps != nullptr && drafter_loaded) {
+            std::string err;
+            if (!reseed_drafter_from_taps(c.pos, err))
+                return false;
         }
         pos = c.pos;
         toks.resize((size_t) pos);
@@ -5455,7 +5489,7 @@ struct Model::Impl {
             return "a checkpoint of " + std::to_string(c.win.size()) + " layers, not " + std::to_string(L.size());
         for (size_t i = 0; i < L.size(); ++i) {
             const size_t group = L[i].kv_src && L[i].ratio > 1 ? (size_t) L[i].ratio * g.hd : 0;
-            if (c.win[i].size() != (size_t) g.win * win_rb() || c.comp[2 * i].size() != group ||
+            if (c.win[i].size() != get_checkpoint_ring_bytes(i) || c.comp[2 * i].size() != group ||
                 c.comp[2 * i + 1].size() != group)
                 return "a checkpoint whose layer " + std::to_string(i) + " is not this model's";
         }
@@ -6893,6 +6927,18 @@ struct Model::Impl {
         Dev& d = devs[(size_t) d_dev];
         cudaSetDevice(d.id);
         const int nt = (int) g.d_targets.size(), D = g.dim, HD = g.hd;
+        if (draft_taps != nullptr)
+            for (int row = 0; row < n; ++row) {
+                if (!strata::core::gpu_copy_2d_async(
+                        draft_taps + (size_t) ((p0 + row) % g.win) * nt * D, 0,
+                        h_taps + (size_t) (row0 + row) * nt * D, 0,
+                        (size_t) nt * D * sizeof(float), 1, d.st)) {
+                    err = "retaining recent DSpark inputs failed";
+                    return false;
+                }
+            }
+        if (!drafter_loaded)
+            return true;
         if (dump_d != nullptr) {   // DS4_DSPARK_DUMP: 'S', the first position, the rows, then the taps
             for (Dev& e : devs) {
                 cudaSetDevice(e.id);
@@ -6936,6 +6982,29 @@ struct Model::Impl {
                 finish(d.kvr, na, HD, HD, fk, d.st);
                 ext_to_ring(d.ext, l.win, p0 + a, g.win, na, HD, d.st);
             }
+        }
+        return true;
+    }
+
+    /// Reconstructs the seated conversation after its dense weights or checkpoint returns.
+    bool reseed_drafter_from_taps(int64_t position, std::string& err) {
+        Dev& d = devs[(size_t) d_dev];
+        const strata::core::OnDevice on_device(d.id);
+        if (!strata::core::gpu_stream_synchronize(d.st)) {
+            err = "waiting to restore DSpark rings failed";
+            return false;
+        }
+        const size_t width = g.d_targets.size() * (size_t) g.dim;
+        for (int64_t first = std::max<int64_t>(0, position - g.win); first < position;) {
+            const int n = (int) std::min<int64_t>({position - first, kWin, g.win - first % g.win});
+            if (!strata::core::gpu_copy(h_taps, draft_taps + (size_t) (first % g.win) * width,
+                                        (size_t) n * width * sizeof(float))) {
+                err = "reading recent DSpark inputs failed";
+                return false;
+            }
+            if (!seed_drafter(first, n, 0, err))
+                return false;
+            first += n;
         }
         return true;
     }
@@ -8684,7 +8753,7 @@ struct Model::Impl {
                 Dev& dv = devs[(size_t) l.dev];
                 cudaSetDevice(dv.id);
                 const bool kept = !l.mtp && l.snap_win != nullptr;
-                ckp.win[i].resize((size_t) g.win * win_rb());
+                ckp.win[i].resize(get_checkpoint_ring_bytes(i));
                 CK(cudaMemcpyAsync(ckp.win[i].data(), kept ? l.snap_win : l.win, ckp.win[i].size(),
                                    cudaMemcpyDeviceToHost, dv.st));
                 if (l.c_kv) {
@@ -9816,6 +9885,51 @@ bool Model::set_stage_layers(int stage, int lb, int le, std::string& err) {
     return true;
 }
 std::vector<float>& Model::get_usage() { return p_->usage; }
+uint64_t Model::get_drafter_weight_bytes(int stage) const {
+    return p_->devs[(size_t) stage].drafter_bytes;
+}
+
+bool Model::switch_drafter_weights(bool on, std::string& err) {
+    Impl& p = *p_;
+    if (on == p.drafter_loaded)
+        return true;
+    if (on) {
+        for (Dev& d : p.devs)
+            d.draft_allocations.clear();
+        for (size_t stage = 0; stage < p.devs.size(); ++stage)
+            if (!p.load_dense((int) stage, err, true)) {
+                p.devs[stage].loading_drafter = false;
+                p.drafter_loaded = true;
+                std::string ignored;
+                switch_drafter_weights(false, ignored);
+                return false;
+            }
+        p.drafter_loaded = true;
+        return true;
+    }
+    for (Dev& d : p.devs) {
+        const strata::core::OnDevice on_device(d.id);
+        if (!strata::core::gpu_stream_synchronize(d.st)) {
+            err = "waiting for DSpark's device work failed";
+            return false;
+        }
+        for (auto& [address, bytes] : d.draft_allocations) {
+            if (address == nullptr)
+                continue;
+            strata::core::gpu_free(address);
+            d.allocs.erase(std::remove(d.allocs.begin(), d.allocs.end(), address), d.allocs.end());
+            d.weights -= bytes;
+            address = nullptr;
+        }
+    }
+    p.drafter_loaded = false;
+    return true;
+}
+
+bool Model::reseed_drafter(int64_t position, std::string& err) {
+    return p_->reseed_drafter_from_taps(position, err);
+}
+
 uint64_t Model::get_weight_bytes(int dev) const { return p_->devs[(size_t) dev].weights; }
 uint64_t Model::get_scratch_bytes(int dev) const {
     return p_->devs[(size_t) dev].scratch +
@@ -9847,6 +9961,8 @@ void Model::use_state_memory(int dev, uint8_t* fixed, uint8_t* drafter, const Co
             l.c_score = l.c_kv + (size_t) l.ratio * p.g.hd;
         }
     }
+    if (dev == p.d_dev && at.taps != kNoOffset)
+        p.draft_taps = (float*) (drafter + at.taps);
     for (Layer& l : p.L)   // Paged stages are layer-parallel, with no tensor-parallel members.
         if (l.dev == dev)
             l.win = (l.mtp ? drafter : fixed) + at.ring[(size_t) l.il];

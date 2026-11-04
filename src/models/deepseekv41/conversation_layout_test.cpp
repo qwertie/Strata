@@ -114,7 +114,8 @@ void one_card_fixture() {
     check(layout.regions.size() == 10 && at.trunk == 0 && at.drafter == 1, "two fixed regions, then 4 x 2 growing");
     const uint64_t ring = 128 * 528, group = 2 * 2 * 512 * 4;
     check(layout.regions[at.trunk].unit_bytes == 40 * ring + 3 * group, "the trunk's rings and partial groups");
-    check(layout.regions[at.drafter].unit_bytes == 3 * ring, "the DSpark blocks' rings");
+    check(layout.regions[at.drafter].unit_bytes == 3 * ring +
+          (uint64_t) g.win * g.d_targets.size() * g.dim * sizeof(float), "the DSpark blocks' rings");
     check(at.ring[39] == 39 * ring && at.ring[40] == 0 && at.ring[42] == 2 * ring, "where the rings start");
     check(at.group[0] == 40 * ring && at.group[2] == 40 * ring + 2 * group && at.group[3] == kNoOffset,
           "the partial groups after the rings; none at ratio 1");

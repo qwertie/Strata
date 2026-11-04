@@ -1510,8 +1510,12 @@ strata::serve::MemoryReport PagedEngine::describe_memory() const {
         const strata::core::PagePoolReport r = card.experts.pool().report();
         strata::serve::Memory& gpu = report.at(card.id);
         strata::core::read_gpu_memory(card.dev, gpu.name, gpu.total, gpu.free, gpu.unified);
-        gpu.add("weights", model_.get_weight_bytes(card));
-        gpu.add("experts", r.experts.bytes);
+        const uint64_t draft_weights = settings_.drafter ? model_.get_drafter_weight_bytes(card) : 0;
+        gpu.add("weights", model_.get_weight_bytes(card) - draft_weights);
+        gpu.add("drafter", draft_weights);
+        const uint64_t draft_experts = model_.get_drafter_expert_bytes(card);
+        gpu.add("experts", r.experts.bytes - draft_experts);
+        gpu.add("drafter_experts", draft_experts);
         gpu.add("conversations", r.active.bytes + r.fixed.bytes);
         gpu.add("pool_free", r.free.bytes);
         gpu.add("scratch", model_.get_scratch_bytes(card));
@@ -1981,13 +1985,39 @@ std::string PagedEngine::set_token_limits(int64_t min, int64_t max) {
 }
 
 bool PagedEngine::switch_drafter(bool on, std::string& err) {
+    std::vector<uint64_t> targets, previous;
+    for (const PagedCard& card : cards_) {
+        const auto& pool = card.experts.pool();
+        const uint64_t bytes = model_.get_drafter_weight_bytes(card) / pool.chunk_bytes() * pool.chunk_bytes();
+        const uint64_t now = pool.report().total.bytes;
+        previous.push_back(now);
+        if (on && (bytes > now || now - bytes < get_smallest_gpu(card, settings_.tokens_min))) {
+            err = "the pool cannot make room for the drafter's dense weights";
+            return false;
+        }
+        targets.push_back(on ? now - bytes : now + bytes);
+    }
     if (!on) {
-        (void) model_.switch_drafter(false, err);
+        if (!model_.switch_drafter(false, err))
+            return false;
+        for (PagedCard& card : cards_)
+            if (const std::string why = targets[card.index] == card.experts.pool().report().total.bytes
+                    ? std::string{} : resize_gpu(card, targets[card.index]); !why.empty())
+                say("the freed drafter memory could not all join the pool: %s\n", why.c_str());
         settings_.drafter = false;
         say("the drafter is off, its memory given back\n");
         return true;
     }
+    for (PagedCard& card : cards_)
+        if (const std::string why = targets[card.index] == card.experts.pool().report().total.bytes
+                ? std::string{} : resize_gpu(card, targets[card.index]); !why.empty()) {
+            err = why;
+            return false;
+        }
     if (!model_.switch_drafter(true, err)) {
+        for (PagedCard& card : cards_)
+            if (previous[card.index] != card.experts.pool().report().total.bytes)
+                (void) resize_gpu(card, previous[card.index]);
         err = "the drafter could not be loaded: " + err;
         return false;
     }

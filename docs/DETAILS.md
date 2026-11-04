@@ -1823,6 +1823,32 @@ including with cost mode enabled. It reads the existing `dspark_conf`, `dspark_c
 request keys; a negative floor uses the engine's default. Model adapters run their networks, bind state, and
 return raw proposals and confidences. DeepSeek's plain step after a rejected model proposal is scheduled here too.
 `--lookahead 0` disables all drafting. `--drafter off` switches off only the model drafter.
+
+In `strata-ds41`, the Memory panel's Drafter switch (`CHANGE_SETTINGS drafter=off|on`) also releases and
+reloads DSpark's dense tensors. `--drafter off` and `--dspark off` start with those tensors released;
+`--dspark none` loads no DSpark at all. A request's `spec=0` disables proposals for that request only.
+The shared memory manager trades whole pool chunks against the dense allocation. The panel separates
+Drafter (dense weights) and Drafter experts from the main model's weights and experts.
+Recent trunk taps stay in each conversation's fixed pool region, beside the DSpark rings. They travel with
+pauses and checkpoints, so the engine can rebuild the rings after loading the tensors again. This adds
+7,864,320 bytes per conversation for the tested pack, plus the checkpoint copies in RAM.
+
+Measured on Windows HIP, Strix Halo (Radeon 8060S), the IQ2_XXS pack copy, context 8192,
+`--gpu-mib 10240 --ram-mib 512 --expert-cache 480 --no-expert-cache --adapt-swaps 0`,
+`--dspark-conf 0.65`, and `DS4_COMMIT_CAP_GB=18`: switching off released 752,205,056 dense bytes;
+the GPU pool grew from 10,734,796,800 to 11,271,536,640 bytes. Switching on restored the dense allocation
+and the original pool size in two cycles. Chunk rounding transfers 536,739,840 bytes into the pool;
+the remainder stays available outside it. The panel reports 7,219,445,760 bytes of drafter experts
+separately; after refilling they return to that size. A greedy 16-token continuation after on, off,
+a different 8-token conversation, and on again matched uninterrupted tokens, including pause/resume
+and rewind to the prompt checkpoint. Lowest free commit/physical RAM: 50.37/26.72 GiB.
+Startup with `--drafter off` and a continuation checkpoint created while off also passed; the latter
+matched after pause/resume. That run kept at least 50.92 GiB free commit and 26.62 GiB free physical RAM.
+Switches sent during a single `GEN` were queued until `DONE`; its 32-token answer matched the
+uninterrupted answer. This checks safe deferral, not a switch applied inside a decode window.
+These checks used stdin/stdout, not the user's server. Logs and the harness are in
+`%TEMP%/dspark-memory` and `%TEMP%/dspark-harness.py`. CUDA, real multi-GPU hardware and browser rendering
+were not tested. HIP builds of `strata-ds41`, `strata-dsv41` and `strata-q38` passed.
 DeepSeek offers no guesses when several conversations share a step, following D8. Each request rebuilds its
 own token index from its full prompt, including after pauses and session restores. Learned costs follow the logical
 conversation through in-process pauses; costs are rebuilt after a process restart. Stderr reports suffix and

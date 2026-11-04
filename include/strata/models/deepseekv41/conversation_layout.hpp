@@ -34,6 +34,7 @@ bool find_kv_sources(const Geometry& g, std::vector<KvSource>& sources, std::vec
 
 /// Where describe_conversation put each part of a conversation's state.
 struct ConversationRegions {
+    uint64_t taps = kNoOffset; ///< Recent trunk inputs retained while DSpark weights are unloaded.
     size_t trunk = kNoRegion;     ///< fixed: the card's trunk layers' rings, then its KV sources' partial groups
     size_t drafter = kNoRegion;   ///< fixed: the DSpark blocks' rings
     /// Per layer (the trunk's, then the DSpark blocks'): where its ring starts in its fixed region.
@@ -47,7 +48,8 @@ struct ConversationRegions {
 
 /// Describes what one conversation keeps on a card that runs trunk layers [lb, le), and with `drafter` the DSpark
 /// blocks: a fixed region of its layers' rings (the window's last `win` tokens, kKvFp8 rows) and partial groups,
-/// one of the DSpark blocks' rings, and per KV source a layer of the card reads, its compressed rows (kKvFp4) and,
+/// one of the DSpark blocks' rings and recent trunk taps, and per KV source a layer of the card reads, its
+/// compressed rows (kKvFp4) and,
 /// when a layer of the card scores them, its index keys (kKvFp4p), as per_block regions of one row per `ratio`
 /// tokens.  A source's rows are on every card that reads them.  False (and `err`) when the geometry or the range is
 /// not one the old engine runs.

@@ -13,7 +13,8 @@
 
 /** Names shown for the uses a memory's bar is divided into (`uses` keys and the segments the panel adds). */
 const USES = {weights: "Weights", experts: "Experts", conversations: "Conversations", pool_free: "Free in the pool",
-              paused: "Paused conversations", drafter: "Drafter", scratch: "Scratch", engram: "Engram",
+              paused: "Paused conversations", drafter: "Drafter", drafter_experts: "Drafter experts",
+              scratch: "Scratch", engram: "Engram",
               borrowed: "GPU (borrowed from RAM)", other: "Other", free: "Free"};
 /** What each use of a bar is, in plain words: the tooltip of its segment and its legend entry. */
 const USE_HELP = {
@@ -24,6 +25,7 @@ const USE_HELP = {
   conversations: "What the model remembers of the conversations it is working on (their context)",
   pool_free: "Room the engine has set aside here that nothing uses yet; experts or conversations take it as needed",
   paused: "Conversations put aside for now, kept here until they continue",
+  drafter_experts: "Expert weights used by the model that guesses words ahead",
   drafter: "The small model that guesses the next words ahead, so that answers come faster",
   scratch: "Working space the engine needs while it computes",
   engram: "DeepSeek's table of word patterns, read as it answers",

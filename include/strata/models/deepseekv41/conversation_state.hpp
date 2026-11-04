@@ -18,7 +18,7 @@ constexpr int kCheckpoints = 4;
 /// The state at one position: what the rest of the state (compressed rows, by position) does not give back.
 struct Checkpoint {
     int64_t pos = -1;                          ///< -1: none kept
-    std::vector<std::vector<uint8_t>> win;     ///< per layer, its window ring
+    std::vector<std::vector<uint8_t>> win;     ///< Per layer: its ring; paged DSpark appends taps to the last ring.
     /// per layer, its compressor's partial group: its KV at 2 * layer, its scores at 2 * layer + 1 (empty for a layer
     /// without a compressor)
     std::vector<std::vector<float>> comp;

@@ -190,6 +190,12 @@ public:
     std::vector<float>& get_usage();
     /// Gets the GPU memory of the weights on GPU `dev` (an index into get_devices).
     uint64_t get_weight_bytes(int dev) const;
+    /// Gets DSpark's reloadable dense allocation size on a stage, including while unloaded.
+    uint64_t get_drafter_weight_bytes(int stage) const;
+    /// Releases or reloads DSpark's dense tensors, retaining pool-owned conversation state.
+    bool switch_drafter_weights(bool on, std::string& err);
+    /// Rebuilds the seated conversation's DSpark rings from its recent trunk inputs.
+    bool reseed_drafter(int64_t position, std::string& err);
     /// Gets the GPU memory of the buffers on GPU `dev` that are not the weights, the experts or the caches (the
     /// windows' and the prompt path's).
     uint64_t get_scratch_bytes(int dev) const;

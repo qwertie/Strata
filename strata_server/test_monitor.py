@@ -360,6 +360,7 @@ class EngineConversations(unittest.TestCase):
         from types import SimpleNamespace
         from strata_common.engine_client import StrataEngine
         engine = StrataEngine.__new__(StrataEngine)
+        engine.info = {}
         engine.proc = SimpleNamespace(stdin=io.StringIO(), poll=lambda: None)
         engine.lines, engine.wlock, engine.ended = queue.Queue(), threading.Lock(), False
         for line in lines:
@@ -406,6 +407,8 @@ class EngineConversations(unittest.TestCase):
              "paused_budget": 800, **none, "uses": {"paused": 300}},
             {"id": "ssd", "name": None, "total": None, "free": None, "unified": False, "paused_count": None,
              "paused_budget": None, **none, "uses": {"engram": 70}}], "settings": {"context": 32768, "concurrent": 1}})
+        draft = self.bare(["MEMORY gpu0 experts=9 drafter_experts=7", "END_MEMORY"]).memory()
+        self.assertEqual(draft["memories"][0]["uses"], {"experts": 9, "drafter_experts": 7})
         pool = self.bare(["MEMORY gpu0 experts=9 pool_pages=800 allocated_pages=780 fragmented_pages=3 setting=500 "
                           "smallest=200 largest=900 name=card", "SETTINGS", "END_MEMORY"]).memory()["memories"][0]
         self.assertEqual((pool["allocated_pct"], pool["fragmented_pct"], pool["uses"]), (97.5, 0.38, {"experts": 9}))

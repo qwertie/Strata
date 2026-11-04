@@ -167,6 +167,10 @@ public:
     /// and its buffers there that are not allocated (a drafter switched off).  The engine weighs it against the GPU's
     /// free memory when a pool grows.
     virtual uint64_t get_gpu_keep(const PagedCard& card) const = 0;
+    /// Gets reloadable dense bytes that trade space with the card's pool when drafting changes.
+    virtual uint64_t get_drafter_weight_bytes(const PagedCard&) const { return 0; }
+    /// Gets pool bytes occupied by the drafter's experts, separate from the trunk's experts.
+    virtual uint64_t get_drafter_expert_bytes(const PagedCard&) const { return 0; }
     /// Gets the experts of the profile of layers [lb, le), hottest first; on a layer split, `max_experts` (the most
     /// the GPUs hold) becomes how many of them are among the whole profile's first `max_experts`.
     virtual std::vector<strata::core::ExpertKey> get_card_ranking(int64_t lb, int64_t le,

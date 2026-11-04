@@ -40,3 +40,5 @@
 .mem-input { width: auto; max-width: 8em; height: auto; min-height: 0; padding: 2px 6px; }
 .mem-undo { margin-left: var(--st-s-2); font: inherit; color: var(--st-accent-text); background: none; border: 0;
             padding: 0; text-decoration: underline; cursor: pointer; }
+
+.mem-bars [data-use="drafter_experts"] { background-color: var(--st-danger); }

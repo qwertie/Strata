@@ -69,7 +69,9 @@ bool describe_conversation(const Geometry& g, int lb, int le, bool drafter, Stat
     if (drafter && g.n_mtp > 0) {
         for (int b = 0; b < g.n_mtp; ++b)
             at.ring[(size_t) (g.nl + b)] = (uint64_t) b * ring;
-        at.drafter = layout.add(RegionKind::fixed, (uint64_t) g.n_mtp * ring);
+        at.taps = (uint64_t) g.n_mtp * ring;
+        at.drafter = layout.add(RegionKind::fixed, at.taps +
+            (uint64_t) g.win * g.d_targets.size() * g.dim * sizeof(float));
     }
 
     std::vector<bool> reads(sources.size()), scores(sources.size());
@@ -109,7 +111,7 @@ strata::core::RegionSpan get_conversation_span(const Geometry& g, int lb, int le
         if (local.group[s] != kNoOffset)
             span.ranges.push_back({at.trunk, at.group[s], 2 * (uint64_t) sources[s].ratio * g.hd * sizeof(float)});
     if (drafter && g.n_mtp > 0)
-        span.ranges.push_back({at.drafter, 0, (uint64_t) g.n_mtp * ring});
+        span.ranges.push_back({at.drafter});
     for (size_t s = 0; s < sources.size(); ++s) {
         if (local.ckv[s] != kNoRegion)
             span.ranges.push_back({at.ckv[s]});
