@@ -3,6 +3,7 @@
 #include "strata/models/qwen38/conversation_drafter.hpp"
 
 #include "strata/base/gpu/on_device.hpp"
+#include "strata/base/gpu/runtime.hpp"
 
 #include <cuda_runtime.h>
 
@@ -33,13 +34,13 @@ bool ConversationDrafter::init(Model& m, int sessions, std::string& err) {
     return mtp_->bind(st != nullptr ? st->wt : m.wt, st != nullptr ? &st->head : &m.native_head, rows_, err);
 }
 
-bool ConversationDrafter::read_prompt(strata::prefill::Prefill& sp, const ConversationPages& pages,
+bool ConversationDrafter::read_prompt(strata::prefill::Prefill* sp, const ConversationPages& pages,
                                       strata::core::SessionState& ss, const float* R_rows, const int32_t* next,
                                       int64_t n, int64_t cell0, int64_t prompt_len, std::string& err) {
     if (!select(pages, ss, prompt_len, err))
         return false;
     // the prompt path's batched pass where it can (E-9), else the drafter's own
-    return sp.draft_kv(*mtp_, R_rows, next, n, cell0, err) ||
+    return (sp && sp->draft_kv(*mtp_, R_rows, next, n, cell0, err)) ||
            (err.empty() && mtp_->prefill(R_rows, next, n, cell0, err));
 }
 
@@ -53,6 +54,11 @@ bool ConversationDrafter::reserve_snapshots(const float* residuals, std::string&
     for (size_t session = 0; session < last_.size(); ++session)
         if (last_[session].rows > 0 && !last_[session].saved && !save_residuals((int) session, residuals, err))
             return false;
+    // Prompt admission can reuse verifier scratch before another proposal drains the draft stream.
+    if (!strata::core::gpu_stream_synchronize(mtp_->stream())) {
+        err = "the drafter's residual snapshots did not complete";
+        return false;
+    }
     return true;
 }
 
@@ -110,9 +116,9 @@ int ConversationDrafter::propose(int session, const ConversationPages& pages, st
 
 bool ConversationDrafter::save_residuals(int session, const float* residuals, std::string& err) {
     Last& last = last_.at((size_t) session);
-    if (cudaMemcpy(saved_rows_ + (size_t) session * max_rows_ * row_floats_,
-        residuals + (size_t) last.row0 * row_floats_, (size_t) last.rows * row_floats_ * sizeof(float),
-        cudaMemcpyDeviceToDevice) != cudaSuccess) {
+    const size_t bytes = (size_t) last.rows * row_floats_ * sizeof(float);
+    if (!strata::core::gpu_copy_2d_async(saved_rows_ + (size_t) session * max_rows_ * row_floats_, bytes,
+        residuals + (size_t) last.row0 * row_floats_, bytes, bytes, 1, mtp_->stream())) {
         err = "the drafter's conversation residual snapshot failed";
         return false;
     }
@@ -125,6 +131,11 @@ bool ConversationDrafter::select(const ConversationPages& pages, strata::core::S
     mtp_->set_ple_session(&ss);
     mtp_->set_prompt_len(prompt_len);
     return mtp_->use_kv_units(pages.get_drafter_units(), err);
+}
+
+bool ConversationDrafter::preserve_pending_rows(const float* residuals, std::string& err) {
+    return std::none_of(last_.begin(), last_.end(), [](const Last& row) { return row.rows > 0 && !row.saved; }) ||
+           reserve_snapshots(residuals, err);
 }
 
 }  // namespace strata::qwen38

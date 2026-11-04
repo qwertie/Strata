@@ -122,7 +122,7 @@ public:
     /// See serve_paged_model.
     PagedEngine(PagedModel& model, PagedCards& cards, strata::core::RamExperts& ram, bool copy_back,
                 const PagedSettings& settings);
-    /// Deletes the paused conversations' files.
+    /// Drains state writes and deletes the paused conversations' files.
     ~PagedEngine();
 
     /// Makes each conversation's state on each card; false (said on stderr) when one does not fit.
@@ -216,6 +216,8 @@ private:
                      int64_t& read_to, bool& fatal, std::string& err);
     /// Runs one step of every decoding conversation and prints what it emitted; false (ERR printed) ends the engine.
     bool decode_step();
+    /// Reports failures while draining state before commands or completed requests expose it.
+    bool wait_model_state();
     /// Ends the request that batch slot `slot` decodes, so that one of priority `priority` takes the slot, when that is
     /// higher than its own: prints its BDONE with the finish "preempted".  The server sends it again later, its prompt
     /// and the tokens it got so far, which resumes its conversation (take_conversation pauses it).  False when the
@@ -489,6 +491,7 @@ PagedEngine::PagedEngine(PagedModel& model, PagedCards& cards, strata::core::Ram
 }
 
 PagedEngine::~PagedEngine() {
+    (void) wait_model_state();
     for (const Paused& p : paused_)
         drop_pages(p);
 }
@@ -553,6 +556,7 @@ int PagedEngine::serve() {
     }
     std::printf("READY %lld stop conversations memory preempt settings\n", (long long) facts_.context);
     strata::serve::EngineHooks hooks;
+    hooks.before_line = [this](const std::string&) { return wait_model_state(); };
     hooks.is_busy = [this] { return is_decoding() || is_refill_wanted(); };
     hooks.step = [this] { return is_decoding() ? decode_step() : refill_experts(); };
     hooks.stop_slot = [this](int slot) { stop_slot(slot); };
@@ -892,7 +896,8 @@ bool PagedEngine::read_prompt(Held& h, const std::vector<int64_t>& ids, int64_t 
     bool ok = true;
     for (int64_t q = from; ok && q < to; q += piece) {
         const Clock::time_point tq = Clock::now();
-        ok = model_.read_prompt(h.parts, ids, q, std::min(piece, to - q), is_model_drafting(), on_chunk, err);
+        ok = model_.wait_state(err) &&
+             model_.read_prompt(h.parts, ids, q, std::min(piece, to - q), is_model_drafting(), on_chunk, err);
         const double budget_ms = kDecodeShare * get_ms_since(tq);
         const Clock::time_point td = Clock::now();
         while (ok && q + piece < to && is_decoding() && get_ms_since(td) < budget_ms) {
@@ -954,6 +959,8 @@ bool PagedEngine::decode_step() {
                 std::printf("BT %d %d\n", h->slot, (int) t);
         if (d.finish == nullptr)
             continue;
+        if (!wait_model_state())
+            return false;
         h->decoding = false;
         if (d.planner)
             say("suffix drafts: %lld of %lld kept/offered\n", (long long) d.suffix_kept,
@@ -1088,9 +1095,15 @@ int64_t PagedEngine::take_conversation(size_t target, const std::vector<int64_t>
 }
 
 bool PagedEngine::make_room(Held& h, int64_t tokens, std::string& err) {
+    const bool reuse = std::all_of(h.parts.begin(), h.parts.end(),
+        [tokens](const auto& part) { return part->can_reserve_without_growth(tokens); });
+    if (!reuse && !model_.wait_state(err))
+        return false;
     for (size_t k = 0; k < h.parts.size(); ++k) {
         const strata::core::OnDevice on(cards_[k].dev);
         while (!h.parts[k]->reserve(tokens, err)) {
+            if (!model_.wait_state(err))
+                return false;
             Held* idle = find_idle(&h);
             if (idle == nullptr)
                 return false;
@@ -2126,6 +2139,14 @@ auto time_step_if(bool enabled, double& elapsed, F&& operation) -> decltype(oper
     auto result = operation();
     elapsed += get_ms_since(start);
     return result;
+}
+
+bool PagedEngine::wait_model_state() {
+    std::string err;
+    if (model_.wait_state(err))
+        return true;
+    std::printf("ERR %s\n", err.c_str());
+    return false;
 }
 
 }  // namespace

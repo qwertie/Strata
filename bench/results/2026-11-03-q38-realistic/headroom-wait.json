@@ -1,0 +1,23 @@
+{
+  "resumed_local": "2026-11-04T04:06:00-06:00",
+  "required_free_commit_gib": 75,
+  "preflight_source": "C:/Users/qwert/AppData/Local/Temp/q38-realistic/run.py:103",
+  "observations": [
+    {
+      "utc": "2026-11-04T10:17:42.883312+00:00",
+      "free_commit_gib": 60.58053207397461,
+      "free_physical_gib": 22.34052276611328
+    },
+    {
+      "utc": "2026-11-04T10:20:22.150050+00:00",
+      "free_commit_gib": 46.30635070800781,
+      "free_physical_gib": 9.535797119140625
+    },
+    {
+      "utc": "2026-11-04T10:35:56.100747+00:00",
+      "free_commit_gib": 67.45168685913086,
+      "free_physical_gib": 27.416004180908203
+    }
+  ],
+  "resolution": "Owner confirmed vitest finished and authorized about 68 GiB free commit or a small GPU-pool trim. The remaining new-engine case completed with a 58 GiB pool after a 66.64 GiB free-commit preflight; all experts remained resident."
+}

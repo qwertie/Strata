@@ -3,6 +3,8 @@
 #include "strata/models/qwen38/paged_model.hpp"
 
 #include "strata/base/gpu/on_device.hpp"
+#include "strata/base/gpu/gfx_arch.hpp"
+#include "strata/common/artifact/gguf_reader.hpp"
 #include "strata/base/gpu/runtime.hpp"
 #include "strata/models/qwen38/prompt_images.hpp"
 #include "strata/common/experts/card_rules.hpp"
@@ -102,6 +104,9 @@ struct Part final : strata::serve::PagedPart {
         return pages.init(m.g, ss, pool, id, err) && note_gdn_place(err);
     }
     bool reserve(int64_t tokens, std::string& err) override { return pages.reserve(tokens, err); }
+    bool can_reserve_without_growth(int64_t tokens) const override {
+        return pages.can_reserve_without_growth(tokens);
+    }
     void truncate(int64_t tokens) override { pages.truncate(tokens); }
     void release() override { pages.release(); }
     bool refresh(std::string& err) override { return pages.refresh(ss, err) && note_gdn_place(err); }
@@ -137,7 +142,7 @@ public:
     /// `drafter`: null when drafting is off; `sessions`: the conversations the engine holds (its batch slots and
     /// "main").
     PagedQwen(Model& m, Conversation& conv, const PagedCards& cards, ModelCards& model_cards, SplitDrive& split,
-              const strata::core::RamExperts& ram, ConversationDrafter* drafter, int sessions);
+              const strata::core::RamExperts& ram, ConversationDrafter* drafter, int sessions, int prompt_rows);
 
     bool prepare_images(const strata::serve::RequestLine& request, const std::vector<int64_t>& ids,
                         uint64_t& key, std::string& err) override;
@@ -204,6 +209,7 @@ public:
     int propose(strata::serve::PagedPart& last, int session, int32_t, int64_t, int n, int32_t* out,
                 std::string& err, strata::spec::DraftContext* draft) override;
     bool switch_drafter(bool on, std::string& err) override;
+    bool wait_state(std::string& err) override;
     void print_info(int slots, int spec) const override;
     void print_done(const strata::serve::RequestDone& done) const override;
 
@@ -238,6 +244,7 @@ private:
     std::vector<const float*> image_row_ptrs_;
     std::vector<Part*> leads_;
     std::vector<std::vector<int32_t*>> image_tables_;
+    int draft_image_session_ = -1; ///< The conversation whose cell table the drafter currently holds.
     Model& m_;
     Conversation& conv_;   ///< card 0's prompt path and verify windows, shared by every conversation
     const PagedCards& pcards_;
@@ -246,6 +253,7 @@ private:
     const strata::core::RamExperts& ram_;
     ConversationDrafter* const drafter_;
     const int sessions_;
+    const int prompt_rows_; ///< The legacy verify width used for short prompt reads.
     std::vector<int32_t> picks_;       ///< the last step's token after each row, for the drafter
     std::vector<const std::vector<int32_t>*> histories_; ///< consumed tokens for the current step
     std::vector<int> history_lengths_; ///< each session's penalty window
@@ -261,6 +269,8 @@ bool open_ram(Model& m, const PagedCards& cards, const ModelCards& model_cards, 
 bool init_card_paths(Model& m, Conversation& conv, PagedCards& cards, ModelCards& model_cards, SplitDrive& split,
                      int handoff_rows, std::string& err);
 std::string get_unsupported_reason(const Model& m);
+/// Selects the single-gfx1151 IQ3_S policy; the verifier applies it only to fully resident batch graphs.
+bool should_inline_resident_shared(const Model& m);
 void append_size(std::vector<uint8_t>& bytes, uint64_t n);
 uint64_t read_size(const std::vector<uint8_t>& bytes, size_t& at);
 
@@ -283,6 +293,7 @@ int run_paged_engine(int argc, char** argv) {
     }
     strata::serve::set_paged_runtime_env(settings, !o.layer_split.empty() && hop_refusal.empty());
     prime_gpu_queues();
+    const bool shared_stream_override = std::getenv("STRATA_SH_STREAM") != nullptr;
     if (const int status = apply_device_defaults(o); status >= 0) return status;
     const int slots = strata::kernels::kVerifyMaxT;
     if (settings.step.concurrent < 0)
@@ -355,10 +366,18 @@ int run_paged_engine(int argc, char** argv) {
     };
     if (const int status = m.load(); status != 0) return status;
     if (const int status = m.build_hit_tables(false); status != 0) return status;
+    const bool inline_shared = !shared_stream_override && should_inline_resident_shared(m);
+    if (inline_shared)
+        std::fprintf(stderr, "strata-q38: fully resident IQ3_S windows keep shared projections on the main stream\n");
     for (ModelCard& mc : model_cards) {
+        mc.ver->set_resident_shared_inline(inline_shared);
         mc.d_res = mc.stage != nullptr ? mc.stage->d_res : m.d_res;
         mc.ver->set_dynamic_residency(true);
         mc.ver->set_batch_self_commit_default(true);
+#if !defined(STRATA_GPU_METAL)
+        // Metal's wait_commit does not fence a deferred batch graph.
+        mc.ver->set_batch_commit_async(drafting && !m.multi_gpu);
+#endif
     }
     if (const std::string why = get_unsupported_reason(m); !why.empty()) {
         std::fprintf(stderr, "strata-q38: %s\n", why.c_str());
@@ -392,7 +411,8 @@ int run_paged_engine(int argc, char** argv) {
             mc.ver->set_batch_graph_limit(kWindowGraphs);
     if (drafting && !settings.drafter)   // loaded for the pool's layout of the drafter's K/V, switched on later
         m.unload_drafter();
-    PagedQwen model(m, conv, cards, model_cards, split, ram, drafting ? &drafter : nullptr, slots + 1);
+    PagedQwen model(m, conv, cards, model_cards, split, ram, drafting ? &drafter : nullptr, slots + 1,
+                    window_rows.total);
     return strata::serve::serve_paged_model(model, cards, ram, copy_back, settings);
 }
 
@@ -400,9 +420,9 @@ namespace {
 
 PagedQwen::PagedQwen(Model& m, Conversation& conv, const PagedCards& cards, ModelCards& model_cards,
                      SplitDrive& split, const strata::core::RamExperts& ram, ConversationDrafter* drafter,
-                     int sessions)
+                     int sessions, int prompt_rows)
     : m_(m), conv_(conv), pcards_(cards), cards_(model_cards), split_(split), ram_(ram), drafter_(drafter),
-      sessions_(sessions) {
+      sessions_(sessions), prompt_rows_(prompt_rows) {
     const Options& o = m.o;
     facts.name = kProgram;
     facts.n_layers = m.g.n_layers;
@@ -715,6 +735,8 @@ bool PagedQwen::activate_images(int session, std::string& err, bool shared) {
         }
     }
     lead.image_table_ready = true;
+    if (shared)
+        draft_image_session_ = session;
     return true;
 }
 
@@ -813,11 +835,42 @@ bool PagedQwen::read_prompt(const PagedParts& parts, const std::vector<int64_t>&
         cards_[k].sp->set_session(get_part(*parts[k]).ss);
     std::vector<int32_t> next;   // the drafter's: the token after each of the chunk's
     strata::prefill::Prefill& last = *cards_.back().sp;   // which has the head
+    if (n <= m_.o.short_read && image_row_ptrs_.empty()) {
+        if (drafting && !drafter_->preserve_pending_rows(cards_.back().ver->final_R_all(), err))
+            return false;
+        const int session = (int) get_part(*parts.front()).id() - 1;
+        int64_t turn = from + n;
+        if (m_.o.prompt_cache > 0 && m_.o.turn_token >= 0)
+            for (int64_t i = from + n - 1; i > from; --i)
+                if (ids[(size_t) i] == m_.o.turn_token) {
+                    turn = i;
+                    break;
+                }
+        for (int64_t pos = from; pos < from + n;) {
+            const int64_t end = pos < turn ? turn : from + n;
+            const int count = (int) std::min<int64_t>(prompt_rows_, end - pos);
+            std::vector<strata::spec::StepRow> rows;
+            std::vector<int32_t> picks((size_t) count);
+            next.assign(ids.begin() + pos + 1, ids.begin() + pos + count + 1);
+            for (int t = 0; t < count; ++t)
+                rows.push_back({session, (int32_t) ids[(size_t) (pos + t)], pos + t, t - 1});
+            if (!run_rows(rows, picks, err) || !keep_rows(rows, {count}, false, err))
+                return false;
+            Part& part = get_part(*parts.back());
+            if (drafting && !drafter_->read_prompt(nullptr, part.pages, part.ss, cards_.back().ver->final_R_all(),
+                    next.data(), count, pos, (int64_t) ids.size(), err))
+                return false;
+            if (!on_chunk(pos, count, err))
+                return false;
+            pos += count;
+        }
+        return true;
+    }
     last.on_chunk = [&](const float* R_rows, int64_t T, int64_t pos0, std::string& e) -> bool {
         if (drafting) {
             next.assign(ids.begin() + pos0 + 1, ids.begin() + pos0 + T + 1);
             Part& part = get_part(*parts.back());
-            if (!drafter_->read_prompt(last, part.pages, part.ss, R_rows, next.data(), T, pos0, (int64_t) ids.size(),
+            if (!drafter_->read_prompt(&last, part.pages, part.ss, R_rows, next.data(), T, pos0, (int64_t) ids.size(),
                                        e))
                 return false;
         }
@@ -840,7 +893,7 @@ bool PagedQwen::run_rows(const std::vector<strata::spec::StepRow>& rows, std::ve
             return false;
         for (size_t k = 0; k < cards_.size(); ++k) {
             const strata::core::OnDevice on(pcards_[k].dev);
-            int32_t* table = k == 0 ? m_.d_mrope : cards_[k].stage->mrope;
+            int32_t* table = cards_[k].ver->get_batch_image_table();
             if (!strata::core::gpu_copy(table, coordinates.data(), coordinates.size() * sizeof(int32_t))) {
                 err = "the step's image position upload failed";
                 return false;
@@ -898,7 +951,7 @@ bool PagedQwen::launch_group(int stage, int group, std::string& err) {
     auto& v = *cards_[(size_t) stage].ver;
     const strata::core::OnDevice on(pcards_[(size_t) stage].dev);
     if (g.coordinates) {
-        int32_t* table = stage == 0 ? m_.d_mrope : cards_[(size_t) stage].stage->mrope;
+        int32_t* table = v.get_batch_image_table();
         if (cudaMemcpyAsync(table, g.coordinates, (size_t) g.count * 3 * sizeof(int32_t),
                             cudaMemcpyHostToDevice, v.stream()) != cudaSuccess) {
             err = "the pipeline's picture coordinate upload failed";
@@ -950,19 +1003,38 @@ bool PagedQwen::keep_rows(const std::vector<strata::spec::StepRow>& rows, const 
         if (r == 0 || rows[r].session != rows[r - 1].session)
             keep[(size_t) rows[r].session] = kept[c++];
     const bool all = rows.size() == kept.size();   // one row each, kept
-    if (!(all ? conv_.ver.commit_slots(err) : conv_.ver.commit_slot_prefixes(keep.data(), err)))
-        return false;
     // Serial turns must preserve the owned rows of conversations that are waiting for their next turn.
-    return !drafting || drafter_->note_window(rows, kept, picks_.data(), err,
-        drafter_->get_snapshot_bytes() ? conv_.ver.final_R_all() : nullptr);
+    if (drafting && !drafter_->note_window(rows, kept, picks_.data(), err,
+            drafter_->get_snapshot_bytes() ? conv_.ver.final_R_all() : nullptr))
+        return false;
+    return all ? conv_.ver.commit_slots(err) : conv_.ver.commit_slot_prefixes(keep.data(), err);
 }
 
 int PagedQwen::propose(strata::serve::PagedPart& last, int session, int32_t, int64_t, int n, int32_t* out,
                        std::string& err, strata::spec::DraftContext* draft) {
-    if (!activate_images(session, err))
+    if (!drafter_->has_pending_rows(session))
+        return 0;
+    const bool upload = draft_image_session_ != session || !leads_[(size_t) session]->image_table_ready;
+    if (!activate_images(session, err, false))
         return -1;
+    if (m_.o.vision && upload) {
+        const strata::core::OnDevice on(m_.mtp.device());
+        int32_t* table = cards_.back().stage ? cards_.back().stage->mrope : m_.d_mrope;
+        strata::kernels::mrope_table_set(table);
+        const size_t bytes = m_.mrope_host.size() * sizeof(int32_t);
+        // Commits read per-conversation tables, so the drafter's shared table can travel on its own stream.
+        if (!strata::core::gpu_copy_2d_async(table, bytes, image_tables_.back()[(size_t) session], bytes,
+                                            bytes, 1, m_.mtp.stream())) {
+            err = "the drafter's image position copy failed";
+            return -1;
+        }
+        draft_image_session_ = session;
+    }
     Part& part = get_part(last);
-    return drafter_->propose(session, part.pages, part.ss, conv_.ver.final_R_all(), n, out, err, draft);
+    const int got = drafter_->propose(session, part.pages, part.ss, conv_.ver.final_R_all(), n, out, err, draft);
+    if (got < 0)
+        (void) wait_state(err);
+    return got;
 }
 
 bool PagedQwen::get_row_inputs(const std::vector<strata::spec::StepRow>& rows, RowInputs& inputs,
@@ -1200,6 +1272,42 @@ uint64_t read_size(const std::vector<uint8_t>& bytes, size_t& at) {
     std::memcpy(&n, bytes.data() + at, sizeof n);
     at += sizeof n;
     return n;
+}
+
+bool PagedQwen::wait_state(std::string& err) {
+    for (const ModelCard& card : cards_)
+        if (!card.ver->wait_commit(err))
+            return false;
+    if (m_.mtp.stream()) {
+        const strata::core::OnDevice on(m_.mtp.device());
+        if (!strata::core::gpu_stream_synchronize(m_.mtp.stream())) {
+            err = "the drafter's state writes did not complete";
+            return false;
+        }
+    }
+    return true;
+}
+
+
+bool should_inline_resident_shared(const Model& m) {
+#if defined(STRATA_USE_HIP)
+    if (m.multi_gpu || !m.native_pack || m.o.native_shards.empty())
+        return false;
+    cudaDeviceProp device{};
+    if (cudaGetDeviceProperties(&device, 0) != cudaSuccess ||
+        !strata::kernels::gfx_arch_is_gfx1151(device.gcnArchName))
+        return false;
+    try {
+        const strata::GgufFile file(m.o.native_shards.front());
+        const strata::MetaValue* type = file.get("general.file_type");
+        return type && type->is_num() && type->u == 26;   // GGUF's IQ3_S tier includes mixed expert formats.
+    } catch (const std::exception&) {
+        return false;
+    }
+#else
+    (void) m;
+    return false;
+#endif
 }
 
 }  // namespace

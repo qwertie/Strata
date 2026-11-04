@@ -64,6 +64,8 @@ public:
     virtual bool init(strata::core::PagePool& pool, strata::core::ConversationId id, std::string& err) = 0;
     /// Gives it the pages for its first `tokens` tokens; false (and `err`) when the pool has no room.
     virtual bool reserve(int64_t tokens, std::string& err) = 0;
+    /// Tells whether reserve(tokens) would leave the pages and device tables untouched.
+    virtual bool can_reserve_without_growth(int64_t) const { return false; }
     /// Gives back its growing pages beyond its first `tokens` tokens.
     virtual void truncate(int64_t tokens) = 0;
     /// Gives back every page it holds, its fixed regions too (it is not ready after).
@@ -278,6 +280,8 @@ public:
                            bool drafting, std::string& err) = 0;
     /// Prepares model-specific drafting for the conversations sharing the next pass.
     virtual void begin_step(int) {}
+    /// Completes outstanding state writes before commands, page reuse or a completed request can expose them.
+    virtual bool wait_state(std::string&) { return true; }
     /// Writes up to `n` guesses of the tokens after `token` at `pos` in `session` to `out` from its state on the last
     /// card (`last`); gets how many, or -1 (and `err`) when the drafter failed.  It is called before each of the
     /// conversation's steps (spec::StepModel::propose), also with `n` 0. `draft` supplies the shared window policy

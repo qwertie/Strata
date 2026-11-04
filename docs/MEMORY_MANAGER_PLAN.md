@@ -429,10 +429,51 @@ plus two subtests passed. CUDA/SYCL/Metal, DeepSeek inference and real multi-car
 [DETAILS.md](DETAILS.md#qwen-page-pool-benchmark-budgets) and the
 [full report](../bench/results/2026-11-03-q38-realistic/README.md) retain the historical restricted results,
 all realistic rates, exact commands, memory logs, source locations and remaining failures.
-Further full-residency diagnostics are blocked: final free commit 64.479 GiB was below the revised 68 GiB
+The initial pass stopped when free commit 64.479 GiB was below the revised 68 GiB
 preflight requirement, with 23.879 GiB physical RAM free. Separate failed attempts reached minimum free
 commit 0.004 GiB and minimum physical RAM 3.960 GiB; test PIDs were killed. The system-managed page file
 stayed at 65,174 MiB. No engine remains running; the main completed matrix's minimums are unchanged.
+
+### Full-residency follow-up: short prompt reads
+
+The old server reads a short prompt through verify windows (`--short-read 64`) and splits it at the
+final chat-turn boundary. The paged adapter always used batched prefill. Those paths use different
+projection input precisions. This explains the story's token-2 difference; changing owned versus borrowed
+prompt scratch could not remove it. The adapter now uses the old short-read width and boundary and feeds
+the drafter from those verified rows. All 41 captured story rows matched the old engine exactly across
+47 completed-layer HC means and all 248,320 logits per row. The original token-2 logits and per-layer
+errors are retained in the [follow-up report](../bench/results/2026-11-03-q38-realistic/README.md).
+
+Single-conversation batch windows reuse the ordinary QSA attention, grouped K/V and indexer appends,
+and combined GDN convolution/gate kernel. Per-slot GDN recurrence writes quantized output directly.
+Both verifier commit paths now
+share the existing all-layer QSA indexer helper, including the conversation's rotary table. Existing
+overrides and per-layer fallbacks remain available. These changes do not establish universal identity
+across different concurrent row layouts.
+
+The fully resident paged path also keeps shared projections on the main stream for the measured
+single-gfx1151 GGUF IQ3_S tier. Two warm and two measured 256-token seasons controls improved to
+32.62 tok/s without MTP and 52.04 with it; answers stayed identical. The preceding default-path pair
+was 24.83 and 44.34. The model metadata selects the tier. Explicit `STRATA_SH_STREAM` settings win;
+other devices, tiers, partial-residency graphs, split runs and legacy callers retain their policy.
+These controls and the final comparison are retained in the linked report.
+
+Single-GPU MTP also shares the original engine's asynchronous commit behavior. The shared engine's state
+fence runs before commands, actual page growth, interleaved prompt chunks, request completion and cleanup.
+Reservations within already published physical units only advance host bookkeeping. Verifier row
+coordinates have their own buffer, so the drafter keeps its full cell table between steps. Short prompt windows
+preserve pending drafter residuals before reusing verifier scratch. Snapshot and coordinate copies run
+on the draft stream, with a wait before prompt admission reuses their source. The guarded text/image
+control keeps both 256-token outputs identical after live memory changes and three cancellations. Split and legacy batch callers retain synchronous commits; `STRATA_COMMIT_SYNC=1` remains available.
+
+The final 4 November 2026 two-round Windows HIP comparison on Strix Halo, all 24,576 experts
+resident, measured seasons at 26.50/31.85 tok/s old/new without drafts and
+44.34/51.14 with MTP. Story was 27.04/31.15 without drafts and
+36.46/42.37 with MTP. New was faster in all 12 standalone prompt/mode comparisons, by 11.3% to 40.2%.
+New three-conversation aggregate rates were 60.09 without drafts and
+65.65 with MTP. The full suffix matrix, exact answers, memory floors and
+passed/failed/not-run checks are in the [paired report](../bench/results/2026-11-03-q38-realistic/README.md).
+Suffix-history and concurrent-layout differences remain; these measurements do not promise universal identity.
 
 ## Pictures in the replacement engines
 

@@ -183,4 +183,15 @@ int64_t ConversationPages::count_qsa_layers(const strata::core::ModelGeometry& g
     return g.n_qsa_layers() > 0 ? ss.layer_hi / interval - ss.layer_lo / interval : 0;
 }
 
+bool ConversationPages::can_reserve_without_growth(int64_t tokens) const {
+    if (!is_ready())
+        return false;
+    // The logical high-water mark can advance inside units whose device addresses are already published.
+    const int64_t blocks = get_pool_tokens(tokens) / idx_block_;
+    for (size_t j = 0; j < unit_bytes_.size(); ++j)
+        if ((uint64_t) blocks > runs_in_table_[j] * (run_bytes_[j] / unit_bytes_[j]))
+            return false;
+    return true;
+}
+
 }  // namespace strata::qwen38

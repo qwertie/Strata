@@ -1,5 +1,147 @@
 # Qwen3.8 IQ3_S with all experts on the GPU
 
+## Follow-up: the prompt path and decode kernels
+
+The follow-up uses `memory-manager` at `0c3006ca` with uncommitted changes. The initial measurements below
+are retained as the before comparison. The same hardware, model, saved environment and memory watchdog apply.
+
+The story's token-2 difference comes from prompt handling. The old server's `--short-read 64` default reads
+this prompt through verify windows and splits it at the final chat-turn boundary
+(`src/program/generate.cpp:6642`, `6771`, `7494`). The paged adapter always used batched prefill.
+Changing owned versus borrowed scratch did not change that decision. Batched prefill feeds FP16/BF16
+projection inputs (`src/models/qwen38/prefill/prefill.cpp:3272`); the verifier uses its Q8_1 projection path.
+These paths round differently before decode starts. This is a missing short-read policy in the adapter,
+not evidence of an incorrect expert layout, position, K/V format or HC weight setting.
+
+The layer trace compares the same story input at positions 33 and 34. Before the fix, layer 0's maximum
+absolute difference at position 34 was 0.000157665; the logits differed by up to 0.8460803.
+The old logits preferred token 13071, ` storm`, at 18.415834 over token 9662, ` wind`, at 18.233873.
+The new logits reversed them: 18.144032 and 18.167442. The adapter now honors short reads using the old
+verify width and final turn boundary, and feeds the drafter from those verified residuals with its own
+prefill pass. All 41 captured prompt/decode rows then matched exactly: 47 tapped layers of 2,560 floats
+and all 248,320 logits per row. Reusing the GDN decode fusions kept this exact match.
+[divergence.json](divergence.json) retains every layer's error, the top logits, equality checks and dump hashes.
+Raw `.tap` and `.logits` files remain in `%TEMP%/q38-realistic`; logits were exported temporarily through
+the existing `Verifier::copy_logits`, and that temporary exporter is absent from the final engine.
+The existing layer-tap exporter now also supports batch windows and their actual row positions.
+
+The decode changes reuse existing kernels. A single conversation's rows can use the ordinary QSA attention
+and grouped K/V and indexer appends over its shared pools. Per-slot GDN recurrence writes its Q8_1 output
+directly; one chain can use the combined
+convolution/gate kernel. The shared QSA commit helper restores and appends all indexer layers together,
+including per-conversation rotary tables. Existing overrides and per-layer fallbacks remain available.
+The saved `STRATA_GDN_SPLIT=1` hardware default prevents the combined GDN commit helper from running;
+that helper is not credited with a speed improvement here.
+
+The remaining large decode cost was the shared expert's side stream. In two warm and two measured
+256-token seasons controls, `STRATA_SH_STREAM=0` raised no-draft speed to 32.62 tok/s and MTP to
+52.04 tok/s, with identical answer tokens. The preceding default-path pair gave 24.83 and 44.34 tok/s.
+[shared-inline-controls.json](shared-inline-controls.json) retains both controls. The fully resident
+paged path was slower when shared projections overlapped the resident expert work; GPU hardware
+counters were not collected, so the specific resource contention is not established.
+
+The new default therefore keeps shared projections on the main stream only for batch graphs with
+all experts resident, one gfx1151 GPU, and the GGUF IQ3_S tier (`general.file_type=26`, which includes
+mixed expert formats). It reads the model's metadata, rather than matching its filename. Explicit
+`STRATA_SH_STREAM=0|1` settings take precedence. Other devices, quantization tiers, partial-residency
+graphs, split runs and legacy callers keep their existing policy. The shared fork/join condition is
+computed once per captured window. A separate-commit alternative was tested and rejected: it was
+slower, with large timing spikes; its answers matched ([rejected control](rejected-commit-control.json)).
+
+Single-GPU MTP can overlap its state commit with the next draft. The shared engine drains pending state
+writes before commands, page growth, interleaved prompt chunks, completed requests and destruction.
+Reservations already covered by published physical units only advance host bookkeeping, so they do not
+force a wait before drafting. The verifier owns a small row-coordinate table, leaving the drafter's
+full cell table intact between steps. It copies a full table only when the conversation or coordinates
+change, ordered on its own stream. Short prompt
+reads preserve residual rows still owed to other conversations' drafters. Snapshot copies use that same
+stream, and prompt admission waits for them before reusing verifier scratch. Legacy batch callers remain
+synchronous; `STRATA_COMMIT_SYNC=1` still forces synchronous commits.
+
+The guarded [state control](state-control.json) passes with a saved image embedding, three live requests,
+a change from 8,192 to 16,384 minimum tokens, cancellation of all three requests, and a return to 8,192.
+The standalone 256-token story and picture outputs are identical before and after. The first control
+failed when snapshot copies were not ordered with the drafter; that failed run is recorded separately.
+The corrected run exited normally without a watchdog kill. It used the existing embedding file; no
+image rendering or encoding ran alongside inference.
+
+## Final paired measurement: 4 November 2026
+
+All eight cases were rerun after the final HIP build, on the hardware and with the flags below.
+The owner-approved final MTP/suffix new-engine retry trimmed the GPU budget from 60 to 58 GiB
+to fit ordinary application headroom. All 24,576 experts remained resident; the other cases used 60 GiB.
+Each case has two full warm rounds, two measured 256-token rounds, and, for the new engine,
+one warm plus two measured three-conversation rounds. Rates are pooled over both measured rounds.
+No compilation, preview, rendering or encoding ran during inference. Desktop applications remained open;
+GPU clocks were not fixed or recorded. The owner reported vitest activity in another project during
+earlier attempts; the last pair ran after it finished. Background CPU load was not isolated.
+These measurements establish this configuration's result.
+
+| MTP | Suffix | Old seasons | New seasons | Old repeat | New repeat | Old story | New story | New three conversations |
+|---|---|---:|---:|---:|---:|---:|---:|---:|
+| Off | Off | 26.50 | 31.85 | 25.83 | 31.09 | 27.04 | 31.15 | 60.09 |
+| Off | On | 24.01 | 31.48 | 73.21 | 91.17 | 23.56 | 31.01 | 60.66 |
+| On | Off | 44.34 | 51.14 | 64.73 | 72.06 | 36.46 | 42.37 | 65.65 |
+| On | On | 40.29 | 48.34 | 61.89 | 86.75 | 34.47 | 40.81 | 64.66 |
+
+New was faster in all 12 standalone prompt/mode comparisons, by 11.3% to 40.2%. The previous agent's initial matrix remains below as the before
+comparison. [Interactive comparison](comparison.html). [final.json](final.json) retains every warm and measured answer, command, decode time,
+draft count, concurrent round, memory floor and timing report. Both executables' hashes are included.
+
+The new no-draft one-row median was verify 31.143 ms, commit 0.006 ms,
+and total 31.269 ms. These per-step medians include warm, standalone and concurrent work;
+they are not substituted for the paired request rates. MTP's four-row median commit callback was
+0.161 ms, compared with about 1.8-2.1 ms in the earlier synchronous diagnostic.
+Old `STRATA_DECODE_TIMING=1`, new `--step-profile 1 --stats`, and MTP draft graph timings are retained
+in `final.json`. Earlier layer-stage profiles are in [profiling.json](profiling.json), labelled by their
+code stage. The event profiler disables some stream and convolution fusions, so its stage totals
+are diagnostic numbers rather than final throughput.
+
+Every memory snapshot retained 24,576 experts / 50,292,326,400 expert bytes on the GPU.
+The final matrix exited normally in all eight cases, with minimum free commit 3.849 GiB and
+minimum free physical RAM 18.185 GiB. New-engine decode file counters stayed flat and CPU misses
+were zero; the old engine reported zero decode file blobs. The 60 GiB maximum GPU budget and PID-scoped
+3 GiB commit / 4 GiB physical watchdog remained in force. After vitest finished, the owner directed
+returning to about 68 GiB preflight headroom, with a small pool trim if needed. The last retry used
+66.5 GiB minimum free commit with the 58 GiB pool; earlier successful cases used the original thresholds.
+
+### Answer checks and limits
+
+Prompt order is seasons, repeat, story. `match` means all 256 output tokens matched. Concurrent
+comparisons retain seeds; their throughput excludes tokens before the last admission.
+
+- MTP off, suffix off: standalone [match, match, match, match, match, match];
+  concurrent [[68, match, match], [68, match, match], [68, match, match]].
+- MTP off, suffix on: standalone [match, match, match, match, match, match];
+  concurrent [[21, match, 19], [21, match, 19], [21, match, 19]].
+- MTP on, suffix off: standalone [match, match, match, match, match, match];
+  concurrent [[68, match, 65], [68, match, 65], [68, match, 65]].
+- MTP on, suffix on: standalone [match, match, match, match, match, match];
+  concurrent [[match, match, 10], [match, match, 10], [match, match, 10]].
+
+The final short-read trace also matches the old file byte for byte across all 41 rows and 47 tapped
+layers. Its earlier full-logit comparison matched all 248,320 logits per row. The final text/image
+state control passes after live memory changes and cancellation. Those checks do not establish
+universal identity across suffix histories, concurrent row layouts or long prompts.
+
+### Validation
+
+Passed: HIP builds of `strata`, `strata-q38` and `strata-ds41`; all five architecture tests;
+`step_test`, `batch_rows_test`, `batch_read_test`; the final layer replay, text/image state control
+eight-case matrix, and explicit `STRATA_SH_STREAM=1` replay (all 41 tapped rows identical). The second pass was performed by the implementation agent, as requested.
+
+Failed/rejected: the earlier text/image control exposed unordered residual snapshots and passed after
+the stream-order fix. Three attempts hit the commit watchdog (diagnostic startup, no-draft concurrency, MTP/suffix startup).
+Their complete retries passed; no final rate mixes in a stopped attempt. [followup-safety.json](followup-safety.json) records those stops separately
+from the successful matrix. Disabling inline one-row commits was slower and was rejected; its answer
+check passed. No speed claim uses that control's timings.
+
+Not run: CUDA, SYCL or Metal builds/inference; DeepSeek inference; multi-card inference or long-context
+speed/quality. The owner-excluded `test_lifecycle_matrix`, `vmm_test`, `hip_prefill_gemm` and
+`hip_prefill_mmq_parity` were not run. The user's server and port 8080 were not touched.
+
+## Initial full-residency comparison
+
 Measured on 3 November 2026, Windows HIP, Ryzen AI Max+ 395 / Radeon 8060S (gfx1151),
 128 GB unified memory. The Windows commit limit was 127.295 GiB throughout the recorded runs.
 This is a targeted engine comparison, not the standard benchmark protocol. Both binaries were built
@@ -253,7 +395,8 @@ Earlier 16 GiB-floor pilots are separate from the owner-approved 3 GiB-floor mat
 34 retained run logs, including archived attempts; [controls.json](controls.json) retains picture, batch and
 cost-policy answers and commands.
 
-**Blocked:** further full-residency diagnostics and optimization. A final preflight refused to start with
+**Blocked at the end of the initial pass:** further full-residency diagnostics and optimization.
+That pass's final preflight refused to start with
 64.479 GiB free commit and 23.879 GiB free physical RAM, below the revised 68 GiB requirement
 (`%TEMP%/q38-realistic/run.py:105`). No engine is left running. The HC-Q8-off comparison did not complete,
 and the planned isolated old/new MTP graph-timing control did not start. More commit headroom is needed

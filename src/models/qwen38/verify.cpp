@@ -392,6 +392,8 @@ bool fuse_hits_on() {
 #endif
 }
 
+bool is_layer_commit_enabled();
+
 bool one_token_self_commit() {
 #if defined(STRATA_USE_HIP)
     static const bool on = [] {
@@ -669,7 +671,7 @@ void Verifier::tap_write(int T, const int32_t* tokens, int64_t pos0) {
     if (tap_file_ == nullptr) return;
     const size_t per = tap_layers_.size() * (size_t) g_->n_embd;
     for (int t = 0; t < T; ++t) {
-        const int32_t hdr[2] = {(int32_t) (pos0 + t), tokens[t]};
+        const int32_t hdr[2] = {(int32_t) (last_batch_ ? last_pos_b_[t] : pos0 + t), tokens[t]};
         std::fwrite(hdr, sizeof hdr, 1, tap_file_);
         std::fwrite(h_tap_ + (size_t) t * per, sizeof(float), per, tap_file_);
     }
@@ -1177,6 +1179,8 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
     const int hrow0 = batch_rec_ ? row_base_ : 0;   // a slot group's own hand-off rows
     // STRATA_BATCH_SELF_COMMIT: the window keeps its rows (no commit graph, nothing to snapshot for one)
     const bool keep_rows = batch_rec_ && can_self_commit(brow_, T);
+    const bool sh_fork = sh_stream_on() && !prof_on_ && sh_cs_ != nullptr && ev_fork_ != nullptr &&
+                         ev_join_ != nullptr && !(batch_rec_ && ar_on() && resident_shared_inline_);
 
     // ---- the window's inputs, from mapped staging.  With branches the steps and positions (first read by the first
     // layer's mixer) cross PCIe on side 1 beside the embedding and the first hyper-connection read.
@@ -1236,6 +1240,8 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
     // ---------------------------------------------------------------- pre(l, group): up to the ring
     auto pre = [&](int64_t l, int grp) -> bool {
         const int tb = tb_[grp], te = te_[grp], n = te - tb;
+        // Validated layouts keep each slot contiguous, so matching endpoints share one state.
+        const bool one_chain = !batch_rec_ || brow_[tb] == brow_[te - 1];
         stamp(l, 0, grp);
         const LayerView v(wt, l);
         const char* pfx[2] = {"hc_attn_", "hc_ffn_"};
@@ -1423,7 +1429,8 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
                     !native_of(wout, v.name("ssm_out.weight"), err))
                     return false;
                 const int64_t gi = gdn_idx[(size_t) l];
-                float* state = ss.gdn_state + (size_t) (gi - ss.gdn_ord0) * gdn_floats;
+                SessionState& first_ss = slot_ss(tb);
+                float* state = first_ss.gdn_state + (size_t) (gi - first_ss.gdn_ord0) * gdn_floats;
                 float* conv = state + (uint64_t) g.ssm_state_size * g.ssm_v_heads * g.ssm_state_size;
                 float* qkv = qkv_L_ + (size_t) gi * MT * C;
                 float* hb = h_L_ + (size_t) gi * MT * C;
@@ -1462,10 +1469,10 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
                     native_mmvq(wg->native_type, wg->native_data, xq_, z_ + (size_t) tb * ZV, (int) N, (int) ZV, n,
                                 df_side_[1]);
                 }
-                const bool fuse_ab = fuse_convab_on() && !br && !batch_rec_ && !prof_on_ && !sidem;   // the side mixer computes the gates on its branch
+                const bool fuse_ab = fuse_convab_on() && !br && one_chain && !prof_on_ && !sidem;
                 if (!side_proj) mm(wqkv, qkv + (size_t) tb * C, (int) N, (int) C);   // with side_proj: above, first
                 stamp(l, 2, grp);
-                if (batch_rec_) {   // contiguous rows may be proposals for the same slot
+                if (batch_rec_ && !fuse_ab) {   // contiguous rows may be proposals for the same slot
                     for (int t = tb; t < te;) {
                         const int first = t;
                         while (t < te && brow_[t] == brow_[first]) ++t;
@@ -1479,7 +1486,8 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
                 } else
                 // a one-token window keeps its token: it advances the conv history and the state itself (commit)
                 if (fuse_ab)   // 143-amdk: the conv and the a/b projections in one launch
-                    gdn_conv_ab_multi(conv, qkv, (const float*) wc->data, hb, (int) C, (int) (2 * HK), EPS, n, tb, self_commit,
+                    gdn_conv_ab_multi(conv, qkv, (const float*) wc->data, hb, (int) C, (int) (2 * HK), EPS, n, tb,
+                                      self_commit || keep_rows,
                                       xm, (const uint16_t*) wa->data, (const uint16_t*) wb->data, (const float*) wdt->data,
                                       (const float*) wsa->data, gate + (size_t) tb * HV, beta + (size_t) tb * HV, (int) N,
                                       (int) HV, cs);
@@ -1535,21 +1543,22 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
                         gdn_step_norm_multi(stx, hb + (size_t) first * C, (int) C, gate + (size_t) first * HV,
                                             beta + (size_t) first * HV, z_ + (size_t) first * ZV,
                                             (const float*) wnm->data, EPS, y_ + (size_t) first * ZV,
-                                            (int) HK, (int) HV, t - first, keep_rows ? one_ : nullptr, cs, 0);
+                                            (int) HK, (int) HV, t - first, keep_rows ? one_ : nullptr, cs, 0,
+                                            g_qfuse() ? xq_ + (size_t) first * (ZV / 32) * 36 : nullptr);
                     }
                 } else
                 gdn_step_norm_multi(state, hb, (int) C, gate, beta, z_, (const float*) wnm->data, EPS, y_, (int) HK,
                                     (int) HV, te, self_commit ? one_ : nullptr, cs, tb, g_qfuse() ? (void*) xq_ : nullptr);
                 stamp(l, 6, grp);
-                // STRATA_QFUSE: done above by gdn_step_norm_multi - but a batch's per-slot recurrence passes it no q8_1
-                // destination (#1139: the out-projection read stale bytes), so that case quantizes here as without it
-                if (!g_qfuse() || batch_rec_) quant_in(y_ + (size_t) tb * ZV, (int) ZV);
+                // The grouped recurrence does not write quantized output rows.
+                if (!g_qfuse() || (batch_rec_ && gdn_groups_on))
+                    quant_in(y_ + (size_t) tb * ZV, (int) ZV);
                 else il_ready = false;
                 mm(wout, bo_ + tb * N, (int) ZV, (int) N);
             } else {
                 // ======================= QSA =======================
                 const int64_t qi = qsa_idx[(size_t) l];
-                const QsaState& st = ss.qsa_states[qi];
+                const QsaState& st = slot_ss(tb).qsa_states[qi];
                 const WeightRef *wik = need(v, "indexer.k_proj.weight", err), *wq = need(v, "attn_q.weight", err),
                                 *wk = need(v, "attn_k.weight", err), *wv = need(v, "attn_v.weight", err),
                                 *wo = need(v, "attn_output.weight", err), *wiq = need(v, "indexer.q_proj.weight", err),
@@ -1637,7 +1646,9 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
                     if (grp == 0) copy_from_mapped(tail_snap_ + (size_t) qi * TS, st.idx_tail, TS, ns);
                 };
                 auto idx_append = [&](cudaStream_t ns) {
-                    if (dec_batch && !g_no_batch_kv && !batch_rec_) {
+                    if (dec_batch && !g_no_batch_kv && one_chain) {
+                        const MropeTableScope image_table(slot_image_tables_.empty() || !batch_rec_
+                            ? mrope_table() : slot_image_tables_[(size_t) brow_[tb]]);
                         const QsaIndexerBuffers ib = qsa_indexer_buffers(st);
                         native_qsa_indexer_append_steps(idx_raw + tb * ID, step_ + tb * kStepCount + kStepPos, kStepCount,
                                                         n, 0, (const float*) wikn->data, EPS, ib, s, st.max_cells,
@@ -1743,9 +1754,8 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
                 }
                 stamp(l, 8, grp);
                 if (!sidem) idx_snap(cs);
-                // #783 PR-d (stuchapin909): the window's K/V cells in one launch per pool instead of one per token (a
-                // batch's rows each have their own K/V, so that case keeps the loop)
-                if (dec_batch && !g_no_batch_kv && !batch_rec_) {
+                // Mixed-conversation windows keep per-row appends to their separate pools.
+                if (dec_batch && !g_no_batch_kv && one_chain) {
                     const int32_t* step_b = step_ + tb * kStepCount;
                     const float* kc_b = kcur_ + tb * NKV * HD;
                     const float* vc_b = vcur_ + tb * NKV * HD;
@@ -1869,7 +1879,7 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
                                                       attn_scratch_ + (size_t) t * attn_scratch_floats_,
                                                       attn_ + t * NH * HD, 1, cs);
                     }
-                } else if (batch_rec_) {   // each row selects and attends over its own slot's K/V
+                } else if (batch_rec_ && (!one_chain || st.kv_mode == 1)) {
                     for (int t = tb; t < te; ++t) {
                         const QsaState& sx = slot_ss(t).qsa_states[qi];
                         qsa_block_scores(sx.idx_pooled, sx.idx_dead, qidx_ + t * IQ * ID, step_ + t * kStepCount, 1,
@@ -1936,7 +1946,6 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
             const char* e = std::getenv("STRATA_SH_FORK_LATE");
             return !e || e[0] != '0';
         }();
-        const bool sh_fork = sh_stream_on() && !prof_on_ && sh_cs_ != nullptr && ev_fork_ != nullptr && ev_join_ != nullptr;
         const bool sh_fork_late = sh_fork && sh_fork_late_env && !ar_on();
         cudaStream_t sh_stream = sh_fork ? sh_cs_ : cs;
         if (sh_fork && !sh_fork_late) {
@@ -2181,9 +2190,7 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
                               native_moe_combine_hits_supported(parts_ + (size_t) tb * K * N, shared_ + tb * N, bo_ + tb * N, N, K, n);
             if (!hits_in_combine) moe_hit_add(parts_out, hit_out, p_dst, p_counts + 1, cap, N, cs);
         }
-        // Same condition as `sh_fork` above, which is per group and out of scope here: wait only when the fork
-        // actually ran (a wait on an event never recorded is a no-op, but saying it outright reads better).
-        if (sh_stream_on() && !prof_on_ && sh_cs_ != nullptr && ev_fork_ != nullptr && ev_join_ != nullptr) {
+        if (sh_fork) {
             cudaStreamWaitEvent(cs, ev_join_, 0);
         }
         if (sg_gated_[grp]) {   // STRATA_LFUSE: the shared expert's gate was not applied: the combine applies it (all rows are hits)
@@ -2210,7 +2217,7 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
         if (remote_opt_) remote_opt_->combine(bo_ + tb * N, y_dummy_ + tb * N, tb, n,
                               device_plan_ ? skip_ + grp : nullptr, ring, cs);
         stamp(l, 24, grp);
-        if (tap_on_ && !batch_rec_ && l < (int64_t) tap_slot_.size() && tap_slot_[(size_t) l] >= 0) {
+        if (tap_on_ && l < (int64_t) tap_slot_.size() && tap_slot_[(size_t) l] >= 0) {
             // the layer's completed output: R with this FFN half's write applied (the next layer's read would fold it), the mean of
             // the hc streams, all rows of the group in one launch
             const int64_t nt = (int64_t) tap_layers_.size();
@@ -2352,7 +2359,8 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
         if (nan_guard_on()) strata::kernels::logits_nonfinite_rows(head_logits_, T, (int) n_vocab_, m_nf_, cs);
     }
     stamp(g.n_layers, 1, 0);
-    if (tap_on_ && !batch_rec_ && tap_file_ != nullptr) copy_from_mapped(m_tap_, tap_dev_, (int64_t) T * (int64_t) tap_layers_.size() * N, cs);
+    if (tap_on_ && tap_file_ != nullptr)
+        copy_from_mapped(m_tap_, tap_dev_, (int64_t) T * (int64_t) tap_layers_.size() * N, cs);
     return true;
 }
 
@@ -2618,11 +2626,7 @@ bool Verifier::capture_commit(std::string& err) {
         // engine-latency (STRATA_COMMIT_BATCH, default on; =0 keeps the per-layer loop): every GDN layer's conv history and
         // state in two launches instead of two per layer (~70 graph nodes fewer; the same arithmetic per layer, bitwise).
         // The commit runs between a window and the draft round, which on HIP waits for it.
-#if defined(STRATA_GPU_METAL)   // no batched commit kernels on Metal: the per-layer loop (the Mac engine's gated path)
-        static const bool commit_batch = false;
-#else
-        static const bool commit_batch = [] { const char* e = std::getenv("STRATA_COMMIT_BATCH"); return !e || e[0] != '0'; }();
-#endif
+        const bool commit_batch = is_layer_commit_enabled();
         bool gdn_batched = false;
         if (commit_batch) {
             int64_t n_gdn = 0;
@@ -2641,34 +2645,9 @@ bool Verifier::capture_commit(std::string& err) {
                     beta_L_ + (size_t) gdn_index * MT * HV, MT * HV, (int) C, (int) g.ssm_k_heads, (int) HV, (int) MT,
                     (int) n_gdn, commit_, cs_);
         }
-        // the QSA layers' tail restore + indexer append, one launch for all of them (one block per layer)
-        bool qsa_batched = false;
-        if (commit_batch && ok && !g_no_batch_kv) {
-            QsaIndexerLayers il;
-            int nq = 0;
-            int64_t mc = -1;
-            bool fits = true;
-            for (int64_t l = lb_, qi = qsa_index; l < le_ && fits; ++l) {
-                if (!is_qsa_layer(g, l)) continue;
-                const WeightRef* wikn = need(LayerView(*wt_, l), "indexer.k_norm.weight", err);
-                if (!wikn) { ok = false; fits = false; break; }
-                const QsaState& st = ss.qsa_states[qi];
-                if (nq >= QsaIndexerLayers::kMax || (mc >= 0 && st.max_cells != mc)) { fits = false; break; }
-                mc = st.max_cells;
-                il.gamma[nq] = (const float*) wikn->data;
-                il.tail_src[nq] = tail_snap_ + (size_t) qi * TS;
-                il.tail[nq] = st.idx_tail; il.dead[nq] = st.idx_dead; il.pooled[nq] = st.idx_pooled;
-                il.block_pos[nq] = st.idx_block_pos;
-                il.units[nq] = st.units;
-                ++nq;
-                ++qi;
-            }
-            if (ok && fits && nq > 0) {
-                native_qsa_indexer_append_steps_layers(idx_raw_L_ + (size_t) qsa_index * MT * ID, MT * ID, commit_ + 2, 1,
-                                                       (int) MT, 0, EPS, il, nq, s, mc, rope_scaling(), cs_);
-                qsa_batched = true;
-            }
-        }
+        const bool qsa_batched = commit_batch && ok &&
+            try_record_qsa_commit_layers(ss, 0, (int) MT, commit_ + 2, tail_snap_, err);
+        ok = ok && err.empty();
         for (int64_t l = lb_; l < le_ && ok; ++l) {
             const LayerView v(*wt_, l);
             if (is_qsa_layer(g, l) && qsa_batched) {
@@ -3430,15 +3409,8 @@ bool Verifier::commit(int n_keep, std::string& err) {
         // set_commit_async: no wait here - the next window runs on the same stream after it, and the drafter (its own
         // stream) reads only this window's final rows and its own K/V. h_commit_ is next written after the next window's
         // results are read, i.e. after this graph has run.  Everything else waits on commit_done_ (wait_commit).
-        if (!g_commit_async || next_ != nullptr) {
-            const cudaError_t se = cudaStreamSynchronize(cs_);
-            if (se != cudaSuccess) { err = std::string("verify: commit: ") + cudaGetErrorString(se); return false; }
-        } else {
-            const cudaError_t re = cudaEventRecord(commit_done_, cs_);
-            if (re != cudaSuccess) { err = std::string("verify: commit event: ") + cudaGetErrorString(re); return false; }
-            (void) cudaStreamQuery(cs_);
-            commit_pending_ = true;
-        }
+        if (!finish_commit_launch(g_commit_async, err))
+            return false;
     }
     if (ple_stage())   // stages that share one session must advance it once
         for (int t = 0; t < n_keep; ++t) {
@@ -3489,11 +3461,13 @@ bool Verifier::init_slots(const std::vector<SessionState*>& slots, std::string& 
         return false;
     }
     const uint64_t a = ((uint64_t) S * CB * 4 + 255) & ~255ull;
-    if (cudaMalloc(&d, a + (uint64_t) S * std::max<int64_t>(nQ, 1) * TS * 4) != cudaSuccess) {
+    const uint64_t coordinates = a + (uint64_t) S * std::max<int64_t>(nQ, 1) * TS * 4;
+    if (cudaMalloc(&d, coordinates + strata::kernels::kVerifyMaxT * 3 * sizeof(int32_t)) != cudaSuccess) {
         err = "verify: the batch buffers do not fit";
         return false;
     }
     arena_b_ = d;
+    batch_image_table_ = (int32_t*) ((uint8_t*) d + coordinates);
     commitb_ = (int32_t*) d;
     tail_snap_b_ = (float*) ((uint8_t*) d + a);
     slots_ = slots;
@@ -3514,6 +3488,8 @@ bool Verifier::capture_batch(const int* rows, int S, int hbase, std::string& err
     row_base_ = hbase;
     for (int t = 0; t < S; ++t) brow_[t] = rows[t];
     std::string rerr;
+    const strata::kernels::MropeTableScope image_table(
+        slot_image_tables_.empty() ? strata::kernels::mrope_table() : batch_image_table_);
     const bool ok = record_window(S, cs_, rerr);
     batch_rec_ = false;
     row_base_ = 0;
@@ -3557,6 +3533,21 @@ bool Verifier::capture_commit_batch(const int* rows, int S, int hbase, std::stri
         for (int t = 0; t < S; ++t)
             if (t == 0 || rows[t] != rows[t - 1])
                 copy_i32_from_mapped(commitb_ + (size_t) rows[t] * CB, m_commitb_ + (size_t) rows[t] * CB, CB, cs_);
+        std::vector<bool> qsa_batched(slots_.size(), false);
+        for (int t = 0; t < S;) {
+            const int first = t;
+            while (t < S && rows[t] == rows[first])
+                ++t;
+            const int slot = rows[first];
+            const MropeTableScope image_table(slot_image_tables_.empty() ? mrope_table() : slot_image_tables_[slot]);
+            qsa_batched[(size_t) slot] = try_record_qsa_commit_layers(
+                *slots_[(size_t) slot], first, t - first, commitb_ + (size_t) slot * CB + 2,
+                tail_snap_b_ + (size_t) slot * nQ * TS, err);
+            if (!err.empty()) {
+                ok = false;
+                break;
+            }
+        }
         int64_t qsa_index = 0, gdn_index = 0;
         for (int64_t l = 0; l < lb_; ++l) (is_qsa_layer(g, l) ? qsa_index : gdn_index) += 1;
         for (int64_t l = lb_; l < le_ && ok; ++l) {
@@ -3610,6 +3601,8 @@ bool Verifier::capture_commit_batch(const int* rows, int S, int hbase, std::stri
                 for (int t = 0; t < S;) {
                     const int first = t;
                     while (t < S && rows[t] == rows[first]) ++t;
+                    if (qsa_batched[(size_t) rows[first]])
+                        continue;
                     const MropeTableScope image_table(slot_image_tables_.empty()
                         ? mrope_table() : slot_image_tables_[(size_t) rows[first]]);
                     const QsaState& st = slots_[(size_t) rows[first]]->qsa_states[qsa_index];
@@ -3715,6 +3708,8 @@ bool Verifier::instantiate_evicting(cudaGraphExec_t& ex, cudaGraph_t graph, cons
 bool Verifier::stage_batch(const int* rows, int S, int hbase, const int32_t* tokens, const int64_t* pos,
                            std::string& err, bool capture) {
     using namespace strata::kernels;
+    if (!wait_commit(err))
+        return false;
     // the row layout: a slot may own a contiguous group of rows (--batch-mtp), also across the stages of a layer split,
     // whose hand-off buffers hold kVerifyMaxT rows, or set_handoff_rows' (a stage that hands rows on or takes them)
     if (const char* why = batch_rows_error(rows, S, pos, (int) slots_.size(), max_t_, hbase,
@@ -3944,8 +3939,8 @@ bool Verifier::commit_slot_prefixes(const int* keep, std::string& err, bool chai
     if (!can_self_commit(last_rows_, S)) {   // (else the window has kept its rows)
         const cudaError_t le = cudaGraphLaunch(commit_bm_[bkey(last_rows_, S, row_base_)], cs_);
         if (le != cudaSuccess) { err = std::string("verify: batch commit launch: ") + cudaGetErrorString(le); return false; }
-        const cudaError_t se = cudaStreamSynchronize(cs_);
-        if (se != cudaSuccess) { err = std::string("verify: batch commit: ") + cudaGetErrorString(se); return false; }
+        if (!finish_commit_launch(batch_commit_async_ && g_commit_async, err))
+            return false;
     }
     if (ple_stage())
         for (int t = 0; t < S;) {
@@ -3978,6 +3973,7 @@ bool Verifier::reserve_batch_history(size_t tokens, std::string& err) {
 }
 
 bool Verifier::sample_rows(int S, std::string& err) {
+    tap_write(S, last_tokens_, 0);
     std::vector<int32_t> history;
     std::vector<size_t> offsets((size_t) S);
     std::vector<int> lengths((size_t) S);
@@ -4676,5 +4672,80 @@ void Verifier::absorb_stats(Verifier& o) {
 bool Verifier::can_self_commit(const int* rows, int count) const {
     return batch_self_commit_ && one_row_per_slot(rows, count);
 }
+
+bool Verifier::try_record_qsa_commit_layers(const SessionState& ss, int first, int count,
+                                           const int32_t* positions, const float* tails, std::string& err) {
+    using namespace strata::kernels;
+    if (!is_layer_commit_enabled() || g_no_batch_kv)
+        return false;
+    const ModelGeometry& g = *g_;
+    const QsaShapes s = shapes_of(g);
+    const int64_t TS = (s.idx_block - 1) * g.idx_key_dim;
+    QsaIndexerLayers layers;
+    int nq = 0;
+    int64_t qi = 0, cells = -1;
+    for (int64_t l = 0; l < le_; ++l) {
+        if (!is_qsa_layer(g, l))
+            continue;
+        const int64_t index = qi++;
+        if (l < lb_)
+            continue;
+        const WeightRef* norm = need(LayerView(*wt_, l), "indexer.k_norm.weight", err);
+        if (!norm)
+            return false;
+        const QsaState& st = ss.qsa_states[index];
+        if (nq >= QsaIndexerLayers::kMax || (cells >= 0 && st.max_cells != cells))
+            return false;
+        cells = st.max_cells;
+        layers.gamma[nq] = (const float*) norm->data;
+        layers.tail_src[nq] = tails + (size_t) index * TS;
+        layers.tail[nq] = st.idx_tail;
+        layers.dead[nq] = st.idx_dead;
+        layers.pooled[nq] = st.idx_pooled;
+        layers.block_pos[nq] = st.idx_block_pos;
+        layers.units[nq++] = st.units;
+    }
+    if (nq == 0)
+        return false;
+    const int64_t first_qsa = qi - nq;
+    native_qsa_indexer_append_steps_layers(
+        idx_raw_L_ + (size_t) (first_qsa * max_t_ + first) * g.idx_key_dim,
+        max_t_ * g.idx_key_dim, positions, 1, count, 0, EPS, layers, nq, s, cells, rope_scaling(), cs_);
+    return true;
+}
+
+bool Verifier::finish_commit_launch(bool async, std::string& err) {
+    if (!async || next_ != nullptr) {
+        const cudaError_t status = cudaStreamSynchronize(cs_);
+        if (status != cudaSuccess) {
+            err = std::string("verify: commit: ") + cudaGetErrorString(status);
+            return false;
+        }
+    } else {
+        const cudaError_t status = cudaEventRecord(commit_done_, cs_);
+        if (status != cudaSuccess) {
+            err = std::string("verify: commit event: ") + cudaGetErrorString(status);
+            return false;
+        }
+        (void) cudaStreamQuery(cs_);
+        commit_pending_ = true;
+    }
+    return true;
+}
+
+namespace {
+/// Keeps the existing per-layer override available to both verifier commit paths.
+bool is_layer_commit_enabled() {
+#if defined(STRATA_GPU_METAL)
+    return false;
+#else
+    static const bool on = [] {
+        const char* value = std::getenv("STRATA_COMMIT_BATCH");
+        return !value || value[0] != '0';
+    }();
+    return on;
+#endif
+}
+}  // namespace
 
 }  // namespace strata::core

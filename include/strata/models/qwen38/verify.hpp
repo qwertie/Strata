@@ -236,8 +236,10 @@ public:
     bool finish_slot_rows(int base, std::vector<int32_t>& picks, std::string& err);
     /// Gets device bytes retained for drained groups' deferred commits.
     uint64_t get_pipeline_scratch_bytes() const;
-    /// Sets stable per-slot tables before capture; paged vision query/K rows use the shared table's row indices.
+    /// Sets stable per-slot cell coordinates before capture; paged vision query/K rows use a separate row table.
     void set_slot_image_tables(const std::vector<const int32_t*>& tables) { slot_image_tables_ = tables; }
+    /// Gets paged vision query/K coordinates, [kVerifyMaxT][3], written before launching a batch window.
+    int32_t* get_batch_image_table() { return batch_image_table_; }
 
     /// --batch-mtp: slot rotation makes many row layouts, so bound the captured batch graph pairs (LRU). 0 = unbounded.
     void set_batch_graph_limit(size_t n) { batch_graph_limit_ = n; }
@@ -245,6 +247,10 @@ public:
     void set_dynamic_residency(bool enabled) { dynamic_residency_ = enabled; }
     /// Selects the paged engine's one-row state path; STRATA_BATCH_SELF_COMMIT overrides this before init.
     void set_batch_self_commit_default(bool enabled) { batch_self_commit_default_ = enabled; }
+    /// Allows commit/draft overlap when the caller fences page reuse with wait_commit().
+    void set_batch_commit_async(bool enabled) { batch_commit_async_ = enabled; }
+    /// Keeps shared projections in line for the paged engine's measured all-resident UMA path.
+    void set_resident_shared_inline(bool enabled) { resident_shared_inline_ = enabled; }
     /// Frees every captured batch window graph; they are captured again when used.  For a slot whose state the
     /// captured graphs point at moved (strata-q38: a paused conversation came back in other page-pool pages).
     bool drop_batch_graphs(std::string& err);
@@ -406,6 +412,8 @@ private:
     bool can_self_commit(const int* rows, int count) const;
     bool batch_self_commit_default_ = false; ///< The caller's policy when no environment override is set.
     bool batch_self_commit_ = false; ///< The policy resolved before any graphs are captured.
+    bool resident_shared_inline_ = false; ///< Avoids competing weight reads when a resident batch plans on device.
+    bool batch_commit_async_ = false; ///< Requires caller-owned state fences; legacy batch callers stay synchronous.
     std::vector<const int32_t*> slot_image_tables_; ///< Coordinates used by each slot's pooled indexer keys.
     RemoteExpertOpt* remote_opt_ = nullptr;
     bool capture(int T, std::string& err);
@@ -472,6 +480,7 @@ private:
     int32_t* commitb_ = nullptr;
     float* tail_snap_b_ = nullptr;         ///< per (slot, QSA layer) indexer tail snapshot
     void* arena_b_ = nullptr;
+    int32_t* batch_image_table_ = nullptr; ///< Row coordinates independent of prompt and draft cell tables.
     int64_t last_pos_b_[8] = {};
     bool capture_batch(const int* rows, int S, int hbase, std::string& err);
     /// Free the graph pair of the least recently used batch layout other than `keep` (`evicted`: there was one).
@@ -560,6 +569,12 @@ private:
     bool staged_ = false;
     bool copy_used_ = false;
     bool capture_commit(std::string& err);
+    /// Records completion for deferred state writes, or drains the stream before returning.
+    bool finish_commit_launch(bool async, std::string& err);
+    /// Restores and appends one conversation's indexer tails across this stage.
+    /// Uses scratch rows [first, first + count); false selects the per-layer fallback.
+    bool try_record_qsa_commit_layers(const SessionState& ss, int first, int count,
+                                      const int32_t* positions, const float* tails, std::string& err);
     bool record_window(int T, cudaStream_t cs, std::string& err);
     // #649: STRATA_VERIFY_TRACE=1 - a host event ring (trace_ev) and GPU breadcrumbs: the profiler's stamp points,
     // per layer and token group, written to mapped memory (null when the trace is off)

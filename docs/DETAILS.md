@@ -1608,11 +1608,58 @@ replacement. These include background application changes; they are not an exact
 The commit limit stayed at 127.295 GiB. Do not add GPU use to system charge on unified memory.
 [The full report](../bench/results/2026-11-03-q38-realistic/README.md) gives exact flags, round times,
 per-case memory floors, load-path source locations, profiling, identity failures and validation limits.
-Further GPU diagnostics are blocked by commit headroom: the final preflight refused 64.479 GiB free commit
+The initial pass stopped at a preflight with 64.479 GiB free commit
 against a revised 68 GiB requirement, despite 23.879 GiB free physical RAM. The retained exploratory logs
 include a 0.004 GiB commit minimum and a 3.960 GiB physical minimum in separate killed attempts; they are
 not successful runs. The main matrix remains separate. No engine is left running. The system-managed
 page file was 65,174 MiB and did not grow in the logs. The report includes every retained run's minimums.
+
+### Short prompts in the full-residency follow-up
+
+The story's old/new token-2 difference was caused by different prompt paths. The old server's default
+`--short-read 64` reads short segments through verify windows, with a split at the final chat-turn
+boundary. The paged adapter always used batched prefill, whose FP16/BF16 projection inputs round
+differently from the verifier's Q8_1 inputs. Owned prompt scratch did not change that choice.
+At story position 34, the old engine preferred ` storm` over ` wind`; the new engine reversed them.
+Their maximum logit difference was 0.8460803. This was a missing prompt-selection policy in the adapter.
+No position, expert-layout, K/V-format or HC-weight change was needed.
+
+The adapter now honors short reads with the original window width and final turn boundary, and feeds
+the drafter from verified residuals using its own prefill pass. All 41 captured story prompt/decode rows
+then matched exactly across 47 completed-layer HC means and all 248,320 logits per row. The verifier's
+existing layer-tap exporter also supports batch rows and their actual positions. Raw dumps and their
+hashes are retained in the [full report](../bench/results/2026-11-03-q38-realistic/README.md).
+
+Single-conversation batch windows reuse the ordinary QSA attention, grouped K/V and indexer appends,
+and combined GDN convolution/gate kernels. Per-slot recurrence writes quantized outputs directly.
+Both commit paths share the existing
+all-layer QSA indexer helper, including the conversation's rotary table, with the existing per-layer
+fallbacks and overrides. These changes do not promise identical answers across concurrent row layouts.
+
+The fully resident paged path also keeps shared projections on the main stream for the measured
+single-gfx1151 GGUF IQ3_S tier. Two warm and two measured 256-token seasons controls improved to
+32.62 tok/s without MTP and 52.04 with it; answers stayed identical. The preceding default-path pair
+was 24.83 and 44.34. The model metadata selects the tier. Explicit `STRATA_SH_STREAM` settings win;
+other devices, tiers, partial-residency graphs, split runs and legacy callers retain their policy.
+These controls and the final comparison are retained in the linked report.
+
+On one GPU, the next MTP draft can overlap the verified state commit. Commands, actual page growth,
+interleaved prompt chunks, request completion and engine cleanup drain pending state first. Advancing
+within already published physical units needs no device-table write. Verifier row coordinates have
+their own buffer, so the drafter keeps its full cell table between steps. Short prompt reads preserve any
+pending drafter residuals from other conversations. Snapshot and coordinate copies run on the draft
+stream; prompt admission waits before reusing the source scratch. A guarded text/image control keeps
+both 256-token outputs identical after live memory changes and cancellation of three requests.
+Legacy batch callers stay synchronous; `STRATA_COMMIT_SYNC=1` keeps the explicit wait available.
+
+The final 4 November 2026 two-round Windows HIP comparison on Strix Halo, all 24,576 experts
+resident, measured seasons at 26.50/31.85 tok/s old/new without drafts and
+44.34/51.14 with MTP. Story was 27.04/31.15 without drafts and
+36.46/42.37 with MTP. New was faster in all 12 standalone prompt/mode comparisons, by 11.3% to 40.2%.
+New three-conversation aggregate rates were 60.09 without drafts and
+65.65 with MTP. The full suffix matrix, exact answers, memory floors and
+passed/failed/not-run checks are in the [paired report](../bench/results/2026-11-03-q38-realistic/README.md).
+Suffix-history and concurrent-layout differences remain; these measurements do not promise universal identity.
 
 ### Pictures in the page-pool engines
 

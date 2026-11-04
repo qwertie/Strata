@@ -35,8 +35,8 @@ public:
     /// Writes the drafter's K/V of the prompt cells [cell0, cell0 + n) of a conversation (its `pages` and session
     /// `ss`) from the prompt path `sp`'s final residual rows `R_rows`: cell i pairs row i with `next[i]`, the token
     /// after it.  Cells that a prompt of `prompt_len` tokens leaves out of the drafter's attention window are skipped.
-    /// For the prompt path's on_chunk.
-    bool read_prompt(strata::prefill::Prefill& sp, const ConversationPages& pages, strata::core::SessionState& ss,
+    /// A null `sp` uses the drafter's own pass for residuals from verify windows.
+    bool read_prompt(strata::prefill::Prefill* sp, const ConversationPages& pages, strata::core::SessionState& ss,
                      const float* R_rows, const int32_t* next, int64_t n, int64_t cell0, int64_t prompt_len,
                      std::string& err);
     /// Remembers what the verify window that just ran kept of each conversation in it: `rows` (a conversation's rows
@@ -52,8 +52,12 @@ public:
     /// Reserves per-conversation copies before a wave, preserving pending rows from the last synchronous
     /// verifier output in `residuals`. Ownership remains with each conversation through live concurrency changes.
     bool reserve_snapshots(const float* residuals, std::string& err);
+    /// Preserves unconsumed rows before short prompt windows reuse the verifier's scratch.
+    bool preserve_pending_rows(const float* residuals, std::string& err);
     /// Forgets what the last window kept of conversation `session` (its state is about to change otherwise).
     void forget(int session) { last_.at((size_t) session).rows = 0; }
+    /// Tells whether the next proposal still needs a verified window.
+    bool has_pending_rows(int session) const { return last_.at((size_t) session).rows > 0; }
     /// Reads what the last window kept of conversation `session` (its `pages` and session `ss`) into its K/V, from
     /// `window_R`, that window's final residual rows; then writes up to `n` guesses of the tokens after its last kept
     /// one to `out` and gets how many (0 also when the window did not hold it).  `n` 0 only reads.  -1 (with `err`)
@@ -79,7 +83,7 @@ private:
 
     strata::core::MtpDrafter* mtp_ = nullptr;
     uint64_t row_floats_ = 0;   ///< the floats of one residual row
-    float* saved_rows_ = nullptr; ///< Per-session residual snapshots for pipelined windows.
+    float* saved_rows_ = nullptr; ///< Keeps pending drafts valid while another conversation reuses verifier scratch.
     int max_rows_ = 0;
     float* rows_ = nullptr;     ///< the bound residual rows: a conversation's rows of the window, copied in by draft()
     int device_ = 0;            ///< the drafter's GPU, which `rows_` is on (a layer split's last card's)

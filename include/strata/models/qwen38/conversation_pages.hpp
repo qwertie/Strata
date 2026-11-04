@@ -47,6 +47,8 @@ public:
     /// them), zeroes the new pages and writes their units' addresses into the QSA states' tables.  Call before each
     /// append; false when the pool has no room.
     bool reserve(int64_t tokens, std::string& err);
+    /// Tells whether the existing unit tables already cover the requested append and spare indexer block.
+    bool can_reserve_without_growth(int64_t tokens) const;
     /// Points `ss` and the device tables at the pages the pool holds the conversation in now, after a shrink of the
     /// pool moved them (PagePool::resize); the bytes moved with them.
     bool refresh(strata::core::SessionState& ss, std::string& err);
