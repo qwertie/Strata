@@ -19,7 +19,7 @@
 // BF16 path affects only the scalar gate: it reads the original F32 input and uses pinned CUDA MMVF plus
 // an FP32 sigmoid. Native projection overrides independently select CUDA Q8_1 MMVQ and FP32 SwiGLU.
 #include "strata/models/qwen38/kernels/shared_expert.hpp"
-#include "strata/models/qwen38/kernels/fuse_decode.hpp"
+#include "strata/common/kernels/fuse_decode.hpp"
 #include "strata/common/kernels/bf16_gemv.hpp"
 #include "strata/common/kernels/bf16_bits.hpp"
 #include "strata/common/kernels/f16_bits.hpp"

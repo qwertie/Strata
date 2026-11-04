@@ -50,7 +50,7 @@
 #include "strata/base/platform/aux_cpus.hpp"
 #include "strata/common/kernels/cpu/expert_layout.hpp"
 #include "strata/models/qwen38/kernels/ngram.hpp"
-#include "strata/models/qwen38/kernels/s2_expert_grouped.hpp"
+#include "strata/models/common/kernels/s2_expert_grouped.hpp"
 #include "strata/common/kernels/sampler.hpp"
 #include "strata/models/qwen38/kernels/verify_kernels.hpp"
 #include "strata/common/kernels/elementwise.hpp"
@@ -8739,7 +8739,7 @@ int main(int argc, char** argv) {
                     return 1;
                 }
                 const int64_t L = (int64_t) live.size();
-                const strata::kernels::QsaShapes qs = strata::core::qsa_shapes(g);
+                const strata::kernels::QsaShapes qs = strata::kernels::qsa_shapes(g);
                 bool hash_ok = true;
                 std::array<uint8_t, 65536> hash_buffer;
                 auto hash_dev = [&](const void* p, size_t bytes, uint64_t h) {

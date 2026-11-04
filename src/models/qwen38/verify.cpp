@@ -52,7 +52,7 @@
 #include "strata/common/kernels/quantize_act.hpp"
 #include "strata/common/kernels/rope.hpp"
 #include "strata/common/kernels/mrope.hpp"
-#include "strata/models/qwen38/kernels/s2_expert_grouped.hpp"
+#include "strata/models/common/kernels/s2_expert_grouped.hpp"
 #include "strata/common/kernels/sampler.hpp"
 #include "strata/common/state/progress.hpp"
 #include "strata/models/qwen38/kernels/shared_expert.hpp"
@@ -425,7 +425,7 @@ bool mapped(size_t bytes, void** h, void** d) {
     return cudaHostGetDevicePointer(d, *h, 0) == cudaSuccess;
 }
 
-strata::kernels::QsaShapes shapes_of(const ModelGeometry& g) { return qsa_shapes(g); }
+strata::kernels::QsaShapes shapes_of(const ModelGeometry& g) { return strata::kernels::qsa_shapes(g); }
 
 const WeightRef* need(const LayerView& v, const char* suffix, std::string& err) {
     const WeightRef* r = v.get(suffix);

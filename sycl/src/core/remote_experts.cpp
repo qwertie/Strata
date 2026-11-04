@@ -6,7 +6,7 @@
 #include "strata/common/kernels/cpu/hadamard.hpp"
 #include "strata/common/kernels/iq_kernels.hpp"
 #include "strata/common/kernels/quantize_act.hpp"
-#include "strata/models/qwen38/kernels/s2_expert_grouped.hpp"
+#include "strata/models/common/kernels/s2_expert_grouped.hpp"
 
 #include <algorithm>
 #include <chrono>

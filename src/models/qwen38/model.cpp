@@ -31,7 +31,7 @@
 #include "strata/common/kernels/cpu/hadamard.hpp"
 #include "strata/models/qwen38/kernels/ngram.hpp"
 #include "strata/common/kernels/iq_kernels.hpp"
-#include "strata/models/qwen38/kernels/s2_expert_grouped.hpp"
+#include "strata/models/common/kernels/s2_expert_grouped.hpp"
 #include "strata/models/qwen38/kernels/verify_kernels.hpp"
 #include "strata/models/qwen38/kernels/shared_expert.hpp"
 #include "strata/models/common/kernels/native_moe.hpp"
@@ -1867,7 +1867,7 @@ int Model::load() {
         // fields directly, replicating kv_plan's arithmetic (layer.cpp:634) with the public getters.
         auto chunk_bytes = [&](int64_t lb, int64_t c) -> uint64_t {
             strata::core::qsa_set_kv_resident(o.kv_resident);
-            const strata::kernels::QsaShapes s = strata::core::qsa_shapes(g);
+            const strata::kernels::QsaShapes s = strata::kernels::qsa_shapes(g);
             const int64_t pages = (o.max_context + s.page_size - 1) / s.page_size;
             int mode = 0;
             const int64_t kv_res = strata::core::qsa_kv_resident();

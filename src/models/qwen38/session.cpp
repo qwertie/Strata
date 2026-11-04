@@ -7,7 +7,7 @@
 #include "strata/models/qwen38/kernels/qsa.hpp"
 #include "strata/common/kernels/elementwise.hpp"
 #include "strata/common/kernels/quantize_act.hpp"
-#include "strata/models/qwen38/kernels/s2_expert_grouped.hpp"
+#include "strata/models/common/kernels/s2_expert_grouped.hpp"
 #include "strata/common/kernels/cpu/pool.hpp"
 #include "strata/base/platform/aux_cpus.hpp"
 #include "strata/models/qwen38/kernels/ngram.hpp"
@@ -214,7 +214,7 @@ void gdn_point_at(const ModelGeometry& g, int64_t layer, SessionState& s) {
 /// The per-token staging every QSA layer's captured H2D reads FROM.  Must run before each replay: the graphs
 /// captured the SOURCE POINTER, not the value, and that is exactly why the buffers are pinned and fixed.
 void stage_token(const ModelGeometry& g, int64_t pos, int32_t pos_base, SessionState& s) {
-    const strata::kernels::QsaShapes sh = qsa_shapes(g);
+    const strata::kernels::QsaShapes sh = strata::kernels::qsa_shapes(g);
     for (int64_t j = 0; j < s.qsa_alloc; ++j) {
         QsaState& q = s.qsa_states[s.qsa_ord0 + j];
         qsa_step_fill(q.host_step, pos, sh);

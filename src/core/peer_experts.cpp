@@ -8,7 +8,7 @@
 #include "strata/common/kernels/elementwise.hpp"
 #include "strata/common/kernels/iq_kernels.hpp"
 #include "strata/common/kernels/quantize_act.hpp"
-#include "strata/models/qwen38/kernels/s2_expert_grouped.hpp"
+#include "strata/common/kernels/expert_scratch.hpp"
 
 #include <algorithm>
 #include <chrono>

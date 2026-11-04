@@ -88,6 +88,7 @@
 #pragma once
 
 #include <cstdint>
+#include "strata/core/geometry.hpp"
 
 namespace strata::kernels {
 
@@ -113,6 +114,21 @@ inline QsaShapes qsa_real_shapes() {
     // one page = one indexer block (4 cells): the granule KV streaming keeps resident (kv_stream.hpp). The readers
     // resolve a row per cell anyway, so the page size costs them nothing (measured: identical output and speed).
     s.page_size = 4;
+    return s;
+}
+
+/// The shapes the QSA kernels want, every one from the model's geometry; only the KV page size is the
+/// kernels' own choice (`qsa_real_shapes`).
+inline QsaShapes qsa_shapes(const strata::core::ModelGeometry& g) {
+    QsaShapes s = qsa_real_shapes();
+    s.n_head = g.n_head;
+    s.n_head_kv = g.n_head_kv;
+    s.head_dim = g.head_dim;
+    s.n_rot = g.n_rot;
+    s.idx_n_head = g.idx_q_heads;
+    s.idx_dim = g.idx_key_dim;
+    s.idx_block = g.idx_block;
+    s.idx_top_k = g.idx_top_k;
     return s;
 }
 

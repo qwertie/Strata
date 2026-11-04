@@ -12,7 +12,7 @@
 #include "strata/base/platform/memory.hpp"
 #include "strata/common/kernels/elementwise.hpp"
 #include "strata/common/kernels/quantize_act.hpp"
-#include "strata/models/qwen38/kernels/s2_expert_grouped.hpp"
+#include "strata/models/common/kernels/s2_expert_grouped.hpp"
 #include "strata/common/kernels/cpu/kq_avx1.hpp"
 #include "strata/common/kernels/cpu/kq_avx2.hpp"
 #include "strata/common/kernels/cpu/pool.hpp"

@@ -248,8 +248,8 @@ set(_m models/common/kernels)
 set(_q models/qwen38/kernels)
 set(_kernel_cu_c dequant_s2 s2_gemv s_gemv s2_gemv_quads s2_gemv_fast router_top10 quantize_act rope sampler s2_gemv_q8
     elementwise bf16_gemv native_mmvq native_bf16 dequant_bf16 iq_kernels)
-set(_kernel_cu_m native_moe native_router fused_gdn)
-set(_kernel_cu_q s2_expert_grouped shared_expert gr gdn qsa native_gr_norm native_gdn native_gr_postops
+set(_kernel_cu_m s2_expert_grouped native_moe native_router fused_gdn)
+set(_kernel_cu_q shared_expert gr gdn qsa native_gr_norm native_gdn native_gr_postops
     native_gdn_preprocess native_qsa native_rope native_ple_postops native_flash_attn native_qsa_indexer
     native_qsa_score ple kv_q8 kv_stream kv_q4 fused_gr cvec qsa_decode_attn qsa_prompt_attn qsa_select verify_kernels)
 set(_kernel_files "")
@@ -374,7 +374,7 @@ if(STRATA_SYCL_PARITY)
   add_executable(iq_multi_parity ${_src})
   target_link_libraries(iq_multi_parity PRIVATE strata_kernels)
   add_test(NAME iq_multi_parity COMMAND iq_multi_parity)
-  strata_resolve(_src src/models/qwen38/kernels/s2_expert_grouped_parity.cpp)
+  strata_resolve(_src src/models/common/kernels/s2_expert_grouped_parity.cpp)
   add_executable(s2_expert_grouped_parity ${_src})
   target_link_libraries(s2_expert_grouped_parity PRIVATE strata_kernels)
   add_test(NAME s2_expert_grouped_parity COMMAND s2_expert_grouped_parity --selftest)

@@ -1,4 +1,4 @@
-// src/models/qwen38/kernels/cuda/s2_expert_grouped.cu - R4's grouped GPU expert.  Read the header first.
+// src/models/common/kernels/cuda/s2_expert_grouped.cu - R4's grouped GPU expert.  Read the header first.
 //
 // THE ARITHMETIC IS `src/common/kernels/cpu/expert.cpp`'s, over the same bytes, one warp per output row.
 //
@@ -19,12 +19,12 @@
 #include <dpct/dpct.hpp>
 #include "strata/sycl_math.hpp"
 #include "strata/sycl_queue.hpp"
-#include "strata/models/qwen38/kernels/s2_expert_grouped.hpp"
+#include "strata/models/common/kernels/s2_expert_grouped.hpp"
 #include "strata/common/kernels/dp4a.hpp"
 #include "strata/common/kernels/f16_bits.hpp"
 
 #include "strata/common/kernels/quantize_act.hpp"
-#include "strata/models/qwen38/kernels/verify_kernels.hpp"
+#include "strata/common/kernels/window_ops.hpp"
 
 #include <atomic>
 #include <cstdint>

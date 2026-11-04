@@ -15,7 +15,7 @@
 #include "strata/models/qwen38/kernels/qsa_decode_attn.hpp"
 #include "strata/common/kernels/rope.hpp"
 #include "strata/common/kernels/rope_scaling.hpp"
-#include "strata/models/qwen38/kernels/s2_expert_grouped.hpp"
+#include "strata/models/common/kernels/s2_expert_grouped.hpp"
 #include "strata/models/qwen38/kernels/shared_expert.hpp"
 #include "strata/models/qwen38/kernels/fused_gr.hpp"
 #include "strata/common/kernels/prefill/gemm.hpp"

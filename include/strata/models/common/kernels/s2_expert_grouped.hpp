@@ -1,4 +1,4 @@
-// include/strata/models/qwen38/kernels/s2_expert_grouped.hpp - R4's GPU expert tier.
+// include/strata/models/common/kernels/s2_expert_grouped.hpp - R4's GPU expert tier.
 //
 // **WHAT THIS IS FOR.** The CPU expert pool is the engine's largest single cost - 663.6 MB of expert bytes per
 // token at ~40 GB/s = 16.2 ms on a ~53 ms token - and `test_expert_pool` measures the pipeline hiding
@@ -24,15 +24,9 @@
 #pragma once
 
 #include <cstdint>
+#include "strata/common/kernels/expert_scratch.hpp"
 
 namespace strata::kernels {
-
-/// Bytes of caller-owned scratch `moe_hit_grouped_s2` needs for `n_hits` experts.
-///
-/// Two regions: the gate/up activations (`n_hits x 2 x FF` floats) and the quantized intermediate
-/// (`n_hits x (FF/32) x 34` bytes).  Carved from the caller's arena rather than allocated - a `cudaMalloc`
-/// on the token path is forbidden by P2.T10 and illegal during stream capture, and this is called from both.
-uint64_t moe_hit_grouped_scratch_bytes(int64_t n_hits, int64_t n_embd, int64_t n_ff);
 
 /// **ONE GROUPED EXPERT EVALUATION.**  For each hit `h` in `[0, n_hits)`, evaluates the expert held in
 /// `blob_base + slot_index[h] * blob_bytes` against `x_q8_0` and writes `n_embd` floats to

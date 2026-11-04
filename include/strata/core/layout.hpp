@@ -17,27 +17,11 @@
 
 #include "strata/core/geometry.hpp"
 #include "strata/core/weights.hpp"
-#include "strata/models/qwen38/kernels/qsa.hpp"
 
 #include <cstdint>
 #include <string>
 
 namespace strata::core {
-
-/// The shapes the QSA kernels want, every one from the model's geometry; only the KV page size is the
-/// kernels' own choice (`qsa_real_shapes`).
-inline strata::kernels::QsaShapes qsa_shapes(const ModelGeometry& g) {
-    strata::kernels::QsaShapes s = strata::kernels::qsa_real_shapes();
-    s.n_head = g.n_head;
-    s.n_head_kv = g.n_head_kv;
-    s.head_dim = g.head_dim;
-    s.n_rot = g.n_rot;
-    s.idx_n_head = g.idx_q_heads;
-    s.idx_dim = g.idx_key_dim;
-    s.idx_block = g.idx_block;
-    s.idx_top_k = g.idx_top_k;
-    return s;
-}
 
 /// One layer's tensors, resolved by NAME.  `get("attn_qkv.weight")` looks up `blk.<layer>.attn_qkv.weight`
 /// and returns null if the pack does not have it - a null is information, because a GDN layer has no

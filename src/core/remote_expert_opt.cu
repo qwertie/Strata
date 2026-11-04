@@ -3,7 +3,7 @@
 #include "strata/base/gpu/on_device.hpp"
 #include "strata/common/kernels/cpu/expert_layout.hpp"
 #include "strata/common/kernels/elementwise.hpp"
-#include "strata/models/qwen38/kernels/verify_kernels.hpp"
+#include "strata/common/kernels/window_ops.hpp"
 
 #include <algorithm>
 #include <cstring>

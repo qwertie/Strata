@@ -27,7 +27,7 @@
 #include "strata/common/kernels/quantize_act.hpp"
 #include "strata/common/kernels/rope.hpp"
 #include "strata/common/kernels/router_top10.hpp"
-#include "strata/models/qwen38/kernels/s2_expert_grouped.hpp"
+#include "strata/models/common/kernels/s2_expert_grouped.hpp"
 #include "strata/common/kernels/sampler.hpp"
 #include "strata/models/qwen38/kernels/shared_expert.hpp"
 #include "strata/models/qwen38/kernels/verify_kernels.hpp"
@@ -99,7 +99,7 @@ catch (sycl::exception const &exc) {
   std::exit(1);
 }
 
-strata::kernels::QsaShapes shapes_of(const ModelGeometry& g) { return qsa_shapes(g); }
+strata::kernels::QsaShapes shapes_of(const ModelGeometry& g) { return strata::kernels::qsa_shapes(g); }
 
 // 64-bit seek/tell on a `FILE*`: `fseek`/`ftell` take a 32-bit `long` on Windows and would wrap past 2 GiB.
 #if defined(_WIN32)

@@ -152,7 +152,7 @@ struct Options {
     /// R4: slots of VRAM-resident experts.  **0 = off, and off is the default.**
     /// **THE COMMENT THAT USED TO BE HERE WAS FALSE AND ROUND 328 MEASURED IT.**  It said "the cache has no
     /// consumer yet - `moe_hit_grouped_s2` does not exist - so switching it on costs the fill traffic and
-    /// saves nothing".  The kernel exists (`src/models/qwen38/kernels/cuda/s2_expert_grouped.cu`), it is wired at line
+    /// saves nothing".  The kernel exists (`src/models/common/kernels/cuda/s2_expert_grouped.cu`), it is wired at line
     /// ~660 via `expert_hit_run`, and switching the cache on **does** move work off the CPU pool: the drain fell
     /// **19.076 -> 10.312 ms/token** at 4096 per-layer slots, for **-2.7 ms/token** end to end.  What was
     /// true is that the ADMISSION POLICY gave every slot to the first position, which is why the earlier

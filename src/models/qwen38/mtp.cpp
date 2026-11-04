@@ -28,7 +28,7 @@
 #include "strata/common/kernels/quantize_act.hpp"
 #include "strata/common/kernels/rope.hpp"
 #include "strata/common/kernels/router_top10.hpp"
-#include "strata/models/qwen38/kernels/s2_expert_grouped.hpp"
+#include "strata/models/common/kernels/s2_expert_grouped.hpp"
 #include "strata/common/kernels/sampler.hpp"
 #include "strata/models/qwen38/kernels/shared_expert.hpp"
 #include "strata/models/qwen38/kernels/verify_kernels.hpp"
@@ -100,7 +100,7 @@ bool mapped(size_t bytes, void** h, void** d) {
     return cudaHostGetDevicePointer(d, *h, 0) == cudaSuccess;
 }
 
-strata::kernels::QsaShapes shapes_of(const ModelGeometry& g) { return qsa_shapes(g); }
+strata::kernels::QsaShapes shapes_of(const ModelGeometry& g) { return strata::kernels::qsa_shapes(g); }
 
 /// Puts `what` and the CUDA runtime's last error into `err`; returns false, for `return report_cuda_error(...)`.
 bool report_cuda_error(std::string& err, const char* what) {

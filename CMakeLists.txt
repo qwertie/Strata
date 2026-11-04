@@ -395,7 +395,7 @@ if(STRATA_ENABLE_CUDA OR STRATA_ENABLE_HIP)
                           src/common/kernels/cuda/rope.cu
                           src/common/kernels/cuda/sampler.cu
                           src/common/kernels/cuda/s2_gemv_q8.cu
-    src/models/qwen38/kernels/cuda/s2_expert_grouped.cu
+    src/models/common/kernels/cuda/s2_expert_grouped.cu
                           src/models/qwen38/kernels/cuda/shared_expert.cu
                           src/models/qwen38/kernels/cuda/gr.cu
                           src/models/qwen38/kernels/cuda/gdn.cu
@@ -428,6 +428,8 @@ if(STRATA_ENABLE_CUDA OR STRATA_ENABLE_HIP)
                           src/models/common/kernels/cuda/fused_gdn.cu
                           src/common/kernels/cuda/dequant_bf16.cu
                           src/models/qwen38/kernels/cuda/qsa_select.cu
+                          src/common/kernels/expert_scratch.cpp
+                          src/common/kernels/cuda/window_ops.cu
                           src/models/qwen38/kernels/cuda/verify_kernels.cu
                           src/models/qwen38/kernels/cuda/dflash2.cu
                           src/common/kernels/cuda/iq_kernels.cu

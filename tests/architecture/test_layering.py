@@ -58,6 +58,19 @@ def test_cpp_includes_follow_layers():
     assert not problems, "\n".join(problems)
 
 
+def test_legacy_core_does_not_include_model_families():
+    """Keeps the shared expert store independent of a family's headers during its migration."""
+    problems = []
+    for root in (ROOT / "src/core", ROOT / "include/strata/core"):
+        for path in root.rglob("*"):
+            if path.suffix not in CPP_SUFFIXES:
+                continue
+            for target in CPP_INCLUDE.findall(path.read_text(encoding="utf-8", errors="replace")):
+                if target.startswith("models/") and not target.startswith("models/common/"):
+                    problems.append(f"{path.relative_to(ROOT).as_posix()}: includes strata/{target}")
+    assert not problems, "\n".join(problems)
+
+
 def test_known_upward_includes_are_still_there():
     upward = {own for path, own, problem in find_cpp_problems()}
     assert not set(KNOWN_UPWARD_INCLUDES) - upward, "remove these from KNOWN_UPWARD_INCLUDES"

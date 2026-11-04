@@ -1,4 +1,4 @@
-// src/models/qwen38/kernels/cuda/s2_expert_grouped.cu - R4's grouped GPU expert.  Read the header first.
+// src/models/common/kernels/cuda/s2_expert_grouped.cu - R4's grouped GPU expert.  Read the header first.
 //
 // THE ARITHMETIC IS `src/common/kernels/cpu/expert.cpp`'s, over the same bytes, one warp per output row.
 //
@@ -13,14 +13,14 @@
 // partials are reduced through shuffle; the CPU walks every chunk in order with its own accumulator shape.
 // The two agree to float rounding and not to the bit, which is the same contract `s_gemv_parity` carries for
 // the same reason.  `bench/micro/moe_hit_parity.cu` is the check.
-#include "strata/models/qwen38/kernels/s2_expert_grouped.hpp"
+#include "strata/models/common/kernels/s2_expert_grouped.hpp"
 #include "strata/core/geometry.hpp"
 #include "strata/common/kernels/dp4a.hpp"
 #include "strata/common/kernels/f16_bits.hpp"
 
 #include "strata/common/kernels/quantize_act.hpp"
-#include "strata/models/qwen38/kernels/fuse_decode.hpp"
-#include "strata/models/qwen38/kernels/verify_kernels.hpp"
+#include "strata/common/kernels/fuse_decode.hpp"
+#include "strata/common/kernels/window_ops.hpp"
 
 #include <cuda_fp16.h>
 #include <cuda_runtime.h>
@@ -603,16 +603,6 @@ void moe_grouped_select_old(int old) { g_select_old.store(old < 0 ? -1 : (old !=
 
 int moe_grouped_last_path() { return g_last_path.exchange(-1, std::memory_order_relaxed); }
 
-uint64_t moe_hit_grouped_scratch_bytes(int64_t n_hits, int64_t n_embd, int64_t n_ff) {
-    if (n_hits <= 0) return 0;
-    const uint64_t gu = (uint64_t) n_hits * (uint64_t) (2 * n_ff) * 4;
-    const uint64_t q8 = (uint64_t) n_hits * (uint64_t) (n_ff / 32) * 34;
-    // R4.2h: the fp32 scales for the INTERMEDIATE's own quantization, one per 32-element chunk per hit.
-    const uint64_t hs = (uint64_t) n_hits * (uint64_t) (n_ff / 32) * 4;
-    const uint64_t xh = (uint64_t) (n_embd / 32) * 4;
-    return ((gu + 15) & ~15ull) + ((q8 + 15) & ~15ull) + 2 * ((hs + 15) & ~15ull) +
-           ((xh + 15) & ~15ull);
-}
 
 void moe_hit_grouped_s2(const uint8_t* blob_base, const int32_t* slot_index, const int32_t* dst_index,
                         int64_t n_hits, int64_t blob_bytes, const uint8_t* x_q8_0, void* scratch, float* out,

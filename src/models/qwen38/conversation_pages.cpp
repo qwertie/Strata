@@ -1,6 +1,7 @@
 // src/models/qwen38/conversation_pages.cpp - a Qwen3.8 conversation's state in a GPU page pool
 // (conversation_pages.hpp).
 #include "strata/models/qwen38/conversation_pages.hpp"
+#include "strata/models/qwen38/kernels/qsa.hpp"
 
 #include "strata/base/gpu/on_device.hpp"
 #include "strata/core/layout.hpp"
@@ -30,7 +31,7 @@ bool ConversationPages::get_layout(const strata::core::ModelGeometry& g, const s
               "with a GDN and a QSA layer";
         return false;
     }
-    const strata::kernels::QsaShapes s = qsa_shapes(g);
+    const strata::kernels::QsaShapes s = strata::kernels::qsa_shapes(g);
     const auto fmt = (strata::kernels::KvFormat) qsa_kv_format(ss.qsa_states[ss.qsa_primary()]);
     try {
         const strata::kernels::KvUnitLayout unit = strata::kernels::kv_unit_layout(s, fmt);
@@ -58,7 +59,7 @@ bool ConversationPages::get_layout(const strata::core::ModelGeometry& g, const s
 bool ConversationPages::init(const strata::core::ModelGeometry& g, strata::core::SessionState& ss,
                              strata::core::PagePool& pool, strata::core::ConversationId id, std::string& err) {
     using namespace strata::core;
-    const strata::kernels::QsaShapes s = qsa_shapes(g);
+    const strata::kernels::QsaShapes s = strata::kernels::qsa_shapes(g);
     const int64_t n_qsa = count_qsa_layers(g, ss);
     unit_bytes_.clear();
     run_bytes_.clear();

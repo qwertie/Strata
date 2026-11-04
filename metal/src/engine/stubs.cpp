@@ -44,7 +44,7 @@
 #include "strata/common/kernels/rope_scaling.hpp"
 #include "strata/models/qwen38/kernels/route_prior.hpp"
 #include "strata/common/kernels/router_top10.hpp"
-#include "strata/models/qwen38/kernels/s2_expert_grouped.hpp"
+#include "strata/models/common/kernels/s2_expert_grouped.hpp"
 #include "strata/common/kernels/s2_gemv.hpp"
 #include "strata/common/kernels/s2_gemv_q8.hpp"
 #include "strata/common/kernels/s_gemv.hpp"
