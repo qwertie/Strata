@@ -39,7 +39,8 @@ int take_paged_options(int& argc, char** argv, const std::string& program, Paged
                        {"--suffix-draft", &s.suffix_draft},    {"--lookahead", &lookahead},
                        {"--concurrent", &concurrent}, {"--batch-groups", nullptr, &s.batch_groups},
                        {"--pause-dir", nullptr, &s.pause_dir}, {"--copy-back", nullptr, &s.copy_back},
-                       {"--drafter", nullptr, &drafter},      {"--remote-experts", nullptr, &s.remote_experts}};
+                       {"--drafter", nullptr, &drafter},      {"--remote-experts", nullptr, &s.remote_experts},
+                       {"--step-profile", &s.step_profile}};
     const char* const name = program.c_str();
     int out = 1;
     for (int i = 1; i < argc; ++i) {
@@ -59,6 +60,10 @@ int take_paged_options(int& argc, char** argv, const std::string& program, Paged
             *o->value = std::atoll(argv[++i]);
     }
     argc = out;
+    if (s.step_profile != 0 && s.step_profile != 1) {
+        std::fprintf(stderr, "%s: --step-profile takes 0 or 1\n", name);
+        return 2;
+    }
     s.step.rows = (int) std::clamp<int64_t>(rows, 0, INT32_MAX);
     s.step.lookahead = (int) std::clamp<int64_t>(lookahead, -1, INT32_MAX);
     s.step.concurrent = (int) std::clamp<int64_t>(concurrent, -1, INT32_MAX);   // -1: --batch, set once it is read
@@ -116,11 +121,13 @@ void measure_card(PagedCard& card, const std::string& program, uint64_t expert_b
     card.layer_ms = strata::program::split_rules::get_layer_ms(strata::core::get_card_speed(card.dev));
 }
 
-strata::core::ChunkMemory get_gpu_chunk_memory(int dev) {
+strata::core::ChunkMemory get_gpu_chunk_memory(int dev, bool zeroed) {
     strata::core::ChunkMemory memory;
-    memory.alloc = [dev](uint64_t n) {
+    memory.alloc = [dev, zeroed](uint64_t n) {
         const strata::core::OnDevice on(dev);
-        return (uint8_t*) strata::core::gpu_alloc_zeroed((size_t) n);
+        // Adapters initialize pages on use; touching free runs can page active weights out under WDDM.
+        return (uint8_t*) (zeroed ? strata::core::gpu_alloc_zeroed((size_t) n) :
+                                   strata::core::gpu_alloc((size_t) n));
     };
     memory.free = [dev](uint8_t* p) {
         const strata::core::OnDevice on(dev);

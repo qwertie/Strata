@@ -35,6 +35,9 @@ namespace {
 
 using Clock = std::chrono::steady_clock;
 
+template <class F>
+auto time_step_if(bool enabled, double& elapsed, F&& operation) -> decltype(operation());
+
 /// Between two chunks of a prompt, the conversations that decode take steps for this share of the time the chunk
 /// took, so that a long prompt does not stop them (the old engine's STRATA_BATCH_DECODE_SHARE default).
 constexpr double kDecodeShare = 0.5;
@@ -356,6 +359,8 @@ private:
     /// the model's usage counts before the step that runs now: the experts whose count grows were routed to in the step
     std::vector<float> routed_before_;
     int step_rows_ = 0;                ///< the rows the last step ran
+    /// Host elapsed times within the current decode step; GPU waits are included in their caller's time.
+    double draft_ms_ = 0, verify_ms_ = 0, commit_ms_ = 0, pages_ms_ = 0;
     /// Since the last report: the decode steps that routed on the CPU's side (not every expert on the GPU), their
     /// rows, and the experts they routed to, each counted once a step (docs/DETAILS.md, rows and guesses)
     int64_t routed_steps_ = 0, routed_rows_ = 0, routed_experts_ = 0;
@@ -380,13 +385,19 @@ bool is_layer_cut(const std::vector<int64_t>& cut, int64_t n_layers) {
 
 /// Gets how much more may be committed while a tenth of Windows' commit limit, at least 8 GiB, stays uncommitted
 /// (kCommitMarginShare, kCommitMarginMin); UINT64_MAX where the commit charge is not reported (elsewhere than
-/// Windows).
+/// Windows). STRATA_COMMIT_RESERVE_MIB explicitly overrides the automatic reserve for controlled runs.
 uint64_t get_commit_room() {
     strata::core::detail::HostMemory hm;
     if (!strata::core::detail::host_available_memory(hm) || hm.commit == ~uint64_t{0})
         return UINT64_MAX;
     const uint64_t share = hm.commit_limit == ~uint64_t{0} ? 0 : (uint64_t) (kCommitMarginShare * hm.commit_limit);
-    const uint64_t margin = std::max(kCommitMarginMin, share);
+    uint64_t margin = std::max(kCommitMarginMin, share);
+    if (const char* value = std::getenv("STRATA_COMMIT_RESERVE_MIB")) {
+        char* end = nullptr;
+        const uint64_t mib = std::strtoull(value, &end, 10);
+        if (end != value && *end == '\0' && *value != '-' && mib <= (UINT64_MAX >> 20))
+            margin = mib << 20;
+    }
     return hm.commit > margin ? hm.commit - margin : 0;
 }
 
@@ -523,6 +534,14 @@ bool PagedEngine::init() {
 }
 
 int PagedEngine::serve() {
+    const Clock::time_point fill_start = Clock::now();
+    std::string err;
+    if (!fill_cards(err)) {
+        say("filling the GPU expert pools before READY: %s\n", err.c_str());
+        return 1;
+    }
+    refilling_ = is_refill_wanted();
+    say("GPU expert pools filled before READY in %.0f ms\n", get_ms_since(fill_start));
     model_.print_info((int) at_.size() - 1, step_.settings.lookahead > 0 ?
                          std::min(step_.settings.rows, step_.settings.lookahead + 1) : 0);
     std::printf("INFO concurrent=%d\n", settings_.step.concurrent);
@@ -887,6 +906,8 @@ bool PagedEngine::read_prompt(Held& h, const std::vector<int64_t>& ids, int64_t 
 }
 
 bool PagedEngine::decode_step() {
+    const Clock::time_point started = settings_.step_profile ? Clock::now() : Clock::time_point{};
+    draft_ms_ = verify_ms_ = commit_ms_ = pages_ms_ = 0;
     std::vector<Held*> going;
     for (const std::unique_ptr<Held>& h : held_)
         if (h->decoding)
@@ -965,7 +986,12 @@ bool PagedEngine::decode_step() {
     strata::core::progress_beat();
     if (refilling_ && !is_refill_wanted())
         refilling_ = false;
-    return adapt_experts() && (!refilling_ || refill_experts());
+    const bool ok = time_step_if(settings_.step_profile != 0, pages_ms_,
+        [&] { return adapt_experts() && (!refilling_ || refill_experts()); });
+    if (settings_.step_profile)
+        say("step-profile rows=%d draft=%.3f verify=%.3f commit=%.3f pages=%.3f total=%.3f ms\n",
+            step_rows_, draft_ms_, verify_ms_, commit_ms_, pages_ms_, get_ms_since(started));
+    return ok;
 }
 
 bool PagedEngine::preempt(size_t slot, int64_t priority) {
@@ -1973,7 +1999,8 @@ strata::spec::StepModel PagedEngine::get_step_model() {
     model.begin = [this](int count) { model_.begin_step(count); };
     model.make_room = [this](int session, int64_t tokens) {
         std::string err;
-        if (make_room(*held_[(size_t) session], tokens, err))
+        if (time_step_if(settings_.step_profile != 0, pages_ms_,
+                         [&] { return make_room(*held_[(size_t) session], tokens, err); }))
             return true;
         say("%s\n", err.c_str());
         return false;
@@ -1986,7 +2013,8 @@ strata::spec::StepModel PagedEngine::get_step_model() {
         for (const auto& row : rows)
             histories.push_back(&held_[(size_t) row.session]->live);
         model_.set_step_histories(histories);
-        return model_.run_rows(rows, picks, err);
+        return time_step_if(settings_.step_profile != 0, verify_ms_,
+                            [&] { return model_.run_rows(rows, picks, err); });
     };
     if (model_.get_pipeline_stages() > 1) {
         model.run_groups = [this](std::vector<strata::spec::StepGroup>& groups, std::string& err) {
@@ -2014,7 +2042,8 @@ strata::spec::StepModel PagedEngine::get_step_model() {
             // No admission, page trade, restore or settings command runs until this wave has drained.
             int peak = 0;
             stages.peak_in_flight = &peak;
-            const bool ok = strata::spec::run_stage_groups(std::move(stages), groups, err);
+            const bool ok = time_step_if(settings_.step_profile != 0, verify_ms_,
+                [&] { return strata::spec::run_stage_groups(std::move(stages), groups, err); });
             if (peak > pipeline_peak_) {
                 pipeline_peak_ = peak;
                 say("pipeline: groups=%zu stages=%d peak_in_flight=%d\n", groups.size(),
@@ -2024,11 +2053,15 @@ strata::spec::StepModel PagedEngine::get_step_model() {
         };
         model.keep_group = [this](int group, const std::vector<strata::spec::StepRow>& rows,
                                   const std::vector<int>& kept, std::string& err) {
-            return model_.keep_group(group, rows, kept, is_model_drafting(), err);
+            return time_step_if(settings_.step_profile != 0, commit_ms_,
+                [&] { return model_.keep_group(group, rows, kept, is_model_drafting(), err); });
         };
     }
     model.keep = [this](const std::vector<strata::spec::StepRow>& rows, const std::vector<int>& kept,
-                        std::string& err) { return model_.keep_rows(rows, kept, is_model_drafting(), err); };
+                        std::string& err) {
+        return time_step_if(settings_.step_profile != 0, commit_ms_,
+            [&] { return model_.keep_rows(rows, kept, is_model_drafting(), err); });
+    };
     if (facts_.has_drafter)
         model.propose = [this](int session, int32_t token, int64_t pos, int n, int32_t* out,
                                strata::spec::DraftContext* draft) {
@@ -2036,9 +2069,11 @@ strata::spec::StepModel PagedEngine::get_step_model() {
                 return 0;
             Held& h = *held_[(size_t) session];
             std::string err;
-            if (n > 0 && !make_room(h, pos + 1 + n, err))   // (the drafter writes the guesses' cells)
+            if (n > 0 && !time_step_if(settings_.step_profile != 0, pages_ms_,
+                                      [&] { return make_room(h, pos + 1 + n, err); }))
                 n = 0;
-            const int got = model_.propose(*h.parts.back(), session, token, pos, n, out, err, draft);
+            const int got = time_step_if(settings_.step_profile != 0, draft_ms_,
+                [&] { return model_.propose(*h.parts.back(), session, token, pos, n, out, err, draft); });
             if (got >= 0)
                 return got;
             say("the drafter: %s\n", err.c_str());
@@ -2080,6 +2115,17 @@ void PagedEngine::say(const char* format, ...) const {
     va_start(args, format);
     std::vfprintf(stderr, format, args);
     va_end(args);
+}
+
+/// Attributes synchronous caller time without adding clocks when profiling is disabled.
+template <class F>
+auto time_step_if(bool enabled, double& elapsed, F&& operation) -> decltype(operation()) {
+    if (!enabled)
+        return operation();
+    const Clock::time_point start = Clock::now();
+    auto result = operation();
+    elapsed += get_ms_since(start);
+    return result;
 }
 
 }  // namespace

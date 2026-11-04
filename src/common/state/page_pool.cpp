@@ -240,10 +240,15 @@ PageId PagePool::use_expert(ExpertKey key) {
         return no_page;
     const PageId first = it->second;
     Run& r = runs_.at(first);
-    unlist_expert(r, first);
+    const auto before = std::make_tuple(r.last_use, r.uses, first);
     r.last_use = now_;
     ++r.uses;
-    list_expert(r, first);
+    const auto after = std::make_tuple(r.last_use, r.uses, first);
+    for (UseOrder* order : {&by_use_, &size_by_use_.at(r.pages)}) {
+        auto node = order->extract(before);
+        node.value() = after;
+        order->insert(std::move(node));
+    }
     return first;
 }
 

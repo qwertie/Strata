@@ -9,12 +9,16 @@ namespace strata::core {
 
 /// Allocates `bytes` of device memory and zeroes it; nullptr when the device has not that much.
 void* gpu_alloc_zeroed(size_t bytes);
+/// Allocates uninitialized device memory; nullptr when the runtime refuses it.
+void* gpu_alloc(size_t bytes);
 void gpu_free(void* p);
 /// Queues a copy of `height` rows of `width` bytes, whose starts are `src_pitch` and `dst_pitch` bytes apart, between
 /// any two memories (the runtime tells host from device by the addresses).  Returns false when the runtime refuses it.
 bool gpu_copy_2d_async(void* dst, size_t dst_pitch, const void* src, size_t src_pitch, size_t width, size_t height,
                        void* stream);
 bool gpu_memset_async(void* p, int value, size_t bytes, void* stream);
+/// Waits for queued work on stream; false when the runtime reports a failure.
+bool gpu_stream_synchronize(void* stream);
 /// Copies `bytes` between any two memories and waits for the copy; false when the runtime refuses it.
 bool gpu_copy(void* dst, const void* src, size_t bytes);
 /// Allocates `bytes` of page-locked host memory that the current device reads in place: `device_view` gets the

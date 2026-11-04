@@ -46,9 +46,6 @@ using strata::serve::PagedSettings;
 /// The program's name, which starts its stderr lines.
 const std::string kProgram = "strata-q38";
 
-/// The lookahead when --mtp is given and --lookahead is not: on the Strix Halo one conversation decoded fastest with 3
-/// guesses a step (4 rows) or 2, and several conversations with 8 rows (docs/DETAILS.md, rows per step).
-constexpr int kDefaultLookahead = 3;
 /// The milliseconds the CPU pool takes for one routed expert of a decode step, from RAM, against which a hop to
 /// another card is weighed (--remote-experts auto, card_rules' is_hop_cheaper): the Strix Halo's pool computed 70,349
 /// experts in 2,449 ms and 43,808 in 1,550 ms (two stages, 6 requests each, the reads from the SSD not counted).
@@ -290,9 +287,13 @@ int run_paged_engine(int argc, char** argv) {
     const int slots = strata::kernels::kVerifyMaxT;
     if (settings.step.concurrent < 0)
         settings.step.concurrent = std::max(o.batch, 1);
+    const auto window_rows = strata::spec::get_window_rows(
+        o.spec >= 2 ? o.spec : 4, o.mtp_max_t, (int) settings.suffix_draft, settings.lookup_chain);
     if (settings.step.lookahead < 0)
         settings.step.lookahead = o.mtp.empty() && settings.suffix_draft == 0 && settings.lookup_chain == 0 ?
-                                      0 : kDefaultLookahead;
+                                      0 : std::max(window_rows.total - 1, 0);
+    if (settings.step.model_lookahead < 0 && window_rows.model > 0)
+        settings.step.model_lookahead = window_rows.model - 1;
     if (const std::string why = strata::serve::get_step_settings_problem(settings.step, strata::kernels::kVerifyMaxT);
         !why.empty()) {
         std::fprintf(stderr, "strata-q38: %s\n", why.c_str());
@@ -317,6 +318,8 @@ int run_paged_engine(int argc, char** argv) {
     o.kv_resident = 0;
     // strata-q38 does not pipeline verify windows across cards; 0 also keeps the drafter on the last card (mtp_first)
     o.pipeline_windows = 0;
+    // Paged caches cannot lend the contiguous expert arena that the prompt-buffer planner assumes.
+    o.no_prefill_borrow = true;
     if (o.prefill_chunk <= 0) o.prefill_chunk = 2048;   // open_pages leaves room for the prompt path's own buffers
     if (o.resident_budget > 0 && settings.ram_mib < 0)
         settings.ram_mib = (int64_t) (o.resident_budget >> 20);
@@ -352,8 +355,11 @@ int run_paged_engine(int argc, char** argv) {
     };
     if (const int status = m.load(); status != 0) return status;
     if (const int status = m.build_hit_tables(false); status != 0) return status;
-    for (ModelCard& mc : model_cards)
+    for (ModelCard& mc : model_cards) {
         mc.d_res = mc.stage != nullptr ? mc.stage->d_res : m.d_res;
+        mc.ver->set_dynamic_residency(true);
+        mc.ver->set_batch_self_commit_default(true);
+    }
     if (const std::string why = get_unsupported_reason(m); !why.empty()) {
         std::fprintf(stderr, "strata-q38: %s\n", why.c_str());
         return 2;
@@ -635,6 +641,23 @@ bool PagedQwen::attach_hop(PagedCard& card, std::string& err) {
 }
 
 void PagedQwen::report_hops() const {
+    if (m_.o.stats) {
+        const auto& d = m_.drive.d;
+        std::fprintf(stderr, "strata-q38: profile totals: cpu_misses=%lld gpu_hits=%lld cpu_run=%.3f "
+                             "plan=%.3f jobs=%.3f ms\n", (long long) d.multi_misses,
+                     (long long) d.cache_hits, d.ms_run, d.ms_plan, d.ms_jobs);
+        std::fprintf(stderr, "strata-q38: file totals: reads=%lld bytes=%llu time=%.3f ms\n",
+                     (long long) m_.src.reads(), (unsigned long long) m_.src.file_read_bytes(), m_.src.file_ms());
+        for (const ModelCard& card : cards_) {
+            const auto& v = *card.ver;
+            std::fprintf(stderr, "strata-q38: verify totals: windows=%lld wait=%.3f pool=%.3f host=%.3f "
+                                 "commit=%.3f ms\n", (long long) v.windows, v.ms_wait, v.ms_pool,
+                         v.ms_host, v.ms_commit);
+            const std::string profile = card.ver->profile_report();
+            if (!profile.empty())
+                std::fprintf(stderr, "%s\n", profile.c_str());
+        }
+    }
     for (size_t k = 0; k < cards_.size(); ++k)
         if (const strata::core::PeerExperts& hop = cards_[k].hop; hop.experts() > 0)
             std::fprintf(stderr, "strata-q38: so far %s computed %lld experts of other cards' layers (%lld rows) in "
@@ -676,21 +699,17 @@ bool PagedQwen::activate_images(int session, std::string& err, bool shared) {
     Part& lead = *leads_[(size_t) session];
     if (!shared && lead.image_table_ready)
         return true;
-    const auto& positions = lead.image_positions;
-    if (positions.empty()) {
-        for (size_t i = 0; i < m_.mrope_host.size(); ++i)
-            m_.mrope_host[i] = (int32_t) (i / 3);
-    } else {
-        m_.mrope_host = positions;
-    }
+    const auto& positions = lead.image_positions.empty() ? m_.mrope_host : lead.image_positions;
+    const size_t bytes = positions.size() * sizeof(int32_t);
+    // Captured consumers use nonblocking streams, so the cached table must arrive before they launch.
     for (size_t k = 0; k < cards_.size(); ++k) {
         const strata::core::OnDevice on(pcards_[k].dev);
         int32_t* table = k == 0 ? m_.d_mrope : cards_[k].stage->mrope;
         strata::kernels::mrope_table_set(table);
-        const size_t bytes = m_.mrope_host.size() * sizeof(int32_t);
-        if ((shared && !strata::core::gpu_copy(table, m_.mrope_host.data(), bytes)) ||
-            (!lead.image_table_ready && !strata::core::gpu_copy(image_tables_[k][(size_t) session],
-                                                               m_.mrope_host.data(), bytes))) {
+        int32_t* cached = image_tables_[k][(size_t) session];
+        if ((!lead.image_table_ready && !strata::core::gpu_copy(cached, positions.data(), bytes)) ||
+            (shared && (!strata::core::gpu_copy_2d_async(table, bytes, cached, bytes, bytes, 1, nullptr) ||
+                        !strata::core::gpu_stream_synchronize(nullptr)))) {
             err = "the image position upload failed";
             return false;
         }
@@ -1082,8 +1101,8 @@ bool open_pages(Model& m, PagedCard& card, ModelCard& mc, int64_t tokens_min, in
     strata::core::PagePoolConfig config;
     config.tokens_min = std::clamp<int64_t>(tokens_min, 0, m.o.max_context);
     if (!mc.cache->open((int64_t) (chunk / page), m.g.n_layers, m.g.n_expert, (int64_t) page, err) ||
-        !card.experts.open(*mc.cache, strata::serve::get_gpu_chunk_memory(card.dev), pool_b, layout, config, blobs,
-                           m.g.n_expert, max_experts, ranking, err))
+        !card.experts.open(*mc.cache, strata::serve::get_gpu_chunk_memory(card.dev, false), pool_b, layout, config,
+                           blobs, m.g.n_expert, max_experts, ranking, err))
         return false;
     strata::serve::say_gpu_pool(kProgram, card, room, chunk);
     return true;

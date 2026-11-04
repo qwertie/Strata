@@ -215,6 +215,22 @@ void test_replace() {
           "the new expert's use counts from the replacement");
 }
 
+/// Checks that routing refreshes both eviction orders without changing expert ownership or page totals.
+void test_use_expert() {
+    Fixture f(get_config(), get_kv_layout());
+    f.add_experts(12);
+    const PageId first = f.pool.find_expert({0, 0});
+    f.clock = 20;
+    check(f.pool.use_expert({0, 0}) == first && f.pool.use_expert({0, 0}) == first &&
+              f.pool.find_expert({0, 0}) == first && f.pool.report().experts.pages == 12,
+          "repeated routing preserves the expert's place and page count");
+    check(f.pool.add_expert({0, 12}, 1) != no_page && get_experts(f.evicted) == std::vector<int>{1},
+          "a same-size replacement protects the recently routed expert");
+    check(f.pool.grow_conversation(1, 4).empty() && get_experts(f.evicted) == std::vector<int>{1, 2} &&
+              f.pool.find_expert({0, 0}) == first && f.pool.report().experts.pages == 11,
+          "a conversation protects the same recently routed expert");
+}
+
 void test_holes() {
     PagePoolConfig config = get_tiling_config();
     Fixture f(config, get_kv_layout(), 1);
@@ -616,6 +632,7 @@ int main() {
     test_runs();
     test_experts_tile();
     test_replace();
+    test_use_expert();
     test_holes();
     test_allocated_and_fragmented();
     test_new_layout();

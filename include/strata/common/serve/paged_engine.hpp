@@ -77,6 +77,7 @@ struct PagedSettings {
     int64_t lookup_chain = 0, lookup_chain_min = 3; ///< Existing lookup-chain length and match floor.
     int64_t suffix_draft = 0; ///< --suffix-draft: minimum repeated context; 0 disables prompt lookup.
     bool drafter = true;                           ///< --drafter on|off: its weights loaded (with --lookahead)
+    int64_t step_profile = 0; ///< --step-profile 1 reports host elapsed times for each decode step.
     strata::spec::StepSettings step;               ///< --rows, --lookahead and --concurrent (default --batch)
 };
 
@@ -101,8 +102,8 @@ void set_paged_runtime_env(const PagedSettings& s, bool hops_possible);
 /// its speed from its multiprocessors and clock (layer_ms); says the link on stderr after `program`.  Call before the
 /// card's pool takes the memory the measuring copies need.
 void measure_card(PagedCard& card, const std::string& program, uint64_t expert_bytes);
-/// Gets GPU `dev`'s memory for a page pool's chunks; each call runs on that GPU, whichever is current.
-strata::core::ChunkMemory get_gpu_chunk_memory(int dev);
+/// Gets GPU `dev`'s chunk allocator. Disable `zeroed` only when the adapter initializes every page before use.
+strata::core::ChunkMemory get_gpu_chunk_memory(int dev, bool zeroed = true);
 /// Gets the bytes a pool on GPU `dev` takes: `gpu_mib` (--gpu-mib), but no more than `room`; -1: `room` but no more
 /// than `most`.  `room` gets what the pool could take: get_gpu_room(dev, keep, 0).
 uint64_t get_gpu_pool_bytes(int dev, uint64_t keep, int64_t gpu_mib, uint64_t most, uint64_t& room);

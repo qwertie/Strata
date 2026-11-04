@@ -1,6 +1,7 @@
 // src/models/qwen38/model.cpp - Model::load, Qwen3.8's model loader (it was inline in main() in
 // src/program/generate.cpp), and the helpers it shares with that program's serve loop.
 #include "strata/models/qwen38/model.hpp"
+#include "strata/common/spec/window_planner.hpp"
 
 #include "strata/base/platform/memory.hpp"
 #include "strata/base/gpu/gfx_arch.hpp"
@@ -432,21 +433,9 @@ int Model::load() {
         return 2;
     }
     strata::core::qsa_set_kv_resident(o.kv_resident);
-    // Prompt lookup (the suffix drafter, on by default): the MTP keeps its --spec windows and a lookup window may be
-    // up to 2 tokens longer; the draft policy (strata/common/spec/draft_policy.hpp) takes one only where it pays. Code
-    // edits +6-11%, ordinary text unchanged (bench/results/2026-09-27-spec). --suffix-draft 0 turns it off.
-    if (o.suffix_draft > 0 && o.spec >= 2 && o.mtp_max_t == 0) {
-        o.mtp_max_t = o.spec;
-        o.spec = std::min(o.spec + 2, 8);   // kVerifyMaxT
-    }
-    // --lookup-chain (opt-in): the MTP keeps its windows; a lookup chained after its drafts may lengthen one by up to K.
-    // Sized from the cap actually in force: the suffix block above may already have raised --spec to --spec+2, so sizing
-    // from mtp_max_t left K=1 and K=2 with a window identical to not passing the flag at all.
-    if (o.lookup_chain > 0 && o.spec >= 2) {
-        if (o.mtp_max_t == 0) o.mtp_max_t = o.spec;
-        const int chain_base = o.spec;
-        o.spec = std::max(chain_base, std::min(std::max(chain_base, o.mtp_max_t) + o.lookup_chain, 8));  // kVerifyMaxT
-    }
+    const auto window_rows = strata::spec::get_window_rows(o.spec, o.mtp_max_t, o.suffix_draft, o.lookup_chain);
+    o.spec = window_rows.total;
+    o.mtp_max_t = window_rows.model;
     // dflash2-kern: right after the start the resident experts are the profile's, not this text's; a speculative round carries
     // 2-5 tokens, so the adaptive tier (one swap round per adapt_every VERIFY rounds) learned the text 2-5 times slower per
     // token.  For the first STRATA_SPEC_ADAPT_WARM rounds it swaps every STRATA_SPEC_ADAPT_EVERY rounds (set per card by

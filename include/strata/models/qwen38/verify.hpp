@@ -2,15 +2,14 @@
 //
 // T tokens at consecutive positions p0 .. p0+T-1 - the last accepted token and T-1 drafts - go through all 48
 // layers in ONE captured graph, and the head's argmax is produced for every one of them.  Token t's argmax is
-// what plain greedy decode would produce after token t, BIT FOR BIT: every kernel here is either the single-token
-// kernel applied per token, or a multi-token kernel whose per-token arithmetic is the single-token kernel's
-// (multi-column MMVQ in exact mode, the T-token GDN kernels, the per-token hit activation, the multi-token CPU
-// expert rows).  So a draft is accepted exactly when greedy decode would have produced it.
+// the verifier's prediction after token t. A draft is accepted only when it matches that prediction. Floating-point
+// reductions can round differently between row layouts, so near ties can differ from single-row greedy decoding.
 //
 // What the window costs is the dense weights read ONCE for T tokens and the union of the T tokens' missed
 // experts on the CPU (measured on decode traces: 1.75x one token's misses for T=2, 2.4x for 3, 3.05x for 4).
 //
-// STATE.  The window appends K/V and indexer keys for all T positions and leaves the GDN state untouched.
+// STATE.  The window appends K/V and indexer keys for all T positions. With proposal rows it leaves GDN untouched;
+// with one row per conversation, can_self_commit may advance state in the window because no row can be rejected.
 // `commit(n_keep)` then makes the first `n_keep` tokens permanent: the GDN conv history and recurrent state are
 // advanced by replaying those tokens from inputs the window stored, the indexer's key tail is restored from a
 // snapshot and the accepted keys re-appended (a rejected key can land in a slot the current block still needs),
@@ -242,6 +241,10 @@ public:
 
     /// --batch-mtp: slot rotation makes many row layouts, so bound the captured batch graph pairs (LRU). 0 = unbounded.
     void set_batch_graph_limit(size_t n) { batch_graph_limit_ = n; }
+    /// Allows paged cache changes to select the resident graph after init; set before init.
+    void set_dynamic_residency(bool enabled) { dynamic_residency_ = enabled; }
+    /// Selects the paged engine's one-row state path; STRATA_BATCH_SELF_COMMIT overrides this before init.
+    void set_batch_self_commit_default(bool enabled) { batch_self_commit_default_ = enabled; }
     /// Frees every captured batch window graph; they are captured again when used.  For a slot whose state the
     /// captured graphs point at moved (strata-q38: a paused conversation came back in other page-pool pages).
     bool drop_batch_graphs(std::string& err);
@@ -399,6 +402,10 @@ public:
     std::string route_stats_report();
 
 private:
+    /// Checks whether each conversation owns exactly one row, so no rejected state needs replaying.
+    bool can_self_commit(const int* rows, int count) const;
+    bool batch_self_commit_default_ = false; ///< The caller's policy when no environment override is set.
+    bool batch_self_commit_ = false; ///< The policy resolved before any graphs are captured.
     std::vector<const int32_t*> slot_image_tables_; ///< Coordinates used by each slot's pooled indexer keys.
     RemoteExpertOpt* remote_opt_ = nullptr;
     bool capture(int T, std::string& err);
@@ -512,13 +519,14 @@ private:
     int device_ = -1;                    ///< the device `init` ran on: run/commit switch to it (layer split)
     unsigned long long* rr_stats_ = nullptr;   ///< STRATA_ROUTE_RESIDENT's counters on device_ (#1578); null: none
     std::atomic<bool> released_{false};  ///< #267: release_gpu_waits ran (maybe on the watchdog thread): no more windows
-    bool all_resident_ = false;           ///< 100% of experts in [lb_, le_) resident in VRAM: zero-doorbell graph
+    bool has_resident_graph_ = false; ///< Supports the resident graph; ar_off_ reflects the current table.
+    bool dynamic_residency_ = false; ///< Paged caches may become fully resident after verifier initialization.
     /// #871: the zero-doorbell graph plans from the device residency table alone, so it is only right while every
     /// expert of the stage is in VRAM.  A prompt loan, a VRAM shrink or an adaptive swap marks some -1 for a while:
     /// every window then runs the doorbell graph (exec_nr_ / the batch key's top bit), the same as a stage that never
     /// was all-resident.  refresh_ar() looks at the host table before each window.
     bool ar_off_ = false;
-    bool ar_on() const { return all_resident_ && !ar_off_; }
+    bool ar_on() const { return has_resident_graph_ && !ar_off_; }
     void refresh_ar();
     uint32_t* h_plan_err_ = nullptr; uint32_t* m_plan_err_ = nullptr;   // set by resident_plan on a -1 (all-resident graph)
     const int32_t* h_res_ = nullptr;      ///< the host residency table (VerifyHits::h_res)

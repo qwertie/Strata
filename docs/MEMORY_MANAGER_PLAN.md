@@ -397,11 +397,42 @@ used 4 GiB GPU / 2 GiB RAM pools and 400 GPU experts; groups used two 2 GiB stag
 requesting 400 experts. Their short answers and fixed warm-up counts do not meet a stable-residency,
 two-round, 256-token comparison at realistic budgets.
 
-[DETAILS.md](DETAILS.md#qwen-page-pool-benchmark-budgets) retains the historical suffix table, the saved
-settings and the rerun requirements. That rerun is blocked: Docker Desktop and its backend were running at
-inspection, while the task forbids inference alongside Docker. Available physical RAM was about 21.6 GiB;
-free commit was about 62.6 GiB of 127.3 GiB. No engine or service was started or stopped. Realistic-budget
-measurements, profiling, optimization gains and fresh greedy-identity checks remain pending.
+The realistic rerun completed on 3 November 2026, Windows HIP, Strix Halo / Radeon 8060S, native IQ3_S,
+204,800 context, int8 K/V and vision enabled. The old engine used `--expert-cache auto --resident-experts
+--resident-budget-gib 4 --vram-reserve-mib 700`; the new one requested `--gpu-mib 61440 --ram-mib 512
+--expert-cache 24576 --vram-reserve-mib 4300`, with `STRATA_COMMIT_RESERVE_MIB=3072`.
+Actual new GPU pools were 52.50-53.75 GiB. Both engines held all 24,576 experts (46.84 GiB) on the GPU,
+with no measured decode expert file loads. Idle residency checks and two three-prompt warm-up rounds
+preceded two measured 256-token rounds. No-draft old/new seasons rates were 25.20/23.98 tok/s;
+MTP-only rates were 43.21/37.08. Repetition with MTP plus suffix gave 60.29/67.37.
+New three-conversation aggregate rates for neither, suffix, MTP and both were
+48.38, 49.47, 54.48 and 56.05 tok/s, excluding prefill and tokens before the last admission.
+
+Shared startup now fills the permitted GPU expert pools before `READY`; Qwen can select its resident graph
+when that fill completes. The adapter owns prompt scratch, initializes pages on use, and enables the existing
+one-row state-commit path. Shared expert touches reuse index nodes; verify-width sizing is shared with the
+original Qwen engine. Full-residency startup was old 39.41-40.28 s and new 39.29-45.65 s.
+The old saved mode maps files, uploads through one-expert host staging, then trims file-backed working-set
+pages and pins the RAM complement. The new engine also uses host staging, into pool pages. Neither streams
+experts during these warmed decode rounds. Startup order is not evidence for the remaining steady-state gap.
+
+The owner's task-only watchdog floors were 3 GiB free commit and 4 GiB free physical RAM. All main matrix
+runs passed: minimums 3.538 and 18.356 GiB. The commit limit stayed at 127.295 GiB; observed system charge
+increases were old 56.657-62.471 GiB and new 63.204-64.854 GiB, including background changes.
+A separate saved-mode mapped startup hit the physical floor before its final trim. Exploratory controls
+also hit the commit watchdog; all are kept apart from the completed matrix in the report.
+
+Matching every old-engine speed and universal greedy identity remain unmet. Old/new normal and story
+answers differ, as do new concurrent/standalone answers; repetition matches. The old engine's own MTP-on/off
+answers differ too. HIP builds, `step_test`, 1,121,445 page-pool checks and 16 architecture/launcher tests
+plus two subtests passed. CUDA/SYCL/Metal, DeepSeek inference and real multi-card groups were not rerun.
+[DETAILS.md](DETAILS.md#qwen-page-pool-benchmark-budgets) and the
+[full report](../bench/results/2026-11-03-q38-realistic/README.md) retain the historical restricted results,
+all realistic rates, exact commands, memory logs, source locations and remaining failures.
+Further full-residency diagnostics are blocked: final free commit 64.479 GiB was below the revised 68 GiB
+preflight requirement, with 23.879 GiB physical RAM free. Separate failed attempts reached minimum free
+commit 0.004 GiB and minimum physical RAM 3.960 GiB; test PIDs were killed. The system-managed page file
+stayed at 65,174 MiB. No engine remains running; the main completed matrix's minimums are unchanged.
 
 ## Pictures in the replacement engines
 
@@ -421,6 +452,20 @@ The throughput setup and before/after numbers are in [DETAILS.md](DETAILS.md#pic
 The architecture tests (5), `step_test` and `prompt_images_test` pass. PID watchdogs enforce 16 GiB free commit
 and 4 GiB free physical RAM; no trips. Logs, scripts and token lists are in `%TEMP%/pictures/batch-*`.
 No CUDA, SYCL, Metal or real multi-GPU validation was run.
+
+Realistic-budget follow-up (3 November 2026): Windows HIP, Strix Halo, native IQ3_S, 204,800 context,
+all 24,576 experts on the GPU, the 60 GiB requested new pool and bounded old resident setup above,
+no drafting, two measured 256-token rounds after warm-up: picture/counting **25.06 old / 24.76 new tok/s**;
+new picture/seasons/repetition together **49.91 aggregate tok/s**, excluding prefill and earlier admissions.
+Existing 16-row image embeddings exclude encoder time. The picture matches old/new and standalone in both
+mixed batches; seasons differs at token 56, repetition matches. Old/new minimum free commit was 8.068/5.785 GiB,
+minimum physical RAM 23.723/26.262 GiB. This supersedes the small-pool picture check as a speed reference
+for this machine, without changing that check's historical provenance.
+
+An old-engine full-residency `--batch 3` control at 8K, no drafting, found story differs from standalone
+at token 186 in both 256-token rounds; seasons and repetition match. This does not establish the cause
+of the new engine's earlier divergence or rerun the exact live-group failure sequence. The old 204,800-context
+three-slot startup hit the commit watchdog; the completed main solo matrix retains that context.
 
 ## Later
 

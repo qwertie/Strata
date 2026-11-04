@@ -1563,13 +1563,56 @@ results from that report; they were not rerun during this inspection.
 | Repetitive list | On | 4.95 / 4.86 | 5.50 / 5.50 |
 | Seasons | On | 5.71 / 5.25 | 8.81 / 9.02 |
 
-A realistic-budget rerun is pending. On inspection, Docker Desktop and its backend were running; the safety
-rule forbids inference alongside Docker. Free physical RAM was about 21.6 GiB and free commit about 62.6 GiB
-out of a 127.3 GiB limit. No engine was started and no service was stopped. Before rerunning, check both memory
-limits, reserve 16 GiB of commit and 4 GiB of physical RAM with a PID-scoped watchdog, and account for weights
-and scratch outside the pools. Use port 8091 only. Measure at least two rounds of at least 256 tokens after
-expert residency or hit rates stabilize, including one and three conversations. No new realistic-budget speed,
-identity result or optimization gain is claimed here.
+A full-residency rerun completed on 3 November 2026, on the same Windows HIP Strix Halo and native IQ3_S,
+with the saved 204,800 context, int8 K/V and vision settings. The original engine used
+`--expert-cache auto --resident-experts --resident-budget-gib 4 --vram-reserve-mib 700`.
+The replacement requested `--gpu-mib 61440 --ram-mib 512 --expert-cache 24576 --vram-reserve-mib 4300`,
+with `STRATA_COMMIT_RESERVE_MIB=3072`. Its actual GPU pools were 52.50-53.75 GiB after automatic caps;
+**both engines held all 24,576 experts, 46.84 GiB, on the GPU**. The old RAM complement used 2.69 GiB.
+The owner explicitly allowed a 3 GiB commit floor for this task; the physical floor stayed at 4 GiB.
+Both were checked before every start and every 250 ms by a PID-scoped watchdog. The main matrix had no trip.
+No Docker VM, browser rendering or encoding ran with inference. Tests used private engine pipes, with no
+listener or use of the owner's server. Exploratory watchdog stops, including an old mapped-startup physical
+floor trip, are recorded separately in the report.
+
+GPU residency stayed unchanged through idle checks and two complete warm-up rounds before timing.
+Each standalone case pools two measured 256-token answers. Three-conversation rates pool two measured
+rounds after a separate batch warm-up, counting only tokens after the last admission and excluding prefill.
+Normal is a detailed seasons explanation; repeat is the five-word repeated list from the historical table.
+The concurrent workload adds a lighthouse story. These are decode tokens/s:
+
+| MTP | Suffix | Old normal | New normal | Old repeat | New repeat | New three, aggregate |
+|---|---|---:|---:|---:|---:|---:|
+| Off | Off | 25.20 | 23.98 | 25.05 | 24.28 | 48.38 |
+| Off | On | 25.29 | 24.56 | 75.91 | 72.49 | 49.47 |
+| On | Off | 43.21 | 37.08 | 60.97 | 58.00 | 54.48 |
+| On | On | 39.47 | 37.10 | 60.29 | 67.37 | 56.05 |
+
+These realistic numbers replace the restricted-memory table as evidence of this setup's throughput.
+They do not establish a win in every case. Normal MTP accepts 158/239 drafts in the old engine against
+144/243 in the new one, requiring 97 against 111 decode windows. Old/new greedy answers differ on normal
+and story prompts; the repeated list matches. Concurrent/standalone identity also fails on normal and story.
+The old engine's own MTP-on/off answers differ too. These failures are separate from the measured rates;
+their cause is not established by the timing data. An owned-prefill control did not remove the old/new mismatch.
+
+Shared startup now fills GPU expert pools before `READY`, instead of relying on later idle refill.
+Full-residency startup took old 39.41-40.28 s and new 39.29-45.65 s, including 16.55-19.42 s of final pool fill.
+The saved old resident mode maps files, stages one expert at a time into the GPU cache, then trims mapped
+working-set pages and pins the RAM complement. Its RAM peak is not a full private committed expert arena.
+The replacement also stages host data into GPU pages. Once both are fully resident, neither reads expert
+files during decode, so startup placement cannot explain the remaining steady-state gap.
+
+The final matrix's minimum free commit was 3.538 GiB; minimum free physical RAM was 18.356 GiB.
+Observed system commit increases were 56.657-62.471 GiB for the original and 63.204-64.854 GiB for the
+replacement. These include background application changes; they are not an exact per-process attribution.
+The commit limit stayed at 127.295 GiB. Do not add GPU use to system charge on unified memory.
+[The full report](../bench/results/2026-11-03-q38-realistic/README.md) gives exact flags, round times,
+per-case memory floors, load-path source locations, profiling, identity failures and validation limits.
+Further GPU diagnostics are blocked by commit headroom: the final preflight refused 64.479 GiB free commit
+against a revised 68 GiB requirement, despite 23.879 GiB free physical RAM. The retained exploratory logs
+include a 0.004 GiB commit minimum and a 3.960 GiB physical minimum in separate killed attempts; they are
+not successful runs. The main matrix remains separate. No engine is left running. The system-managed
+page file was 65,174 MiB and did not grow in the logs. The report includes every retained run's minimums.
 
 ### Pictures in the page-pool engines
 
@@ -1587,6 +1630,17 @@ This is one round of 64-token answers: a picture with counting, then Python and 
 Timing starts after the last admission and excludes prefill and earlier tokens (one: 63 tokens in each run;
 three: 187 before, 183 after). Small pools on this setup do not make three conversations faster than one.
 The before binary is 4c047a0f. All three answers match standalone and that binary exactly.
+
+At realistic budgets on the same Windows HIP Strix Halo and native IQ3_S, the 204,800-context,
+full-residency setup above gave **25.06 old / 24.76 new tok/s** for a picture followed by counting,
+and **49.91 aggregate tok/s** for the new engine with that picture, seasons and repetition together.
+Both draft sources were off. Two measured 256-token rounds followed warm-up; the mixed batch also had
+its own warm-up and counts 762 tokens after the last admission per measured round. This uses an existing
+16-row embedding file, excluding image encoding time. The picture matches old/new and concurrent/standalone
+in both rounds; the mixed seasons answer differs from standalone at token 56 and repetition matches.
+All 24,576 experts were on the GPU. Minimum free commit/physical RAM was old 8.068/23.723 GiB and
+new 5.785/26.262 GiB. These are realistic-budget picture checks; the earlier 4 GiB-pool numbers above
+remain historical restricted-memory evidence, not this setup's speed.
 
 Both engines bind prefix reuse to a hash of all pictures and their positions. A different picture set reads the
 prompt again from token zero. Pauses and saved sessions keep that identity; Qwen also keeps rotary coordinates.
@@ -1678,6 +1732,14 @@ without that live change pass. The restored logits themselves select the emitted
 a repeat passed. The final MTP run's three-conversation picture check also failed. These failures prevent claiming
 universal concurrent/standalone identity. Keep the option opt-in while investigating them; the NVIDIA kit records
 identity failures separately from the measured speeds.
+
+A separate full-residency old-engine control on 3 November used `--batch 3`, 8K context,
+`--resident-budget-gib 4`, no drafting, the seasons/list/story prompts above and two 256-token batch rounds.
+The old story differs from standalone at output token 186 in both rounds; seasons and repetition match.
+This confirms batch dependence in the original engine too, but does not establish the cause of the new
+engine's token-2 story divergence or reproduce the exact sparse-slot/live-group failures above.
+At 204,800 context that old three-slot control hit the 3 GiB commit watchdog during startup; the 8K control
+completed with all experts on the GPU. The main one-conversation comparison retains 204,800 context.
 
 Both page-pool engines can use greedy prompt lookup with `--suffix-draft 3` (`0`, the default, turns it off).
 They use the original Qwen engine's shared `WindowPlanner`, including its measured row costs, lookup acceptance

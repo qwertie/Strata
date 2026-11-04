@@ -404,6 +404,15 @@ int main() {
         check(stop && stop(0, 0.99f) && stop(1, 0.9f) && !stop(2, 0.8f),
               "incremental and batched networks use the same cumulative cut");
     }
+    {
+        const auto plain = get_window_rows(4, 0, 0, 0);
+        const auto suffix = get_window_rows(4, 0, 3, 0);
+        const auto chain = get_window_rows(4, 0, 3, 1);
+        const auto capped = get_window_rows(4, 3, 3, 0);
+        check(plain.total == 4 && plain.model == 0 && suffix.total == 6 && suffix.model == 4 &&
+                  chain.total == 7 && chain.model == 4 && capped.total == 4 && capped.model == 3,
+              "lookup capacity and explicit model caps agree across the original and paged engines");
+    }
     std::printf(g_fail ? "step_test: %d FAILED\n" : "step_test: all passed\n", g_fail);
     return g_fail ? 1 : 0;
 }

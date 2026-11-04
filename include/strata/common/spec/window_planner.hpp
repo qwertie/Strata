@@ -14,6 +14,15 @@
 
 namespace strata::spec {
 
+/// The full verify width and the cap reserved for model proposals, in rows including the current token.
+struct WindowRows {
+    int total, model;
+};
+
+/// Reserves lookup capacity while retaining the original model cap; zero model_rows selects it from rows.
+inline WindowRows get_window_rows(int rows, int model_rows, int suffix_draft, int64_t lookup_chain,
+                                  int max_rows = 8);
+
 /// The make-up of one verify window, chosen by WindowPlanner.
 struct Window {
     int T = 1;              ///< rows before the chained lookup tokens: the fed-back token, then MTP or lookup drafts
@@ -154,5 +163,19 @@ private:
     std::vector<int32_t> sbuf_, cbuf_, ctail_;
     std::vector<float> probs_;
 };
+
+inline WindowRows get_window_rows(int rows, int model_rows, int suffix_draft, int64_t lookup_chain, int max_rows) {
+    if (suffix_draft > 0 && rows >= 2 && model_rows == 0) {
+        model_rows = rows;
+        rows = (int) std::min<int64_t>((int64_t) rows + 2, max_rows);
+    }
+    if (lookup_chain > 0 && rows >= 2) {
+        if (model_rows == 0)
+            model_rows = rows;
+        rows = std::max(rows, (int) std::min<int64_t>((int64_t) std::max(rows, model_rows) +
+                                                    std::min<int64_t>(lookup_chain, max_rows), max_rows));
+    }
+    return {rows, model_rows};
+}
 
 }  // namespace strata::spec
