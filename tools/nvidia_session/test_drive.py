@@ -40,6 +40,29 @@ class CutMove(unittest.TestCase):
             self.assertIn("resize failed", get_cut_move_problem(out))
 
 
+class DenseMigration(unittest.TestCase):
+    def test_requires_cross_card_dense_migration(self):
+        from report import get_exercise_problem
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            out = root / "after-1.out"
+            out.write_text("exit 0\n", encoding="utf-8")
+            Path(str(out) + ".settings").write_text(
+                ">>> after 24 tokens: CHANGE_SETTINGS memory_mib.gpu0=512\nEND_MEMORY\n"
+                ">>> after 48 tokens: CHANGE_SETTINGS memory_mib.gpu0=1024\nEND_MEMORY\n", encoding="utf-8")
+            stderr = Path(str(out) + ".stderr")
+            move = "strata-ds41: the layer cut moved: K=20 -> K=12\n"
+            stderr.write_text(move, encoding="utf-8")
+            self.assertIn("dense-weight", get_exercise_problem(root, "memory-ds41-cut-move-SB"))
+            stderr.write_text(move + "strata-ds41: dense layer 12 migrated: gpu0 -> gpu1 (4096 bytes)\n",
+                              encoding="utf-8")
+            self.assertIn("dense-weight", get_exercise_problem(root, "memory-ds41-cut-move-SB"))
+            stderr.write_text(move + "".join(
+                f"strata-ds41: dense layer {layer} migrated: gpu0 -> gpu1 (4096 bytes)\n"
+                for layer in range(12, 20)), encoding="utf-8")
+            self.assertEqual("", get_exercise_problem(root, "memory-ds41-cut-move-SB"))
+
+
 class Telemetry(unittest.TestCase):
     def test_keeps_all_memory_fields_and_process_usage(self):
         with tempfile.TemporaryDirectory() as folder:

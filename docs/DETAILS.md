@@ -1935,3 +1935,37 @@ Two launch-argument regressions and five architecture checks pass. HIP sources c
 targets link; a direct rebuild reports no work. The local Visual Studio environment script prints a missing
 `vswhere.exe` diagnostic and returns a nonzero wrapper status despite the successful Ninja build.
 EXL3 inference and its chunked prompt path remain unverified; that path retains the old region staging reader.
+
+
+### DeepSeek paged stages: dense weights and expert hops
+
+`strata-ds41` uses the shared paged engine's cut planner, conversation transfer and expert placement.
+Without `--trim-stage-weights`, a cut may cross the initial dense-weight ranges. On separate GPUs,
+DeepSeek reloads each moved layer's dense tensors and verify scratch on its new owner before freeing
+the previous copy. The output head and DSpark stay on the last stage. Reloads print
+`dense layer L migrated: gpuA -> gpuB (N bytes)`; weights and scratch remain outside the page pools.
+A failed layer reload retains that layer's old copy. Extra temporary room for one layer is needed.
+Two stages on one GPU reuse the same allocations and transfer their accounting.
+Qwen currently moves cuts only within dense weights already loaded on each card; this is not a Qwen
+cross-card reload mechanism.
+
+The shared expert placement selects at most one holder for each layer's lent experts. DeepSeek's CPU
+lane sends that holder the selected activation rows in one batch, runs its existing expert matrix
+kernels on a separate stream and private scratch, and returns the rows before publishing the primary's
+response. CPU entries retain their original order in the weighted sum. The chunked prompt path still
+streams nonlocal experts; hops apply to window decoding. `--remote-experts on` forces eligible hops;
+`auto` compares the measured link with a startup calibration of a CPU expert from RAM; `off` disables
+lending. Separate GPUs are required. Same-GPU forced hops remain refused because a waiting verify
+kernel and hop kernels can stall the GPU and reset its driver. There is no safe same-GPU test override.
+Cross-card token identity and speed must be checked by the NVIDIA session; no speed gain is claimed.
+
+Local check (2026-11-04, Radeon 8060S, Windows HIP, two stages on one GPU): with 240 fixed GPU
+experts, drafting and adaptive placement off, 2 GiB per GPU pool, 1 GiB requested RAM pool and
+`DS4_COMMIT_CAP_GB=24`, a 96-token story at cut 10 moved to cut 20 after token 24 when the first
+pool halved. Restoring the pool after token 48 succeeded. All 96 tokens matched the fixed-cut-20
+run and a one-stage reference with a 4 GiB GPU pool. A separate cut-20 run with the pool halved but no cut change also matched all 96 tokens.
+A stress run shrinking that pool to a quarter moved 20 -> 11 -> 20, but its answer diverged at
+output token 71. During the moved cut it held about 69 MB fewer GPU expert bytes; a change of
+CPU/GPU arithmetic is a possible cause, not a confirmed diagnosis. Separate-card migration,
+hop correctness and speed remain unmeasured here. The kit's identity check starts at cut 10
+and halves the pool to exercise a move without that expert shortfall.

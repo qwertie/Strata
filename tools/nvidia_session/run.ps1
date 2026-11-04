@@ -445,7 +445,14 @@ function Invoke-DeepSeekMemory {
         $split = "strata-ds41.exe --cards $cards $base " +
                  "`"--args=$fixed --gpus 0,1 --gpu-mib 2048,2048 --layer-split 20`""
         Invoke-Versus "memory-ds41-2cards-$order" dsmemory $one $split
-        Invoke-Versus "memory-ds41-cut-move-$order" dscutmove $split "$split --move-cut"
+        $cutRun = $split.Replace('--layer-split 20', '--layer-split 10')
+        Invoke-Versus "memory-ds41-cut-move-$order" dscutmove $cutRun "$cutRun --move-cut"
+        foreach ($mode in 'off', 'auto', 'on') {
+            $modeArgs = $fixed.Replace('--remote-experts off', "--remote-experts $mode")
+            $modeRun = "strata-ds41.exe --cards $cards $base " +
+                       "`"--args=$modeArgs --gpus 0,1 --gpu-mib 256,4096 --layer-split 20`""
+            Invoke-Versus "memory-ds41-remote-$mode-$order" dsmemory $one $modeRun
+        }
         $hopArgs = $fixed.Replace('--remote-experts off', '--remote-experts on')
         $hop = "strata-ds41.exe --cards $cards $base " +
                "`"--args=$hopArgs --gpus 0,1 --gpu-mib 256,4096 --layer-split 20`""

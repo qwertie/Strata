@@ -241,3 +241,31 @@ building them one at a time.
 To clean up, from the checkout: `git -c safe.directory=<checkout> worktree remove --force C:\sn\before`,
 then the equivalent command for `after`. Replace `<checkout>` with the checkout's full path, and use your `-Work`
 folder's paths.
+
+
+### DeepSeek dense migration and remote experts
+
+From the commit containing these changes, use fresh results:
+
+```powershell
+.\tools\nvidia_session\run.ps1 -Only preflight,build,memory `
+  -DataDir E:\Strata-data -DeepSeekDir E:\DeepSeek-V4.1-Flash `
+  -Results E:\Strata-results\ds41-dense-hops
+```
+
+`memory-ds41-cut-move-SB` and `-BS` now require both successful resizes, a changed cut, and a nonzero
+`dense layer L migrated: gpuA -> gpuB (N bytes)` line naming different GPUs. Token identity and speed
+are compared with the fixed-cut run. `memory-ds41-remote-off/auto/on-SB` and `-BS` each compare with
+one card using the same fixed expert set. Forced `on` must report computed remote experts. Auto may
+choose none; inspect its CPU calibration and hop counters alongside the speed report. The existing
+`memory-ds41-hop-default-queues-*` compares forced hops with extra versus explicit default queues.
+DeepSeek runs check free commit and physical RAM before starting and stop only their engine PID below
+3 GiB free commit or 4 GiB free physical RAM. Docker Desktop/backend or vmmem processes block a start.
+The original pack is copied before its model path and expert profile are changed. No test uses port 8080.
+A same-GPU split cannot validate dense transfers or hops; forced same-GPU hops remain refused.
+
+Local validation on the Radeon 8060S (2026-11-04, Windows HIP): the single-stage, fixed split
+and cut-10-to-20 runs matched all 96 output tokens. The quarter-pool stress run moved 20 -> 11 -> 20
+but diverged at token 71. Settings, limits and the observed GPU expert shortfall are recorded in
+[DETAILS.md](../../docs/DETAILS.md#deepseek-paged-stages-dense-weights-and-expert-hops).
+Separate-card migration and hop execution remain for the NVIDIA kit.

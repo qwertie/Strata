@@ -183,8 +183,16 @@ public:
     bool set_expert_addresses(const std::vector<const uint8_t*>& at, std::string& err, int stage = -1);
     /// Gets each stage's trunk interval, in device order.
     std::vector<int64_t> get_layer_cuts() const;
-    /// Changes a stage's interval when its dense weights remain addressable on the same physical GPU.
+    /// Changes a stage's interval, reloading moved dense tensors when the physical GPU changes.
     bool set_stage_layers(int stage, int lb, int le, std::string& err);
+    /// Opens a stage's compute buffers for experts lent by the shared paged engine.
+    bool attach_expert_hop(int stage, std::function<const uint8_t*(int, int)> find, std::string& err);
+    /// Publishes the shared planner's per-layer destination card, or null when hopping is off.
+    void set_hop_holders(const int32_t* holders);
+    /// Prints counts of work completed on the other cards.
+    void report_hops() const;
+    /// Measures one routed expert from RAM for the shared auto-hop decision.
+    double measure_cpu_expert_ms();
     /// (Options::expert_pages) Gets each trunk expert's routings in windows since the caller last changed them (layer
     /// * n_exp + expert), counted once the caller sized it to that.
     std::vector<float>& get_usage();

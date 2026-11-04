@@ -156,6 +156,8 @@ private:
     /// the next step, so that the steps compute the same experts on the GPUs as before.  False (and `err`) when a
     /// conversation did not fit in the RAM's pool, or a pool cannot have the new layout: the cut stays.
     bool move_cut(const std::vector<int64_t>& cut, std::string& err);
+    /// Updates model ownership while conversations have no GPU pages.
+    bool set_layers(const std::vector<int64_t>& cut, std::string& err);
     /// Gives each card's pool the experts it wants that fit (refill), waiting for pages that open soon; then uploads
     /// the residency tables.
     bool fill_cards(std::string& err);
@@ -346,6 +348,7 @@ private:
     std::optional<strata::core::SessionFileIdentity> identity_;
     uint64_t requests_ = 0;            ///< the requests served so far (Held::used)
     const Held* reading_ = nullptr;    ///< the conversation whose prompt read_prompt reads, which make_room keeps
+    std::string fatal_error_; ///< Stops serving when the model cannot recover its layer ownership.
     bool residency_changed_ = false;   ///< the model's residency table changed since the devices' were uploaded
     /// Per layer, the card whose pool holds the layer's experts that its own card's does not (the model's hop
     /// holders), or -1; empty while the cards lend no pages (one card, or --remote-experts off)
@@ -562,7 +565,9 @@ int PagedEngine::serve() {
     strata::serve::EngineHooks hooks;
     hooks.before_line = [this](const std::string&) { return wait_model_state(); };
     hooks.is_busy = [this] { return is_decoding() || is_refill_wanted(); };
-    hooks.step = [this] { return is_decoding() ? decode_step() : refill_experts(); };
+    hooks.step = [this] {
+        return fatal_error_.empty() && (is_decoding() ? decode_step() : refill_experts());
+    };
     hooks.stop_slot = [this](int slot) { stop_slot(slot); };
     hooks.list_conversations = [this] { return list_conversations(); };
     hooks.describe_memory = [this] { return describe_memory(); };
@@ -1863,13 +1868,25 @@ bool PagedEngine::move_cut(const std::vector<int64_t>& cut, std::string& err) {
     // holder's own windows do not look
     if (!holder_.empty())
         place_card_experts(false);
-    bool ok = true;
-    for (size_t k = 0; k < cards_.size(); ++k) {
-        PagedCard& card = cards_[k];
-        std::tie(card.lb, card.le) = get_card_layers(cut, k, facts_.n_layers);
-        for (const std::unique_ptr<Held>& h : held_)
-            h->parts[k]->set_layers(card.lb, card.le);
-        ok = model_.set_card_layers(card, err) && ok;
+    if (!set_layers(cut, err)) {
+        const std::string failure = err;
+        for (size_t k = 0; k < cards_.size(); ++k)
+            (void) cards_[k].experts.pool().set_layout(old_layouts[k]);
+        std::string rollback_error;
+        if (!set_layers(before, rollback_error)) {
+            err = failure + "; restoring the old layer owners failed: " + rollback_error;
+            fatal_error_ = err;
+            for (auto& [h, p] : out)
+                drop_pages(p);
+            return false;
+        }
+        place_card_experts(false);
+        if (!holder_.empty())
+            place_card_experts(true);
+        residency_changed_ = refilling_ = true;
+        bring_back(true);
+        err = failure;
+        return false;
     }
     // a moved layer's experts leave the card it left, even those it is to hold for the layer's new card: the hook put
     // them in the device's table, not in `lent`
@@ -1879,7 +1896,7 @@ bool PagedEngine::move_cut(const std::vector<int64_t>& cut, std::string& err) {
     residency_changed_ = refilling_ = true;
     bring_back(false);
     trim_ram();   // the conversations left paused went to RAM beyond --tokens-max's budget
-    if (!ok || !fill_cards(err))
+    if (!fill_cards(err))
         return false;
     std::string layers;
     for (const PagedCard& card : cards_)
@@ -1887,6 +1904,18 @@ bool PagedEngine::move_cut(const std::vector<int64_t>& cut, std::string& err) {
                   std::to_string(card.le - 1);
     say("the layer cut moved: K=%s -> K=%s (%s; %zu conversations paused for it) in %.0f ms\n",
         format_cuts(before).c_str(), format_cuts(cut).c_str(), layers.c_str(), out.size(), get_ms_since(t0));
+    return true;
+}
+
+bool PagedEngine::set_layers(const std::vector<int64_t>& cut, std::string& err) {
+    for (size_t k = 0; k < cards_.size(); ++k) {
+        PagedCard& card = cards_[k];
+        std::tie(card.lb, card.le) = get_card_layers(cut, k, facts_.n_layers);
+        if (!model_.set_card_layers(card, err))
+            return false;
+        for (const std::unique_ptr<Held>& h : held_)
+            h->parts[k]->set_layers(card.lb, card.le);
+    }
     return true;
 }
 
@@ -2210,8 +2239,10 @@ auto time_step_if(bool enabled, double& elapsed, F&& operation) -> decltype(oper
 
 bool PagedEngine::wait_model_state() {
     std::string err;
-    if (model_.wait_state(err))
+    if (model_.wait_state(err) && fatal_error_.empty())
         return true;
+    if (!fatal_error_.empty())
+        err = fatal_error_;
     std::printf("ERR %s\n", err.c_str());
     return false;
 }

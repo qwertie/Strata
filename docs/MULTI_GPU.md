@@ -299,3 +299,18 @@ cold 19.9K prompt; one run per arm (community report #1447, not repeated here).
 | `--pipeline-windows 2` | 136.7 | 2,097 |
 | `STRATA_PF_FUSED=1` | 137.2 | 1,913 |
 | pipeline-windows 2 + async + lag 2 + rotate + pf_fused | 142.0 | 2,302 |
+
+
+## DeepSeek paged engine (`strata-ds41`)
+
+The opt-in paged engine accepts `--layer-split K --gpus 0,1`. Live pool resizes can move its cut.
+Without `--trim-stage-weights`, dense tensors follow moved layers to their new GPU; the output head
+and drafter stay on the last stage. Reloading needs temporary room for a layer outside the pools.
+`--trim-stage-weights` keeps the initial ranges fixed.
+
+`--remote-experts off|auto|on` uses the common placement rules. DeepSeek has its own expert kernels
+and private hop scratch, while both paged engines share the cut, lending and link-cost decisions.
+Auto uses a local CPU calibration and the measured link, so it may choose no hops. Forced hops require
+separate physical GPUs. On one GPU, `--split-device 0` permits a two-stage cut test with `off` or `auto`;
+`on` is refused because concurrent waiting and hop kernels have caused a driver reset.
+The NVIDIA session checks both card orders, identity, actual dense migration, forced hops and speed.

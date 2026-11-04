@@ -98,6 +98,15 @@ def main(argv: list[str]) -> int:
                     len(re.findall(r"^SPEED groups ", run, re.M)) == 2
                     for runs in files.values() for run in runs):
                 note = "; ".join([note, *compare_speeds(files["before"], files["after"])[1]])
+        if "memory-ds41-remote-" in check:
+            counts = []
+            for path in sorted((results / check).glob("after-*.out.stderr")):
+                cards = {}
+                for gpu, count in re.findall(r"so far (gpu\d+) computed (\d+) experts of other cards' layers",
+                                             path.read_text(encoding="utf-8", errors="replace")):
+                    cards[gpu] = max(cards.get(gpu, 0), int(count))
+                counts.append(sum(cards.values()))
+            note += f"; remote experts per run: {counts}"
         note = "; ".join(filter(None, [note, explain_slow_decode(results / check)])) + describe_telemetry(
             results / check)
     elif cmd == "rows":
@@ -192,7 +201,7 @@ def get_exercise_problem(folder: Path, check: str) -> str:
                     stderr = path.read_text(encoding="utf-8", errors="replace") if path.exists() else ""
                     if not re.search(r"pipeline: groups=2 stages=2 peak_in_flight=2", stderr):
                         return f"{run.name}: no evidence of two occupied stages"
-    if "hop" in check:
+    if "hop" in check or "ds41-remote-on-" in check:
         sides = ("before", "after") if "default-queues" in check else ("after",)
         for side in sides:
             runs = list(folder.glob(f"{side}-*.out"))
@@ -201,6 +210,8 @@ def get_exercise_problem(folder: Path, check: str) -> str:
             for run in runs:
                 stderr = Path(str(run) + ".stderr")
                 text = stderr.read_text(encoding="utf-8", errors="replace") if stderr.exists() else ""
+                if "expert hop failed" in text:
+                    return f"{run.name}: expert hop failed; see stderr"
                 if not any(int(n) > 0 for n in re.findall(
                         r"computed (\d+) experts of other cards' layers", text)):
                     return f"no hops: {run.name} has no nonzero computed-expert counter in stderr"
@@ -208,6 +219,16 @@ def get_exercise_problem(folder: Path, check: str) -> str:
         for run in folder.glob("after-*.out"):
             if problem := get_cut_move_problem(run):
                 return f"{run.name}: {problem}"
+            if "ds41" in check:
+                path = Path(str(run) + ".stderr")
+                text = path.read_text(encoding="utf-8", errors="replace") if path.exists() else ""
+                migrations = re.findall(r"dense layer (\d+) migrated: gpu(\d+) -> gpu(\d+) \((\d+) bytes\)", text)
+                moved = {int(layer) for layer, src, dst, size in migrations if src != dst and int(size) > 0}
+                expected = set()
+                for before, after in re.findall(r"layer cut moved: K=(\d+) -> K=(\d+)", text):
+                    expected.update(range(min(int(before), int(after)), max(int(before), int(after))))
+                if not expected or not expected.issubset(moved):
+                    return f"{run.name}: missing cross-card dense-weight migration evidence for moved layers"
     return ""
 
 

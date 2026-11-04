@@ -38,8 +38,8 @@ struct PagedCard {
     /// its memory's id in GET_MEMORY_USE and CHANGE_SETTINGS: gpu<dev>, and gpu<dev>.<index> for a card on the GPU of
     /// an earlier card (the test of a split on one GPU)
     std::string id;
-    /// the layers whose dense weights it holds, which the cut keeps it within: every layer, or with
-    /// --trim-stage-weights its own at the start
+    /// Bounds the cut to layers whose dense tensors the model can address or reload on this card.
+    /// --trim-stage-weights restricts this to the initial interval.
     int64_t weights_lb = 0, weights_le = 0;
     strata::core::LinkSpeed link;                 ///< its link to RAM, measured at start
     double layer_ms = 0;                          ///< the predicted ms of one layer of a decode window on it
@@ -192,8 +192,8 @@ public:
     /// Gets the decode steps between two rounds of the adaptive tier at step `steps`.
     virtual int get_adapt_interval(int64_t steps) const = 0;
     /// Makes the model run layers [card.lb, card.le) on `card` (the layer cut moved); false (and `err`) when its
-    /// windows could not drop what they kept for the old layers.  The engine calls it for each card in order, after
-    /// setting the card's layers and its parts' (PagedPart::set_layers), while every conversation is paused.
+    /// dense tensors could not reload or its windows could not discard the old layers. The engine calls it
+    /// with the card's new range while every conversation is paused, before updating its parts' ranges.
     virtual bool set_card_layers(const PagedCard& card, std::string& err) = 0;
     /// Gets each layer's sizes for the layer split's planner, an expert in pages of `page_bytes`.
     virtual strata::core::LayerSizes get_layer_sizes(uint64_t page_bytes) const = 0;

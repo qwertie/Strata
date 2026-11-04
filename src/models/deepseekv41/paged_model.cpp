@@ -335,12 +335,18 @@ public:
     }
     uint64_t get_weight_bytes(const PagedCard& card) const override { return m_.get_weight_bytes((int) card.index); }
     uint64_t get_scratch_bytes(const PagedCard& card) const override { return m_.get_scratch_bytes((int) card.index); }
-    bool attach_hop(PagedCard&, std::string& err) override {
-        err = "DeepSeek expert hops are not implemented; use --remote-experts off or auto";
-        return false;
+    bool attach_hop(PagedCard& card, std::string& err) override {
+        if (facts.cpu_expert_ms == 0) {
+            facts.cpu_expert_ms = m_.measure_cpu_expert_ms();
+            std::fprintf(stderr, "%s: CPU expert calibration: %.3f ms\n", kProgram.c_str(), facts.cpu_expert_ms);
+        }
+        return m_.attach_expert_hop((int) card.index, [this, &card](int layer, int expert) {
+            const int32_t page = card.lent[(size_t) layer * facts.n_expert + expert];
+            return page < 0 ? nullptr : card.experts.pool().page_address(page);
+        }, err);
     }
-    void set_hop_holders(const int32_t*) override {}
-    void report_hops() const override {}
+    void set_hop_holders(const int32_t* holders) override { m_.set_hop_holders(holders); }
+    void report_hops() const override { m_.report_hops(); }
     bool prepare_images(const strata::serve::RequestLine& request, const std::vector<int64_t>& ids,
                         uint64_t& key, std::string& err) override;
     void attach_images(const PagedParts&) override {}
@@ -488,15 +494,14 @@ int run_paged_engine(int argc, char** argv) {
                 std::fprintf(stderr, "%s: --remote-experts on: %s\n", kProgram.c_str(), refusal.c_str());
                 return 2;
             }
-            strata::serve::set_paged_runtime_env(settings, false);
         } else {
-            strata::serve::set_paged_runtime_env(settings, false);
             int count = 0;
             cudaGetDeviceCount(&count);
             stage_devices.clear();
             for (int i = 0; i < count; ++i)
                 stage_devices.push_back(i);
         }
+        strata::serve::set_paged_runtime_env(settings, strata::core::get_hop_refusal(stage_devices).empty());
         if (stage_devices.size() < 2 || (!cuts.empty() && cuts.size() + 1 != stage_devices.size())) {
             std::fprintf(stderr, "%s: the layer split needs one more stage than cuts\n", kProgram.c_str());
             return 2;
@@ -590,15 +595,14 @@ int run_paged_engine(int argc, char** argv) {
         std::fprintf(stderr, "%s: %s\n", kProgram.c_str(), err.c_str());
         return 1;
     }
-    const bool shared_gpu = std::all_of(devices.begin(), devices.end(), [&](int dev) { return dev == devices[0]; });
     for (size_t i = 0; i < devices.size(); ++i) {
         PagedCard& card = cards.emplace_back();
         card.index = i;
         card.dev = devices[i];
         card.lb = i == 0 ? 0 : cuts[i - 1];
         card.le = i == cuts.size() ? g.nl : cuts[i];
-        card.weights_lb = shared_gpu && !x.trim_stage_weights ? 0 : card.lb;
-        card.weights_le = shared_gpu && !x.trim_stage_weights ? g.nl : card.le;
+        card.weights_lb = !x.trim_stage_weights ? 0 : card.lb;
+        card.weights_le = !x.trim_stage_weights ? g.nl : card.le;
         card.id = "gpu" + std::to_string(card.dev);
         if (std::find(devices.begin(), devices.begin() + i, card.dev) != devices.begin() + i)
             card.id += "." + std::to_string(i);
@@ -648,6 +652,7 @@ PagedDeepSeek::PagedDeepSeek(Model& m, const Options& o, const ProgramOptions& x
     facts.name = kProgram;
     facts.n_layers = g.nl;
     facts.n_expert = g.n_exp;
+    facts.row_bytes = (uint64_t) g.dim * sizeof(float);
     facts.context = o.max_context;
     facts.max_rows = kWindowRows;
     facts.end_tokens.assign(eos.begin(), eos.end());

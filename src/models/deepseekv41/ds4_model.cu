@@ -472,6 +472,23 @@ struct Dev {
     int *grp_start = nullptr, *grp_ent = nullptr, *n_groups = nullptr;
 };
 
+/// Keeps DeepSeek hop launches independent of a holder's prompt and decoding scratch.
+struct ExpertHop {
+    Dev d;
+    std::function<const uint8_t*(int, int)> find;
+    int64_t experts = 0, rows = 0;
+    double ms = 0;
+    ~ExpertHop() {
+        cudaSetDevice(d.id);
+        if (d.st != nullptr)
+            cudaStreamSynchronize(d.st);
+        for (void* ptr : d.allocs)
+            cudaFree(ptr);
+        if (d.st != nullptr)
+            cudaStreamDestroy(d.st);
+    }
+};
+
 // the chunked prompt path's buffers on a device: a chunk of C tokens through a layer at once (the attention in slabs of
 // A queries, the indexer in slabs of AI), its GEMMs through FP16 reconstructions of the weights and cuBLAS
 // DS4_PRED_DUMP: a fixed +-1 random projection of the router input (D -> 256), one block a token
@@ -599,6 +616,8 @@ struct Layer {
     std::vector<int> host_list;
     std::string name;         // "layers.N." or, for the DSpark drafter's blocks, "mtp.N."
     int n_exp = 0, k_exp = 0; // routed experts, and how many a token takes (the drafter's: 128, 3)
+    std::vector<void*> dense_allocations; ///< Records tensors and verify scratch reloaded on a cut move.
+    size_t dense_scratch_bytes = 0; ///< Reloadable scratch accounted separately from tensors.
     size_t weight_bytes = 0;  ///< Dense allocations accounted to the stage that currently runs this layer.
     bool mtp = false;         // a DSpark block (index stage = il - n_layers)
     bool kv_src = false, ix_src = false, owns_k = false, cand_src = false, uses_cand = false;
@@ -2362,6 +2381,7 @@ struct Model::Impl {
             }
         }
         for (Src& sr : srcs) {
+            sr.remote = sr.remote || (o.expert_pages != nullptr && devs.size() > 1);
             if (sr.remote && (!hmap(sr.x_stage, x_cap() * (ckv_rb() + ik_rb()), err) || !hmap(sr.x_flag, 32, err)))
                 return false;
             if (sr.remote && chunk > 0 &&
@@ -3723,16 +3743,21 @@ struct Model::Impl {
         return true;
     }
 
-    bool load_dense(int di, std::string& err, bool drafter_only = false) {
+    std::vector<std::unique_ptr<ExpertHop>> hops; ///< Indexed by the shared engine's card index.
+    const int32_t* hop_holders = nullptr; ///< Published only between decode windows.
+
+    bool load_dense(int di, std::string& err, bool drafter_only = false, int layer_only = -1) {
         Dev& d = devs[(size_t) di];
         cudaSetDevice(d.id);
         size_t* acct = &d.weights;
         for (Layer& l0 : L)
           for (int mi = 0; mi < l0.nm; ++mi) {
             Layer& l = member(l0, mi);
-            if (l.dev != di || (drafter_only && !l.mtp)) continue;
+            if (l.dev != di || (drafter_only && !l.mtp) || (layer_only >= 0 && l.il != layer_only))
+                continue;
+            const size_t first_allocation = d.allocs.size();
             d.loading_drafter = l.mtp;
-            const size_t before = d.weights;
+            const size_t before = d.weights, scratch_before = d.scratch;
             // (a group's member: its share of the heads (wq_b columns, the sinks), of wo_a's groups and wo_b's rows,
             // of the shared expert's FFN; the rest whole)
             const int nm = l0.nm, na = g.heads / std::max(1, l.ahn), ha = l.ah0 / std::max(1, l.ahn);
@@ -3793,8 +3818,12 @@ struct Model::Impl {
             if (g.n_mtp > 0 && !l.mtp && !init_verify_layer(l, err)) return false;
             d.loading_drafter = false;
             if (!drafter_only && !dalloc(d, l.vram_tab, (size_t) l.n_exp, err, acct)) return false;
+            l.dense_scratch_bytes = d.scratch - scratch_before;
             l.weight_bytes = d.weights - before;
+            l.dense_allocations.assign(d.allocs.begin() + first_allocation, d.allocs.end());
           }
+        if (layer_only >= 0)
+            return true;
         // The head: each member of its group holds a share of the columns.
         if (!drafter_only && d.grp == devs[(size_t) head_dev].grp) {
             const int hn = head_nm();
@@ -6024,26 +6053,100 @@ struct Model::Impl {
         }
     }
 
+    /// Computes the lent entries in one transfer each way, leaving the others for the CPU lane.
+    bool run_expert_hop(const Layer& l, const float* x, size_t ldx, std::vector<Ent>& cold,
+                        std::string& err) {
+        if (hop_holders == nullptr || l.mtp || hop_holders[l.il] < 0)
+            return true;
+        ExpertHop& hop = *hops[(size_t) hop_holders[l.il]];
+        const strata::core::OnDevice on(hop.d.id);
+        Dev& d = hop.d;
+        std::vector<Ent> remote;
+        std::vector<float> input;
+        Layer view;
+        view.lay = l.lay;
+        view.vm.resize((size_t) l.n_exp);
+        for (const Ent& en : cold) {
+            const uint8_t* blob = hop.find(l.il, en.e);
+            if (blob == nullptr)
+                continue;
+            set_vm(view, en.e, blob);
+            remote.push_back(en);
+            for (int i = 0; i < en.n; ++i)
+                input.insert(input.end(), x + (size_t) en.tok[i] * ldx, x + (size_t) en.tok[i] * ldx + g.dim);
+        }
+        if (remote.empty())
+            return true;
+        const double start = now_ms();
+        CK(cudaMemcpyAsync(d.xe, input.data(), input.size() * sizeof(float), cudaMemcpyHostToDevice, d.st));
+        std::vector<x3::MvJob> jobs;
+        int rows = 0;
+        for (const Ent& en : remote) {
+            const auto& vm = view.vm[(size_t) en.e];
+            jobs.push_back(job(vm[0], d.xe + (size_t) rows * g.dim, d.xg + (size_t) rows * g.ff,
+                               en.n, g.dim, g.ff));
+            jobs.push_back(job(vm[1], d.xe + (size_t) rows * g.dim, d.xu + (size_t) rows * g.ff,
+                               en.n, g.dim, g.ff));
+            rows += en.n;
+        }
+        if (!mv_n(d, jobs.data(), (int) jobs.size(), err))
+            return false;
+        swiglu(d.xg, d.xu, rows * g.ff, g.lim, d.xhh, d.st);
+        jobs.clear();
+        rows = 0;
+        for (const Ent& en : remote) {
+            jobs.push_back(job(view.vm[(size_t) en.e][2], d.xhh + (size_t) rows * g.ff,
+                               d.ed + (size_t) rows * g.dim, en.n, g.ff, g.dim));
+            rows += en.n;
+        }
+        if (!mv_n(d, jobs.data(), (int) jobs.size(), err))
+            return false;
+        std::vector<float> output((size_t) rows * g.dim);
+        CK(cudaMemcpyAsync(output.data(), d.ed, output.size() * sizeof(float), cudaMemcpyDeviceToHost, d.st));
+        CK(cudaStreamSynchronize(d.st));
+        rows = 0;
+        for (const Ent& en : remote) {
+            std::copy_n(output.data() + (size_t) rows * g.dim, (size_t) en.n * g.dim,
+                        c_yd.data() + (size_t) en.slot0 * g.dim);
+            rows += en.n;
+        }
+        cold.erase(std::remove_if(cold.begin(), cold.end(), [&](const Ent& en) {
+            return hop.find(l.il, en.e) != nullptr;
+        }), cold.end());
+        hop.experts += remote.size();
+        hop.rows += rows;
+        hop.ms += now_ms() - start;
+        return true;
+    }
+
     // (Options::expert_pages) the CPU lane's entries from the caller's pool, kCpuLaneExperts experts at a time: the
     // pool keeps the blobs it gives for the layer in place while it gives no more than that many it does not hold.
     // Each group's entries computed as cpu_experts_mx computes them (an entry's rows do not depend on the others').
     // An expert the pool could not read: its rows are 0, said once.
     void cpu_experts_paged(const Layer& l, const float* x, const std::vector<Ent>& ents, size_t ldx) {
+        std::vector<Ent> local = ents;
+        std::string why;
+        if (!run_expert_hop(l, x, ldx, local, why)) {
+            std::fprintf(stderr, "strata-ds41: expert hop failed, computing on CPU: %s\n", why.c_str());
+            local = ents;
+        }
+        if (local.empty())
+            return;
         strata::core::ExpertSource& pool = *o.expert_pages;
         std::vector<int32_t> ids;
-        for (const Ent& en : ents)
+        for (const Ent& en : local)
             ids.push_back(en.e);
         pool.begin_layer(l.il, ids.data(), (int64_t) ids.size());
-        for (size_t a = 0; a < ents.size();) {
+        for (size_t a = 0; a < local.size();) {
             std::vector<Ent> group, lost;
             std::vector<int64_t> want;
-            for (; a < ents.size(); ++a) {
-                const bool known = std::find(want.begin(), want.end(), ents[a].e) != want.end();
+            for (; a < local.size(); ++a) {
+                const bool known = std::find(want.begin(), want.end(), local[a].e) != want.end();
                 if (!known && want.size() == (size_t) kCpuLaneExperts)
                     break;
                 if (!known)
-                    want.push_back(ents[a].e);
-                group.push_back(ents[a]);
+                    want.push_back(local[a].e);
+                group.push_back(local[a]);
             }
             pool.prefetch(l.il, want.data(), (int64_t) want.size());
             for (const int64_t e : want)
@@ -7304,12 +7407,15 @@ struct Model::Impl {
     /// Gives a trunk layer scratch for restoring state after rejected guesses, independently of DSpark weights.
     bool init_verify_layer(Layer& l, std::string& err) {
         Dev& d = devs[(size_t) l.dev];
+        const size_t first = d.allocs.size(), before = d.scratch;
         if (!l.ring_bak && !dalloc(d, l.ring_bak, (size_t) kWin * win_rb(), err))
             return false;
         if (l.kv_src && l.ratio > 1 &&
             ((!l.c_snap && !dalloc(d, l.c_snap, (size_t) 2 * l.ratio * g.hd, err)) ||
              (!l.c_rows && !dalloc(d, l.c_rows, (size_t) 2 * kWin * g.hd, err))))
             return false;
+        l.dense_allocations.insert(l.dense_allocations.end(), d.allocs.begin() + first, d.allocs.end());
+        l.dense_scratch_bytes += d.scratch - before;
         return true;
     }
 
@@ -9870,19 +9976,124 @@ std::vector<int64_t> Model::get_layer_cuts() const {
 
 bool Model::set_stage_layers(int stage, int lb, int le, std::string& err) {
     Impl& p = *p_;
-    for (int il = lb; il < le; ++il)
-        if (p.devs[(size_t) p.L[(size_t) il].dev].id != p.devs[(size_t) stage].id) {
-            err = "the layer's dense weights are on another GPU";
-            return false;
-        }
     for (int il = lb; il < le; ++il) {
         Layer& layer = p.L[(size_t) il];
-        p.devs[(size_t) layer.dev].weights -= layer.weight_bytes;
-        p.devs[(size_t) stage].weights += layer.weight_bytes;
-        layer.dev = stage;
-        layer.grp = stage;
+        if (layer.dev == stage)
+            continue;
+        Dev& old = p.devs[(size_t) layer.dev];
+        Dev& target = p.devs[(size_t) stage];
+        std::vector<void*> allocations = layer.dense_allocations;
+        if (layer.slot_tab != nullptr)
+            allocations.push_back(layer.slot_tab);
+        if (layer.vs_dev != nullptr)
+            allocations.push_back(layer.vs_dev);
+        const size_t layer_scratch = layer.dense_scratch_bytes +
+            (layer.slot_tab != nullptr ? align256((size_t) layer.n_exp * 8) : 0) +
+            (layer.vs_dev != nullptr ? align256((size_t) layer.n_exp * 4) : 0);
+        if (old.id != target.id) {
+            // The conversations are paused; reload before releasing the old copy so allocation failure is reversible.
+            const Layer saved = layer;
+            const size_t first = target.allocs.size(), weights = target.weights, scratch = target.scratch;
+            layer.dev = stage;
+            layer.grp = stage;
+            layer.ring_bak = nullptr;
+            layer.c_snap = layer.c_rows = nullptr;
+            bool ok = p.load_dense(stage, err, false, il);
+            if (ok && saved.ring_bak != nullptr)
+                ok = p.init_verify_layer(layer, err);
+            if (ok && saved.slot_tab != nullptr)
+                ok = p.dalloc(target, layer.slot_tab, (size_t) layer.n_exp, err);
+            if (ok && saved.vs_dev != nullptr)
+                ok = p.dalloc(target, layer.vs_dev, (size_t) layer.n_exp, err);
+            if (!ok) {
+                cudaSetDevice(target.id);
+                for (size_t i = first; i < target.allocs.size(); ++i)
+                    cudaFree(target.allocs[i]);
+                target.allocs.resize(first);
+                target.weights = weights;
+                target.scratch = scratch;
+                layer = saved;
+                return false;
+            }
+            cudaSetDevice(old.id);
+            for (void* ptr : allocations) {
+                cudaFree(ptr);
+                old.allocs.erase(std::remove(old.allocs.begin(), old.allocs.end(), ptr), old.allocs.end());
+            }
+            old.weights -= saved.weight_bytes;
+            old.scratch -= layer_scratch;
+            // Expert addresses must be republished even when the new owner's page numbers happen to match.
+            std::fill(layer.page_at.begin(), layer.page_at.end(), ~0ull);
+            std::fprintf(stderr, "strata-ds41: dense layer %d migrated: gpu%d -> gpu%d (%zu bytes)\n",
+                         il, old.id, target.id, layer.weight_bytes);
+        } else {
+            old.weights -= layer.weight_bytes;
+            target.weights += layer.weight_bytes;
+            for (void* ptr : allocations) {
+                old.allocs.erase(std::remove(old.allocs.begin(), old.allocs.end(), ptr), old.allocs.end());
+                target.allocs.push_back(ptr);
+            }
+            old.scratch -= layer_scratch;
+            target.scratch += layer_scratch;
+            layer.dev = stage;
+            layer.grp = stage;
+        }
     }
     return true;
+}
+bool Model::attach_expert_hop(int stage, std::function<const uint8_t*(int, int)> find, std::string& err) {
+    Impl& p = *p_;
+    p.hops.resize(p.devs.size());
+    auto hop = std::make_unique<ExpertHop>();
+    Dev& d = hop->d;
+    d.id = p.devs[(size_t) stage].id;
+    const strata::core::OnDevice on(d.id);
+    CK(cudaStreamCreateWithFlags(&d.st, cudaStreamNonBlocking));
+    const size_t rows = kWin * kPicks;
+    if (!p.dalloc(d, d.xe, rows * p.g.dim, err) || !p.dalloc(d, d.xg, rows * p.g.ff, err) ||
+        !p.dalloc(d, d.xu, rows * p.g.ff, err) || !p.dalloc(d, d.xhh, rows * p.g.ff, err) ||
+        !p.dalloc(d, d.ed, rows * p.g.dim, err))
+        return false;
+    hop->find = std::move(find);
+    p.hops[(size_t) stage] = std::move(hop);
+    return true;
+}
+double Model::measure_cpu_expert_ms() {
+    Impl& p = *p_;
+    const Layer* layer = nullptr;
+    Impl::Ent en;
+    for (const Layer& candidate : p.L) {
+        if (candidate.mtp)
+            continue;
+        for (int e = 0; e < candidate.n_exp; ++e)
+            if (!p.o.expert_pages->transient(candidate.il, e)) {
+                layer = &candidate;
+                en.e = e;
+                break;
+            }
+        if (layer != nullptr)
+            break;
+    }
+    if (layer == nullptr)
+        return 0;
+    en.slot0 = 0;
+    en.n = 1;
+    en.tok[0] = 0;
+    std::vector<float> input((size_t) p.g.dim, 0.0f);
+    const std::vector<Impl::Ent> entries{en};
+    p.cpu_experts_paged(*layer, input.data(), entries, (size_t) p.g.dim);
+    const double start = now_ms();
+    for (int i = 0; i < 3; ++i)
+        p.cpu_experts_paged(*layer, input.data(), entries, (size_t) p.g.dim);
+    return (now_ms() - start) / 3;
+}
+void Model::set_hop_holders(const int32_t* holders) { p_->hop_holders = holders; }
+void Model::report_hops() const {
+    for (const auto& hop : p_->hops)
+        if (hop && hop->experts > 0)
+            std::fprintf(stderr, "strata-ds41: so far gpu%d computed %lld experts of other cards' layers "
+                                 "(%lld rows) in one hop each layer, %.1f ms waited for\n",
+                         hop->d.id, (long long) hop->experts, (long long) hop->rows, hop->ms);
 }
 std::vector<float>& Model::get_usage() { return p_->usage; }
 uint64_t Model::get_drafter_weight_bytes(int stage) const {
@@ -9932,7 +10143,9 @@ bool Model::reseed_drafter(int64_t position, std::string& err) {
 
 uint64_t Model::get_weight_bytes(int dev) const { return p_->devs[(size_t) dev].weights; }
 uint64_t Model::get_scratch_bytes(int dev) const {
-    return p_->devs[(size_t) dev].scratch +
+    const uint64_t hop = (size_t) dev < p_->hops.size() && p_->hops[(size_t) dev]
+        ? p_->hops[(size_t) dev]->d.scratch : 0;
+    return p_->devs[(size_t) dev].scratch + hop +
            (p_->vt.device() == p_->devs[(size_t) dev].id ? p_->vt.device_bytes() : 0);
 }
 const Geometry& Model::geometry() const { return p_->g; }

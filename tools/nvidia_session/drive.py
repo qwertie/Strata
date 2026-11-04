@@ -85,14 +85,14 @@ def get_windows_free_memory() -> tuple[int, int]:
     return status.avail_page, status.avail_phys
 
 
-def watch_group_memory(process: subprocess.Popen, output: str) -> threading.Event:
+def watch_group_memory(process: subprocess.Popen, output: str, commit_gib: int = 16) -> threading.Event:
     """Kills only this check's engine if commit or physical RAM crosses the owner's margins."""
     stop = threading.Event()
     def watch():
         while not stop.wait(0.25) and process.poll() is None:
             try:
                 commit, physical = get_windows_free_memory()
-                if commit >= 16 * 2**30 and physical >= 4 * 2**30:
+                if commit >= commit_gib * 2**30 and physical >= 4 * 2**30:
                     continue
                 reason = f"free commit {commit / 2**30:.2f} GiB, free physical RAM {physical / 2**30:.2f} GiB"
             except OSError as error:
@@ -115,8 +115,21 @@ def run_engine(a, env: dict[str, str]) -> int:
               f"free physical RAM {physical / 2**30:.2f} GiB", flush=True)
         if commit < 40 * 2**30 or physical < 16 * 2**30:
             raise ValueError("group check needs 40 GiB free commit and 16 GiB free physical RAM before start")
+    deepseek = a.scenario in ("ds", "dsmemory", "dscutmove")
+    if deepseek and os.name == "nt":
+        import psutil
+        blockers = {"docker desktop", "com.docker.backend", "vmmem", "vmmemwsl"}
+        for process in psutil.process_iter(["name"]):
+            if (process.info["name"] or "").lower().removesuffix(".exe") in blockers:
+                raise ValueError(f"DeepSeek check blocked by {process.info['name']}")
+        commit, physical = get_windows_free_memory()
+        print(f"[DeepSeek] before start: free commit {commit / 2**30:.2f} GiB; "
+              f"free physical RAM {physical / 2**30:.2f} GiB", flush=True)
+        if commit < 40 * 2**30 or physical < 16 * 2**30:
+            raise ValueError("DeepSeek check needs 40 GiB free commit and 16 GiB free physical RAM before start")
     e = Engine([a.exe, "--serve", *model_args(a), *a.args.split()], env, a.out)
-    stop_guard = watch_group_memory(e.p, a.out) if a.scenario == "groups" else None
+    stop_guard = (watch_group_memory(e.p, a.out, 3 if deepseek else 16)
+                  if a.scenario == "groups" or (deepseek and os.name == "nt") else None)
     try:
         e.until("READY")
         e.record_memory("ready")
