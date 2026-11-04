@@ -199,6 +199,8 @@ private:
     /// prompt starts with its tokens continues it, reading only the rest.  When the file was refused or could not be
     /// copied, nothing changed.
     void restore_session(const std::string& path);
+    /// Claims compatible orphaned SSD pauses; unreadable or foreign files stay untouched.
+    void adopt_pause_files(const std::string& dir);
     /// Prints a SERR line (SessionError `kind`, `why`) for a refused or failed SAVE or RESTORE `action` of `path`, and
     /// says it on stderr.
     void refuse_session(const char* action, const std::string& path, strata::core::SessionError kind,
@@ -464,9 +466,11 @@ PagedEngine::PagedEngine(PagedModel& model, PagedCards& cards, strata::core::Ram
                                           : std::filesystem::path(settings.pause_dir);
     std::filesystem::create_directories(dir, ec);
     pause_prefix_ = strata::core::get_pause_file_prefix(dir.string());
-    if (const int stale = strata::core::remove_stale_pause_files(dir.string()); stale > 0)
-        say("deleted %d files of paused conversations that engines no longer running left in %s\n", stale,
-            dir.string().c_str());
+    try {
+        adopt_pause_files(dir.string());
+    } catch (const std::exception& e) {
+        say("pause adoption skipped: %s\n", e.what());
+    }
     for (PagedCard& card : cards_) {
         strata::core::ExpertPages::Hooks hooks;
         hooks.load = [this, &c = card](strata::core::ExpertKey key, int32_t slot, std::string& err) {
@@ -700,6 +704,39 @@ void PagedEngine::restore_session(const std::string& path) {
         get_ms_since(t0));
     std::printf("RESTORED %zu %llu %.1f\n", tokens, (unsigned long long) bytes, get_ms_since(t0));
     std::fflush(stdout);
+}
+
+void PagedEngine::adopt_pause_files(const std::string& dir) {
+    for (const std::string& path : strata::core::find_stale_pause_files(dir)) {
+        try {
+            std::string err;
+            if (!find_identity(err)) {
+                say("pause adoption skipped: %s\n", err.c_str());
+                return;
+            }
+            Paused p;
+            strata::core::PauseStream file;
+            if (strata::core::open_pause_file(path, *identity_, (uint64_t) facts_.context, file, p.head, err) !=
+                    strata::core::SessionError::none || !is_layer_cut(p.head.cut, facts_.n_layers))
+                continue;
+            file.reset();
+            std::error_code ec;
+            p.bytes = std::filesystem::file_size(path, ec);
+            if (ec)
+                continue;
+            p.serial = ++serial_;
+            p.file = get_pause_file(p.serial);
+            // A rename claims the file without duplicating its pages on disk.
+            std::filesystem::rename(path, p.file, ec);
+            if (ec)
+                continue;
+            p.used = ++requests_;
+            paused_.push_back(std::move(p));
+            trim_ssd();
+        } catch (const std::exception& e) {
+            say("pause adoption skipped %s: %s\n", path.c_str(), e.what());
+        }
+    }
 }
 
 void PagedEngine::refuse_session(const char* action, const std::string& path, strata::core::SessionError kind,

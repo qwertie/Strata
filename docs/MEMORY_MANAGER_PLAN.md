@@ -534,8 +534,19 @@ three-slot startup hit the commit watchdog; the completed main solo matrix retai
 - Both paged engines use one checksummed file per paused conversation: model and settings identity, tokens,
   checkpoints, model state, the layer cut and each card's pages. `SAVE <path>` persists the most recently used
   conversation; `RESTORE <path>` puts it in the paused set for token-prefix reuse, including after a restart.
-  Named sessions and automatic SSD pauses share this format. Automatic files remain process-owned; they are not
-  adopted after a restart. Qwen restores require the same number of stages, but the layer cut may differ.
+  Named sessions and automatic SSD pauses share this format. Qwen's running-state metadata now stores one PLE
+  history, independent of stage count; one-stage and split saves can be redistributed through the RAM pool.
+  Its layout fingerprint refuses the earlier stage-bound files. DeepSeek's metadata was already cut-independent.
+  Startup adopts compatible files of dead processes by renaming them under its prefix, after checking checksums,
+  fingerprints, context and cut. The SSD pause budget evicts recovered files by the usual rule (priority zero,
+  filename order); consumed files and clean shutdown delete adopted files. Live-process files, incompatible or
+  damaged files, links and incomplete temporary files stay untouched for manual cleanup. Adoption failures never
+  fail startup. RAM pauses and active conversations need an explicit SAVE to survive a process exit.
+  Draft-enabled persistence and cross-stage regression runner: `tools/test_paged_persistence.py`. Windows HIP on
+  the Strix Halo passed Qwen IQ3_S at one stage, two same-GPU stages and cuts 20/30 with MTP and suffix drafting;
+  DeepSeek IQ2_XXS passed cold restore and orphan adoption with DSpark and suffix drafting. Continued tokens matched
+  uninterrupted requests; foreign and damaged files stayed untouched. File checks: 44 passed; architecture: 5.
+  CUDA, SYCL, Metal and separate-card inference remain untested. Details and pool budgets: DETAILS.md, Session files.
 - What the panel shows for an old engine's settings it cannot change live: greyed out, or "applies after a restart"
   with a restart button?
 

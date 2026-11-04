@@ -184,7 +184,7 @@ public:
                        std::string& err) const override;
     bool get_session_identity(strata::core::SessionFileIdentity& id, std::string& err) const override {
         strata::core::SessionIdentityBuilder config(get_session_config_fingerprint(m_));
-        config.u64("stages", cards_.size());
+        config.u64("paged state layout", 2);
         id.config = config.digest();
         return get_session_model_fingerprint(m_, &m_.src, id.model, err);
     }
@@ -749,8 +749,8 @@ void PagedQwen::start_request(int session, const strata::serve::RequestStart& r)
 }
 
 // The state beside the pages is every QSA layer's indexer state (tail, dead, block_pos) in the layers' order, its
-// size first, then each card's PLE history, its size first: the QSA layers move between cards with the cut, the PLE
-// history is each card's whole. Image rotary coordinates, when present, follow the histories.
+// size first, then the PLE history of the card that owns layer 1, its size first.
+// Image rotary coordinates, when present, follow the history.
 bool PagedQwen::save_state(const PagedParts& parts, std::vector<uint8_t>& state, std::string& err) const {
     strata::core::ConversationStateSizes z;
     if (!strata::core::conversation_state_sizes(m_.g, z, err))
@@ -763,8 +763,10 @@ bool PagedQwen::save_state(const PagedParts& parts, std::vector<uint8_t>& state,
         if (!strata::core::conversation_unpaged_save(p.ss, m_.g, one, err))
             return false;
         const size_t n = one.size() - (size_t) p.ss.qsa_alloc * (z.tail + z.dead + z.block_pos);
-        append_size(ple, n);
-        ple.insert(ple.end(), one.begin(), one.begin() + (std::ptrdiff_t) n);
+        if (p.ss.layer_lo <= 1 && p.ss.layer_hi > 1) {
+            append_size(ple, n);
+            ple.insert(ple.end(), one.begin(), one.begin() + (std::ptrdiff_t) n);
+        }
         qsa.insert(qsa.end(), one.begin() + (std::ptrdiff_t) n, one.end());
     }
     state.clear();
@@ -788,22 +790,28 @@ bool PagedQwen::restore_state(const std::vector<uint8_t>& state, const PagedPart
     const size_t per_layer = z.tail + z.dead + z.block_pos;
     size_t at = 0;
     const size_t qsa = read_size(state, at);
-    if (qsa > state.size() - at) {
+    if (qsa > state.size() - at || qsa != (size_t) m_.g.n_qsa_layers() * per_layer) {
         err = "the paused conversation's QSA state is damaged";
         return false;
     }
     const auto qsa_begin = state.begin() + (std::ptrdiff_t) at;
     at += qsa;
+    const size_t n = read_size(state, at);
+    if (n > state.size() - at) {
+        err = "the paused conversation's PLE state is damaged";
+        return false;
+    }
+    const size_t ple_at = at;
+    at += n;
     for (const std::unique_ptr<strata::serve::PagedPart>& part : parts) {
         Part& p = get_part(*part);
         const strata::core::OnDevice on(p.dev);
-        const size_t n = read_size(state, at);
-        if (n > state.size() - at || (size_t) (p.ss.qsa_ord0 + p.ss.qsa_alloc) * per_layer > qsa) {
+        if ((size_t) (p.ss.qsa_ord0 + p.ss.qsa_alloc) * per_layer > qsa) {
             err = "the paused conversation's running state is damaged";
             return false;
         }
-        std::vector<uint8_t> one(state.begin() + (std::ptrdiff_t) at, state.begin() + (std::ptrdiff_t) (at + n));
-        at += n;
+        std::vector<uint8_t> one(state.begin() + (std::ptrdiff_t) ple_at,
+                                 state.begin() + (std::ptrdiff_t) (ple_at + n));
         const auto first = qsa_begin + (std::ptrdiff_t) ((size_t) p.ss.qsa_ord0 * per_layer);
         one.insert(one.end(), first, first + (std::ptrdiff_t) ((size_t) p.ss.qsa_alloc * per_layer));
         if (!strata::core::conversation_unpaged_restore(one, p.ss, m_.g, live, err))

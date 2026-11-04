@@ -49,11 +49,10 @@ bool write_conversation_section(std::FILE* file, const PagePool& pool, Conversat
 bool read_conversation_section(std::FILE* file, const PagePool& pool, ConversationId id, std::string& err,
                                RegionSpan span = {});
 /// Gets the start of the names of this process's files of paused conversations in folder `dir`: "paused-", its
-/// process id, the time now and "-", so that engines sharing the folder keep apart and remove_stale_pause_files can
+/// process id, the time now and "-", so that engines sharing the folder keep apart and find_stale_pause_files can
 /// tell whose a file is.
 std::string get_pause_file_prefix(const std::string& dir);
-/// Deletes the files of paused conversations in folder `dir` whose process no longer runs (it crashed or was killed
-/// before it could delete them); gets how many.  A file whose process id a new process has taken stays.
-int remove_stale_pause_files(const std::string& dir);
+/// Finds regular pause files whose owning process no longer runs. Files of a reused process id stay untouched.
+std::vector<std::string> find_stale_pause_files(const std::string& dir);
 
 }  // namespace strata::core

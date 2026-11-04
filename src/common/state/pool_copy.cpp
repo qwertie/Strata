@@ -153,19 +153,23 @@ std::string get_pause_file_prefix(const std::string& dir) {
         .string();
 }
 
-int remove_stale_pause_files(const std::string& dir) {
+std::vector<std::string> find_stale_pause_files(const std::string& dir) {
     namespace fs = std::filesystem;
     std::error_code ec;
-    int removed = 0;
-    for (const fs::directory_entry& f : fs::directory_iterator(dir, ec)) {
+    std::vector<std::string> files;
+    for (fs::directory_iterator it(dir, ec), end; !ec && it != end; it.increment(ec)) {
+        const fs::directory_entry& f = *it;
         const std::string name = f.path().filename().string();
         if (name.rfind(kPausePrefix, 0) != 0 || f.path().extension() != ".bin")
             continue;
-        const uint64_t pid = std::strtoull(name.c_str() + sizeof kPausePrefix - 1, nullptr, 10);
-        if (!strata::platform::is_process_running(pid) && fs::remove(f.path(), ec))
-            ++removed;
+        char* pid_end = nullptr;
+        const uint64_t pid = std::strtoull(name.c_str() + sizeof kPausePrefix - 1, &pid_end, 10);
+        if (*pid_end == '-' && pid != 0 && !strata::platform::is_process_running(pid) && f.is_regular_file(ec) &&
+            !f.is_symlink(ec))
+            files.push_back(f.path().string());
     }
-    return removed;
+    std::sort(files.begin(), files.end());
+    return files;
 }
 
 }  // namespace strata::core

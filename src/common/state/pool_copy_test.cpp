@@ -184,9 +184,11 @@ int main() {
     const std::filesystem::path gone = dir / "paused-2147483000-1-1.bin", other = dir / "paused-notes.txt";
     for (const std::filesystem::path& f : {std::filesystem::path(mine), gone, other})
         std::fclose(std::fopen(f.string().c_str(), "wb"));
-    check(remove_stale_pause_files(dir.string()) == 1 && std::filesystem::exists(mine) &&
-              !std::filesystem::exists(gone) && std::filesystem::exists(other),
-          "only the pause files of a process that no longer runs are deleted");
+    check(find_stale_pause_files(dir.string()) == std::vector<std::string>{gone.string()} && std::filesystem::exists(mine) &&
+              std::filesystem::exists(gone) && std::filesystem::exists(other),
+          "only files of a dead process are offered for adoption, without deletion");
+    check(find_stale_pause_files((dir / "missing").string()).empty(),
+          "a missing pause directory does not fail discovery");
     std::filesystem::remove_all(dir);
     std::printf("pool_copy_test: %d checks passed\n", checks);
     return 0;

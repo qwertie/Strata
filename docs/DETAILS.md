@@ -688,9 +688,32 @@ curl -X POST "http://127.0.0.1:8080/slots/0?action=restore" -H "Content-Type: ap
   no room; `500` for other I/O failures or an engine that ended. `error.published: true` means a save failed after its new
   file had replaced the old one. Requests must be `application/json` (else `415`) and come from no browser page, Strata's own
   page or a trusted origin.
-- Not supported with `--layer-split`, `--peer-device`, `--batch` or `--prompt-cache 0`. The engine has been run on Linux and CUDA
-  only for this feature. Exact token replay across restarts is not guaranteed: expert residency and CPU/GPU rounding can
-  change later output.
+- The original engine does not support this with `--layer-split`, `--peer-device`, `--batch` or
+  `--prompt-cache 0`. Its session files have been tested on Linux and CUDA only. Exact token replay across restarts
+  is not guaranteed: expert residency and CPU/GPU rounding can change later output.
+
+For the opt-in paged engines (`strata-q38`, `strata-ds41`), named saves use the same checksummed container as
+SSD pauses. Qwen stores the PLE history of layer 1 and QSA state in layer order, so a session can move between
+one stage and several stages, or between cuts. Moving between cuts needs room for the conversation in the RAM pool while its
+pages are redistributed. The Qwen paged-state fingerprint now identifies this layout; files from the earlier
+stage-bound layout are refused. DeepSeek already stores its running state without stage-count metadata.
+
+On startup these engines scan `--pause-dir` for regular `paused-<pid>-*.bin` files whose process no longer runs.
+They check the whole-file checksum, model and settings fingerprints, context limit and layer cut before adopting
+a file. Adoption renames it under the new process's prefix and counts it against `--ssd-pause-mib`. Files beyond
+that budget are deleted by the usual lowest-priority, least-recently-used rule; recovered files have priority zero
+and are considered in filename order. Adopted files are deleted when consumed, evicted or on a clean shutdown.
+Files belonging to a live process (including a reused PID), links, damaged or incompatible files, and unfinished
+`.tmp` files are left alone. Remove those manually when no engine uses the directory. An unreadable directory or
+file does not prevent startup. Only SSD pauses survive a crash; RAM pauses and active GPU conversations do not.
+
+Validation on 4 November 2026 used Windows HIP on the Strix Halo (gfx1151), context 8192 and greedy sampling.
+Qwen IQ3_S used MTP, suffix drafting and 8 GiB per stage plus 2 GiB in the RAM pool. Saves continued with identical
+tokens at one stage, two stages on the same GPU (`--split-device 0`), and cuts 20 and 30. DeepSeek IQ2_XXS used
+DSpark, suffix drafting and 18 GiB GPU / 2 GiB RAM pools. Cold restore and orphan adoption matched uninterrupted
+continuations. Foreign-model and damaged orphan files stayed untouched. The file tests passed 44 checks and the
+architecture tests passed 5. CUDA, SYCL, Metal and separate-card inference were not tested. The regression runner
+is `tools/test_paged_persistence.py`; local configs and logs are under `%TEMP%/persistence-leftovers`.
 
 ### API request monitor
 
