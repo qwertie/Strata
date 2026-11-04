@@ -1,0 +1,23 @@
+ds4: prompts run in windows of 16 tokens (--prefill-chunk 0): long prompts prefill far slower than in
+     chunks (a 7-GPU RTX 3090 rig, Maya-S read in place: 8K / 32K tokens 115 / 99 tokens/s,
+     461 / 1010 in chunks of 8192) - leave --prefill-chunk out for chunks
+ds4: experts per word: 5 (faster mode; full quality: --experts 6)
+strata-ds41: gpu0's link to RAM: 67.0 GB/s to the GPU, 51.9 GB/s back, 0.089 ms a round trip
+strata-ds41: gpu0.1's link to RAM: 77.1 GB/s to the GPU, 55.9 GB/s back, 0.089 ms a round trip
+strata-ds41: the page pool of gpu0 (layers 0-9): 4.00 GiB (of 41.87 GiB it could take) in chunks of 256 MiB, pages of 92160 bytes, for the experts and the conversations, 1024 tokens of it kept for the conversations
+strata-ds41: the page pool of gpu0.1 (layers 10-39): 4.00 GiB (of 37.82 GiB it could take) in chunks of 256 MiB, pages of 92160 bytes, for the experts and the conversations, 1024 tokens of it kept for the conversations
+strata-ds41: the RAM's page pool: 3.75 GiB, page-locked, 3.68 GiB of experts read in 2.0 s (2.0 GB/s); the other experts are read from the SSD without the file cache.  An expert the GPU evicts is copied back to RAM (copying it back: 46.4 GB/s, reading the SSD: 3.1 GB/s; --copy-back auto)
+strata-ds41: GPU expert pools filled before READY in 0 ms
+strata-ds41: a conversation of 167 tokens is paused in RAM (3 MiB in 9 ms)
+strata-ds41: a conversation of 168 tokens is paused in RAM (3 MiB in 249 ms)
+strata-ds41: a conversation of 166 tokens is paused in RAM (3 MiB in 397 ms)
+strata-ds41: a conversation of 167 tokens is back from the SSD (22 ms)
+strata-ds41: a conversation of 167 tokens goes back to token 159
+strata-ds41: a conversation of 168 tokens is back from the SSD (24 ms)
+strata-ds41: a conversation of 168 tokens goes back to token 160
+strata-ds41: pipeline: groups=2 stages=2 peak_in_flight=2
+strata-ds41: a conversation of 166 tokens is back from RAM (10 ms)
+strata-ds41: a conversation of 166 tokens goes back to token 158
+strata-ds41: a conversation of 163 tokens is paused in RAM (3 MiB in 178 ms)
+strata-ds41: a conversation of 163 tokens is back from RAM (6 ms)
+strata-ds41: a conversation of 163 tokens goes back to token 155

@@ -1,0 +1,80 @@
+ds4: prompts run in windows of 16 tokens (--prefill-chunk 0): long prompts prefill far slower than in
+     chunks (a 7-GPU RTX 3090 rig, Maya-S read in place: 8K / 32K tokens 115 / 99 tokens/s,
+     461 / 1010 in chunks of 8192) - leave --prefill-chunk out for chunks
+ds4: experts per word: 5 (faster mode; full quality: --experts 6)
+strata-ds41: gpu0's link to RAM: 70.7 GB/s to the GPU, 52.5 GB/s back, 0.102 ms a round trip
+strata-ds41: gpu0.1's link to RAM: 80.1 GB/s to the GPU, 56.0 GB/s back, 0.096 ms a round trip
+strata-ds41: the page pool of gpu0 (layers 0-19): 4.00 GiB (of 45.69 GiB it could take) in chunks of 256 MiB, pages of 92160 bytes, for the experts and the conversations, 128 tokens of it kept for the conversations
+strata-ds41: the page pool of gpu0.1 (layers 20-39): 4.00 GiB (of 41.63 GiB it could take) in chunks of 256 MiB, pages of 92160 bytes, for the experts and the conversations, 128 tokens of it kept for the conversations
+strata-ds41: the RAM's page pool: 3.75 GiB, page-locked, 3.68 GiB of experts read in 2.0 s (2.0 GB/s); the other experts are read from the SSD without the file cache.  An expert the GPU evicts is copied back to RAM (copying it back: 29.4 GB/s, reading the SSD: 3.1 GB/s; --copy-back auto)
+strata-ds41: GPU expert pools filled before READY in 0 ms
+strata-ds41: a conversation of 23 tokens is paused in RAM (3 MiB in 11 ms)
+strata-ds41: a conversation of 23 tokens is back from RAM (9 ms)
+strata-ds41: a conversation of 23 tokens goes back to token 15
+strata-ds41: a conversation of 24 tokens is paused in RAM (3 MiB in 40 ms)
+strata-ds41: a conversation of 24 tokens is back from RAM (11 ms)
+strata-ds41: a conversation of 24 tokens goes back to token 16
+strata-ds41: pipeline: groups=2 stages=2 peak_in_flight=2
+strata-ds41: a conversation of 23 tokens is paused in RAM (3 MiB in 35 ms)
+strata-ds41: a conversation of 23 tokens is back from RAM (11 ms)
+strata-ds41: a conversation of 23 tokens goes back to token 15
+strata-ds41: a conversation of 24 tokens is paused in RAM (3 MiB in 32 ms)
+strata-ds41: a conversation of 24 tokens is back from RAM (12 ms)
+strata-ds41: a conversation of 24 tokens goes back to token 16
+strata-ds41: a conversation of 23 tokens is paused in RAM (3 MiB in 32 ms)
+strata-ds41: a conversation of 23 tokens is back from RAM (9 ms)
+strata-ds41: a conversation of 23 tokens goes back to token 15
+strata-ds41: a conversation of 24 tokens is paused in RAM (3 MiB in 33 ms)
+strata-ds41: a conversation of 24 tokens is back from RAM (9 ms)
+strata-ds41: a conversation of 24 tokens goes back to token 16
+strata-ds41: a conversation of 24 tokens is paused in RAM (3 MiB in 34 ms)
+strata-ds41: a conversation of 23 tokens is paused in RAM (3 MiB in 37 ms)
+strata-ds41: a conversation of 23 tokens is back from RAM (10 ms)
+strata-ds41: a conversation of 23 tokens goes back to token 15
+strata-ds41: a conversation of 24 tokens is back from the SSD (24 ms)
+strata-ds41: a conversation of 24 tokens goes back to token 16
+strata-ds41: a conversation of 22 tokens is paused in RAM (3 MiB in 33 ms)
+strata-ds41: a conversation of 22 tokens is back from RAM (9 ms)
+strata-ds41: a conversation of 22 tokens goes back to token 14
+strata-ds41: a conversation of 23 tokens is paused in RAM (3 MiB in 33 ms)
+strata-ds41: a conversation of 23 tokens is back from RAM (10 ms)
+strata-ds41: a conversation of 23 tokens goes back to token 15
+strata-ds41: a conversation of 24 tokens is paused in RAM (3 MiB in 37 ms)
+strata-ds41: a conversation of 24 tokens is back from RAM (9 ms)
+strata-ds41: a conversation of 24 tokens goes back to token 16
+strata-ds41: a conversation of 22 tokens is paused in RAM (3 MiB in 33 ms)
+strata-ds41: a conversation of 22 tokens is back from RAM (8 ms)
+strata-ds41: a conversation of 22 tokens goes back to token 14
+strata-ds41: a conversation of 23 tokens is paused in RAM (3 MiB in 30 ms)
+strata-ds41: a conversation of 23 tokens is back from RAM (6 ms)
+strata-ds41: a conversation of 23 tokens goes back to token 15
+strata-ds41: a conversation of 24 tokens is paused in RAM (3 MiB in 36 ms)
+strata-ds41: a conversation of 24 tokens is back from RAM (10 ms)
+strata-ds41: a conversation of 24 tokens goes back to token 16
+strata-ds41: a conversation of 22 tokens is paused in RAM (3 MiB in 35 ms)
+strata-ds41: a conversation of 22 tokens is back from RAM (13 ms)
+strata-ds41: a conversation of 22 tokens goes back to token 14
+strata-ds41: a conversation of 22 tokens is paused in RAM (3 MiB in 39 ms)
+strata-ds41: a conversation of 23 tokens is paused in RAM (3 MiB in 36 ms)
+strata-ds41: a conversation of 23 tokens is back from RAM (13 ms)
+strata-ds41: a conversation of 23 tokens goes back to token 15
+strata-ds41: a conversation of 24 tokens is paused in RAM (3 MiB in 35 ms)
+strata-ds41: a conversation of 24 tokens is back from RAM (9 ms)
+strata-ds41: a conversation of 24 tokens goes back to token 16
+strata-ds41: a conversation of 22 tokens is back from the SSD (26 ms)
+strata-ds41: a conversation of 22 tokens goes back to token 14
+strata-ds41: a conversation of 19 tokens is paused in RAM (3 MiB in 30 ms)
+strata-ds41: a conversation of 19 tokens is back from RAM (6 ms)
+strata-ds41: a conversation of 19 tokens goes back to token 11
+strata-ds41: a conversation of 23 tokens is paused in RAM (3 MiB in 36 ms)
+strata-ds41: a conversation of 23 tokens is back from RAM (11 ms)
+strata-ds41: a conversation of 23 tokens goes back to token 15
+strata-ds41: a conversation of 24 tokens is paused in RAM (3 MiB in 38 ms)
+strata-ds41: a conversation of 24 tokens is back from RAM (12 ms)
+strata-ds41: a conversation of 24 tokens goes back to token 16
+strata-ds41: a conversation of 22 tokens is paused in RAM (3 MiB in 37 ms)
+strata-ds41: a conversation of 22 tokens is back from RAM (10 ms)
+strata-ds41: a conversation of 22 tokens goes back to token 14
+strata-ds41: a conversation of 19 tokens is paused in RAM (3 MiB in 35 ms)
+strata-ds41: a conversation of 19 tokens is back from RAM (9 ms)
+strata-ds41: a conversation of 19 tokens goes back to token 11

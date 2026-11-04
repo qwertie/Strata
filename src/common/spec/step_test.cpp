@@ -194,6 +194,34 @@ int main() {
         check(a.guessed == 5 && b.guessed == 5 && c.guessed == 5 && d.guessed == 5,
               "equal-priority conversations rotate the extra row within every group");
     }
+    {
+        FakeModel fm;
+        fm.right = 3;
+        auto hooks = fm.hooks();
+        fm.add_drafter(hooks);
+        hooks.run_groups = [](std::vector<StepGroup>& groups, std::string&) {
+            for (auto& group : groups) {
+                check(group.rows.size() == 1, "single-conversation drafter stays paused across groups");
+                group.picks = {group.rows[0].token + 1};
+            }
+            return true;
+        };
+        hooks.keep_group = [](int, const std::vector<StepRow>&, const std::vector<int>&, std::string&) {
+            return true;
+        };
+        Step step(hooks, {});
+        step.settings = {2, 8, 3};
+        step.settings.groups = 2;
+        step.settings.max_draft_conversations = 1;
+        auto a = conversation(0, 10, 0, 32), b = conversation(1, 20, 0, 32);
+        std::string err;
+        check(step.run({&a, &b}, err) && fm.asked == std::vector<int>{0, 0},
+              "model draft limits count conversations across the whole wave");
+        fm.asked.clear();
+        auto c = conversation(2, 30, 0, 32);
+        check(step.run({&c}, err) && fm.asked == std::vector<int>{3} && c.emitted.size() == 4,
+              "single-conversation drafting resumes after a grouped wave");
+    }
     {   // the plan's table: 3 conversations at once, 8 rows
         StepSettings s{3, 8, 8};
         check(share_guess_rows(s, 3, 3, 0) == std::vector<int>{2, 2, 1}, "3 active: 2, 2, 1");

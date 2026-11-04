@@ -178,6 +178,7 @@ def get_cut_move_problem(out: Path) -> str:
 def get_exercise_problem(folder: Path, check: str) -> str:
     """Requires workload-specific evidence before comparing memory checks."""
     if "memory-groups-" in check:
+        count = int(match[1]) if (match := re.search(r"ds41-(\d+)c-", check)) else 4
         for side in ("before", "after"):
             runs = list(folder.glob(f"{side}-*.out"))
             if not runs:
@@ -185,18 +186,20 @@ def get_exercise_problem(folder: Path, check: str) -> str:
             for run in runs:
                 if Path(str(run) + ".watchdog").exists():
                     return f"{run.name}: memory watchdog tripped"
+                if Path(str(run) + ".watchdog-read-error").exists():
+                    return f"{run.name}: memory watchdog could not read free RAM"
                 text = run.read_text(encoding="utf-8", errors="replace")
                 tokens = re.findall(r"^GROUP_TOKENS \d+ (.*)$", text, re.M)
                 try:
-                    valid = len(tokens) == 2 and all(len(json.loads(row)) == 4 for row in tokens)
+                    valid = len(tokens) == 2 and all(len(json.loads(row)) == count for row in tokens)
                 except (ValueError, TypeError):
                     valid = False
-                identity = re.findall(r"^GROUP_IDENTITY (?:passed slots=4|differs slots=\S+)$", text, re.M)
+                identity = re.findall(rf"^GROUP_IDENTITY (?:passed slots={count}|differs slots=\S+)$", text, re.M)
                 if not valid or len(identity) != 2 or len(speeds(text)["decode"]) != 2:
                     return f"{run.name}: missing concurrent identity or aggregate speed evidence"
-                if text.count("GROUP_IDENTITY passed slots=4") != 2:
+                if text.count(f"GROUP_IDENTITY passed slots={count}") != 2:
                     return f"{run.name}: concurrent answers differ from standalone"
-                if "q38" in check and side == "after":
+                if ("q38" in check or "ds41" in check) and count % 2 == 0 and side == "after":
                     path = Path(str(run) + ".stderr")
                     stderr = path.read_text(encoding="utf-8", errors="replace") if path.exists() else ""
                     if not re.search(r"pipeline: groups=2 stages=2 peak_in_flight=2", stderr):

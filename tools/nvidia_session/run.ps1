@@ -445,6 +445,18 @@ function Invoke-DeepSeekMemory {
         $split = "strata-ds41.exe --cards $cards $base " +
                  "`"--args=$fixed --gpus 0,1 --gpu-mib 2048,2048 --layer-split 20`""
         Invoke-Versus "memory-ds41-2cards-$order" dsmemory $one $split
+        foreach ($draft in 'on', 'off') {
+            foreach ($count in 1..4) {
+                $groupExperts = if ($draft -eq 'on') { 2000 } else { 240 }
+                $groupArgs = "--gpus 0,1 --layer-split 20 --gpu-mib 4096,7680 --ram-mib 8192 " +
+                             "--expert-cache $groupExperts --no-expert-cache --remote-experts off --batch 4 " +
+                             "--concurrent $count --dspark $(if ($draft -eq 'off') { 'none' } else { 'on' })"
+                $groupRun = "strata-ds41.exe --cards $cards $base --conversations $count"
+                Invoke-Versus "memory-groups-ds41-$($count)c-dspark-$draft-$order" dsgroups (
+                    "$groupRun `"--args=$groupArgs --batch-groups 1`"") (
+                    "$groupRun `"--args=$groupArgs --batch-groups auto`"")
+            }
+        }
         $cutRun = $split.Replace('--layer-split 20', '--layer-split 10')
         Invoke-Versus "memory-ds41-cut-move-$order" dscutmove $cutRun "$cutRun --move-cut"
         foreach ($mode in 'off', 'auto', 'on') {

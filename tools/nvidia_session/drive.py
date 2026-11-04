@@ -8,6 +8,7 @@ Scenarios (the engine's --serve protocol unless said otherwise):
   q38state  Qwen3.8: prefix reuse, parking, SAVE / RESTORE, and a RESTORE of --other (the build before's file)
   q36       Qwen3.6: the same for its engine (strata-q36)
   multi     Qwen3.8: a 2,000-token prompt, a 128-token answer, a second turn; the startup lines appended
+  dsgroups  strata-ds41: --conversations 1..4; standalone identity and aggregate decode speed, DSpark as configured
   groups    Qwen3.8: four standalone answers against two rounds of four batch answers and aggregate decode speed
   cutmove   strata-q38: a 96-token story in a batch slot; with --move-cut the first card's memory is halved after 24
             tokens and set back after 48 (the layer cut moves between two steps); the answers go to FILE.settings
@@ -53,7 +54,7 @@ QWEN_USER, QWEN_ANSWER = "<|im_start|>user\n", "<|im_end|>\n<|im_start|>assistan
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("scenario", choices=["q38", "q38state", "q36", "multi", "cutmove", "ds", "dsmemory",
-                                        "dscutmove", "groups", "server", "config"])
+                                        "dscutmove", "dsgroups", "groups", "server", "config"])
     ap.add_argument("--exe", required=True)
     ap.add_argument("--out", required=True)
     ap.add_argument("--data", required=True)
@@ -63,6 +64,7 @@ def main() -> int:
     ap.add_argument("--deepseek")
     ap.add_argument("--other")
     ap.add_argument("--move-cut", action="store_true")
+    ap.add_argument("--conversations", type=int, choices=range(1, 5), default=4)
     a = ap.parse_args()
     env = dict(e.split("=", 1) for e in a.env)
     if a.scenario == "config":
@@ -85,18 +87,20 @@ def get_windows_free_memory() -> tuple[int, int]:
     return status.avail_page, status.avail_phys
 
 
-def watch_group_memory(process: subprocess.Popen, output: str, commit_gib: int = 16) -> threading.Event:
-    """Kills only this check's engine if commit or physical RAM crosses the owner's margins."""
+def watch_group_memory(process: subprocess.Popen, output: str) -> threading.Event:
+    """Kills only this check's engine if free physical RAM falls below 4 GiB."""
     stop = threading.Event()
     def watch():
         while not stop.wait(0.25) and process.poll() is None:
             try:
                 commit, physical = get_windows_free_memory()
-                if commit >= commit_gib * 2**30 and physical >= 4 * 2**30:
+                if physical >= 4 * 2**30:
                     continue
                 reason = f"free commit {commit / 2**30:.2f} GiB, free physical RAM {physical / 2**30:.2f} GiB"
             except OSError as error:
-                reason = str(error)
+                with open(output + ".watchdog-read-error", "a", encoding="utf-8") as log:
+                    log.write(f"PID {process.pid}: {error}\n")
+                continue
             with open(output + ".watchdog", "a", encoding="utf-8") as log:
                 log.write(f"PID {process.pid}: {reason}\n")
             process.kill()
@@ -113,9 +117,8 @@ def run_engine(a, env: dict[str, str]) -> int:
         commit, physical = get_windows_free_memory()
         print(f"[groups] before start: free commit {commit / 2**30:.2f} GiB; "
               f"free physical RAM {physical / 2**30:.2f} GiB", flush=True)
-        if commit < 40 * 2**30 or physical < 16 * 2**30:
-            raise ValueError("group check needs 40 GiB free commit and 16 GiB free physical RAM before start")
-    deepseek = a.scenario in ("ds", "dsmemory", "dscutmove")
+
+    deepseek = a.scenario in ("ds", "dsmemory", "dscutmove", "dsgroups")
     if deepseek and os.name == "nt":
         import psutil
         blockers = {"docker desktop", "com.docker.backend", "vmmem", "vmmemwsl"}
@@ -125,11 +128,11 @@ def run_engine(a, env: dict[str, str]) -> int:
         commit, physical = get_windows_free_memory()
         print(f"[DeepSeek] before start: free commit {commit / 2**30:.2f} GiB; "
               f"free physical RAM {physical / 2**30:.2f} GiB", flush=True)
-        if commit < 40 * 2**30 or physical < 16 * 2**30:
-            raise ValueError("DeepSeek check needs 40 GiB free commit and 16 GiB free physical RAM before start")
+
     e = Engine([a.exe, "--serve", *model_args(a), *a.args.split()], env, a.out)
-    stop_guard = (watch_group_memory(e.p, a.out, 3 if deepseek else 16)
+    stop_guard = (watch_group_memory(e.p, a.out)
                   if a.scenario == "groups" or (deepseek and os.name == "nt") else None)
+    failed = False
     try:
         e.until("READY")
         e.record_memory("ready")
@@ -137,6 +140,7 @@ def run_engine(a, env: dict[str, str]) -> int:
         e.record_memory("after scenario")
         e.send("QUIT")
     except (SystemExit, queue.Empty, OSError, ValueError, TypeError) as x:
+        failed = True
         e.note(f"STOPPED: {x or 'no output for 15 minutes'}")
     code = e.finish(a.scenario == "multi")
     if stop_guard:
@@ -146,7 +150,7 @@ def run_engine(a, env: dict[str, str]) -> int:
             with open(a.out, "a", encoding="utf-8") as out:
                 out.write(f"STOPPED: {problem}\nexit 1\n")
             return 1
-    return code
+    return 1 if failed else code
 
 
 class Engine:
@@ -198,6 +202,8 @@ class Engine:
         got = []
         while (line := self.until("T ", "DONE", "ERR")).startswith("T "):
             got.append(int(line.split()[1]))
+        if line.startswith("ERR"):
+            raise ValueError(line)
         return ids + got
 
     def note_settings(self, text: str):
@@ -305,7 +311,7 @@ def model_args(a) -> list[str]:
     if a.scenario == "q36":
         gguf = next((d / "models/qwen36-UD-Q4_K_XL").glob("*.gguf"))
         return ["--native", str(gguf), "--max-context", "32768", "--prefill", "auto", "--mtp", "2", "--batch", "2"]
-    if a.scenario in ("ds", "dsmemory", "dscutmove"):
+    if a.scenario in ("ds", "dsmemory", "dscutmove", "dsgroups"):
         return ["--pack", str(deepseek_pack(a)), "--max-context", "8192", "--eos", "1", "--dspark-conf", "0.65",
                 *(["--batch", "1"] if a.scenario == "dscutmove" else [])]
     more = {"q38": ["--batch", "2"], "q38state": ["--conversation-cache-mib", "4096"], "cutmove": ["--batch", "1"]}
@@ -406,13 +412,17 @@ def multi(e: Engine, a):
 
 
 def check_groups(e: Engine, a):
-    """Compares four concurrent greedy answers with standalone and times decoding after the last admission."""
-    tok = tokenizer(Path(a.data) / "packs/iq3_s")
-    prompts = [tok.encode(QWEN_USER + text + QWEN_ANSWER, parse_special=True) for text in (
+    """Compares concurrent greedy answers with standalone and times decoding after the last admission."""
+    deepseek = getattr(a, "scenario", "groups") == "dsgroups"
+    tok = tokenizer(Path(a.data) / (DS_PACK if deepseek else "packs/iq3_s"))
+    prefix = "The lighthouse keeper counts ships. " * 18 if deepseek else ""
+    prompts = [tok.encode(render_deepseek_prompt(prefix + text) if deepseek else QWEN_USER + text + QWEN_ANSWER,
+                          parse_special=True) for text in (
         "Write a Python function to compute Fibonacci numbers, with comments.",
         "Tell a long story about a sailor who discovers a hidden island.",
         "Count from one to one hundred, separated by commas.",
         "Explain how a bicycle works in detail.")]
+    prompts = prompts[:getattr(a, "conversations", 4)]
     standalone = [e.gen("96 temperature=0", ids)[len(ids):] for ids in prompts]
     for round_index in range(2):
         answers = [[] for _ in prompts]
@@ -449,7 +459,7 @@ def check_groups(e: Engine, a):
         different = [str(slot) for slot, (answer, expected) in enumerate(zip(answers, standalone))
                      if answer != expected]
         e.note("GROUP_IDENTITY differs slots=" + ",".join(different) if different else
-               "GROUP_IDENTITY passed slots=4")
+               f"GROUP_IDENTITY passed slots={len(prompts)}")
         e.note(f"GROUP_TOKENS {round_index} " + json.dumps(answers, separators=(",", ":")))
 
 
@@ -498,7 +508,7 @@ def render_deepseek_prompt(text: str) -> str:
 
 SCENARIOS = {"q38": q38, "q38state": q38state, "q36": q36, "multi": multi, "groups": check_groups,
              "cutmove": cutmove, "ds": ds,
-             "dsmemory": dsmemory, "dscutmove": cutmove}
+             "dsgroups": check_groups, "dsmemory": dsmemory, "dscutmove": cutmove}
 
 
 def looks(e: Engine, cmds: list[str]):

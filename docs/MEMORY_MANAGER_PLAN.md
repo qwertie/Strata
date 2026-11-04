@@ -191,7 +191,7 @@ parallelism ([MULTI_GPU.md](MULTI_GPU.md)). The new step has one shared way:
   Qwen3.8) and every conversation's pages for it are copied in the background, the tokens added meanwhile copied
   after, and ownership switches between two steps, one layer at a time.
 - **Keeping cards busy.** With several conversations, the step splits them into groups, so that one card runs group
-  A while the other runs group B (today's `--batch-groups`, chosen automatically). The rows settings apply per group.
+  A while the other runs group B (`--batch-groups auto`). The rows settings apply per group.
   Implemented for Qwen3.8 (3 November 2026): `spec::run_stage_groups` prepares all groups, then services each
   stage without waiting for another stage's GPU. `PagedModel` exposes prepare/launch/poll/finish/keep operations;
   Qwen's verifier preserves each group's deferred commit inputs, and the adapter preserves its picture coordinates,
@@ -205,12 +205,16 @@ parallelism ([MULTI_GPU.md](MULTI_GPU.md)). The new step has one shared way:
   count must divide live concurrency, otherwise it uses one group. `1` keeps the synchronous path; omitting the
   option keeps that existing default, so pipeline groups remain opt-in. `--batch` only
   seeds concurrency; raising it live can grow the groups. The Python launcher forwards the existing option.
-  DeepSeek accepts it but reports one group: `src/models/deepseekv41/paged_model.cpp`, `PagedDeepSeek::run_rows`,
-  calls `Model::step_conversations` in `ds4_model.cu`, which owns a complete layer-major pass and its host state.
-  Exposing stage launch/poll there requires factoring that pass, rather than a modest adapter wrapper. It remains
-  separate work; no DeepSeek overlap is claimed. The NVIDIA session's `memory-groups-q38-*` and
-  `memory-groups-old-*` checks prepare the real two-card comparison, with standalone identity and aggregate rates.
-  Validation remains incomplete: [DETAILS.md](DETAILS.md) records the same-GPU measurements (2.216 vs 2.220
+  DeepSeek now exposes stage launch/poll through that same scheduler. Its pass separates immutable group inputs,
+  row-local attention binding, stage execution and deferred sampling. Group-owned compressed-row copy buffers and
+  DSpark taps survive until the wave drains; stage ownership follows live cuts. Its one-group path remains separate
+  and unchanged in execution. The NVIDIA session's `memory-groups-ds41-*` checks compare groups 1 and auto with
+  1, 2, 3 and 4 conversations and DSpark on and off, in both card orders. Real two-card results remain unmeasured here.
+  DeepSeek's local same-GPU checks passed groups 1/2/auto at two to four conversations, a live cut move with
+  pauses/restores and pool changes, and DSpark concurrency 1 -> 2 -> 1. The setup and timing limits are in
+  [the local report](../bench/results/ds41-groups-20261104/README.md). Real two-card speed and hops remain open.
+  For Qwen3.8, validation remains incomplete: [DETAILS.md](DETAILS.md) records the same-GPU measurements
+  (2.216 vs 2.220
   aggregate tokens/s, groups 1 vs auto), passed checks and answer-identity failures. In particular, suffix-only
   pictures during live concurrency changes still need investigation. This is implemented and opt-in, not an
   unconditional identity or speed claim. Real two-card gains remain unmeasured here.

@@ -29,6 +29,15 @@ class PagedLaunchTests(unittest.TestCase):
                 args = ['--batch-groups', groups, '--batch', '2']
                 self.assertEqual(engine_client.engine_args({'exe': exe, 'args': args}), args)
 
+    def test_deepseek_groups_survive_disabled_drafting(self):
+        for groups in ('1', '2', 'auto'):
+            cfg = {'exe': 'strata-ds41.exe', 'drafting': 'off', 'parallel': 4,
+                   'args': ['--batch-groups', groups]}
+            args = engine_client.engine_args(cfg)
+            self.assertEqual(args[:2], ['--batch-groups', groups])
+            self.assertEqual(args[args.index('--batch') + 1], '4')
+            self.assertEqual(args[args.index('--dspark') + 1], 'none')
+
     def test_lookup_options_reach_both_engines(self):
         args = ['--suffix-draft', '3', '--lookup-chain', '2', '--lookup-chain-min', '6', '--mtp-max-t', '4']
         for exe in ('strata-q38', 'strata-ds41'):

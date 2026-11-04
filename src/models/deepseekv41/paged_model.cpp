@@ -383,8 +383,18 @@ public:
     int64_t get_prompt_chunk() const override { return m_.feed_unit(); }
     bool read_prompt(const PagedParts& parts, const std::vector<int64_t>& ids, int64_t from, int64_t n, bool drafting,
                      const ChunkDone& on_chunk, std::string& err) override;
-    // Model::step_conversations owns the complete pass and mutable host state; independent stage launch/poll
-    // requires factoring that pass before this adapter can opt into the shared pipeline scheduler.
+    bool wait_state(std::string& err) override { return m_.wait_state(err); }
+    int get_pipeline_stages() const override { return cards_.size() > 1 ? (int) cards_.size() : 0; }
+    bool prepare_group(int group, const std::vector<strata::spec::StepRow>& rows, std::string& err) override;
+    bool launch_group(int stage, int group, std::string& err) override {
+        return group_rows_[(size_t) group].pending.empty() || m_.launch_group(stage, group, err);
+    }
+    int poll_group(int stage, int group, std::vector<int32_t>&, std::string& err) override {
+        return group_rows_[(size_t) group].pending.empty() ? 1 : m_.poll_group(stage, err);
+    }
+    bool finish_group(int group, std::vector<int32_t>& picks, std::string& err) override;
+    bool keep_group(int, const std::vector<strata::spec::StepRow>&, const std::vector<int>&,
+                    bool, std::string&) override { return true; }
     bool run_rows(const std::vector<strata::spec::StepRow>& rows, std::vector<int32_t>& picks,
                   std::string& err) override;
     bool keep_rows(const std::vector<strata::spec::StepRow>& rows, const std::vector<int>& kept, bool,
@@ -421,6 +431,16 @@ private:
     bool copy_expert(const PagedCard& card, strata::core::ExpertKey key, int32_t first, bool from_ram,
                      std::string& err);
 
+    /// Retains row order and primed picks until the shared scheduler finishes sampling.
+    struct GroupRows {
+        std::vector<strata::spec::StepRow> rows;
+        std::vector<size_t> pending;
+        std::vector<int32_t> picks;
+    };
+    bool prepare_inputs(GroupRows& g, const std::vector<strata::spec::StepRow>& rows,
+                        std::vector<int>& tokens, std::string& err);
+    void sample_pending_rows(GroupRows& g);
+    std::vector<GroupRows> group_rows_;
     SpanCache image_cache_;
     std::vector<Image> pending_images_;
     Model& m_;
@@ -919,44 +939,54 @@ bool PagedDeepSeek::read_prompt(const PagedParts& parts, const std::vector<int64
     return on_chunk(from, n, err);
 }
 
+bool PagedDeepSeek::prepare_group(int group, const std::vector<strata::spec::StepRow>& rows, std::string& err) {
+    if (group_rows_.size() <= (size_t) group)
+        group_rows_.resize((size_t) group + 1);
+    GroupRows& g = group_rows_[(size_t) group];
+    std::vector<int> tokens;
+    if (!prepare_inputs(g, rows, tokens, err))
+        return false;
+    return tokens.empty() || m_.prepare_group(group, tokens, [this, group](int r) {
+        const auto& g = group_rows_[(size_t) group];
+        leads_[(size_t) g.rows[g.pending[(size_t) r]].session]->take_seat();
+    }, [this, group](int r) {
+        const auto& g = group_rows_[(size_t) group];
+        for (Part* p : leads_[(size_t) g.rows[g.pending[(size_t) r]].session]->peers)
+            p->point_model();
+    }, err);
+}
+
+bool PagedDeepSeek::finish_group(int group, std::vector<int32_t>& picks, std::string& err) {
+    GroupRows& g = group_rows_[(size_t) group];
+    if (!g.pending.empty() && !m_.finish_group(group, [this, &g](int r) {
+            Part& p = *leads_[(size_t) g.rows[g.pending[(size_t) r]].session];
+            p.take_seat();
+            for (Part* peer : p.peers)
+                peer->point_model();
+        }, err))
+        return false;
+    sample_pending_rows(g);
+    picks = g.picks;
+    return true;
+}
+
 bool PagedDeepSeek::run_rows(const std::vector<strata::spec::StepRow>& rows, std::vector<int32_t>& picks,
                              std::string& err) {
     if (rows.front().session != rows.back().session) {
         verified_ = 0;
+        GroupRows g;
         std::vector<int> tokens;
-        std::vector<size_t> pending;
-        for (size_t r = 0; r < rows.size(); ++r) {
-            Part& p = *leads_[(size_t) rows[r].session];
-            const bool primed = p.primed_pos == rows[r].pos && p.primed_token == rows[r].token &&
-                                p.get_pos() == rows[r].pos + 1;
-            p.primed_pos = -1;
-            if (primed) {
-                picks[r] = p.primed_pick;
-                continue;
-            }
-            p.take_seat();
-            if (!go_to(rows[r].pos, err))
-                return false;
-            if (p.prompt_open)
-                m_.checkpoint(kBeforeLastCheck);
-            pending.push_back(r);
-            tokens.push_back(rows[r].token);
-        }
-        if (!pending.empty() && !m_.step_conversations(tokens, [&](int r) {
-                leads_[(size_t) rows[pending[(size_t) r]].session]->take_seat();
+        if (!prepare_inputs(g, rows, tokens, err))
+            return false;
+        if (!tokens.empty() && !m_.step_conversations(tokens, [&](int r) {
+                leads_[(size_t) rows[g.pending[(size_t) r]].session]->take_seat();
             }, [&](int r) {
-                for (Part* part : leads_[(size_t) rows[pending[(size_t) r]].session]->peers)
+                for (Part* part : leads_[(size_t) rows[g.pending[(size_t) r]].session]->peers)
                     part->point_model();
             }, err))
             return false;
-        for (size_t r = 0; r < pending.size(); ++r) {
-            Part& p = *leads_[(size_t) rows[pending[r]].session];
-            p.take_seat();
-            if (p.prompt_open)
-                end_prompt(p);
-            const auto& s = p.smp;
-            picks[pending[r]] = m_.sample_row((int) r, s.temperature, s.top_p, s.top_k, s.min_p, s.seed, counter_++);
-        }
+        sample_pending_rows(g);
+        picks = g.picks;
         return true;
     }
     const strata::spec::StepRow& row = rows[0];
@@ -995,6 +1025,44 @@ bool PagedDeepSeek::run_rows(const std::vector<strata::spec::StepRow>& rows, std
         end_prompt(p);
     picks[0] = sample(p);
     return true;
+}
+
+/// Prepares plain decode rows for both the synchronous pass and the shared pipeline scheduler.
+bool PagedDeepSeek::prepare_inputs(GroupRows& g, const std::vector<strata::spec::StepRow>& rows,
+                                  std::vector<int>& tokens, std::string& err) {
+    g.rows = rows;
+    g.pending.clear();
+    g.picks.assign(rows.size(), -1);
+    for (size_t r = 0; r < rows.size(); ++r) {
+        Part& p = *leads_[(size_t) rows[r].session];
+        const bool primed = p.primed_pos == rows[r].pos && p.primed_token == rows[r].token &&
+                            p.get_pos() == rows[r].pos + 1;
+        p.primed_pos = -1;
+        if (primed) {
+            g.picks[r] = p.primed_pick;
+            continue;
+        }
+        p.take_seat();
+        if (!go_to(rows[r].pos, err))
+            return false;
+        if (p.prompt_open)
+            m_.checkpoint(kBeforeLastCheck);
+        g.pending.push_back(r);
+        tokens.push_back(rows[r].token);
+    }
+    return true;
+}
+
+/// Samples in row order after every stage has finished writing retained logits.
+void PagedDeepSeek::sample_pending_rows(GroupRows& g) {
+    for (size_t r = 0; r < g.pending.size(); ++r) {
+        Part& p = *leads_[(size_t) g.rows[g.pending[r]].session];
+        p.take_seat();
+        if (p.prompt_open)
+            end_prompt(p);
+        const auto& s = p.smp;
+        g.picks[g.pending[r]] = m_.sample_row((int) r, s.temperature, s.top_p, s.top_k, s.min_p, s.seed, counter_++);
+    }
 }
 
 // A verify window keeps the rows the step accepted; the sampler's draw count moves past every row with a pick, as the

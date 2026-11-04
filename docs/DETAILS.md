@@ -1731,7 +1731,7 @@ No new engine-choice flag is needed. Restore the original `exe` path to return t
 
 These engines add live memory settings in the Memory panel, several conversations at once, pausing conversations
 in RAM or on disk, saved sessions, and layer splitting. DeepSeek's layer split is still under test; separate-card
-validation remains open in D9. `--tp` is unavailable; DeepSeek's groups still run serially (below).
+validation remains open in D9. `--tp` is unavailable; DeepSeek uses the shared group scheduler described below.
 The server keeps context, GPU selection and `parallel` (starting conversations at once). It logs options it leaves
 out. Use `--set gpu-mib=18432 --set ram-mib=8192` to set the pools; `tokens-min` and `tokens-max` bound the token
 pages kept in the pools. These are engine options in the config's `args`, also available through `--set`.
@@ -1758,10 +1758,26 @@ in flight. Deferred commit buffers and MTP residuals count as model scratch outs
 stages can work on different groups within one wave; this version drains between waves. Group waves do not
 update the drafter's learned single-conversation timing, since their elapsed time covers several groups.
 
-`strata-ds41` accepts the option through the same launcher and parser, but runs one group and notes an explicit
-request for more. Its `PagedDeepSeek::run_rows` calls `Model::step_conversations`, which owns the complete pass
-and its mutable host state (`src/models/deepseekv41/ds4_model.cu`). That pass needs to expose independent stage
-operations before it can use the shared scheduler; wrapping the adapter alone would not overlap cards.
+`strata-ds41` uses the same stage launch/poll interface and scheduler. Its independent rows use the same
+conversation bindings as the synchronous batch pass: rings, compressors, page tables, Engram history and absolute
+positions. Each group retains its embeddings, Engram rows, attention plans, hand-off rows, logits and DSpark taps.
+Compressed-row copies keep separate host buffers for each group and row. The CPU expert mailbox assigns sequences
+in stage launch order. Layer ownership is read at launch, so a cut move applies to the next drained wave.
+The shared step applies the drafting limit to all conversations in a wave, including singleton groups.
+With several conversations the shared engine pauses DSpark; the one-conversation path keeps its existing behavior.
+The omitted option and `1` still use the synchronous pass. Real two-card identity and speed require measurement;
+implementation alone does not establish either.
+
+Local DeepSeek validation (4 November 2026, Ryzen AI MAX+ 395 / Radeon 8060S, HIP gfx1151, one physical GPU,
+2.00 pack, two stages at cut 20, 1K context, 4 GiB GPU pools per stage and 4 GiB RAM pool, eight output tokens):
+all 18 rounds at two, three and four conversations match standalone and groups 1/2/auto. Mean aggregate rates
+for auto were 2.255, 1.981 and 1.814 tokens/s respectively; these short timings are noisy. A longer-prompt run
+crossed the first compressor boundary and matched standalone through RAM/disk restores, pool resizing,
+concurrency 4 -> 2 -> 4 and a cut move 10 -> 20. A separate DSpark test used a 7.5 GiB last-stage pool and
+confidence 0 to force draft verification; concurrency 1 -> 2 -> 1 matched standalone in all six rounds.
+A one-group comparison with rebuilt original DeepSeek components showed no consistent regression across
+opposite-order short runs. Setup, samples and limits are in
+[the local report](../bench/results/ds41-groups-20261104/README.md). None of these runs measures two-card overlap.
 
 The NVIDIA session kit adds `memory-groups-q38-SB` / `-BS` and `memory-groups-old-SB` / `-BS`. Each compares
 `--batch-groups 1` with `auto` on two actual cards, using four conversations, a cut at layer 24, the fixed

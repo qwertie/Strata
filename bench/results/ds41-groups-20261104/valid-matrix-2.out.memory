@@ -1,0 +1,59 @@
+>>> ready: GET_MEMORY_USE
+MEMORY gpu0 total=107090132992 free=80570494976 unified=1 weights=2814122496 experts=987586560 pool_free=3306332160 scratch=25327360 pool_pages=46592 allocated_pages=10716 fragmented_pages=120 setting=4293918720 smallest=268369920 largest=37303418880 name=AMD Radeon(TM) 8060S Graphics
+MEMORY gpu0.1 total=107090132992 free=80570494976 unified=1 weights=3047921152 experts=1076060160 pool_free=3217858560 scratch=41875200 pool_pages=46592 allocated_pages=11676 fragmented_pages=284 setting=4293918720 smallest=268369920 largest=37303418880 name=AMD Radeon(TM) 8060S Graphics
+MEMORY ram experts=3946291200 pool_free=79257600 scratch=81854464 paused_count=0 paused_budget=4055040 pool_pages=43680 allocated_pages=42820 fragmented_pages=860 setting=4107403264 smallest=350224384 largest=15110569984 mapped=4107403264
+MEMORY ssd experts=126063452160 paused_count=0 paused_budget=8589934592
+CONVERSATION main vram empty 0 1024 0 0
+CONVERSATION slot0 vram empty 0 1024 0 0
+CONVERSATION slot1 vram empty 0 1024 0 0
+CONVERSATION slot2 vram empty 0 1024 0 0
+CONVERSATION slot3 vram empty 0 1024 0 0
+CONVERSATION slot4 vram empty 0 1024 0 0
+CONVERSATION slot5 vram empty 0 1024 0 0
+CONVERSATION slot6 vram empty 0 1024 0 0
+CONVERSATION slot7 vram empty 0 1024 0 0
+SETTINGS context=1024 concurrent=4 slots=8 rows=8 lookahead=0 tokens_min=128 tokens_max=1024 ssd_pause_mib=8192 memory_mib.gpu0=4095 memory_mib.gpu0.1=4095 memory_mib.ram=3917 token_bytes=1260 conversation_bytes=2764800
+END_MEMORY
+>>> nvidia-smi processes; engine PID 54388
+process VRAM unavailable: [WinError 2] The system cannot find the file specified
+>>> after scenario: GET_MEMORY_USE
+MEMORY gpu0 total=107090132992 free=80531304448 unified=1 weights=2814122496 experts=987586560 conversations=7741440 pool_free=3298590720 scratch=25327360 pool_pages=46592 allocated_pages=10800 fragmented_pages=36 setting=4293918720 smallest=268369920 largest=40255488000 name=AMD Radeon(TM) 8060S Graphics
+MEMORY gpu0.1 total=107090132992 free=80531304448 unified=1 weights=3047921152 experts=1076060160 conversations=6266880 pool_free=3211591680 scratch=50149120 pool_pages=46592 allocated_pages=11744 fragmented_pages=216 setting=4293918720 smallest=268369920 largest=40255488000 name=AMD Radeon(TM) 8060S Graphics
+MEMORY ram experts=3946291200 pool_free=75755520 scratch=81854464 paused=3502080 paused_count=1 paused_budget=4055040 pool_pages=43680 allocated_pages=42858 fragmented_pages=822 setting=4107403264 smallest=350224384 largest=18331009024 mapped=4107403264
+MEMORY ssd experts=126063452160 paused=256369160 paused_count=22 paused_budget=8589934592
+CONVERSATION main vram empty 0 1024 0 0
+CONVERSATION slot0 vram holding 23 1024 3502080 3502080
+CONVERSATION slot1 vram holding 24 1024 3502080 3502080
+CONVERSATION slot2 vram holding 22 1024 3502080 3502080
+CONVERSATION slot3 vram holding 19 1024 3502080 3502080
+CONVERSATION slot4 vram empty 0 1024 0 0
+CONVERSATION slot5 vram empty 0 1024 0 0
+CONVERSATION slot6 vram empty 0 1024 0 0
+CONVERSATION slot7 vram empty 0 1024 0 0
+CONVERSATION parked1 disk parked 23 23 11653144 11653144
+CONVERSATION parked3 disk parked 23 23 11653144 11653144
+CONVERSATION parked4 disk parked 24 24 11653152 11653152
+CONVERSATION parked5 disk parked 23 23 11653144 11653144
+CONVERSATION parked6 disk parked 24 24 11653152 11653152
+CONVERSATION parked7 disk parked 24 24 11653152 11653152
+CONVERSATION parked8 disk parked 23 23 11653144 11653144
+CONVERSATION parked2 disk parked 24 24 11653152 11653152
+CONVERSATION parked10 disk parked 23 23 11653144 11653144
+CONVERSATION parked11 disk parked 24 24 11653152 11653152
+CONVERSATION parked12 disk parked 22 22 11653136 11653136
+CONVERSATION parked13 disk parked 23 23 11653144 11653144
+CONVERSATION parked14 disk parked 24 24 11653152 11653152
+CONVERSATION parked15 disk parked 22 22 11653136 11653136
+CONVERSATION parked16 disk parked 22 22 11653136 11653136
+CONVERSATION parked17 disk parked 23 23 11653144 11653144
+CONVERSATION parked18 disk parked 24 24 11653152 11653152
+CONVERSATION parked9 disk parked 22 22 11653136 11653136
+CONVERSATION parked19 disk parked 19 19 11653112 11653112
+CONVERSATION parked20 disk parked 23 23 11653144 11653144
+CONVERSATION parked21 disk parked 24 24 11653152 11653152
+CONVERSATION parked22 disk parked 22 22 11653136 11653136
+CONVERSATION parked23 ram parked 19 19 3502080 3502080
+SETTINGS context=1024 concurrent=4 slots=8 rows=8 lookahead=0 tokens_min=128 tokens_max=1024 ssd_pause_mib=8192 memory_mib.gpu0=4095 memory_mib.gpu0.1=4095 memory_mib.ram=3917 token_bytes=1260 conversation_bytes=2764800
+END_MEMORY
+>>> nvidia-smi processes; engine PID 54388
+process VRAM unavailable: [WinError 2] The system cannot find the file specified

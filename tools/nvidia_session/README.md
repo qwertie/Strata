@@ -269,3 +269,19 @@ and cut-10-to-20 runs matched all 96 output tokens. The quarter-pool stress run 
 but diverged at token 71. Settings, limits and the observed GPU expert shortfall are recorded in
 [DETAILS.md](../../docs/DETAILS.md#deepseek-paged-stages-dense-weights-and-expert-hops).
 Separate-card migration and hop execution remain for the NVIDIA kit.
+
+DeepSeek pipeline groups use `dsgroups --conversations 1|2|3|4`. The memory phase runs
+`memory-groups-ds41-<N>c-dspark-<on|off>-<SB|BS>`: groups `1` versus `auto` on two real cards,
+with explicit GPU pools of 4 GiB on the first stage and 7.5 GiB on the last stage, an 8 GiB RAM pool,
+`DS4_COMMIT_CAP_GB=30`, fixed expert placement (2,000 experts with DSpark on, 240 with it off) and remote experts
+off. Each side compares standalone answers with two concurrent rounds and reports aggregate decode tokens/s
+separately from identity. DeepSeek prompts include a repeated prefix to exercise compressed state.
+One and three conversations use one group on two stages.
+The PID-scoped watchdog stops only its engine below 4 GiB free physical RAM; free commit has no floor.
+
+Run from PowerShell on the friend's NVIDIA machine (with the current checkout committed by the owner):
+
+```powershell
+.\tools\nvidia_session\run.ps1 -DataDir E:\Strata-data -DeepSeekDir E:\DeepSeek-V4.1-Flash `
+    -Only preflight,build,memory -Before 30e1e7df
+```

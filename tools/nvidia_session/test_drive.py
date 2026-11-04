@@ -232,8 +232,47 @@ class PipelineScenario(unittest.TestCase):
         self.assertIn('[[10,20],[11,21],[12,22],[13,23]]', engine.notes[-1])
 
 
+class ScenarioFailure(unittest.TestCase):
+    def test_engine_exit_zero_does_not_hide_a_scenario_error(self):
+        args = SimpleNamespace(cards='', scenario='q38', exe='unused', args='', out='unused', move_cut=False)
+        with patch.object(drive, 'model_args', return_value=[]), patch.object(drive, 'Engine') as engine, \
+                patch.dict(drive.SCENARIOS, {'q38': Mock(side_effect=ValueError('rejected setting'))}):
+            engine.return_value.finish.return_value = 0
+            self.assertEqual(drive.run_engine(args, {}), 1)
+
+    def test_standalone_error_cannot_become_an_empty_reference_answer(self):
+        engine = Engine.__new__(Engine)
+        engine.p = SimpleNamespace(stdin=io.StringIO())
+        engine.note = Mock()
+        engine.until = Mock(return_value='ERR bad prompt')
+        with self.assertRaisesRegex(ValueError, 'bad prompt'):
+            engine.gen('8 temperature=0', [1])
+
+
+class DeepSeekGroupArguments(unittest.TestCase):
+    def test_uses_deepseek_pack_and_does_not_override_drafting(self):
+        args = SimpleNamespace(scenario='dsgroups', data='unused')
+        with patch.object(drive, 'deepseek_pack', return_value=Path('private-pack')):
+            result = drive.model_args(args)
+        self.assertEqual(result[:2], ['--pack', 'private-pack'])
+        self.assertNotIn('--dspark', result)
+
+
 class PipelineMemorySafety(unittest.TestCase):
-    def test_low_commit_or_physical_ram_kills_only_the_owned_process(self):
+    def test_memory_query_failure_does_not_kill_the_engine(self):
+        with tempfile.TemporaryDirectory() as folder:
+            process = SimpleNamespace(pid=123, poll=lambda: None, kill=Mock())
+            stop = SimpleNamespace(wait=Mock(side_effect=[False, True]))
+            output = str(Path(folder) / 'run.out')
+            with patch.object(drive, 'get_windows_free_memory', side_effect=OSError('query failed')), \
+                    patch.object(drive.threading, 'Event', return_value=stop), \
+                    patch.object(drive.threading, 'Thread') as thread:
+                drive.watch_group_memory(process, output)
+                thread.call_args.kwargs['target']()
+            process.kill.assert_not_called()
+            self.assertTrue(Path(output + '.watchdog-read-error').exists())
+
+    def test_low_physical_ram_kills_only_the_owned_process(self):
         for commit, physical in [(15, 8), (32, 3), (32, 8)]:
             with self.subTest(commit=commit, physical=physical), tempfile.TemporaryDirectory() as folder:
                 process = SimpleNamespace(pid=123, poll=lambda: None, kill=Mock())
@@ -244,7 +283,7 @@ class PipelineMemorySafety(unittest.TestCase):
                         patch.object(drive.threading, 'Thread') as thread:
                     drive.watch_group_memory(process, output)
                     thread.call_args.kwargs['target']()
-                low = commit < 16 or physical < 4
+                low = physical < 4
                 self.assertEqual(process.kill.call_count, int(low))
                 self.assertEqual(Path(output + '.watchdog').exists(), low)
                 if low:

@@ -891,6 +891,25 @@ struct Model::Impl {
     /// Absolute token positions and indexer limits for the independent rows of a shared pass.
     int64_t row_positions[8] = {};
     WinPlan row_plans[8];
+    /// Owns immutable inputs and retained outputs until the shared scheduler commits a group.
+    struct PipelineGroup {
+        int count = 0;
+        uint16_t* embeddings = nullptr;
+        uint8_t* engram = nullptr;
+        float* taps = nullptr;
+        float* logits = nullptr;
+        uint8_t* hand = nullptr;
+        std::vector<uint8_t*> copies;
+        int64_t positions[8] = {};
+        WinPlan plans[8];
+        WinPlan plan;
+        std::function<void(int)> bind;
+    };
+    std::vector<PipelineGroup> pipeline_groups;
+    PipelineGroup* active_pipeline = nullptr; ///< Supplies stable cross-stage copies during a stage launch.
+    int active_row = 0; ///< Selects the independent row's copy slot.
+    std::vector<float*> pipeline_cpu_parts; ///< Keeps each stage's asynchronous CPU-result upload alive.
+
     bool spec_win = false;            // the window being run is a draft's verification (layer() keeps backups)
     float* h_taps = nullptr;          // pinned [kWin][targets][dim]: the last window's taps
     cudaEvent_t ev_seed = nullptr;    // the drafter's seeding read h_taps: the next window's taps wait for it
@@ -9065,27 +9084,8 @@ struct Model::Impl {
             err = "independent rows require 1 to 8 rows and layer-parallel stages";
             return false;
         }
-        for (int row = 0; row < T; ++row) {
-            select(row);
-            if (pos >= o.max_context || tokens[row] < 0 || tokens[row] >= g.vocab) {
-                err = "independent row outside the context or vocabulary";
-                return false;
-            }
-            const int64_t p0 = pos;
-            row_positions[row] = p0;
-            toks.push_back(tokens[row]);
-            ctoks.push_back(ctok(p0, tokens[row]));
-            pos = (int64_t) toks.size();
-            slot_held = false;
-            std::memcpy(h_emb + (size_t) row * g.dim, emb_row(p0, tokens[row]), (size_t) g.dim * 2);
-            const double te = now_ms();
-            for (int li = 0; li < pk.eg_layers; ++li) {
-                const size_t per = (size_t) (pk.eg_ngram - 1) * pk.eg_heads * (pk.eg_hd + pk.eg_hd / 32);
-                engram_rows(p0, 1, li, h_eg + ((size_t) li * eg_cap + row) * per);
-            }
-            st.engram_ms += now_ms() - te;
-            plan_window(p0, 1, row_plans[row], true);
-        }
+        if (!prepare_conversation_rows(tokens, select, h_emb, h_eg, eg_cap, row_positions, row_plans, err))
+            return false;
         plan_window(0, T, wplan);
         wplan.par = false;
         n_logits = T;
@@ -9109,6 +9109,180 @@ struct Model::Impl {
         }
         st.tokens += T;
         cache_tick(T);
+        return true;
+    }
+
+    /// Captures row-local state before any pipeline stage may overwrite shared scratch.
+    bool prepare_group(int group, const std::vector<int>& tokens, const std::function<void(int)>& select,
+                       const std::function<void(int)>& bind, std::string& err) {
+        if (tokens.empty() || tokens.size() > 8) {
+            err = "pipeline groups require 1 to 8 independent rows";
+            return false;
+        }
+        if (pipeline_groups.size() <= (size_t) group)
+            pipeline_groups.resize((size_t) group + 1);
+        PipelineGroup& pg = pipeline_groups[(size_t) group];
+        Dev& head = devs[(size_t) head_dev];
+        cudaSetDevice(head.id);
+        const size_t per = (size_t) (pk.eg_ngram - 1) * pk.eg_heads * (pk.eg_hd + pk.eg_hd / 32);
+        if (pg.embeddings == nullptr &&
+            (!halloc(pg.embeddings, (size_t) 8 * g.dim, err) ||
+             !halloc(pg.engram, (size_t) std::max(1, pk.eg_layers) * 8 * per + 64, err) ||
+             !halloc(pg.taps, (size_t) 8 * std::max<size_t>(1, g.d_targets.size()) * g.dim, err) ||
+             !halloc(pg.hand, (size_t) 8 * (g.hc * g.dim + 8 + topk_stride() + cand_stride()) * 4, err) ||
+             !dalloc(head, pg.logits, (size_t) 8 * g.vocab, err)))
+            return false;
+        if (pg.copies.empty()) {
+            pg.copies.resize(srcs.size() * 2, nullptr);
+            for (size_t i = 0; i < srcs.size(); ++i)
+                if (!halloc(pg.copies[2 * i], (size_t) 8 * ckv_rb(), err) ||
+                    !halloc(pg.copies[2 * i + 1], (size_t) 8 * ik_rb(), err))
+                    return false;
+        }
+        if (pipeline_cpu_parts.empty()) {
+            pipeline_cpu_parts.resize(devs.size(), nullptr);
+            for (float*& part : pipeline_cpu_parts)
+                if (!halloc(part, (size_t) 8 * g.dim, err))
+                    return false;
+        }
+        pg.count = (int) tokens.size();
+        pg.bind = bind;
+        if (!prepare_conversation_rows(tokens, select, pg.embeddings, pg.engram, 8, pg.positions, pg.plans, err))
+            return false;
+        plan_window(0, pg.count, pg.plan, true);
+        pg.plan.par = false;
+        return true;
+    }
+
+    /// Queues a stage while each other stage retains its own device scratch.
+    bool launch_group(int stage, int group, std::string& err) {
+        PipelineGroup& pg = pipeline_groups[(size_t) group];
+        Dev& d = devs[(size_t) stage];
+        cudaSetDevice(d.id);
+        const int T = pg.count;
+        if (stage == 0) {
+            CK(cudaMemcpyAsync(d.emb_rows, pg.embeddings, (size_t) T * g.dim * 2,
+                               cudaMemcpyHostToDevice, d.st));
+            embed(d.emb_rows, T, d.h, g.dim, g.hc, d.st);
+            init_pre(d.pre, T, d.st);
+        } else {
+            Xfer x = hand_xfer(pg.hand, d, T, false);
+            for (int i = 0; i < x.n; ++i)
+                CK(cudaMemcpyAsync(x.dst[i], x.src[i], x.bytes[i], cudaMemcpyHostToDevice, d.st));
+        }
+        std::swap(h_eg, pg.engram);
+        std::swap(h_taps, pg.taps);
+        const size_t old_cap = eg_cap;
+        eg_cap = 8;
+        active_pipeline = &pg;
+        std::swap(h_part, pipeline_cpu_parts[(size_t) stage]);
+        select_row = pg.bind;
+        std::copy_n(pg.positions, T, row_positions);
+        std::copy_n(pg.plans, T, row_plans);
+        prof_window = false;
+        // The CPU mailbox consumes one sequence in launch order, including across stages.
+        pg.plan.async = par || (!sync_decode && T <= async_max_t);
+        bool ok = true;
+        for (Layer& l : L) {
+            if (l.il >= g.nl || l.dev != stage)
+                continue;
+            if (pg.plan.async) {
+                pg.plan.seq[l.il] = ++seq_issued;
+                layer_of[pg.plan.seq[l.il] % kRing].store(l.il, std::memory_order_release);
+            }
+            if (!tap(d, l.il, T, err) || !layer(l, 0, 0, T, pg.plan, err)) {
+                ok = false;
+                break;
+            }
+        }
+        select_row = {};
+        std::swap(h_part, pipeline_cpu_parts[(size_t) stage]);
+        active_pipeline = nullptr;
+        eg_cap = old_cap;
+        std::swap(h_taps, pg.taps);
+        std::swap(h_eg, pg.engram);
+        if (!ok)
+            return false;
+        cudaSetDevice(d.id);
+        if (stage == head_dev) {
+            n_logits = T;
+            std::swap(d.logits, pg.logits);
+            ok = head_rows_dev(stage, T, err);
+            std::swap(d.logits, pg.logits);
+            if (!ok)
+                return false;
+        } else {
+            Xfer x = hand_xfer(pg.hand, d, T, true);
+            for (int i = 0; i < x.n; ++i)
+                CK(cudaMemcpyAsync(x.dst[i], x.src[i], x.bytes[i], cudaMemcpyDeviceToHost, d.st));
+        }
+        CK(cudaEventRecord(d.ev_out, d.st));
+        return true;
+    }
+
+    /// Services the completion event used by the shared scheduler's stage owner.
+    int poll_group(int stage, std::string& err) {
+        Dev& d = devs[(size_t) stage];
+        cudaSetDevice(d.id);
+        const cudaError_t result = cudaEventQuery(d.ev_out);
+        if (result == cudaErrorNotReady)
+            return 0;
+        if (result == cudaSuccess)
+            return 1;
+        err = cudaGetErrorString(result);
+        return -1;
+    }
+
+    /// Makes retained outputs available to sampling and the next single-conversation draft.
+    bool finish_group(int group, const std::function<void(int)>& select, std::string& err) {
+        PipelineGroup& pg = pipeline_groups[(size_t) group];
+        Dev& d = devs[(size_t) head_dev];
+        cudaSetDevice(d.id);
+        CK(cudaMemcpyAsync(d.logits, pg.logits, (size_t) pg.count * g.vocab * 4,
+                           cudaMemcpyDeviceToDevice, d.st));
+        std::swap(h_taps, pg.taps);
+        bool ok = true;
+        for (int row = 0; row < pg.count; ++row) {
+            select(row);
+            if (!seed_drafter(pg.positions[row], 1, row, err)) {
+                ok = false;
+                break;
+            }
+        }
+        std::swap(h_taps, pg.taps);
+        cudaSetDevice(d.id);
+        CK(cudaStreamSynchronize(d.st));
+        st.tokens += pg.count;
+        cache_tick(pg.count);
+        return ok;
+    }
+
+    /// Builds independent attention inputs using the same conversation seating as the serial batch pass.
+    bool prepare_conversation_rows(const std::vector<int>& tokens, const std::function<void(int)>& select,
+                                  uint16_t* embeddings, uint8_t* engram, size_t capacity,
+                                  int64_t* positions, WinPlan* plans, std::string& err) {
+        const int T = (int) tokens.size();
+        for (int row = 0; row < T; ++row) {
+            select(row);
+            if (pos >= o.max_context || tokens[row] < 0 || tokens[row] >= g.vocab) {
+                err = "independent row outside the context or vocabulary";
+                return false;
+            }
+            const int64_t p0 = pos;
+            positions[row] = p0;
+            toks.push_back(tokens[row]);
+            ctoks.push_back(ctok(p0, tokens[row]));
+            pos = (int64_t) toks.size();
+            slot_held = false;
+            std::memcpy(embeddings + (size_t) row * g.dim, emb_row(p0, tokens[row]), (size_t) g.dim * 2);
+            const double te = now_ms();
+            for (int li = 0; li < pk.eg_layers; ++li) {
+                const size_t per = (size_t) (pk.eg_ngram - 1) * pk.eg_heads * (pk.eg_hd + pk.eg_hd / 32);
+                engram_rows(p0, 1, li, engram + ((size_t) li * capacity + row) * per);
+            }
+            st.engram_ms += now_ms() - te;
+            plan_window(p0, 1, plans[row], true);
+        }
         return true;
     }
 
@@ -9250,6 +9424,14 @@ struct Model::Impl {
     // pinned memory: the copy out on the source's stream, each copy in on its device's stream after it
     bool replicate(std::vector<KvRows>& copies, uint8_t* stage, cudaEvent_t ev, int64_t r0, int n, int from,
                    std::string& err) {
+        if (active_pipeline != nullptr) {
+            for (size_t i = 0; i < srcs.size(); ++i) {
+                if (stage == srcs[i].h_ckv)
+                    stage = active_pipeline->copies[2 * i] + (size_t) active_row * ckv_rb();
+                else if (stage == srcs[i].h_ik)
+                    stage = active_pipeline->copies[2 * i + 1] + (size_t) active_row * ik_rb();
+            }
+        }
         bool any = false;
         for (size_t od = 0; od < devs.size(); ++od) any = any || (copies[od] && (int) od != from);
         if (!any) return true;
@@ -9384,6 +9566,7 @@ struct Model::Impl {
             int* topk = d.topk;
             int* cand = d.cand;
             for (int row = 0; row < T; ++row) {
+                active_row = row;
                 select_row(row);
                 for (int i = 0; i < 7; ++i)
                     *fields[i] = bases[i] + (size_t) row * strides[i];
@@ -10183,6 +10366,33 @@ void Model::use_state_memory(int dev, uint8_t* fixed, uint8_t* drafter, const Co
 bool Model::step_conversations(const std::vector<int>& tokens, const std::function<void(int)>& select,
                                const std::function<void(int)>& bind, std::string& err) {
     return p_->step_conversations(tokens, select, bind, err);
+}
+bool Model::prepare_group(int group, const std::vector<int>& tokens, const std::function<void(int)>& select,
+                          const std::function<void(int)>& bind, std::string& err) {
+    return p_->prepare_group(group, tokens, select, bind, err);
+}
+bool Model::launch_group(int stage, int group, std::string& err) {
+    if (p_->launch_group(stage, group, err))
+        return true;
+    std::string ignored;
+    wait_state(ignored);
+    return false;
+}
+bool Model::wait_state(std::string& err) {
+    bool ok = true;
+    for (Dev& d : p_->devs) {
+        cudaSetDevice(d.id);
+        const cudaError_t result = cudaStreamSynchronize(d.st);
+        if (result != cudaSuccess) {
+            err = cudaGetErrorString(result);
+            ok = false;
+        }
+    }
+    return ok;
+}
+int Model::poll_group(int stage, std::string& err) { return p_->poll_group(stage, err); }
+bool Model::finish_group(int group, const std::function<void(int)>& select, std::string& err) {
+    return p_->finish_group(group, select, err);
 }
 int Model::sample_row(int row, float t, float tp, int tk, float mp, uint64_t seed, uint64_t counter) {
     return p_->sample_row(row, t, tp, tk, mp, seed, counter, nullptr);

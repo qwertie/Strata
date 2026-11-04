@@ -384,5 +384,23 @@ class PipelineGroups(unittest.TestCase):
             self.assertIn('missing', R.get_exercise_problem(root, 'memory-groups-q38-SB'))
 
 
+class DeepSeekGroups(unittest.TestCase):
+    def test_live_concurrency_requires_overlap_only_for_divisible_counts(self):
+        for count in range(1, 5):
+            with self.subTest(count=count), tempfile.TemporaryDirectory() as folder:
+                root = Path(folder)
+                tokens = json.dumps([[1]] * count)
+                for side in ('before', 'after'):
+                    (root / f'{side}-1.out').write_text(
+                        (f'GROUP_IDENTITY passed slots={count}\nSPEED groups decode=10 prompt=0\n' * 2) +
+                        f'GROUP_TOKENS 0 {tokens}\nGROUP_TOKENS 1 {tokens}\n', encoding='utf-8')
+                check = f'memory-groups-ds41-{count}c-dspark-on-SB'
+                if count % 2 == 0:
+                    self.assertIn('no evidence', R.get_exercise_problem(root, check))
+                    (root / 'after-1.out.stderr').write_text(
+                        'pipeline: groups=2 stages=2 peak_in_flight=2\n', encoding='utf-8')
+                self.assertEqual(R.get_exercise_problem(root, check), '')
+
+
 if __name__ == "__main__":
     unittest.main()

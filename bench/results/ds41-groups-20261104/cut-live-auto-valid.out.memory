@@ -1,0 +1,44 @@
+>>> ready: GET_MEMORY_USE
+MEMORY gpu0 total=107090132992 free=80570494976 unified=1 weights=1417777664 experts=470016000 pool_free=3823902720 scratch=25296640 pool_pages=46592 allocated_pages=5100 fragmented_pages=96 setting=4293918720 smallest=268369920 largest=36229939200 name=AMD Radeon(TM) 8060S Graphics
+MEMORY gpu0.1 total=107090132992 free=80570494976 unified=1 weights=4444265984 experts=1593630720 pool_free=2700288000 scratch=41905920 pool_pages=46592 allocated_pages=17292 fragmented_pages=407 setting=4293918720 smallest=268369920 largest=36229939200 name=AMD Radeon(TM) 8060S Graphics
+MEMORY ram experts=3946291200 pool_free=79257600 scratch=81854464 paused_count=0 paused_budget=4055040 pool_pages=43680 allocated_pages=42820 fragmented_pages=860 setting=4107403264 smallest=350224384 largest=14573830144 mapped=4107403264
+MEMORY ssd experts=126063452160 paused_count=0 paused_budget=8589934592
+CONVERSATION main vram empty 0 1024 0 0
+CONVERSATION slot0 vram empty 0 1024 0 0
+CONVERSATION slot1 vram empty 0 1024 0 0
+CONVERSATION slot2 vram empty 0 1024 0 0
+CONVERSATION slot3 vram empty 0 1024 0 0
+CONVERSATION slot4 vram empty 0 1024 0 0
+CONVERSATION slot5 vram empty 0 1024 0 0
+CONVERSATION slot6 vram empty 0 1024 0 0
+CONVERSATION slot7 vram empty 0 1024 0 0
+SETTINGS context=1024 concurrent=4 slots=8 rows=8 lookahead=0 tokens_min=128 tokens_max=1024 ssd_pause_mib=8192 memory_mib.gpu0=4095 memory_mib.gpu0.1=4095 memory_mib.ram=3917 token_bytes=1440 conversation_bytes=2856960
+END_MEMORY
+>>> nvidia-smi processes; engine PID 32368
+process VRAM unavailable: [WinError 2] The system cannot find the file specified
+>>> after scenario: GET_MEMORY_USE
+MEMORY gpu0 total=107090132992 free=80531304448 unified=1 weights=2814122496 experts=987586560 conversations=7741440 pool_free=3298590720 scratch=25327360 pool_pages=46592 allocated_pages=10800 fragmented_pages=138 setting=4293918720 smallest=268369920 largest=37571788800 name=AMD Radeon(TM) 8060S Graphics
+MEMORY gpu0.1 total=107090132992 free=80531304448 unified=1 weights=3047921152 experts=1076060160 conversations=6266880 pool_free=3211591680 scratch=50149120 pool_pages=46592 allocated_pages=11744 fragmented_pages=294 setting=4293918720 smallest=268369920 largest=37571788800 name=AMD Radeon(TM) 8060S Graphics
+MEMORY ram experts=3946291200 pool_free=75755520 scratch=81854464 paused=3502080 paused_count=1 paused_budget=4055040 pool_pages=43680 allocated_pages=42858 fragmented_pages=822 setting=4107403264 smallest=350224384 largest=15378939904 mapped=4107403264
+MEMORY ssd experts=126063452160 paused=81854552 paused_count=7 paused_budget=8589934592
+CONVERSATION main vram empty 0 1024 0 0
+CONVERSATION slot0 vram holding 131 1024 3502080 3502080
+CONVERSATION slot1 vram holding 132 1024 3502080 3502080
+CONVERSATION slot2 vram holding 130 1024 3502080 3502080
+CONVERSATION slot3 vram holding 127 1024 3502080 3502080
+CONVERSATION slot4 vram empty 0 1024 0 0
+CONVERSATION slot5 vram empty 0 1024 0 0
+CONVERSATION slot6 vram empty 0 1024 0 0
+CONVERSATION slot7 vram empty 0 1024 0 0
+CONVERSATION parked1 disk parked 131 131 11746184 11746184
+CONVERSATION parked2 disk parked 132 132 11746192 11746192
+CONVERSATION parked3 disk parked 130 130 11746176 11746176
+CONVERSATION parked4 disk parked 127 127 11653976 11653976
+CONVERSATION parked9 disk parked 131 131 11654008 11654008
+CONVERSATION parked10 disk parked 132 132 11654016 11654016
+CONVERSATION parked11 disk parked 130 130 11654000 11654000
+CONVERSATION parked12 ram parked 127 127 3502080 3502080
+SETTINGS context=1024 concurrent=4 slots=8 rows=8 lookahead=0 tokens_min=128 tokens_max=1024 ssd_pause_mib=8192 memory_mib.gpu0=4095 memory_mib.gpu0.1=4095 memory_mib.ram=3917 token_bytes=1260 conversation_bytes=2764800
+END_MEMORY
+>>> nvidia-smi processes; engine PID 32368
+process VRAM unavailable: [WinError 2] The system cannot find the file specified

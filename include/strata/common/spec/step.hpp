@@ -165,7 +165,8 @@ private:
         std::vector<size_t> start;
     };
     /// Builds a group's windows before any pipeline work starts; -1 uses the serial rotation.
-    void prepare(const std::vector<Decoding*>& active, Work& work, int group = -1);
+    /// wave_conversations includes peers whose windows belong to other groups.
+    void prepare(const std::vector<Decoding*>& active, Work& work, int group = -1, int wave_conversations = 0);
     /// Applies the model's picks after its stages have drained.
     bool complete(Work& work, int group, double ms, std::string& err);
     /// Gets how many of the `n` rows of `d` (its token, then its guesses) from `picks` it keeps, and sets its

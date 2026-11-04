@@ -103,11 +103,13 @@ bool Step::run(const std::vector<Decoding*>& active, std::string& err) {
     std::vector<Work> work((size_t) count);
     group_turns_.resize((size_t) count);
     std::vector<StepGroup> groups;
+    const int wave_conversations = (int) std::count_if(active.begin(), active.end(),
+        [](const Decoding* d) { return !d->stop; });
     // Picture/suffix answers can differ across live group changes; see docs/DETAILS.md's validation limits.
     for (int i = 0; i < count; ++i) {
         const size_t first = active.size() * (size_t) i / count;
         const size_t end = active.size() * (size_t) (i + 1) / count;
-        prepare({active.begin() + first, active.begin() + end}, work[(size_t) i], i);
+        prepare({active.begin() + first, active.begin() + end}, work[(size_t) i], i, wave_conversations);
         groups.push_back(std::move(work[(size_t) i].group));
     }
     const auto t0 = std::chrono::steady_clock::now();
@@ -123,7 +125,7 @@ bool Step::run(const std::vector<Decoding*>& active, std::string& err) {
     return true;
 }
 
-void Step::prepare(const std::vector<Decoding*>& active, Work& work, int group) {
+void Step::prepare(const std::vector<Decoding*>& active, Work& work, int group, int wave_conversations) {
     std::vector<Decoding*> going;
     for (Decoding* d : active) {
         d->emitted.clear();
@@ -151,7 +153,7 @@ void Step::prepare(const std::vector<Decoding*>& active, Work& work, int group) 
     auto& start = work.start;
     std::vector<int32_t> guesses((size_t) std::max(settings.rows, 1));
     const bool draft = settings.max_draft_conversations == 0 ||
-                       (int) going.size() <= settings.max_draft_conversations;
+                       std::max((int) going.size(), wave_conversations) <= settings.max_draft_conversations;
     for (size_t i = 0; i < going.size(); ++i) {
         Decoding& d = *going[i];
         // no guess past what it may still emit, which also keeps its rows inside the context

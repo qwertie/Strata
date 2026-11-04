@@ -1,0 +1,2 @@
+>>> start: --serve --pack bench\results\ds41-groups-20261104\dspack --max-context 8192 --eos 1 --dspark-conf 0.65 --gpus 0 --split-device 0 --layer-split 20 --gpu-mib 4096,4096 --ram-mib 4096 --max-context 1024 --expert-cache 240 --no-expert-cache --remote-experts off --dspark none --batch 4 --batch-groups auto
+STOPPED: the engine ended early

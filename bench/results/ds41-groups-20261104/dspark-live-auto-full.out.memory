@@ -1,0 +1,46 @@
+>>> ready: GET_MEMORY_USE
+MEMORY gpu0 total=107090132992 free=76088225792 unified=1 weights=2814122496 experts=4211066880 pool_free=82851840 scratch=26045184 pool_pages=46592 allocated_pages=45693 fragmented_pages=899 setting=4293918720 smallest=268369920 largest=36229939200 name=AMD Radeon(TM) 8060S Graphics
+MEMORY gpu0.1 total=107090132992 free=76088225792 unified=1 weights=3047924224 drafter=752205056 experts=651663360 drafter_experts=7219445760 pool_free=179988480 scratch=42387968 pool_pages=87360 allocated_pages=85407 fragmented_pages=1774 setting=8051097600 smallest=268369920 largest=39987118080 name=AMD Radeon(TM) 8060S Graphics
+MEMORY ram experts=3971450880 pool_free=54097920 scratch=81854464 paused_count=0 paused_budget=12165120 pool_pages=43680 allocated_pages=43093 fragmented_pages=587 setting=4107403264 smallest=350224384 largest=16989159424 mapped=4107403264
+MEMORY ssd experts=123239208960 paused_count=0 paused_budget=8589934592
+CONVERSATION main vram empty 0 1024 0 0
+CONVERSATION slot0 vram empty 0 1024 0 0
+CONVERSATION slot1 vram empty 0 1024 0 0
+CONVERSATION slot2 vram empty 0 1024 0 0
+CONVERSATION slot3 vram empty 0 1024 0 0
+CONVERSATION slot4 vram empty 0 1024 0 0
+CONVERSATION slot5 vram empty 0 1024 0 0
+CONVERSATION slot6 vram empty 0 1024 0 0
+CONVERSATION slot7 vram empty 0 1024 0 0
+SETTINGS context=1024 concurrent=4 slots=8 rows=8 lookahead=5 tokens_min=128 tokens_max=1024 ssd_pause_mib=8192 memory_mib.gpu0=4095 memory_mib.gpu0.1=7678 memory_mib.ram=3917 token_bytes=1260 conversation_bytes=10874880 drafter=1
+END_MEMORY
+>>> nvidia-smi processes; engine PID 47332
+process VRAM unavailable: [WinError 2] The system cannot find the file specified
+>>> after scenario: GET_MEMORY_USE
+MEMORY gpu0 total=107090132992 free=75982450688 unified=1 weights=2814122496 experts=4211066880 conversations=3870720 pool_free=78981120 scratch=26045184 pool_pages=46592 allocated_pages=45735 fragmented_pages=857 setting=4293918720 smallest=268369920 largest=35693199360 name=AMD Radeon(TM) 8060S Graphics
+MEMORY gpu0.1 total=107090132992 free=75982450688 unified=1 weights=3047924224 drafter=752205056 experts=643000320 drafter_experts=7219445760 conversations=19353600 pool_free=169297920 scratch=50661888 pool_pages=87360 allocated_pages=85523 fragmented_pages=1837 setting=8051097600 smallest=268369920 largest=39450378240 name=AMD Radeon(TM) 8060S Graphics
+MEMORY ram experts=3963709440 pool_free=50227200 scratch=81854464 paused=11612160 paused_count=1 paused_budget=12165120 pool_pages=43680 allocated_pages=43135 fragmented_pages=545 setting=4107403264 smallest=350224384 largest=16452419584 mapped=4107403264
+MEMORY ssd experts=123255613440 paused=395689840 paused_count=9 paused_budget=8589934592
+CONVERSATION main vram empty 0 1024 0 0
+CONVERSATION slot0 vram holding 131 1024 11612160 11612160
+CONVERSATION slot1 vram holding 132 1024 11612160 11612160
+CONVERSATION slot2 vram empty 0 1024 0 0
+CONVERSATION slot3 vram empty 0 1024 0 0
+CONVERSATION slot4 vram empty 0 1024 0 0
+CONVERSATION slot5 vram empty 0 1024 0 0
+CONVERSATION slot6 vram empty 0 1024 0 0
+CONVERSATION slot7 vram empty 0 1024 0 0
+CONVERSATION parked2 disk parked 131 131 43965536 43965536
+CONVERSATION parked3 disk parked 131 131 43965536 43965536
+CONVERSATION parked4 disk parked 131 131 43965536 43965536
+CONVERSATION parked1 disk parked 131 131 43965536 43965536
+CONVERSATION parked5 disk parked 132 132 43965544 43965544
+CONVERSATION parked6 disk parked 131 131 43965536 43965536
+CONVERSATION parked7 disk parked 132 132 43965544 43965544
+CONVERSATION parked8 disk parked 131 131 43965536 43965536
+CONVERSATION parked9 disk parked 131 131 43965536 43965536
+CONVERSATION parked10 ram parked 131 131 11612160 11612160
+SETTINGS context=1024 concurrent=1 slots=8 rows=8 lookahead=5 tokens_min=128 tokens_max=1024 ssd_pause_mib=8192 memory_mib.gpu0=4095 memory_mib.gpu0.1=7678 memory_mib.ram=3917 token_bytes=1260 conversation_bytes=10874880 drafter=1
+END_MEMORY
+>>> nvidia-smi processes; engine PID 47332
+process VRAM unavailable: [WinError 2] The system cannot find the file specified

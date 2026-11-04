@@ -218,12 +218,23 @@ public:
                           const std::vector<KvRows>& ckv, const std::vector<KvRows>& ik);
 
 
-    /// Feeds `token` at position pos(); with logits, the next token's logits are left on the head's device.
     /// Runs independent conversations through one layer-major pass; select seats host state, bind selects GPU pages.
     bool step_conversations(const std::vector<int>& tokens, const std::function<void(int)>& select,
                             const std::function<void(int)>& bind, std::string& err);
+    /// Stores independent row inputs for the paged engine's shared pipeline scheduler.
+    bool prepare_group(int group, const std::vector<int>& tokens, const std::function<void(int)>& select,
+                       const std::function<void(int)>& bind, std::string& err);
+    /// Queues one stage using the prepared group's inputs and conversation pages.
+    bool launch_group(int stage, int group, std::string& err);
+    /// Completes outstanding writes before pages can be reused, including after a failed launch.
+    bool wait_state(std::string& err);
+    /// Checks the stage's completion event without waiting for its stream.
+    int poll_group(int stage, std::string& err);
+    /// Restores the group's logits and retains its DSpark inputs after every stage drains.
+    bool finish_group(int group, const std::function<void(int)>& select, std::string& err);
     /// Samples one row of the last shared pass with the request's sampling settings.
     int sample_row(int row, float t, float tp, int tk, float mp, uint64_t seed, uint64_t counter);
+    /// Feeds `token` at pos(); with logits, leaves the next token's scores on the head's device.
     bool step(int token, bool logits, std::string& err);
     /// Feeds n tokens (windows of up to 16, or a long run in chunks of prefill_chunk); the last `logits_rows` of them get
     /// logits (logits_rows > 16: only a run of one chunk or window).
