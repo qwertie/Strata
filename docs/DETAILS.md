@@ -1821,3 +1821,68 @@ speed. Timing starts after the last admission and excludes prefill. With DSpark 
 Sources and limits: [D7, D8 and M12](MEMORY_MANAGER_PLAN.md).
 
 * on Windows (users have seen Strix Halo much faster on Linux)
+
+## Quantization coverage of the page-pool engines (4 November 2026)
+
+The replacement engines must retain the old engines' model formats. They share the model loaders,
+quantization readers and kernels. No pack format is retired in this change; no conversion or download is needed
+when selecting a page-pool engine. Source files stay read-only. Keep `--native SHARD1` for Qwen's dense weights
+and head, including with a canonical Q2_0 pack. Ready packs also retain their explicit `--native-dense-gguf`,
+`--embd-gguf` and `--ple-gguf` paths through server/launcher argument translation.
+
+Inventory from `setup.py`, `strata_common/catalog.py`, the shared expert-layout reader and both model loaders:
+
+| Family | Model files / quantization | Pack / reader | Local files and validation |
+|---|---|---|---|
+| Qwen3.8 original ISTA | Q2_0 | Canonical `strata_pack.py` + `pack_index.py`, or native `iq_pack.py` | Absent; canonical verify kernel and source-reader paths retained; inference unverified |
+| Qwen3.8 original ISTA | IQ2_XS, IQ3_XXS, IQ3_S | Native expert manifest | IQ3_S present; old/new and concurrent checks below; others unverified |
+| Qwen3.8 Coder | IQ1_M, pruned expert count | Native manifest, experts stored as IQ3_S | Absent; reader fixture checks pruned count; inference unverified |
+| Qwen3.8 Swift 1.5 | IQ2_XS, IQ3_XXS, IQ3_S | Native manifest, arbitrary split layout | Absent; split reader fixtures; inference unverified |
+| Qwen3.8 Unsloth | UD-IQ4_XS, UD-Q4_K_XL, UD-Q5_K_XL, UD-Q6_K_XL, Q8_0 | Native, `--compat-bf16`; mixed types and per-role shards | Absent; pack conversion and split-reader tests; inference unverified |
+| Qwen3.8 Gyro | Gyro-S, Gyro-M | Native trellis experts, compatibility dense conversion | Absent; shared reader/kernels; inference unverified |
+| Qwen3.8 NVFP4 | Strata GPTQ, NVIDIA, QAD | Ready native pack; local NVIDIA checkpoint preparation also supported | Absent; separate-file launch regression test; inference unverified (NVIDIA only) |
+| Qwen3.8 OrcaRouter | Uncensored IQ3_XXS | Explicit native compatibility conversion | Absent; shared native loader; inference unverified |
+| Qwen3.8 APR | Hadamard-folded experts | Native manifest v5 plus `hadamard.txt` | Absent; existing shared rotation paths; inference unverified |
+| DeepSeek IST-DAS | 1.75 / 2.00 / 2.25 bpw (IQ1_M / IQ2_XXS / IQ2_XS) | `ds4.txt`, `tensors.txt`, Engram hash table, GGUF source spans | 2.00 present; others absent and inference unverified |
+| DeepSeek Unsloth | UD-Q8_K_XL (MXFP4 experts, BF16 dense) | Same GGUF pack reader | Absent; shared MXFP4 CPU/GPU paths; inference unverified |
+| DeepSeek manual EXL3 | Safetensors, per-matrix trellis widths | Existing EXL3 tensor map and nine-piece expert blobs | Absent; synthetic nine-piece file test passes; inference unverified |
+
+Native Qwen manifests v2/v3, v4 per-role shard names and v5 rotations use the same reader as `strata.exe`.
+Experts may be in the model shards or optional `experts.bin`; the canonical Q2_0 reader remains available.
+DeepSeek accepts the current six-shard ISTA layout (metadata shard plus four tensor shards and the separately
+named Engram), older four-shard ISTA layouts, and first-release `model-2.00bpw` / `model-2.25bpw` names through
+setup's pinned layouts and `pack_gguf.py`. These older layouts are absent here and inference is unverified.
+DSpark Q8_0 is a separate optional model and uses the same loader in both DeepSeek engines.
+
+At the kernel level, Qwen also shares Q4_0/Q4_1, Q5_0/Q5_1, Q2_K/Q3_K/Q4_K/Q5_K/Q6_K, Q8_0,
+IQ1_M, IQ2_XXS/IQ2_XS/IQ2_S, IQ3_XXS/IQ3_S, IQ4_NL/IQ4_XS, Q2_0, NVFP4 and trellis
+144/145/146 implementations (Q6_K depends on the build option). DeepSeek shares MXFP4, the IQ and K-quant
+expert kernels, plus experimental TQK6/TQK7 and TQK5X/TQK4X/TQK5T/TQK4T. Kernel coverage does not establish
+that an arbitrary model export has the required dense tensors, geometry or metadata.
+
+Local inventory: `Strata-data/models/IQ3_S`, `Strata-data/packs/iq3_s`, and the IST-DAS 2.00 pack under
+`Strata-data/packs/deepseek-v4.1-flash-ist-das-2.00bpw`. Its original model and DSpark files are in
+`C:/AI-models/DeepSeek-V4.1-Flash`; tests use copied pack manifests and profiles, never modify those files.
+Qwen3.6 UD-Q4_K_XL files are also present; that family is outside this replacement task.
+
+Evidence and limits: Windows HIP on Strix Halo; temporary scripts and logs in `%TEMP%/quant-compat`.
+The Qwen IQ3_S test runs two 8-token greedy answers in each engine, then a concurrent pair in strata-q38:
+all token IDs match. GPU pool 6144 MiB, RAM pool 1024 MiB, context 8192, 480 GPU experts.
+Every launch checks Docker/WSL processes, existing engines, free commit and physical RAM. A PID-scoped watchdog
+stops the test below 3 GiB free commit or 4 GiB free physical RAM. No port 8080 or browser work is used.
+CUDA, SYCL and Metal builds and absent model inference remain unverified.
+
+DeepSeek IST-DAS 2.00 bpw also passes two 8-token greedy old/new answers and a concurrent pair matching
+standalone tokens. Context 8192, DSpark off, paged GPU/RAM pools 4096/1024 MiB, 200 GPU experts;
+the old engine uses `DS4_COMMIT_CAP_GB=12` and `--ssd-cache 1`. These are correctness checks, not speed
+comparisons. Lowest free commit / physical RAM: Qwen old 57.06/25.26 GiB, new 52.69/25.47;
+DeepSeek old 55.51/25.95, new 54.91/26.31. Initial old DeepSeek runs with `--ssd-cache 0` were stopped
+by the physical-RAM watchdog; the bounded-store retry passed. The harness stages runtime DLLs beside each
+test executable; an initial unstaged launch failed before model load.
+
+File-free checks: 33 `tools/test_iq_pack.py` tests, the native manifest fixtures in `expert_layout_test`,
+`file_expert_source_test`, and 343 `ds4_expert_files_test` checks (including nine EXL3 pieces across two files).
+Two launch-argument regressions and five architecture checks pass. HIP sources compile and the four selected
+targets link; a direct rebuild reports no work. The local Visual Studio environment script prints a missing
+`vswhere.exe` diagnostic and returns a nonzero wrapper status despite the successful Ninja build.
+EXL3 inference and its chunked prompt path remain unverified; that path retains the old region staging reader.

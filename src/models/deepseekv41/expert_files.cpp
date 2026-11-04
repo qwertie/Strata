@@ -1,4 +1,4 @@
-// src/models/deepseekv41/expert_files.cpp - a GGUF pack's routed experts read without the file cache
+// GGUF and EXL3 routed experts read without the file cache
 // (expert_files.hpp).
 #include "expert_files.hpp"
 
@@ -18,7 +18,7 @@ constexpr int kReaders = 8;
 ExpertFiles::~ExpertFiles() {
     io_.reset();   // (its threads may still hold staging buffers)
     if (staging_ != nullptr)
-        platform::anon_free(staging_, kBatch * 3 * span_);
+        platform::anon_free(staging_, kBatch * 9 * span_);
     for (const platform::fd_t f : direct_)
         platform::close_fd(f);
     for (const platform::fd_t f : buffered_)
@@ -36,9 +36,14 @@ bool ExpertFiles::open(const std::vector<std::string>& paths, std::vector<Expert
         }
     }
     for (const ExpertFileLayout& l : layers_)   // a matrix with its sector-aligned surroundings
-        for (int r = 0; r < 3; ++r)
+        for (int r = 0; r < 3 && l.pieces.empty(); ++r)
             span_ = std::max<size_t>(span_, (size_t) platform::direct_span(platform::kDirectAlign - 1, l.bytes[r]));
-    staging_ = (uint8_t*) platform::anon_alloc(kBatch * 3 * span_, -1, 1);
+    for (const ExpertFileLayout& l : layers_)
+        for (const auto& expert : l.pieces)
+            for (const auto& piece : expert)
+                span_ = std::max<size_t>(span_, (size_t) platform::direct_span(
+                    platform::kDirectAlign - 1, piece.bytes));
+    staging_ = (uint8_t*) platform::anon_alloc(kBatch * 9 * span_, -1, 1);
     if (staging_ == nullptr) {
         err = "no memory for the expert reads' staging";
         return false;
@@ -56,19 +61,24 @@ bool ExpertFiles::copy_blobs(const int32_t* layers, const int32_t* experts, uint
     const std::lock_guard<std::mutex> lock(mu_);
     std::atomic<bool> bad{false};
     for (size_t i0 = 0; i0 < n && !bad.load(); i0 += kBatch) {
-        IoQueue::Job jobs[kBatch * 3];
+        IoQueue::Job jobs[kBatch * 9];
         std::atomic<int> left{0};
         int nj = 0;
         for (size_t i = i0; i < std::min(n, i0 + kBatch); ++i) {
             const ExpertFileLayout& l = layers_[(size_t) layers[i]];
-            for (int r = 0; r < 3; ++r) {
+            const size_t count = l.pieces.empty() ? 3 : l.pieces[(size_t) experts[i]].size();
+            for (size_t r = 0; r < count; ++r) {
+                const auto piece = l.pieces.empty()
+                    ? ExpertFileLayout::Piece{l.file[r], l.off[r] + (uint64_t) experts[i] * l.stride[r],
+                                              l.bytes[r], l.tr[r]}
+                    : l.pieces[(size_t) experts[i]][r];
                 IoQueue::Job& j = jobs[nj];
-                j.dfd = direct_[(size_t) l.file[r]];
-                j.fd = buffered_[(size_t) l.file[r]];
-                j.off = l.off[r] + (uint64_t) experts[i] * l.stride[r];
-                j.len = l.bytes[r];
+                j.dfd = direct_[(size_t) piece.file];
+                j.fd = buffered_[(size_t) piece.file];
+                j.off = piece.off;
+                j.len = piece.bytes;
                 j.dst = staging_ + (size_t) nj * span_;
-                j.keep = dst[i] + l.tr[r];
+                j.keep = dst[i] + piece.dst;
                 j.left = &left;
                 j.bad = &bad;
                 ++nj;

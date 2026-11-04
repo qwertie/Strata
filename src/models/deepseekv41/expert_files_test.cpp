@@ -85,6 +85,22 @@ int main() {
             check(same, "each matrix holds the file's bytes at its offset");
             check(untouched, "the bytes between the matrices stay as they were");
         }
+        ExpertFileLayout exl;
+        exl.n_exp = 2;
+        exl.blob = 4096;
+        exl.pieces.resize(2);
+        for (int e = 0; e < 2; ++e)
+            for (int q = 0; q < 9; ++q)
+                exl.pieces[(size_t) e].push_back({q % 2, (uint64_t) (123 + e * 10000 + q * 137),
+                                                (uint64_t) (31 + q), (uint64_t) (q * 256)});
+        ExpertFiles pieces;
+        check(pieces.open(paths, {exl}, err), "EXL3 piece files open");
+        std::vector<uint8_t> packed(exl.blob, fill);
+        check(pieces.copy_blob(0, 1, packed.data()), "EXL3 expert reads its nine pieces");
+        for (const auto& piece : exl.pieces[1])
+            for (uint64_t k = 0; k < piece.bytes; ++k)
+                check(packed[piece.dst + k] == get_byte(piece.file, piece.off + k),
+                      "EXL3 pieces land at their kernel offsets");
         ExpertFiles missing;
         check(!missing.open({(dir / "none.bin").string()}, layers, err) && !err.empty(), "a missing file is refused");
     }

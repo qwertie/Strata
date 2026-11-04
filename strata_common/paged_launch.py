@@ -21,8 +21,8 @@ def translate_args(cfg: dict, args: list[str]) -> list[str]:
         rows lookahead concurrent pause-dir copy-back drafter remote-experts suffix-draft mtp-max-t
         lookup-chain lookup-chain-min""".split())
     model = set(("""vision eos gpus reserve-mib cpu-threads dspark dspark-conf experts dspark-block prefill-chunk threads"""
-                 if deepseek else """eos-ids native ple-gguf kv prefill mtp spec-min-p gpu pcie-frac pool-cores
-                 aux-cpus pool-affinity vram-reserve-mib vram-reserve-later-mib""").split())
+                 if deepseek else """eos-ids native native-dense-gguf embd-gguf ple-gguf kv prefill mtp spec-min-p
+                 gpu pcie-frac pool-cores aux-cpus pool-affinity vram-reserve-mib vram-reserve-later-mib""").split())
     switches = {"serve", "trim-stage-weights"} | ({"no-expert-cache"} if deepseek else
                  {"vision", "no-ple", "no-prefill-borrow", "no-host-worker", "no-ple-prefetch", "stop-eos"})
     aliases = {"--slots": "--batch"}

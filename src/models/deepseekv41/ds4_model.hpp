@@ -76,8 +76,8 @@ struct Options {
     bool verbose = false;
     /// strata-ds41 (the memory manager's pools): the routed experts are the caller's - the GPU computes those
     /// set_expert_addresses names, the CPU lane and the prompt path read the others from this pool (a RAM page pool
-    /// over the SSD) - instead of the old engine's VRAM slots, RAM store, files' mapping and moves. Requires a GGUF
-    /// pack with layer-parallel stages. Null: the old engine's own.
+    /// over the SSD) - instead of the old engine's VRAM slots, RAM store, files' mapping and moves. Requires
+    /// layer-parallel stages. Null: the old engine's own.
 
     strata::core::ExpertSource* expert_pages = nullptr;
     /// Chooses trunk cuts from the geometry and expert bytes before loading dense weights; false sets the error.
@@ -95,6 +95,12 @@ struct ExpertFileLayout {
     uint64_t bytes[3] = {0, 0, 0};
     uint64_t tr[3] = {0, 0, 0};
     uint64_t blob = 0;
+    /// EXL3 stores nine separately placed pieces per expert, in the pack's file order.
+    struct Piece {
+        int file = -1;
+        uint64_t off = 0, bytes = 0, dst = 0;
+    };
+    std::vector<std::vector<Piece>> pieces;
 };
 
 /// Reads comma- or space-separated integers from `s`, stopping at the first that is not one.
@@ -163,7 +169,7 @@ public:
     int get_experts_per_token() const;
     /// Gets the bytes of one routed expert of each layer: the trunk's, then the DSpark blocks' when they are loaded.
     std::vector<uint64_t> get_expert_bytes() const;
-    /// Gets where each layer's routed experts (get_expert_bytes' layers) lie in the model's files (a GGUF pack's).
+    /// Gets where each layer's routed experts (get_expert_bytes' layers) lie in the model's files (GGUF or EXL3).
     std::vector<ExpertFileLayout> get_expert_files() const;
     /// Gets the paths of the model's files, which ExpertFileLayout::file numbers.
     std::vector<std::string> get_file_paths() const;

@@ -562,3 +562,13 @@ Windows HIP, Strix Halo: commands, full two-round old/new Qwen speed tables (wit
 token arrays, concurrent answers, pause/restore checks, budgets and limitations are recorded in
 `%TEMP%/suffix-drafter/planner/warm/REPORT.md`. CUDA was not compiled; SYCL, Metal, separate GPUs and the excluded
 GPU/lifecycle tests were not run.
+
+## Item 6: retain quantizations while replacing the engines
+
+The owner's requirement is format parity with strata.exe and strata-dsv41. The inventory and per-format
+verification limits are in [DETAILS.md](DETAILS.md#quantization-coverage-of-the-page-pool-engines-4-november-2026).
+Canonical Q2_0 uses the existing verify kernels; it no longer fails the adapter's native-pack check.
+DeepSeek EXL3 uses nine-piece file reads into the pool's expert layout and the existing CPU/GPU kernels.
+Ready-pack dense and embedding paths survive server/launcher translation. No old pack is retired or rewritten.
+IQ3_S and DeepSeek IST-DAS 2.00 bpw have local old/new greedy and concurrent identity evidence. Absent formats remain inference-unverified;
+this item is not complete until their end-to-end checks and the remaining backend builds pass.

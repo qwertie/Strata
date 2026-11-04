@@ -1,4 +1,4 @@
-// src/models/deepseekv41/expert_files.hpp - DeepSeek V4.1's routed experts read from a GGUF pack's files without the
+// DeepSeek V4.1's routed experts read from GGUF or EXL3 files without the
 // OS file cache, for strata-ds41's RAM page pool (docs/MEMORY_MANAGER_PLAN.md, step D5), which reads through it the
 // experts it does not hold.
 #pragma once
@@ -15,9 +15,8 @@
 
 namespace strata::ds4 {
 
-/// The routed experts of a GGUF pack as an ExpertSource that copies each into the blob layout the model reads
-/// (ExpertFileLayout): its three matrices read without the file cache, each with its sector-aligned surroundings into
-/// a staging buffer, by a few threads, and moved into place.  Copies only: blob() has no memory to give.
+/// The routed experts of a GGUF or EXL3 pack as an ExpertSource that copies each into the blob layout the model reads
+/// (ExpertFileLayout): its pieces read without the file cache into sector-aligned staging buffers and moved into place.  Copies only: blob() has no memory to give.
 class ExpertFiles final : public strata::core::ExpertSource {
 public:
     ExpertFiles() = default;
@@ -39,7 +38,7 @@ private:
     std::vector<ExpertFileLayout> layers_;
     std::unique_ptr<IoQueue> io_;
     std::mutex mu_;
-    uint8_t* staging_ = nullptr;                      ///< kBatch experts' matrices, each in a span of span_ bytes
+    uint8_t* staging_ = nullptr;                      ///< kBatch experts' pieces, each in a span of span_ bytes
     size_t span_ = 0;
 };
 

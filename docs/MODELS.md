@@ -376,3 +376,10 @@ above setup's RAM estimate for 47 GB and was installed with `--model Q2_0 --yes`
 | **UD-Q6_K_XL** | 54 | 76 | 1,020 |
 | **Q8_0** | 53 to 57 | 66 to 74 | 1,230 to 1,300 |
 | *IQ3_S, same card* | 75 | 95 | - |
+
+### Packs with the page-pool engines
+
+Selecting `strata-q38` or `strata-ds41` keeps the existing model files and pack formats, including canonical
+Q2_0 and DeepSeek EXL3. Qwen still needs its source GGUF (`--native`); ready NVFP4 packs keep their separate
+dense, embedding and PLE files. See the [format inventory and validation limits](DETAILS.md#quantization-coverage-of-the-page-pool-engines-4-november-2026).
+Formats without local model files are not yet verified end to end on the replacement engines.

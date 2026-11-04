@@ -1199,7 +1199,7 @@ bool open_ram(Model& m, const PagedCards& cards, const ModelCards& model_cards, 
 
 /// Gets why strata-q38 cannot run the loaded model `m` (empty: it can).
 std::string get_unsupported_reason(const Model& m) {
-    if (!m.native_pack) return "it needs a native pack (--native), which decodes through verify windows";
+    if (m.o.native_preset.empty()) return "it needs --native SHARD1 for the dense projections and output head";
     if (m.thits.d_res == nullptr || m.o.expert_cache <= 0)
         return "it needs the device residency table (--expert-profile, --expert-cache and the token graph)";
     return {};

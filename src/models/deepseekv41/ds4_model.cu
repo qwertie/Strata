@@ -1939,8 +1939,8 @@ struct Model::Impl {
         // GPUs can take - their free memory less the other weights and the prompt path's buffers - do not fit the RAM
         // this process can get beside kRamMargin), decided here because it sets the prompt chunk's default: in place
         // every chunk streams every expert VRAM does not hold from the files, so the larger the chunk the fewer times
-        if (pk.gguf) file_experts = true;   // (a GGUF's: the files stay their source - copy_experts copies them into RAM
-                                            // after VRAM's are in, by --mmap-experts)
+        // Page pools keep one whole expert per CPU staging slot, including EXL3 on NUMA systems.
+        if (pk.gguf || o.expert_pages != nullptr) file_experts = true;
         else if (o.mmap_experts >= 0) file_experts = o.mmap_experts > 0;
         else {
             double exp_b = 0, other_b = 0, room = 0;
@@ -3103,12 +3103,16 @@ struct Model::Impl {
         };
         bool ok = true;
         if (NH == 1) {   // one part: the whole expert in exllamav3's layout, its pieces at hl's offsets
-            const uint8_t* p = src != nullptr ? src : parts[0];
+            const uint8_t* p = src != nullptr ? src : o.expert_pages != nullptr ? file_part(l, e) : parts[0];
             if (l.nm == 1) {
-                for (int r = 0; r < 3; ++r)
-                    ok = ok && cp(dst + l.lay.trellis[r], p + l.hl.trellis[r], l.piece_bytes[r][0]) &&
-                         cp(dst + l.lay.suh[r], p + l.hl.suh[r], (size_t) l.hl.k[r] * 2) &&
-                         cp(dst + l.lay.svh[r], p + l.hl.svh[r], (size_t) l.hl.n[r] * 2);
+                for (int r = 0; r < 3; ++r) {
+                    const size_t tr = o.expert_pages != nullptr ? l.piece_src[r][0] : l.hl.trellis[r];
+                    const size_t su = o.expert_pages != nullptr ? l.piece_src[r][1] : l.hl.suh[r];
+                    const size_t sv = o.expert_pages != nullptr ? l.piece_src[r][2] : l.hl.svh[r];
+                    ok = ok && cp(dst + l.lay.trellis[r], p + tr, l.piece_bytes[r][0]) &&
+                         cp(dst + l.lay.suh[r], p + su, (size_t) l.hl.k[r] * 2) &&
+                         cp(dst + l.lay.svh[r], p + sv, (size_t) l.hl.n[r] * 2);
+                }
             } else {   // member m's part (its FFN columns [f0, f0 + fn)), cut as blob_to_half cuts a blob
                 const Layer& x = member(l, m);
                 const int f0 = x.ff0, fn = x.ffn;
@@ -3872,9 +3876,19 @@ struct Model::Impl {
     bool place_paged(std::string& err) {
         size_t most = 0;
         for (Layer& l : L) {
-            if (l.lay.fmt != gg::kFmtMXFP4 || l.nm > 1 || l.cpu_only) {
-                err = "experts in page pools need a GGUF pack with GPU experts and no tensor parallelism";
+            if (l.nm > 1 || l.cpu_only) {
+                err = "experts in page pools need GPU experts and no tensor parallelism";
                 return false;
+            }
+            if (l.lay.fmt != gg::kFmtMXFP4) {
+                for (int r = 0; r < 3; ++r) {
+                    l.hl.k[r] = r < 2 ? g.dim : g.ff;
+                    l.hl.n[r] = r < 2 ? g.ff : g.dim;
+                    l.hl.trellis[r] = l.lay.trellis[r];
+                    l.hl.suh[r] = l.lay.suh[r];
+                    l.hl.svh[r] = l.lay.svh[r];
+                }
+                l.hl.bytes = l.blob;
             }
             l.by_heat = get_heat_order(l);
             l.slot.assign((size_t) l.n_exp, -1);
@@ -4832,7 +4846,17 @@ struct Model::Impl {
             const Layer& l = L[il];
             ExpertFileLayout& gl = geo[il];
             gl.n_exp = l.n_exp;
-            for (int r = 0; r < 3; ++r) {
+            if (l.lay.fmt != gg::kFmtMXFP4) {
+                gl.pieces.resize((size_t) l.n_exp);
+                for (int e = 0; e < l.n_exp; ++e)
+                    for (int r = 0; r < 3; ++r) {
+                        const size_t dst[] = {l.lay.trellis[r], l.lay.suh[r], l.lay.svh[r]};
+                        for (int q = 0; q < 3; ++q)
+                            gl.pieces[(size_t) e].push_back({l.region_file[(size_t) e],
+                                l.region_off[(size_t) e] + l.piece_src[r][q], l.piece_bytes[r][q], dst[q]});
+                    }
+            }
+            for (int r = 0; r < 3 && gl.pieces.empty(); ++r) {
                 gl.file[r] = l.mx_file[r];
                 gl.off[r] = l.mx_off[r];
                 gl.stride[r] = l.mx_stride[r];
@@ -5993,7 +6017,10 @@ struct Model::Impl {
             const auto is_lost = [&](const Ent& en) { return held[(size_t) en.e] == nullptr; };
             std::copy_if(group.begin(), group.end(), std::back_inserter(lost), is_lost);
             group.erase(std::remove_if(group.begin(), group.end(), is_lost), group.end());
-            cpu_experts_mx(l, x, group, ldx, nullptr);
+            if (l.lay.fmt == gg::kFmtMXFP4)
+                cpu_experts_mx(l, x, group, ldx, nullptr);
+            else
+                cpu_experts_exl3(l, x, group, ldx);
             for (const Ent& en : lost) {
                 static std::atomic<bool> said{false};
                 if (!said.exchange(true))
@@ -6086,12 +6113,16 @@ struct Model::Impl {
             }
             return;
         }
+        cpu_experts_exl3(l, x, ents, ldx);
+    }
+    /// Computes EXL3 experts through the same CPU kernels for mapped files and page pools.
+    void cpu_experts_exl3(const Layer& l, const float* x, const std::vector<Ent>& ents, size_t ldx) {
         const int E = g.dim, FF = g.ff, FFh = FF / NH, Eh = E / NH, GQ = E / 256, DQ = FF / 128;
         const int GB = FFh / 128, DB = Eh / 128, EB = E / 128, FB = FF / 128;
         const int ne = (int) ents.size();
         const float lim = g.lim;
         auto part = [&](int e, int X, int r) {
-            const uint8_t* b = l.hh[(size_t) e][(size_t) X];
+            const uint8_t* b = o.expert_pages != nullptr ? held[(size_t) e] : l.hh[(size_t) e][(size_t) X];
             kc::Exl3Part p;
             p.trellis = (const uint32_t*) (b + l.hl.trellis[r]);
             p.suh = (const uint16_t*) (b + l.hl.suh[r]);
