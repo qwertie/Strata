@@ -278,11 +278,11 @@ struct Part final : strata::serve::PagedPart {
 };
 
 /// DeepSeek for the paged engine: the conversations of the batch slots and "main", whose attention reads each row's
-/// Part pages; independent rows share the expert pass; the GPU computes the experts of the card's
+/// Part pages; conversation windows share the expert pass; the GPU computes the experts of the card's
 /// pool, the CPU the others from the RAM's pool (Options::expert_pages).  A paused conversation's checkpoints are its
 /// state beside the pages (save_state), and a prompt that leaves a conversation before its end goes back to one of
-/// them (rewind).  The DSpark drafter guesses (propose) as the old engine's rounds draft, a step verifies them in one
-/// window (run_rows) and rolls the rejected ones back (keep_rows); its rings are a fixed region of the conversation,
+/// them (rewind). DSpark guesses (propose); one shared pass verifies each conversation's window (run_rows) and
+/// rolls its rejected rows back (keep_rows). The drafter's rings are a fixed region of the conversation,
 /// its experts in the GPU's pool before the trunk's (the RAM's pool holds none: it drafts only while all of them are
 /// on the GPU). Stages use Model's existing serial or chunked hand-offs; each stage owns a pool, while the lead
 /// part owns the conversation's host state.
@@ -384,7 +384,10 @@ public:
     bool read_prompt(const PagedParts& parts, const std::vector<int64_t>& ids, int64_t from, int64_t n, bool drafting,
                      const ChunkDone& on_chunk, std::string& err) override;
     bool wait_state(std::string& err) override { return m_.wait_state(err); }
-    int get_pipeline_stages() const override { return cards_.size() > 1 ? (int) cards_.size() : 0; }
+    int get_pipeline_stages() const override {
+        // Speculative windows share rollback scratch until the step commits all participants.
+        return !facts.has_drafter && cards_.size() > 1 ? (int) cards_.size() : 0;
+    }
     bool prepare_group(int group, const std::vector<strata::spec::StepRow>& rows, std::string& err) override;
     bool launch_group(int stage, int group, std::string& err) override {
         return group_rows_[(size_t) group].pending.empty() || m_.launch_group(stage, group, err);
@@ -401,6 +404,8 @@ public:
                    std::string& err) override;
     int propose(strata::serve::PagedPart& last, int session, int32_t token, int64_t pos, int n, int32_t* out,
                 std::string& err, strata::spec::DraftContext* draft) override;
+    bool has_batched_drafter() const override { return true; }
+    bool propose_batch(std::vector<strata::spec::DraftRequest>& requests, std::string& err) override;
     bool switch_drafter(bool on, std::string& err) override;
     void print_info(int slots, int) const override {
         for (const std::string& line : m_.info_lines())
@@ -424,6 +429,8 @@ private:
     /// Gets the experts of trunk layers [lb, le) in the order the GPU's pool takes them (get_ranking), the drafter's
     /// before them while it is on.
     std::vector<strata::core::ExpertKey> get_pool_ranking(int64_t lb, int64_t le) const;
+    /// Gets 1 when a proposal can run, 0 when it should be skipped, or -1 on state failure.
+    int prepare_draft(Part& part, int session, int64_t pos, int n, std::string& err);
     bool is_drafter_ready() const;
     bool go_to(int64_t pos, std::string& err);
     void end_prompt(Part& p);
@@ -460,7 +467,10 @@ private:
     bool drafting_ = false;            ///< the drafter is switched on: its experts are wanted in the GPU's pool
     /// the drafter's experts (get_ranking's), which it needs all of on the GPU to draft
     std::vector<strata::core::ExpertKey> drafter_experts_;
-    int verified_ = 0;                 ///< the rows of the last step's verify window with a pick; 0: a plain step
+    /// Maps each joint window to its conversation and first logit row.
+    struct JointWindow { int session, first, count; };
+    std::vector<JointWindow> joint_windows_;
+    int verified_ = 0; ///< Counts sampled rows in a standalone verify window; joint_windows_ tracks joint passes.
 };
 
 /// Gets the Part a PagedPart of this model is.
@@ -692,7 +702,7 @@ PagedDeepSeek::PagedDeepSeek(Model& m, const Options& o, const ProgramOptions& x
     }
     facts.draft_limits.confidence = o.dspark_conf;
     facts.draft_limits.cumulative = Model::get_default_cum();
-    facts.draft_limits.max_conversations = 1;
+    facts.draft_limits.max_conversations = facts.has_drafter ? 0 : 1;
     facts.draft_limits.cool_after_rejection = true;
     facts.gpu_experts = x.gpu_experts;
     facts.ram_headroom = kRamHeadroom;
@@ -972,21 +982,53 @@ bool PagedDeepSeek::finish_group(int group, std::vector<int32_t>& picks, std::st
 
 bool PagedDeepSeek::run_rows(const std::vector<strata::spec::StepRow>& rows, std::vector<int32_t>& picks,
                              std::string& err) {
+    joint_windows_.clear();
     if (rows.front().session != rows.back().session) {
         verified_ = 0;
         GroupRows g;
-        std::vector<int> tokens;
+        std::vector<int> tokens, counts;
         if (!prepare_inputs(g, rows, tokens, err))
             return false;
-        if (!tokens.empty() && !m_.step_conversations(tokens, [&](int r) {
-                leads_[(size_t) rows[g.pending[(size_t) r]].session]->take_seat();
-            }, [&](int r) {
-                for (Part* part : leads_[(size_t) rows[g.pending[(size_t) r]].session]->peers)
-                    part->point_model();
-            }, err))
-            return false;
-        sample_pending_rows(g);
         picks = g.picks;
+        const auto& pending = g.pending;
+        for (size_t first = 0; first < pending.size();) {
+            size_t end = first + 1;
+            const int session = rows[pending[first]].session;
+            while (end < pending.size() && rows[pending[end]].session == session)
+                ++end;
+            const int count = (int) (end - first);
+            joint_windows_.push_back({session, (int) first, count});
+            counts.push_back(count);
+            first = end;
+        }
+        if (!pending.empty() && !m_.step_conversations(tokens, [&](int r) {
+                leads_[(size_t) rows[pending[(size_t) r]].session]->take_seat();
+            }, [&](int r) {
+                for (Part* part : leads_[(size_t) rows[pending[(size_t) r]].session]->peers)
+                    part->point_model();
+            }, counts, err))
+            return false;
+        for (const JointWindow& window : joint_windows_) {
+            Part& p = *leads_[(size_t) window.session];
+            p.take_seat();
+            if (p.prompt_open)
+                end_prompt(p);
+            const auto& s = p.smp;
+            if (window.count == 1) {
+                picks[pending[(size_t) window.first]] = m_.sample_row(window.first, s.temperature, s.top_p,
+                    s.top_k, s.min_p, s.seed, counter_++);
+                continue;
+            }
+            std::vector<int> drafts, got;
+            for (int i = 1; i < window.count; ++i)
+                drafts.push_back(tokens[(size_t) window.first + i]);
+            if (!m_.pick_joint_rows(window.session, window.first, drafts, s.temperature, s.top_p, s.top_k,
+                                    s.min_p, s.seed, counter_, got, err))
+                return false;
+            counter_ += got.size();
+            for (size_t i = 0; i < got.size(); ++i)
+                picks[pending[(size_t) window.first + i]] = got[i];
+        }
         return true;
     }
     const strata::spec::StepRow& row = rows[0];
@@ -1027,19 +1069,23 @@ bool PagedDeepSeek::run_rows(const std::vector<strata::spec::StepRow>& rows, std
     return true;
 }
 
-/// Prepares plain decode rows for both the synchronous pass and the shared pipeline scheduler.
+/// Seats each conversation once, preserving primed picks for synchronous and pipeline passes.
 bool PagedDeepSeek::prepare_inputs(GroupRows& g, const std::vector<strata::spec::StepRow>& rows,
                                   std::vector<int>& tokens, std::string& err) {
     g.rows = rows;
     g.pending.clear();
     g.picks.assign(rows.size(), -1);
-    for (size_t r = 0; r < rows.size(); ++r) {
+    for (size_t r = 0; r < rows.size();) {
+        size_t end = r + 1;
+        while (end < rows.size() && rows[end].session == rows[r].session)
+            ++end;
         Part& p = *leads_[(size_t) rows[r].session];
-        const bool primed = p.primed_pos == rows[r].pos && p.primed_token == rows[r].token &&
-                            p.get_pos() == rows[r].pos + 1;
+        const bool primed = end == r + 1 && p.primed_pos == rows[r].pos &&
+                            p.primed_token == rows[r].token && p.get_pos() == rows[r].pos + 1;
         p.primed_pos = -1;
         if (primed) {
             g.picks[r] = p.primed_pick;
+            r = end;
             continue;
         }
         p.take_seat();
@@ -1047,8 +1093,10 @@ bool PagedDeepSeek::prepare_inputs(GroupRows& g, const std::vector<strata::spec:
             return false;
         if (p.prompt_open)
             m_.checkpoint(kBeforeLastCheck);
-        g.pending.push_back(r);
-        tokens.push_back(rows[r].token);
+        for (; r < end; ++r) {
+            g.pending.push_back(r);
+            tokens.push_back(rows[r].token);
+        }
     }
     return true;
 }
@@ -1067,8 +1115,23 @@ void PagedDeepSeek::sample_pending_rows(GroupRows& g) {
 
 // A verify window keeps the rows the step accepted; the sampler's draw count moves past every row with a pick, as the
 // old engine's does.
-bool PagedDeepSeek::keep_rows(const std::vector<strata::spec::StepRow>&, const std::vector<int>& kept, bool,
+bool PagedDeepSeek::keep_rows(const std::vector<strata::spec::StepRow>& rows, const std::vector<int>& kept, bool,
                               std::string& err) {
+    if (!joint_windows_.empty()) {
+        size_t row = 0, group = 0;
+        for (const JointWindow& window : joint_windows_) {
+            while (rows[row].session != window.session) {
+                const int session = rows[row].session;
+                while (row < rows.size() && rows[row].session == session)
+                    ++row;
+                ++group;
+            }
+            leads_[(size_t) window.session]->take_seat();
+            if (!m_.keep_joint_rows(window.first, window.count, kept[group], err))
+                return false;
+        }
+        return true;
+    }
     if (verified_ == 0)
         return true;
     counter_ += (uint64_t) verified_;
@@ -1076,9 +1139,67 @@ bool PagedDeepSeek::keep_rows(const std::vector<strata::spec::StepRow>&, const s
 }
 
 // Runs DSpark once its rings and experts are ready; the shared step selects its candidate prefix.
-int PagedDeepSeek::propose(strata::serve::PagedPart& last, int, int32_t token, int64_t pos, int n, int32_t* out,
-                           std::string& err, strata::spec::DraftContext* draft) {
+int PagedDeepSeek::propose(strata::serve::PagedPart& last, int session, int32_t token, int64_t pos, int n,
+                           int32_t* out, std::string& err, strata::spec::DraftContext* draft) {
     Part& p = *get_part(last).lead;
+    const int ready = prepare_draft(p, session, pos, n, err);
+    if (ready <= 0)
+        return ready;
+    std::vector<int> drafts;
+    std::vector<float> conf;
+    const strata::serve::Sampling& s = p.smp;
+    if (!m_.draft(token, drafts, conf, err, s.temperature, s.top_p, s.top_k, s.min_p, s.seed, counter_))
+        return -1;
+    const int keep = std::min({n, (int) drafts.size(), (int) conf.size()});
+    if (!m_.save_joint_draft(session, keep, err))
+        return -1;
+    std::copy(drafts.begin(), drafts.begin() + keep, out);
+    if (draft && draft->probs)
+        std::copy_n(conf.begin(), keep, draft->probs);
+    for (const strata::core::ExpertKey& key : drafter_experts_)   // (every draft uses its blocks: they stay hot)
+        drafter_card_->experts.note_use(key);
+    return keep;
+}
+
+bool PagedDeepSeek::propose_batch(std::vector<strata::spec::DraftRequest>& requests, std::string& err) {
+    std::vector<Model::DraftRequest> batch;
+    std::vector<size_t> pending;
+    for (size_t i = 0; i < requests.size(); ++i) {
+        auto& r = requests[i];
+        Part& p = *leads_[(size_t) r.session];
+        const int ready = prepare_draft(p, r.session, r.pos, r.limit, err);
+        if (ready < 0)
+            return false;
+        if (ready == 0 || r.pos + m_.draft_block() > facts.context)
+            continue;
+        const auto& sampling = p.smp;
+        batch.push_back({r.session, r.token, r.limit, r.pos, sampling.temperature, sampling.top_p,
+                         sampling.min_p, sampling.top_k, sampling.seed, counter_, {}, {}});
+        pending.push_back(i);
+    }
+    if (!m_.draft_conversations(batch, [&](int i) {
+            leads_[(size_t) batch[(size_t) i].session]->take_seat();
+        }, [&](int i) {
+            for (Part* part : leads_[(size_t) batch[(size_t) i].session]->peers)
+                part->point_model();
+        }, err))
+        return false;
+    for (size_t i = 0; i < batch.size(); ++i) {
+        auto& r = requests[pending[i]];
+        const auto& b = batch[i];
+        r.count = std::min({r.limit, (int) b.tokens.size(), (int) b.confidence.size()});
+        std::copy_n(b.tokens.begin(), r.count, r.tokens.begin());
+        std::copy_n(b.confidence.begin(), r.count, r.confidence.begin());
+    }
+    if (!batch.empty())
+        for (const auto& key : drafter_experts_)
+            drafter_card_->experts.note_use(key);
+    return true;
+}
+
+int PagedDeepSeek::prepare_draft(Part& p, int session, int64_t pos, int n, std::string& err) {
+    if (!m_.save_joint_draft(session, 0, err))
+        return -1;
     if (n <= 0 || !drafting_ || p.prompt_open || p.primed_pos == pos ||
         !is_drafter_ready())
         return 0;
@@ -1088,19 +1209,7 @@ int PagedDeepSeek::propose(strata::serve::PagedPart& last, int, int32_t token, i
             return -1;
         p.drafter_epoch = drafter_epoch_;
     }
-    std::vector<int> drafts;
-    std::vector<float> conf;
-    const strata::serve::Sampling& s = p.smp;
-    if (!go_to(pos, err) ||
-        !m_.draft(token, drafts, conf, err, s.temperature, s.top_p, s.top_k, s.min_p, s.seed, counter_))
-        return -1;
-    const int keep = std::min({n, (int) drafts.size(), (int) conf.size()});
-    std::copy(drafts.begin(), drafts.begin() + keep, out);
-    if (draft && draft->probs)
-        std::copy_n(conf.begin(), keep, draft->probs);
-    for (const strata::core::ExpertKey& key : drafter_experts_)   // (every draft uses its blocks: they stay hot)
-        drafter_card_->experts.note_use(key);
-    return keep;
+    return go_to(pos, err) ? 1 : -1;
 }
 
 bool PagedDeepSeek::switch_drafter(bool on, std::string& err) {

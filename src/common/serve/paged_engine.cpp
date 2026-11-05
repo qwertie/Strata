@@ -2188,6 +2188,24 @@ strata::spec::StepModel PagedEngine::get_step_model() {
             say("the drafter: %s\n", err.c_str());
             return 0;
         };
+    if (facts_.has_drafter && model_.has_batched_drafter())
+        model.propose_batch = [this](std::vector<strata::spec::DraftRequest>& requests) {
+            if (!is_model_drafting())
+                return;
+            std::string err;
+            for (auto& request : requests) {
+                Held& h = *held_[(size_t) request.session];
+                if (request.limit > 0 && !time_step_if(settings_.step_profile != 0, pages_ms_,
+                        [&] { return make_room(h, request.pos + 1 + request.limit, err); }))
+                    request.limit = 0;
+            }
+            if (!time_step_if(settings_.step_profile != 0, draft_ms_,
+                              [&] { return model_.propose_batch(requests, err); })) {
+                for (auto& request : requests)
+                    request.count = 0;
+                say("the drafter: %s\n", err.c_str());
+            }
+        };
     return model;
 }
 

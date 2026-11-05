@@ -303,6 +303,10 @@ public:
     /// Called after each DONE and BDONE line (a batch request has both): DeepSeek writes its expert profile back, as its
     /// old engine does after each request.
     virtual void end_request() {}
+    /// Allows a family to replace individual proposals with a shared network forward pass.
+    virtual bool has_batched_drafter() const { return false; }
+    /// Fills the shared step's requests using each session's own conversation state.
+    virtual bool propose_batch(std::vector<strata::spec::DraftRequest>&, std::string&) { return false; }
 };
 
 }  // namespace strata::serve

@@ -72,6 +72,17 @@ struct DraftContext {
     bool cost_planned = false; ///< Prevents replaying an already evaluated cost chain.
 };
 
+/// Carries one conversation's row allowance through an optional shared drafter forward pass.
+struct DraftRequest {
+    int session = 0;
+    int32_t token = 0;
+    int64_t pos = 0;
+    int limit = 0, count = 0;
+    std::vector<int32_t> tokens;
+    std::vector<float> confidence;
+    DraftContext context;
+};
+
 /// Owns one pipeline group's rows and the tokens picked after them.
 struct StepGroup {
     std::vector<StepRow> rows;
@@ -114,6 +125,8 @@ struct StepModel {
     /// a conversation ends, so that a drafter can read what the conversation's last step kept.  Empty: the model has
     /// no drafter. `draft` supplies the window policy and receives probabilities; null only when decoding ends.
     std::function<int(int session, int32_t token, int64_t pos, int n, int32_t* out, DraftContext* draft)> propose;
+    /// Runs the network once for all eligible requests; unset preserves the individual proposal path.
+    std::function<void(std::vector<DraftRequest>&)> propose_batch;
 };
 
 /// A conversation that decodes in steps, and what its last step did.

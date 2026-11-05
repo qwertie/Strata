@@ -218,9 +218,30 @@ public:
                           const std::vector<KvRows>& ckv, const std::vector<KvRows>& ik);
 
 
-    /// Runs independent conversations through one layer-major pass; select seats host state, bind selects GPU pages.
+    /// Supplies one paged conversation's inputs and receives its DSpark proposal.
+    struct DraftRequest {
+        int session = 0, token = 0, limit = 0;
+        int64_t pos = 0;
+        float temperature = 0, top_p = 1, min_p = 0;
+        int top_k = 0;
+        uint64_t seed = 1, counter = 0;
+        std::vector<int> tokens;
+        std::vector<float> confidence;
+    };
+    /// Runs DSpark's layers once across the paged engine's eligible conversation windows.
+    bool draft_conversations(std::vector<DraftRequest>& requests, const std::function<void(int)>& select,
+                             const std::function<void(int)>& bind, std::string& err);
+    /// Runs contiguous conversation windows through one layer-major pass. The counts partition tokens;
+    /// select seats host state and bind selects GPU pages without waiting on the stream.
     bool step_conversations(const std::vector<int>& tokens, const std::function<void(int)>& select,
-                            const std::function<void(int)>& bind, std::string& err);
+                            const std::function<void(int)>& bind, const std::vector<int>& counts, std::string& err);
+    /// Preserves sampled proposal distributions for the paged engine's joint verification; n=0 discards them.
+    bool save_joint_draft(int session, int n, std::string& err);
+    /// Samples a conversation's window using its preserved proposal distribution.
+    bool pick_joint_rows(int session, int row, const std::vector<int>& drafts, float t, float tp, int tk, float mp,
+                         uint64_t seed, uint64_t counter, std::vector<int>& picks, std::string& err);
+    /// Restores rejected state and seeds the selected conversation from its accepted tap rows.
+    bool keep_joint_rows(int row, int count, int keep, std::string& err);
     /// Stores independent row inputs for the paged engine's shared pipeline scheduler.
     bool prepare_group(int group, const std::vector<int>& tokens, const std::function<void(int)>& select,
                        const std::function<void(int)>& bind, std::string& err);

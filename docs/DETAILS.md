@@ -1764,7 +1764,11 @@ positions. Each group retains its embeddings, Engram rows, attention plans, hand
 Compressed-row copies keep separate host buffers for each group and row. The CPU expert mailbox assigns sequences
 in stage launch order. Layer ownership is read at launch, so a cut move applies to the next drained wave.
 The shared step applies the drafting limit to all conversations in a wave, including singleton groups.
-With several conversations the shared engine pauses DSpark; the one-conversation path keeps its existing behavior.
+With DSpark loaded, eligible conversations share one batched drafter forward and one trunk verification pass.
+Each row reads its conversation's own rings and pages. The existing row budget limits the guesses per conversation;
+drafting phases out as conversations consume that budget. An engine opened with DSpark support uses synchronous
+steps, including while drafting is switched off, because rollback scratch is shared across stage groups.
+`--dspark none` keeps the existing group path. There is no new setting or automatic drafting mode.
 The omitted option and `1` still use the synchronous pass. Real two-card identity and speed require measurement;
 implementation alone does not establish either.
 
@@ -1865,7 +1869,8 @@ uninterrupted answer. This checks safe deferral, not a switch applied inside a d
 These checks used stdin/stdout, not the user's server. Logs and the harness are in
 `%TEMP%/dspark-memory` and `%TEMP%/dspark-harness.py`. CUDA, real multi-GPU hardware and browser rendering
 were not tested. HIP builds of `strata-ds41`, `strata-dsv41` and `strata-q38` passed.
-DeepSeek offers no guesses when several conversations share a step, following D8. Each request rebuilds its
+DeepSeek can offer DSpark guesses when several conversations share a step. The shared step divides `--rows`
+among them; `--batch` and live Conversations at once set the concurrency. Each request rebuilds its
 own token index from its full prompt, including after pauses and session restores. Learned costs follow the logical
 conversation through in-process pauses; costs are rebuilt after a process restart. Stderr reports suffix and
 chained guesses kept and offered per request.
@@ -1882,8 +1887,26 @@ On the same hardware and pack on Windows, commit `ff7e608e`, 8,192 context, defa
 48 GiB GPU and 6 GiB RAM pools, DSpark off, 64-token code / story / count answers: three conversations gave
 8.98 / 10.38 aggregate tok/s* in two rounds, against 6.69 / 7.51 tok/s* for one. That is 34–38% more aggregate
 speed. Timing starts after the last admission and excludes prefill. With DSpark on, three were slower than one
-(7.10 / 7.15 against 8.61 / 7.55 tok/s*); mixed-conversation steps do not draft yet.
+(7.10 / 7.15 against 8.61 / 7.55 tok/s*); mixed-conversation steps did not draft in that build.
 Sources and limits: [D7, D8 and M12](MEMORY_MANAGER_PLAN.md).
+
+Concurrent DSpark drafting is restored on 5 November 2026. On Windows HIP, Ryzen AI MAX+ 395 / Radeon 8060S,
+the IST-DAS 2.00 bpw pack and 256-token greedy answers, the allocator granted 49.99 GiB GPU pools and
+24.74 / 35.74 GiB page-locked RAM pools (80.24 / 92.05 decimal GB combined). Across the three-prompt grids,
+the highest pooled DSpark-on rates were 7.83 tok/s at three conversations, `--rows 5`, and 10.54 tok/s at
+three conversations, `--rows 4`, respectively. Two conversations with `--rows 4` gave 5.97 / 8.24 tok/s;
+`--rows 5` gave 5.41 / 7.33. These runs do not establish two conversations with one or two guesses each as
+the fastest choice. A reversed-order larger-pool check with two concurrent seasons/repetition answers favored
+`--rows 5` at 16.84 tok/s against 14.97 without guesses; it does not compare widths or the full prompt mix.
+At `--rows 8`, one batched drafter forward takes 35.56 / 40.97 / 53.08 ms for one / two / three eligible
+conversations in the larger working pool; the time grows less than the conversation count.
+Each grid cell has at least two measured answers per prompt. The long sequential grids include
+adaptive placement, accumulated paused histories and any thermal variation; the owner reports 96–99 °C under load,
+without per-round clock or temperature logs. In a separate 32 GiB requested-RAM fixed-placement suite,
+concurrent and live 1→2→1 answers match standalone
+through 256 tokens; SSD restore also matches. Full ranges, per-conversation draft counts, expert reads,
+fresh controls, drafter timings and validation limits are in the
+[batched drafting report](../bench/results/2026-11-05-ds41-drafting/README.md).
 
 * on Windows (users have seen Strix Halo much faster on Linux)
 

@@ -1,0 +1,1614 @@
+{
+  "fixed_placement_identity": [
+    {
+      "phase": "concurrent",
+      "prompt": 0,
+      "slot": 0,
+      "count": 256,
+      "match": true,
+      "sha256": "63305888133318644d7a541fa2f23d4102259468f19abc7415fe421471f7fa5d"
+    },
+    {
+      "phase": "concurrent",
+      "prompt": 1,
+      "slot": 1,
+      "count": 256,
+      "match": true,
+      "sha256": "23ab5d0d4475536ad2e66886b17bc4b4aa6c472e59532aabbb2fb403633762f4"
+    },
+    {
+      "phase": "three",
+      "prompt": 0,
+      "slot": 0,
+      "count": 256,
+      "match": true,
+      "sha256": "63305888133318644d7a541fa2f23d4102259468f19abc7415fe421471f7fa5d"
+    },
+    {
+      "phase": "three",
+      "prompt": 1,
+      "slot": 1,
+      "count": 256,
+      "match": true,
+      "sha256": "23ab5d0d4475536ad2e66886b17bc4b4aa6c472e59532aabbb2fb403633762f4"
+    },
+    {
+      "phase": "three",
+      "prompt": 2,
+      "slot": 2,
+      "count": 256,
+      "match": true,
+      "sha256": "cee5503c44cf7355ee6f02361923456824f32eb9748fab44514545559ddf07df"
+    },
+    {
+      "phase": "four-tile-check",
+      "prompt": 0,
+      "slot": 0,
+      "count": 16,
+      "match": true,
+      "sha256": "1442cc491cdad4f0b17000cda3431dc0134fdc3f81aa518ab6151e53a9355f43"
+    },
+    {
+      "phase": "four-tile-check",
+      "prompt": 1,
+      "slot": 1,
+      "count": 16,
+      "match": true,
+      "sha256": "ad96bf36e8f1ab41f0bf069a28e4b02634a1f0f6ca8f06153aa83492e07abcfe"
+    },
+    {
+      "phase": "four-tile-check",
+      "prompt": 2,
+      "slot": 2,
+      "count": 16,
+      "match": true,
+      "sha256": "5c321975e4f62f478a1d1246968b54ba8a3500f2ac64623027e5ccd352387fc9"
+    },
+    {
+      "phase": "four-tile-check",
+      "prompt": 0,
+      "slot": 3,
+      "count": 16,
+      "match": true,
+      "sha256": "1442cc491cdad4f0b17000cda3431dc0134fdc3f81aa518ab6151e53a9355f43"
+    },
+    {
+      "phase": "live-1-2-1",
+      "prompt": 0,
+      "slot": 0,
+      "count": 256,
+      "match": true,
+      "sha256": "63305888133318644d7a541fa2f23d4102259468f19abc7415fe421471f7fa5d"
+    },
+    {
+      "phase": "live-1-2-1",
+      "prompt": 1,
+      "slot": 1,
+      "count": 256,
+      "match": true,
+      "sha256": "23ab5d0d4475536ad2e66886b17bc4b4aa6c472e59532aabbb2fb403633762f4"
+    }
+  ],
+  "live_settings": [
+    {
+      "concurrent": 1,
+      "after_bt": 0
+    },
+    {
+      "concurrent": 2,
+      "after_bt": 18
+    },
+    {
+      "concurrent": 1,
+      "after_bt": 46
+    }
+  ],
+  "ssd_restore_match": true,
+  "sampled_completions": [
+    "BDONE 0 16 length 1612.2",
+    "BDONE 1 16 length 1587.3"
+  ],
+  "correctness_exit": 0,
+  "drafter_batch_calls": 1243,
+  "failed_drafter_calls": 0,
+  "four_conversation_two_tile_calls": 2,
+  "token1": {
+    "inputs_match": true,
+    "prompt_lengths": [
+      43,
+      37,
+      25
+    ],
+    "commands": [
+      {
+        "exe": "C:\\Users\\qwert\\AppData\\Local\\Temp\\ds41-drafting\\validated-strata-ds41.exe",
+        "args": [
+          "--serve",
+          "--pack",
+          "C:\\Users\\qwert\\AppData\\Local\\Temp\\ds41-drafting\\final-token1-new",
+          "--max-context",
+          "524288",
+          "--eos",
+          "1",
+          "--dspark",
+          "none",
+          "--dspark-conf",
+          "0.65",
+          "--gpu-mib",
+          "61440",
+          "--ram-mib",
+          "8192",
+          "--expert-cache",
+          "0",
+          "--batch",
+          "4",
+          "--concurrent",
+          "4",
+          "--remote-experts",
+          "off",
+          "--pause-dir",
+          "C:\\Users\\qwert\\AppData\\Local\\Temp\\ds41-drafting\\final-token1-new-pause",
+          "--step-profile",
+          "1",
+          "--no-expert-cache",
+          "--prefill-chunk",
+          "0"
+        ],
+        "env": {
+          "DS4_COMMIT_CAP_GB": "115",
+          "STRATA_COMMIT_RESERVE_MIB": "0",
+          "DS4_STORE_FLOOR_GB": "0",
+          "DS4_STORE_ZC": "0"
+        },
+        "preflight": {
+          "avail_phys": 44.03147506713867,
+          "avail_page": 85.65760040283203,
+          "total_page": 127.29456329345703
+        },
+        "ram_mib": 8192
+      },
+      {
+        "exe": "C:\\Users\\qwert\\AppData\\Local\\Temp\\ds41-drafting\\validated-strata-dsv41.exe",
+        "args": [
+          "--serve",
+          "--pack",
+          "C:\\Users\\qwert\\AppData\\Local\\Temp\\ds41-drafting\\final-token1-old",
+          "--max-context",
+          "524288",
+          "--eos",
+          "1",
+          "--dspark",
+          "none",
+          "--dspark-conf",
+          "0.65",
+          "--ssd-cache",
+          "8.589934592",
+          "--vram-experts",
+          "0",
+          "--no-expert-cache",
+          "--prefill-chunk",
+          "0"
+        ],
+        "env": {
+          "DS4_COMMIT_CAP_GB": "115",
+          "STRATA_COMMIT_RESERVE_MIB": "0",
+          "DS4_STORE_FLOOR_GB": "0",
+          "DS4_STORE_ZC": "0",
+          "DS4_UMA_GPU_RESERVE_GB": "4"
+        },
+        "preflight": {
+          "avail_phys": 44.06370162963867,
+          "avail_page": 85.69536972045898,
+          "total_page": 127.29456329345703
+        },
+        "ram_mib": 8192
+      }
+    ],
+    "exits": [
+      0,
+      0
+    ],
+    "pairs": [
+      {
+        "prompt": 0,
+        "new": [
+          5
+        ],
+        "old": [
+          5
+        ],
+        "match": true
+      },
+      {
+        "prompt": 1,
+        "new": [
+          8339
+        ],
+        "old": [
+          8339
+        ],
+        "match": true
+      },
+      {
+        "prompt": 2,
+        "new": [
+          671
+        ],
+        "old": [
+          671
+        ],
+        "match": true
+      },
+      {
+        "prompt": 0,
+        "new": [
+          5
+        ],
+        "old": [
+          5
+        ],
+        "match": true
+      },
+      {
+        "prompt": 1,
+        "new": [
+          8339
+        ],
+        "old": [
+          8339
+        ],
+        "match": true
+      },
+      {
+        "prompt": 2,
+        "new": [
+          671
+        ],
+        "old": [
+          671
+        ],
+        "match": true
+      }
+    ]
+  },
+  "correctness_draft_counts": [
+    {
+      "phase": "standalone",
+      "prompts": [
+        0
+      ],
+      "rows": 4,
+      "slot_kept_offered": {
+        "-1": [
+          91,
+          108
+        ]
+      }
+    },
+    {
+      "phase": "standalone",
+      "prompts": [
+        1
+      ],
+      "rows": 4,
+      "slot_kept_offered": {
+        "-1": [
+          191,
+          191
+        ]
+      }
+    },
+    {
+      "phase": "standalone",
+      "prompts": [
+        2
+      ],
+      "rows": 4,
+      "slot_kept_offered": {
+        "-1": [
+          55,
+          60
+        ]
+      }
+    },
+    {
+      "phase": "concurrent",
+      "prompts": [
+        0,
+        1
+      ],
+      "rows": 4,
+      "slot_kept_offered": {
+        "1": [
+          127,
+          127
+        ],
+        "0": [
+          79,
+          91
+        ]
+      }
+    },
+    {
+      "phase": "three",
+      "prompts": [
+        0,
+        1,
+        2
+      ],
+      "rows": 8,
+      "slot_kept_offered": {
+        "1": [
+          159,
+          159
+        ],
+        "0": [
+          87,
+          102
+        ],
+        "2": [
+          54,
+          58
+        ]
+      }
+    },
+    {
+      "phase": "four-tile-check",
+      "prompts": [
+        0,
+        1,
+        2,
+        0
+      ],
+      "rows": 8,
+      "slot_kept_offered": {
+        "1": [
+          8,
+          8
+        ],
+        "0": [
+          4,
+          5
+        ],
+        "2": [
+          4,
+          4
+        ],
+        "3": [
+          4,
+          5
+        ]
+      }
+    },
+    {
+      "phase": "live-1-2-1",
+      "prompts": [
+        0,
+        1
+      ],
+      "rows": 4,
+      "slot_kept_offered": {
+        "1": [
+          186,
+          186
+        ],
+        "0": [
+          89,
+          104
+        ]
+      }
+    }
+  ],
+  "larger_pool_startup_probes": [
+    {
+      "generation": "Joint trunk windows, before true batched drafter implementation",
+      "command": {
+        "exe": "C:\\Users\\qwert\\AppData\\Local\\Temp\\ds41-drafting\\strata-ds41-measure.exe",
+        "args": [
+          "--serve",
+          "--pack",
+          "C:\\Users\\qwert\\AppData\\Local\\Temp\\ds41-drafting\\pool40-final",
+          "--max-context",
+          "524288",
+          "--eos",
+          "1",
+          "--dspark",
+          "on",
+          "--dspark-conf",
+          "0.65",
+          "--gpu-mib",
+          "61440",
+          "--ram-mib",
+          "40960",
+          "--expert-cache",
+          "auto",
+          "--batch",
+          "4",
+          "--concurrent",
+          "4",
+          "--remote-experts",
+          "off",
+          "--pause-dir",
+          "C:\\Users\\qwert\\AppData\\Local\\Temp\\ds41-drafting\\pool40-final-pause",
+          "--step-profile",
+          "1"
+        ],
+        "env": {
+          "DS4_COMMIT_CAP_GB": "115",
+          "STRATA_COMMIT_RESERVE_MIB": "0"
+        },
+        "preflight": {
+          "avail_phys": 47.39562225341797,
+          "avail_page": 81.14569091796875,
+          "total_page": 127.29456329345703
+        },
+        "ram_mib": 40960
+      },
+      "rows": 8,
+      "ram_request_gib": 40,
+      "ram_pool_granted_gib": 39.74,
+      "gpu_pool_granted_gib": 49.99,
+      "page_locked": true,
+      "ready": true,
+      "inference_requests": 0,
+      "error": "unspecified launch failure",
+      "phase": "First GET_MEMORY_USE synchronization after READY"
+    },
+    {
+      "generation": "Joint trunk windows, before true batched drafter implementation",
+      "command": {
+        "exe": "C:\\Users\\qwert\\AppData\\Local\\Temp\\ds41-drafting\\strata-ds41-measure.exe",
+        "args": [
+          "--serve",
+          "--pack",
+          "C:\\Users\\qwert\\AppData\\Local\\Temp\\ds41-drafting\\pool48-final",
+          "--max-context",
+          "524288",
+          "--eos",
+          "1",
+          "--dspark",
+          "on",
+          "--dspark-conf",
+          "0.65",
+          "--gpu-mib",
+          "61440",
+          "--ram-mib",
+          "49152",
+          "--expert-cache",
+          "auto",
+          "--batch",
+          "4",
+          "--concurrent",
+          "4",
+          "--remote-experts",
+          "off",
+          "--pause-dir",
+          "C:\\Users\\qwert\\AppData\\Local\\Temp\\ds41-drafting\\pool48-final-pause",
+          "--step-profile",
+          "1"
+        ],
+        "env": {
+          "DS4_COMMIT_CAP_GB": "115",
+          "STRATA_COMMIT_RESERVE_MIB": "0"
+        },
+        "preflight": {
+          "avail_phys": 42.135414123535156,
+          "avail_page": 80.95034790039062,
+          "total_page": 127.29456329345703
+        },
+        "ram_mib": 49152
+      },
+      "rows": 8,
+      "ram_request_gib": 48,
+      "ram_pool_granted_gib": 47.74,
+      "gpu_pool_granted_gib": 49.99,
+      "page_locked": true,
+      "ready": true,
+      "inference_requests": 0,
+      "error": "unspecified launch failure",
+      "phase": "First GET_MEMORY_USE synchronization after READY"
+    }
+  ],
+  "token1_diagnostic": {
+    "cases": [
+      {
+        "tag": "trace-cpu-new",
+        "command": {
+          "exe": "C:\\Users\\qwert\\AppData\\Local\\Temp\\ds41-drafting\\trace-strata-ds41.exe",
+          "args": [
+            "--serve",
+            "--pack",
+            "C:\\Users\\qwert\\AppData\\Local\\Temp\\ds41-drafting\\trace-cpu-new",
+            "--max-context",
+            "524288",
+            "--eos",
+            "1",
+            "--dspark",
+            "none",
+            "--dspark-conf",
+            "0.65",
+            "--gpu-mib",
+            "61440",
+            "--ram-mib",
+            "8192",
+            "--expert-cache",
+            "0",
+            "--batch",
+            "4",
+            "--concurrent",
+            "4",
+            "--remote-experts",
+            "off",
+            "--pause-dir",
+            "C:\\Users\\qwert\\AppData\\Local\\Temp\\ds41-drafting\\trace-cpu-new-pause",
+            "--step-profile",
+            "1",
+            "--no-expert-cache",
+            "--prefill-chunk",
+            "0",
+            "--adapt-swaps",
+            "0"
+          ],
+          "env": {
+            "DS4_COMMIT_CAP_GB": "115",
+            "STRATA_COMMIT_RESERVE_MIB": "0",
+            "DS4_STORE_FLOOR_GB": "0",
+            "DS4_STORE_ZC": "0",
+            "STRATA_BENCH_LOGITS": "C:\\Users\\qwert\\AppData\\Local\\Temp\\ds41-drafting\\trace-cpu-new-logits"
+          },
+          "preflight": {
+            "avail_phys": 44.16472625732422,
+            "avail_page": 85.88253784179688,
+            "total_page": 127.29456329345703
+          },
+          "ram_mib": 8192,
+          "profile_seed_sha256": "0edaa8337a0792763e62ee6e91adef8d4b4ee5bdf702d2ab22b31f4c315870ce"
+        },
+        "inputs": [
+          0,
+          128803,
+          65106,
+          1192,
+          270,
+          22165,
+          377,
+          6677,
+          1116,
+          14,
+          2622,
+          270,
+          42124,
+          39448,
+          14,
+          1663,
+          318,
+          1593,
+          14,
+          1630,
+          104807,
+          273,
+          14,
+          305,
+          7752,
+          1469,
+          115715,
+          16,
+          15361,
+          260,
+          10659,
+          11394,
+          294,
+          509,
+          3396,
+          223,
+          24,
+          18,
+          18,
+          3345,
+          16,
+          128804,
+          128822
+        ],
+        "gpu_expert_count": 0,
+        "samples": [
+          {
+            "trial": 0,
+            "chosen": 5,
+            "vocab": 129280,
+            "top": [
+              {
+                "id": 5,
+                "logit": 28.686052322387695
+              },
+              {
+                "id": 671,
+                "logit": 28.642772674560547
+              },
+              {
+                "id": 666,
+                "logit": 25.265487670898438
+              },
+              {
+                "id": 372,
+                "logit": 24.444530487060547
+              },
+              {
+                "id": 4374,
+                "logit": 23.62462615966797
+              },
+              {
+                "id": 3054,
+                "logit": 23.29140853881836
+              },
+              {
+                "id": 9544,
+                "logit": 23.141027450561523
+              },
+              {
+                "id": 57617,
+                "logit": 22.72246551513672
+              }
+            ],
+            "gap": 0.04327964782714844,
+            "vector_sha256": "2abbf0b73b236062d8542f99194f976623af5b5d007fd67d98b66885764f9b99"
+          },
+          {
+            "trial": 1,
+            "chosen": 5,
+            "vocab": 129280,
+            "top": [
+              {
+                "id": 5,
+                "logit": 28.686052322387695
+              },
+              {
+                "id": 671,
+                "logit": 28.642772674560547
+              },
+              {
+                "id": 666,
+                "logit": 25.265487670898438
+              },
+              {
+                "id": 372,
+                "logit": 24.444530487060547
+              },
+              {
+                "id": 4374,
+                "logit": 23.62462615966797
+              },
+              {
+                "id": 3054,
+                "logit": 23.29140853881836
+              },
+              {
+                "id": 9544,
+                "logit": 23.141027450561523
+              },
+              {
+                "id": 57617,
+                "logit": 22.72246551513672
+              }
+            ],
+            "gap": 0.04327964782714844,
+            "vector_sha256": "2abbf0b73b236062d8542f99194f976623af5b5d007fd67d98b66885764f9b99"
+          }
+        ],
+        "trace": [
+          "BENCH_TOKEN1 record=0 pos=43 logits_rows=1 token=5 copied=1",
+          "BENCH_TOKEN1 record=1 pos=43 logits_rows=1 token=5 copied=1"
+        ]
+      },
+      {
+        "tag": "trace-cpu-old",
+        "command": {
+          "exe": "C:\\Users\\qwert\\AppData\\Local\\Temp\\ds41-drafting\\trace-strata-dsv41.exe",
+          "args": [
+            "--serve",
+            "--pack",
+            "C:\\Users\\qwert\\AppData\\Local\\Temp\\ds41-drafting\\trace-cpu-old",
+            "--max-context",
+            "524288",
+            "--eos",
+            "1",
+            "--dspark",
+            "none",
+            "--dspark-conf",
+            "0.65",
+            "--ssd-cache",
+            "8.589934592",
+            "--vram-experts",
+            "0",
+            "--no-expert-cache",
+            "--prefill-chunk",
+            "0"
+          ],
+          "env": {
+            "DS4_COMMIT_CAP_GB": "115",
+            "STRATA_COMMIT_RESERVE_MIB": "0",
+            "DS4_STORE_FLOOR_GB": "0",
+            "DS4_STORE_ZC": "0",
+            "DS4_UMA_GPU_RESERVE_GB": "4",
+            "STRATA_BENCH_LOGITS": "C:\\Users\\qwert\\AppData\\Local\\Temp\\ds41-drafting\\trace-cpu-old-logits"
+          },
+          "preflight": {
+            "avail_phys": 44.178741455078125,
+            "avail_page": 85.91387939453125,
+            "total_page": 127.29456329345703
+          },
+          "ram_mib": 8192,
+          "profile_seed_sha256": "0edaa8337a0792763e62ee6e91adef8d4b4ee5bdf702d2ab22b31f4c315870ce"
+        },
+        "inputs": [
+          0,
+          128803,
+          65106,
+          1192,
+          270,
+          22165,
+          377,
+          6677,
+          1116,
+          14,
+          2622,
+          270,
+          42124,
+          39448,
+          14,
+          1663,
+          318,
+          1593,
+          14,
+          1630,
+          104807,
+          273,
+          14,
+          305,
+          7752,
+          1469,
+          115715,
+          16,
+          15361,
+          260,
+          10659,
+          11394,
+          294,
+          509,
+          3396,
+          223,
+          24,
+          18,
+          18,
+          3345,
+          16,
+          128804,
+          128822
+        ],
+        "gpu_expert_count": 0,
+        "samples": [
+          {
+            "trial": 0,
+            "chosen": 5,
+            "vocab": 129280,
+            "top": [
+              {
+                "id": 5,
+                "logit": 28.686052322387695
+              },
+              {
+                "id": 671,
+                "logit": 28.642772674560547
+              },
+              {
+                "id": 666,
+                "logit": 25.265487670898438
+              },
+              {
+                "id": 372,
+                "logit": 24.444530487060547
+              },
+              {
+                "id": 4374,
+                "logit": 23.62462615966797
+              },
+              {
+                "id": 3054,
+                "logit": 23.29140853881836
+              },
+              {
+                "id": 9544,
+                "logit": 23.141027450561523
+              },
+              {
+                "id": 57617,
+                "logit": 22.72246551513672
+              }
+            ],
+            "gap": 0.04327964782714844,
+            "vector_sha256": "2abbf0b73b236062d8542f99194f976623af5b5d007fd67d98b66885764f9b99"
+          },
+          {
+            "trial": 1,
+            "chosen": 5,
+            "vocab": 129280,
+            "top": [
+              {
+                "id": 5,
+                "logit": 28.686052322387695
+              },
+              {
+                "id": 671,
+                "logit": 28.642772674560547
+              },
+              {
+                "id": 666,
+                "logit": 25.265487670898438
+              },
+              {
+                "id": 372,
+                "logit": 24.444530487060547
+              },
+              {
+                "id": 4374,
+                "logit": 23.62462615966797
+              },
+              {
+                "id": 3054,
+                "logit": 23.29140853881836
+              },
+              {
+                "id": 9544,
+                "logit": 23.141027450561523
+              },
+              {
+                "id": 57617,
+                "logit": 22.72246551513672
+              }
+            ],
+            "gap": 0.04327964782714844,
+            "vector_sha256": "2abbf0b73b236062d8542f99194f976623af5b5d007fd67d98b66885764f9b99"
+          }
+        ],
+        "trace": [
+          "BENCH_TOKEN1 record=0 pos=43 logits_rows=1 token=5 copied=1",
+          "BENCH_TOKEN1 record=1 pos=43 logits_rows=1 token=5 copied=1"
+        ]
+      },
+      {
+        "tag": "trace-gpu-new",
+        "command": {
+          "exe": "C:\\Users\\qwert\\AppData\\Local\\Temp\\ds41-drafting\\trace-strata-ds41.exe",
+          "args": [
+            "--serve",
+            "--pack",
+            "C:\\Users\\qwert\\AppData\\Local\\Temp\\ds41-drafting\\trace-gpu-new",
+            "--max-context",
+            "524288",
+            "--eos",
+            "1",
+            "--dspark",
+            "none",
+            "--dspark-conf",
+            "0.65",
+            "--gpu-mib",
+            "61440",
+            "--ram-mib",
+            "20480",
+            "--expert-cache",
+            "auto",
+            "--batch",
+            "4",
+            "--concurrent",
+            "4",
+            "--remote-experts",
+            "off",
+            "--pause-dir",
+            "C:\\Users\\qwert\\AppData\\Local\\Temp\\ds41-drafting\\trace-gpu-new-pause",
+            "--step-profile",
+            "1",
+            "--no-expert-cache",
+            "--prefill-chunk",
+            "0",
+            "--adapt-swaps",
+            "0"
+          ],
+          "env": {
+            "DS4_COMMIT_CAP_GB": "115",
+            "STRATA_COMMIT_RESERVE_MIB": "0",
+            "DS4_STORE_FLOOR_GB": "0",
+            "DS4_STORE_ZC": "0",
+            "STRATA_BENCH_LOGITS": "C:\\Users\\qwert\\AppData\\Local\\Temp\\ds41-drafting\\trace-gpu-new-logits"
+          },
+          "preflight": {
+            "avail_phys": 44.09529495239258,
+            "avail_page": 85.83189392089844,
+            "total_page": 127.29456329345703
+          },
+          "ram_mib": 20480,
+          "profile_seed_sha256": "0edaa8337a0792763e62ee6e91adef8d4b4ee5bdf702d2ab22b31f4c315870ce"
+        },
+        "inputs": [
+          0,
+          128803,
+          65106,
+          1192,
+          270,
+          22165,
+          377,
+          6677,
+          1116,
+          14,
+          2622,
+          270,
+          42124,
+          39448,
+          14,
+          1663,
+          318,
+          1593,
+          14,
+          1630,
+          104807,
+          273,
+          14,
+          305,
+          7752,
+          1469,
+          115715,
+          16,
+          15361,
+          260,
+          10659,
+          11394,
+          294,
+          509,
+          3396,
+          223,
+          24,
+          18,
+          18,
+          3345,
+          16,
+          128804,
+          128822
+        ],
+        "gpu_expert_count": 6793,
+        "samples": [
+          {
+            "trial": 0,
+            "chosen": 5,
+            "vocab": 129280,
+            "top": [
+              {
+                "id": 5,
+                "logit": 29.347883224487305
+              },
+              {
+                "id": 671,
+                "logit": 29.091156005859375
+              },
+              {
+                "id": 666,
+                "logit": 25.625709533691406
+              },
+              {
+                "id": 372,
+                "logit": 24.681774139404297
+              },
+              {
+                "id": 4374,
+                "logit": 23.98024559020996
+              },
+              {
+                "id": 3054,
+                "logit": 23.6751708984375
+              },
+              {
+                "id": 9544,
+                "logit": 23.214067459106445
+              },
+              {
+                "id": 57617,
+                "logit": 22.895315170288086
+              }
+            ],
+            "gap": 0.2567272186279297,
+            "vector_sha256": "92241d0a9415dd3270fff357fecaf482158c4500272b7b32268aac358d6a0a26"
+          },
+          {
+            "trial": 1,
+            "chosen": 5,
+            "vocab": 129280,
+            "top": [
+              {
+                "id": 5,
+                "logit": 29.347883224487305
+              },
+              {
+                "id": 671,
+                "logit": 29.091156005859375
+              },
+              {
+                "id": 666,
+                "logit": 25.625709533691406
+              },
+              {
+                "id": 372,
+                "logit": 24.681774139404297
+              },
+              {
+                "id": 4374,
+                "logit": 23.98024559020996
+              },
+              {
+                "id": 3054,
+                "logit": 23.6751708984375
+              },
+              {
+                "id": 9544,
+                "logit": 23.214067459106445
+              },
+              {
+                "id": 57617,
+                "logit": 22.895315170288086
+              }
+            ],
+            "gap": 0.2567272186279297,
+            "vector_sha256": "92241d0a9415dd3270fff357fecaf482158c4500272b7b32268aac358d6a0a26"
+          }
+        ],
+        "trace": [
+          "BENCH_TOKEN1 record=0 pos=43 logits_rows=1 token=5 copied=1",
+          "BENCH_TOKEN1 record=1 pos=43 logits_rows=1 token=5 copied=1"
+        ]
+      },
+      {
+        "tag": "trace-gpu-old",
+        "command": {
+          "exe": "C:\\Users\\qwert\\AppData\\Local\\Temp\\ds41-drafting\\trace-strata-dsv41.exe",
+          "args": [
+            "--serve",
+            "--pack",
+            "C:\\Users\\qwert\\AppData\\Local\\Temp\\ds41-drafting\\trace-gpu-old",
+            "--max-context",
+            "524288",
+            "--eos",
+            "1",
+            "--dspark",
+            "none",
+            "--dspark-conf",
+            "0.65",
+            "--ssd-cache",
+            "21.47483648",
+            "--vram-experts",
+            "1",
+            "--no-expert-cache",
+            "--prefill-chunk",
+            "0"
+          ],
+          "env": {
+            "DS4_COMMIT_CAP_GB": "62.95",
+            "STRATA_COMMIT_RESERVE_MIB": "0",
+            "DS4_STORE_FLOOR_GB": "0",
+            "DS4_STORE_ZC": "0",
+            "DS4_UMA_GPU_RESERVE_GB": "4",
+            "STRATA_BENCH_LOGITS": "C:\\Users\\qwert\\AppData\\Local\\Temp\\ds41-drafting\\trace-gpu-old-logits"
+          },
+          "preflight": {
+            "avail_phys": 44.08081817626953,
+            "avail_page": 85.8223991394043,
+            "total_page": 127.29456329345703
+          },
+          "ram_mib": 20480,
+          "profile_seed_sha256": "0edaa8337a0792763e62ee6e91adef8d4b4ee5bdf702d2ab22b31f4c315870ce"
+        },
+        "inputs": [
+          0,
+          128803,
+          65106,
+          1192,
+          270,
+          22165,
+          377,
+          6677,
+          1116,
+          14,
+          2622,
+          270,
+          42124,
+          39448,
+          14,
+          1663,
+          318,
+          1593,
+          14,
+          1630,
+          104807,
+          273,
+          14,
+          305,
+          7752,
+          1469,
+          115715,
+          16,
+          15361,
+          260,
+          10659,
+          11394,
+          294,
+          509,
+          3396,
+          223,
+          24,
+          18,
+          18,
+          3345,
+          16,
+          128804,
+          128822
+        ],
+        "gpu_expert_count": 6306,
+        "samples": [
+          {
+            "trial": 0,
+            "chosen": 5,
+            "vocab": 129280,
+            "top": [
+              {
+                "id": 5,
+                "logit": 29.21629524230957
+              },
+              {
+                "id": 671,
+                "logit": 29.148372650146484
+              },
+              {
+                "id": 666,
+                "logit": 25.519344329833984
+              },
+              {
+                "id": 372,
+                "logit": 24.889427185058594
+              },
+              {
+                "id": 4374,
+                "logit": 24.38856315612793
+              },
+              {
+                "id": 3054,
+                "logit": 23.444780349731445
+              },
+              {
+                "id": 9544,
+                "logit": 23.376903533935547
+              },
+              {
+                "id": 57617,
+                "logit": 22.378971099853516
+              }
+            ],
+            "gap": 0.06792259216308594,
+            "vector_sha256": "3c5b51ac828566a80294500a474f99f55f6c197b3b3b7c69046acf266677d44d"
+          },
+          {
+            "trial": 1,
+            "chosen": 5,
+            "vocab": 129280,
+            "top": [
+              {
+                "id": 5,
+                "logit": 29.21629524230957
+              },
+              {
+                "id": 671,
+                "logit": 29.148372650146484
+              },
+              {
+                "id": 666,
+                "logit": 25.519344329833984
+              },
+              {
+                "id": 372,
+                "logit": 24.889427185058594
+              },
+              {
+                "id": 4374,
+                "logit": 24.38856315612793
+              },
+              {
+                "id": 3054,
+                "logit": 23.444780349731445
+              },
+              {
+                "id": 9544,
+                "logit": 23.376903533935547
+              },
+              {
+                "id": 57617,
+                "logit": 22.378971099853516
+              }
+            ],
+            "gap": 0.06792259216308594,
+            "vector_sha256": "3c5b51ac828566a80294500a474f99f55f6c197b3b3b7c69046acf266677d44d"
+          }
+        ],
+        "trace": [
+          "BENCH_TOKEN1 record=0 pos=43 logits_rows=1 token=5 copied=1",
+          "BENCH_TOKEN1 record=1 pos=43 logits_rows=1 token=5 copied=1"
+        ]
+      },
+      {
+        "tag": "trace-gpu-matched-new",
+        "command": {
+          "exe": "C:\\Users\\qwert\\AppData\\Local\\Temp\\ds41-drafting\\trace-strata-ds41.exe",
+          "args": [
+            "--serve",
+            "--pack",
+            "C:\\Users\\qwert\\AppData\\Local\\Temp\\ds41-drafting\\trace-gpu-matched-new",
+            "--max-context",
+            "524288",
+            "--eos",
+            "1",
+            "--dspark",
+            "none",
+            "--dspark-conf",
+            "0.65",
+            "--gpu-mib",
+            "61440",
+            "--ram-mib",
+            "20480",
+            "--expert-cache",
+            "6306",
+            "--batch",
+            "4",
+            "--concurrent",
+            "4",
+            "--remote-experts",
+            "off",
+            "--pause-dir",
+            "C:\\Users\\qwert\\AppData\\Local\\Temp\\ds41-drafting\\trace-gpu-matched-new-pause",
+            "--step-profile",
+            "1",
+            "--no-expert-cache",
+            "--prefill-chunk",
+            "0",
+            "--adapt-swaps",
+            "0"
+          ],
+          "env": {
+            "DS4_COMMIT_CAP_GB": "115",
+            "STRATA_COMMIT_RESERVE_MIB": "0",
+            "DS4_STORE_FLOOR_GB": "0",
+            "DS4_STORE_ZC": "0",
+            "STRATA_BENCH_LOGITS": "C:\\Users\\qwert\\AppData\\Local\\Temp\\ds41-drafting\\trace-gpu-matched-new-logits",
+            "STRATA_BENCH_GPU_MASK": "C:\\Users\\qwert\\AppData\\Local\\Temp\\ds41-drafting\\trace-gpu-old-logits.experts.tsv"
+          },
+          "preflight": {
+            "avail_phys": 44.18646240234375,
+            "avail_page": 85.7134780883789,
+            "total_page": 127.29456329345703
+          },
+          "ram_mib": 20480,
+          "profile_seed_sha256": "0edaa8337a0792763e62ee6e91adef8d4b4ee5bdf702d2ab22b31f4c315870ce",
+          "matched_gpu_mask": {
+            "path": "C:\\Users\\qwert\\AppData\\Local\\Temp\\ds41-drafting\\trace-gpu-old-logits.experts.tsv",
+            "count": 6306
+          }
+        },
+        "inputs": [
+          0,
+          128803,
+          65106,
+          1192,
+          270,
+          22165,
+          377,
+          6677,
+          1116,
+          14,
+          2622,
+          270,
+          42124,
+          39448,
+          14,
+          1663,
+          318,
+          1593,
+          14,
+          1630,
+          104807,
+          273,
+          14,
+          305,
+          7752,
+          1469,
+          115715,
+          16,
+          15361,
+          260,
+          10659,
+          11394,
+          294,
+          509,
+          3396,
+          223,
+          24,
+          18,
+          18,
+          3345,
+          16,
+          128804,
+          128822
+        ],
+        "gpu_expert_count": 6306,
+        "samples": [
+          {
+            "trial": 0,
+            "chosen": 5,
+            "vocab": 129280,
+            "top": [
+              {
+                "id": 5,
+                "logit": 29.21629524230957
+              },
+              {
+                "id": 671,
+                "logit": 29.148372650146484
+              },
+              {
+                "id": 666,
+                "logit": 25.519344329833984
+              },
+              {
+                "id": 372,
+                "logit": 24.889427185058594
+              },
+              {
+                "id": 4374,
+                "logit": 24.38856315612793
+              },
+              {
+                "id": 3054,
+                "logit": 23.444780349731445
+              },
+              {
+                "id": 9544,
+                "logit": 23.376903533935547
+              },
+              {
+                "id": 57617,
+                "logit": 22.378971099853516
+              }
+            ],
+            "gap": 0.06792259216308594,
+            "vector_sha256": "3c5b51ac828566a80294500a474f99f55f6c197b3b3b7c69046acf266677d44d"
+          },
+          {
+            "trial": 1,
+            "chosen": 5,
+            "vocab": 129280,
+            "top": [
+              {
+                "id": 5,
+                "logit": 29.21629524230957
+              },
+              {
+                "id": 671,
+                "logit": 29.148372650146484
+              },
+              {
+                "id": 666,
+                "logit": 25.519344329833984
+              },
+              {
+                "id": 372,
+                "logit": 24.889427185058594
+              },
+              {
+                "id": 4374,
+                "logit": 24.38856315612793
+              },
+              {
+                "id": 3054,
+                "logit": 23.444780349731445
+              },
+              {
+                "id": 9544,
+                "logit": 23.376903533935547
+              },
+              {
+                "id": 57617,
+                "logit": 22.378971099853516
+              }
+            ],
+            "gap": 0.06792259216308594,
+            "vector_sha256": "3c5b51ac828566a80294500a474f99f55f6c197b3b3b7c69046acf266677d44d"
+          }
+        ],
+        "trace": [
+          "BENCH_TOKEN1 record=0 pos=43 logits_rows=1 token=5 copied=1",
+          "BENCH_TOKEN1 record=1 pos=43 logits_rows=1 token=5 copied=1"
+        ]
+      }
+    ],
+    "comparisons": [
+      {
+        "a": "trace-cpu-new",
+        "b": "trace-cpu-old",
+        "trial": 0,
+        "max_abs_logit_difference": 0.0,
+        "rms_logit_difference": 0.0
+      },
+      {
+        "a": "trace-cpu-new",
+        "b": "trace-cpu-old",
+        "trial": 1,
+        "max_abs_logit_difference": 0.0,
+        "rms_logit_difference": 0.0
+      },
+      {
+        "a": "trace-gpu-new",
+        "b": "trace-gpu-old",
+        "trial": 0,
+        "max_abs_logit_difference": 1.3649191856384277,
+        "rms_logit_difference": 0.2913972371308085
+      },
+      {
+        "a": "trace-gpu-new",
+        "b": "trace-gpu-old",
+        "trial": 1,
+        "max_abs_logit_difference": 1.3649191856384277,
+        "rms_logit_difference": 0.2913972371308085
+      },
+      {
+        "a": "trace-cpu-new",
+        "b": "trace-gpu-new",
+        "trial": 0,
+        "max_abs_logit_difference": 2.012768864631653,
+        "rms_logit_difference": 0.3989046898944929
+      },
+      {
+        "a": "trace-cpu-new",
+        "b": "trace-gpu-new",
+        "trial": 1,
+        "max_abs_logit_difference": 2.012768864631653,
+        "rms_logit_difference": 0.3989046898944929
+      },
+      {
+        "a": "trace-cpu-old",
+        "b": "trace-gpu-old",
+        "trial": 0,
+        "max_abs_logit_difference": 2.2264630794525146,
+        "rms_logit_difference": 0.47487105703393173
+      },
+      {
+        "a": "trace-cpu-old",
+        "b": "trace-gpu-old",
+        "trial": 1,
+        "max_abs_logit_difference": 2.2264630794525146,
+        "rms_logit_difference": 0.47487105703393173
+      },
+      {
+        "a": "trace-gpu-matched-new",
+        "b": "trace-gpu-old",
+        "trial": 0,
+        "max_abs_logit_difference": 0.0,
+        "rms_logit_difference": 0.0
+      },
+      {
+        "a": "trace-gpu-matched-new",
+        "b": "trace-gpu-old",
+        "trial": 1,
+        "max_abs_logit_difference": 0.0,
+        "rms_logit_difference": 0.0
+      }
+    ],
+    "gpu_mask": {
+      "new": 6793,
+      "old": 6306,
+      "intersection": 6293,
+      "only_new": 500,
+      "only_old": 13
+    },
+    "matched_gpu_mask": {
+      "equal": true,
+      "new": 6306,
+      "old": 6306,
+      "intersection": 6306,
+      "reference_sha256": "e4ec535d05d124a3e9c4cbc013b5070cd9048ef7880dbce8b5169c917ceac064",
+      "note": "Original profile is unchanged; a temporary cache-ranking override matches the legacy GPU mask."
+    },
+    "diagnostic_hashes": {
+      "trace_ds4_model.cu": "3cb2ea5cdd2ccbf2a0d1b1d6ab1e4f19dc617b6ca4ea50c8673959f0f86267ce",
+      "trace_paged_model.cpp": "92f2a9aa67894e33803decbd10ec57a38f9f30d3466272d404a747b8e4b9c094",
+      "trace-strata-ds41.exe": "08d487c3dd10352ec1ba12d9c5e1515d4164251a4efbf7b3f2c9c5cc63816ba2",
+      "trace-strata-dsv41.exe": "3dbe4617c42316d3acfa8a786cd3c9d9c80440806e5b466f349b95c6f6bda789"
+    }
+  },
+  "final_checks": {
+    "prepare-validation-build": {
+      "exit": 0,
+      "command": [
+        "C:\\AI-models\\Strata\\.venv\\Scripts\\python.exe",
+        "C:\\Users\\qwert\\AppData\\Local\\Temp\\ds41-drafting\\prepare_validation_build.py"
+      ]
+    },
+    "production-hip-build": {
+      "exit": 0,
+      "command": [
+        "cmd",
+        "/c",
+        "C:\\Users\\qwert\\AppData\\Local\\Temp\\ds41-drafting\\build-validation.cmd"
+      ]
+    },
+    "final-step-build": {
+      "exit": 0,
+      "command": [
+        "cmd",
+        "/c",
+        "C:\\Users\\qwert\\AppData\\Local\\Temp\\ds41-drafting\\build-final-step-test.cmd"
+      ]
+    },
+    "final-step-test": {
+      "exit": 0,
+      "command": [
+        "C:\\Users\\qwert\\AppData\\Local\\Temp\\ds41-drafting\\batched-step-test.exe"
+      ]
+    },
+    "final-architecture": {
+      "exit": 0,
+      "command": [
+        "C:\\AI-models\\Strata\\.venv\\Scripts\\python.exe",
+        "-m",
+        "pytest",
+        "tests/architecture",
+        "-q",
+        "-o",
+        "cache_dir=C:\\Users\\qwert\\AppData\\Local\\Temp\\ds41-drafting\\pytest-cache"
+      ]
+    },
+    "final-token1-new": {
+      "exit": 0,
+      "command": [
+        "C:\\AI-models\\Strata\\.venv\\Scripts\\python.exe",
+        "C:\\Users\\qwert\\AppData\\Local\\Temp\\ds41-drafting\\final_token1.py"
+      ]
+    },
+    "final-token1-old": {
+      "exit": 0,
+      "command": [
+        "C:\\AI-models\\Strata\\.venv\\Scripts\\python.exe",
+        "C:\\Users\\qwert\\AppData\\Local\\Temp\\ds41-drafting\\final_token1.py"
+      ]
+    },
+    "extend-validation": {
+      "exit": 0,
+      "command": [
+        "C:\\AI-models\\Strata\\.venv\\Scripts\\python.exe",
+        "C:\\Users\\qwert\\AppData\\Local\\Temp\\ds41-drafting\\extend_validation.py"
+      ]
+    },
+    "source_hashes": {
+      "include/strata/common/serve/paged_model.hpp": "486b2c17e520ebeb89789924bf8719ad031d0e4abcfdb69ffc3d865cdd583bec",
+      "include/strata/common/spec/step.hpp": "b8db5d64b4ac78a9aa3162b27c6ee09d2b3d89465c0db2c358da0f6c767c45be",
+      "src/common/serve/paged_engine.cpp": "be4044154cd060b8ddae25c597d82e67f09cb4376f7408f4ddb1d17abec3f327",
+      "src/common/spec/step.cpp": "9b4611d6c2a7a83dcb792e05fe85963a43cb5291d706175b9f536ec249335ae4",
+      "src/common/spec/step_test.cpp": "0b804c3f09723db39b4c38f65e3c9ef89740223fa966a7217f08b53036d0a07a",
+      "src/models/deepseekv41/ds4_model.cu": "a79780ac77827cc7ea6917a9398bf37a3826f5f56a5a1d81645ad8396b00737c",
+      "src/models/deepseekv41/ds4_model.hpp": "82403a58559d7f7222c0a1d13912eca6dc32a7b7e5adde9a01259ee9a32e25f3",
+      "src/models/deepseekv41/paged_model.cpp": "ece6b0a030dca241af5d51a5360b633fe353f92bbc108cf6d75cb4a0021bf759"
+    },
+    "production_binary_hashes": {
+      "validated-strata-ds41.exe": "a5dff521ce7fe52c001d049ab339a2c218e06bb09df38b2806aa0cfd123a6314",
+      "validated-strata-dsv41.exe": "18295714257ca85bbba0fa6dbea14d197bd7d2ed4f94fc94df7a62a7ded3a6bd",
+      "validated-strata-q38.exe": "39323abcc9087b33152c2cf5b3fb65dd0047e4b2757ef477addf07a349bb9263"
+    },
+    "passed_prose": "HIP host builds/relinks of `strata-ds41`, `strata-dsv41` and `strata-q38` using the existing HIP kernel libraries; the rebuilt shared-step regression suite; six architecture tests; the 256-token concurrent/live and SSD-restore checks above; four-conversation tiled smoke check; six final-production old/new CPU first-token comparisons. The self second pass was completed without subagents. The matched 6,306-GPU-expert first-token control also has bit-identical full logits in both trials.",
+    "matched_gpu_logit_control": {
+      "pass_": true,
+      "gpu_experts": 6306,
+      "max_abs_error": 0.0,
+      "trials": 2
+    }
+  }
+}

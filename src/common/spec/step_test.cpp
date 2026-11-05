@@ -441,6 +441,58 @@ int main() {
                   chain.total == 7 && chain.model == 4 && capped.total == 4 && capped.model == 3,
               "lookup capacity and explicit model caps agree across the original and paged engines");
     }
+    for (int count : {1, 2, 3}) {
+        for (int rows : {3, 4, 5, 8}) {
+            FakeModel individual, batched;
+            individual.right = 2;
+            auto ordinary = individual.hooks();
+            individual.add_drafter(ordinary);
+            auto shared = batched.hooks();
+            int calls = 0;
+            shared.propose = [&](int, int32_t, int64_t, int n, int32_t*, DraftContext*) {
+                check(n == 0, "batched networks bypass individual nonempty proposals");
+                return 0;
+            };
+            shared.propose_batch = [&](std::vector<DraftRequest>& requests) {
+                ++calls;
+                check((int) requests.size() == count, "one batch contains all active conversations");
+                for (auto& request : requests) {
+                    request.count = request.limit;
+                    for (int i = 0; i < request.limit; ++i) {
+                        request.tokens[(size_t) i] = i < 2 ? request.token + i + 1 : 0;
+                        request.confidence[(size_t) i] = 0.95f;
+                    }
+                }
+            };
+            Step before(ordinary, {}), after(shared, {});
+            before.settings = after.settings = {count, rows, 5};
+            std::vector<Decoding> a, b;
+            for (int i = 0; i < count; ++i) {
+                a.push_back(conversation(i, 100 + i * 20, 10 + i, 100));
+                b.push_back(conversation(i, 100 + i * 20, 10 + i, 100));
+            }
+            a[0].draft_limits = b[0].draft_limits = {0.99f, 0, 0, true};
+            std::vector<Decoding*> pa, pb;
+            for (int i = 0; i < count; ++i) {
+                pa.push_back(&a[(size_t) i]);
+                pb.push_back(&b[(size_t) i]);
+            }
+            std::string err;
+            for (int turn = 0; turn < 3; ++turn) {
+                check(before.run(pa, err) && after.run(pb, err), "both proposal paths run");
+                check(calls == turn + 1, "the drafter batch runs once per step");
+                check(individual.kept == batched.kept, "batching preserves accepted prefixes");
+                for (int i = 0; i < count; ++i) {
+                    const auto& x = a[(size_t) i];
+                    const auto& y = b[(size_t) i];
+                    check(x.emitted == y.emitted && x.pos == y.pos && x.next == y.next &&
+                              x.guessed == y.guessed && x.guessed_right == y.guessed_right &&
+                              x.draft_cooling == y.draft_cooling,
+                          "row sharing, confidence cuts and cooldown agree with individual proposals");
+                }
+            }
+        }
+    }
     std::printf(g_fail ? "step_test: %d FAILED\n" : "step_test: all passed\n", g_fail);
     return g_fail ? 1 : 0;
 }

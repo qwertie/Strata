@@ -664,6 +664,8 @@ struct Layer {
     // the window's raw rows (kv, then score) to replay the accepted ones
     uint8_t* ring_bak = nullptr;
     float *c_snap = nullptr, *c_rows = nullptr;
+    /// Keeps compressor snapshots for each conversation's window in a shared pass.
+    float* joint_c_snap = nullptr;
     unsigned long long* vram_tab = nullptr;     // device [n_exp]
     // (Options::expert_pages, set_expert_addresses') the experts hottest first by the profile at load, the order of
     // the VRAM slots, as in the old engine; device [n_exp]: each slot's blob, a page-pool page, which the prompt's
@@ -889,8 +891,19 @@ struct Model::Impl {
     /// The paged engine binds each row's pages without swapping host state or waiting on the stream.
     std::function<void(int)> select_row;
     /// Absolute token positions and indexer limits for the independent rows of a shared pass.
-    int64_t row_positions[8] = {};
-    WinPlan row_plans[8];
+    int64_t row_positions[kWin] = {};
+    WinPlan row_plans[kWin];
+    /// Gives each conversation window's length at its first row; interior entries are zero.
+    int row_counts[kWin] = {};
+    /// Preserves each conversation's sampled proposal until joint verification.
+    std::map<int, std::vector<strata::dsv41k::SpecList>> joint_q;
+    /// Retains activations between layers when a drafter batch spans more than one kernel tile.
+    struct DraftTile {
+        float *h = nullptr, *h2 = nullptr, *pre = nullptr;
+        uint16_t* embeddings = nullptr;
+        int first = 0, count = 0;
+    };
+    std::vector<DraftTile> draft_tiles;
     /// Owns immutable inputs and retained outputs until the shared scheduler commits a group.
     struct PipelineGroup {
         int count = 0;
@@ -1183,7 +1196,7 @@ struct Model::Impl {
     std::mutex prof_mu;
     std::vector<ProfMark> prof_marks;
     std::map<int, std::vector<cudaEvent_t>> prof_pool;   // by device: an event belongs to the device it was made on
-    bool prof_window = false;   // (decode windows only: T == 1)
+    bool prof_window = false;   // (synchronous decode windows)
     // ... and a run of chunks' (prof_chunk): a layer's start, after its attention, after the routing and the shared
     // expert, after its experts (the streamed ones' waits for their reads in it); printed after the run
     bool prof_chunk = false;
@@ -7244,34 +7257,12 @@ struct Model::Impl {
                                 e.st);
                 }
             cudaSetDevice(hd.id);
-        } else {
-            CK(cudaMemcpyAsync(d_ints, h_idx, 4, cudaMemcpyHostToDevice, hd.st));
-            strata::dsv41k::SamplerParams sp;
-            sp.greedy = true;
-            sp.temperature = 0.0f;
-            if (drafts_q) {   // the request's own chain: draft i drawn as the model's token i would be (verify's counter + i)
-                sp.greedy = false;
-                sp.temperature = dq_temp * (q_temp_scale > 0.0f ? q_temp_scale : 1.0f);
-                sp.top_p = dq_top_p;
-                sp.top_k = dq_top_k;
-                sp.min_p = dq_min_p;
-                sp.seed = dq_seed;
-            }
-            for (int i = 0; i < T; ++i) {   // the markov bias of the token before, then that position's draft
-                markov_add(hd.logits + (size_t) i * V, d_mk_embed, d_mk_head, d_ints + i, V, R, hd.st);
-                if (drafts_q) {
-                    sp.counter = dq_counter + (uint64_t) i;
-                    strata::dsv41k::sample_draft(hd.logits + (size_t) i * V, 1, V, sp, d_specq + i, d_ints + i + 1, hd.st);
-                } else
-                    strata::dsv41k::sample_tokens(hd.logits + (size_t) i * V, 1, V, nullptr, 0, sp, d_ints + i + 1, hd.st);
-            }
-        }
-        confidence(hd.x, d_mk_embed, d_ints, d_conf, T, D, R, d_confv, hd.st);
+        } else if (!sample_draft_rows(0, y, T, err))
+            return false;
+        if (!read_draft_rows(0, T, err))
+            return false;
         int tok[kWin + 1];
         float cf[kWin];
-        CK(cudaMemcpyAsync(h_idx, d_ints, (size_t) (T + 1) * 4, cudaMemcpyDeviceToHost, hd.st));
-        CK(cudaMemcpyAsync(h_w, d_confv, (size_t) T * 4, cudaMemcpyDeviceToHost, hd.st));
-        CK(cudaStreamSynchronize(hd.st));
         for (int i = 0; i <= T; ++i) tok[i] = h_idx[i];
         for (int i = 0; i < T; ++i) cf[i] = h_w[i];
         if (dump_d != nullptr) {   // 'D', the block's position, y, T, then the drafts, their confidences, the hidden
@@ -7294,6 +7285,219 @@ struct Model::Impl {
         for (int i = 0; i < T; ++i) {
             out.push_back(tok[i + 1]);
             conf.push_back(cf[i]);
+        }
+        return true;
+    }
+
+    /// Runs one layer-major DSpark forward across eligible conversations, tiling only at kernel capacity.
+    bool draft_conversations(std::vector<Model::DraftRequest>& requests,
+                             const std::function<void(int)>& select,
+                             const std::function<void(int)>& bind, std::string& err) {
+        if (requests.empty())
+            return true;
+        if (requests.size() == 1) {
+            auto& r = requests.front();
+            select(0);
+            if (!draft(r.token, r.tokens, r.confidence, err, r.temperature, r.top_p, r.top_k, r.min_p,
+                       r.seed, r.counter))
+                return false;
+            const int n = std::min(r.limit, (int) r.tokens.size());
+            r.tokens.resize((size_t) n);
+            r.confidence.resize((size_t) n);
+            return save_joint_draft(r.session, n, err);
+        }
+        const int block = g.d_block, D = g.dim, H = g.hc;
+        if (block < 1 || block > kWin || d_dev != head_dev || head_nm() != 1) {
+            err = "batched DSpark needs a layer-parallel drafter and head on the last stage";
+            return false;
+        }
+        const double started = now_ms();
+        Dev& d = devs[(size_t) d_dev];
+        const strata::core::OnDevice on(d.id);
+        const int per_tile = kWin / block;
+        const size_t count = (requests.size() + per_tile - 1) / per_tile;
+        draft_tiles.resize(std::max(draft_tiles.size(), count));
+        struct Restore {
+            Dev& d;
+            float *h, *h2, *pre;
+            std::function<void(int)>& bind;
+            ~Restore() {
+                d.h = h;
+                d.h2 = h2;
+                d.pre = pre;
+                bind = {};
+            }
+        } restore{d, d.h, d.h2, d.pre, select_row};
+        for (size_t index = 0; index < count; ++index) {
+            auto& tile = draft_tiles[index];
+            tile.first = (int) index * per_tile;
+            tile.count = std::min(per_tile, (int) requests.size() - tile.first);
+            if ((!tile.h && !dalloc(d, tile.h, (size_t) kWin * H * D, err)) ||
+                (!tile.h2 && !dalloc(d, tile.h2, (size_t) kWin * H * D, err)) ||
+                (!tile.pre && !dalloc(d, tile.pre, (size_t) kWin * 8, err)) ||
+                (!tile.embeddings && !halloc(tile.embeddings, (size_t) kWin * D, err)))
+                return false;
+            const int T = tile.count * block;
+            for (int row = 0; row < T; ++row) {
+                const auto& r = requests[(size_t) tile.first + row / block];
+                const int token = row % block == 0 ? r.token : g.d_noise;
+                std::memcpy(tile.embeddings + (size_t) row * D, embed_pinned + (size_t) token * D,
+                            (size_t) D * 2);
+            }
+            if (!strata::core::gpu_copy_2d_async(d.emb_rows, 0, tile.embeddings, 0,
+                                                (size_t) T * D * 2, 1, d.st)) {
+                err = "copying batched DSpark inputs failed";
+                return false;
+            }
+            embed(d.emb_rows, T, tile.h, D, H, d.st);
+            init_pre(tile.pre, T, d.st);
+        }
+        for (int layer_index = 0; layer_index < g.n_mtp; ++layer_index) {
+            Layer& l = L[(size_t) g.nl + layer_index];
+            for (size_t index = 0; index < count; ++index) {
+                auto& tile = draft_tiles[index];
+                const int T = tile.count * block;
+                d.h = tile.h;
+                d.h2 = tile.h2;
+                d.pre = tile.pre;
+                std::fill(std::begin(row_counts), std::end(row_counts), 0);
+                for (int row = 0; row < T; ++row) {
+                    row_positions[row] = requests[(size_t) tile.first + row / block].pos + row % block;
+                    if (row % block == 0) {
+                        row_counts[row] = block;
+                        row_plans[row] = {};
+                    }
+                }
+                select_row = [&](int row) { bind(tile.first + row / block); };
+                WinPlan plan;
+                plan.async = !sync_decode;
+                if (plan.async) {
+                    plan.seq[l.il] = ++seq_issued;
+                    layer_of[seq_issued % kRing].store(l.il, std::memory_order_release);
+                }
+                if (!layer(l, 0, 0, T, plan, err))
+                    return false;
+                tile.h = d.h;
+                tile.h2 = d.h2;
+            }
+        }
+        select_row = {};
+        for (size_t index = 0; index < count; ++index) {
+            auto& tile = draft_tiles[index];
+            const int T = tile.count * block;
+            hc_pre_norm(tile.h, tile.pre, nullptr, D, H, T, g.eps, d.x, d.st);
+            if (!strata::core::gpu_copy_2d_async(d.ao, 0, d.x, 0, (size_t) T * D * 4, 1, d.st)) {
+                err = "copying batched DSpark head inputs failed";
+                return false;
+            }
+            Finish norm;
+            norm.w = d.d_norm;
+            norm.eps = g.eps;
+            finish(d.ao, T, D, D, norm, d.st);
+            if (!head_share(d, 0, d.ao, T, err, true))
+                return false;
+            bool sampled = false;
+            for (int item = 0; item < tile.count; ++item) {
+                const auto& r = requests[(size_t) tile.first + item];
+                drafts_q = r.temperature > 0 && sample_drafts;
+                sampled = sampled || drafts_q;
+                dq_temp = r.temperature;
+                dq_top_p = r.top_p;
+                dq_top_k = r.top_k;
+                dq_min_p = r.min_p;
+                dq_seed = r.seed;
+                dq_counter = r.counter;
+                const int row = item * block, ints = item * (block + 1);
+                if (!sample_draft_rows(row, r.token, block, err, ints) ||
+                    !strata::core::gpu_copy_2d_async(d.tok + row, 0, d_ints + ints, 0,
+                                                    (size_t) block * sizeof(int), 1, d.st)) {
+                    if (err.empty())
+                        err = "packing batched DSpark confidence inputs failed";
+                    return false;
+                }
+            }
+            confidence(d.x, d_mk_embed, d.tok, d_conf, T, D, g.d_rank, d_confv, d.st);
+            if (!strata::core::gpu_copy_2d_async(h_idx, 0, d_ints, 0,
+                    (size_t) tile.count * (block + 1) * sizeof(int), 1, d.st) ||
+                !strata::core::gpu_copy_2d_async(h_w, 0, d_confv, 0, (size_t) T * sizeof(float), 1, d.st) ||
+                (sampled && !strata::core::gpu_copy_2d_async(h_specq.data(), 0, d_specq, 0,
+                    (size_t) T * sizeof(h_specq[0]), 1, d.st)) ||
+                !strata::core::gpu_stream_synchronize(d.st)) {
+                err = "reading batched DSpark outputs failed";
+                return false;
+            }
+            for (int item = 0; item < tile.count; ++item) {
+                auto& r = requests[(size_t) tile.first + item];
+                const int row = item * block, ints = item * (block + 1);
+                const int n = std::min({r.limit, block, max_drafts > 0 ? max_drafts : block});
+                r.tokens.assign(h_idx + ints + 1, h_idx + ints + 1 + n);
+                r.confidence.assign(h_w + row, h_w + row + n);
+                auto& q = joint_q[r.session];
+                q.clear();
+                if (r.temperature > 0 && sample_drafts)
+                    q.assign(h_specq.begin() + row, h_specq.begin() + row + n);
+            }
+        }
+        st.draft_ms += now_ms() - started;
+        ++st.drafts_rounds;
+        return true;
+    }
+
+    /// Samples one conversation's Markov chain from its rows in a shared head projection.
+    bool sample_draft_rows(int row0, int y, int T, std::string& err, int int_offset = 0) {
+        Dev& hd = devs[(size_t) head_dev];
+        const int V = g.vocab, R = g.d_rank;
+        h_idx[int_offset] = y;
+        int* ints = d_ints + int_offset;
+        cudaSetDevice(hd.id);
+        CK(cudaMemcpyAsync(ints, h_idx + int_offset, 4, cudaMemcpyHostToDevice, hd.st));
+        strata::dsv41k::SamplerParams sp;
+        sp.greedy = true;
+        sp.temperature = 0.0f;
+        if (drafts_q) {   // Proposal draws use the same counter positions as verification.
+            sp.greedy = false;
+            sp.temperature = dq_temp * (q_temp_scale > 0.0f ? q_temp_scale : 1.0f);
+            sp.top_p = dq_top_p;
+            sp.top_k = dq_top_k;
+            sp.min_p = dq_min_p;
+            sp.seed = dq_seed;
+        }
+        for (int i = 0; i < T; ++i) {   // the markov bias of the token before, then that position's draft
+            markov_add(hd.logits + (size_t) (row0 + i) * V, d_mk_embed, d_mk_head, ints + i, V, R, hd.st);
+            if (drafts_q) {
+                sp.counter = dq_counter + (uint64_t) i;
+                strata::dsv41k::sample_draft(hd.logits + (size_t) (row0 + i) * V, 1, V, sp,
+                                              d_specq + row0 + i, ints + i + 1, hd.st);
+            } else
+                strata::dsv41k::sample_tokens(hd.logits + (size_t) (row0 + i) * V, 1, V, nullptr, 0, sp,
+                                               ints + i + 1, hd.st);
+        }
+        return true;
+    }
+
+    /// Retrieves the selected tokens and confidence head for one conversation's output rows.
+    bool read_draft_rows(int row0, int T, std::string& err) {
+        Dev& hd = devs[(size_t) head_dev];
+        confidence(hd.x + (size_t) row0 * g.dim, d_mk_embed, d_ints, d_conf, T, g.dim, g.d_rank,
+                   d_confv, hd.st);
+        CK(cudaMemcpyAsync(h_idx, d_ints, (size_t) (T + 1) * 4, cudaMemcpyDeviceToHost, hd.st));
+        CK(cudaMemcpyAsync(h_w, d_confv, (size_t) T * 4, cudaMemcpyDeviceToHost, hd.st));
+        CK(cudaStreamSynchronize(hd.st));
+        return true;
+    }
+
+    bool save_joint_draft(int session, int n, std::string& err) {
+        auto& q = joint_q[session];
+        q.clear();
+        if (!drafts_q || n <= 0)
+            return true;
+        q.resize((size_t) n);
+        Dev& d = devs[(size_t) head_dev];
+        const strata::core::OnDevice on(d.id);
+        if (!strata::core::gpu_stream_synchronize(d.st) ||
+            !strata::core::gpu_copy(q.data(), d_specq, q.size() * sizeof(q[0]))) {
+            err = "could not preserve a conversation's proposal distribution";
+            return false;
         }
         return true;
     }
@@ -7337,12 +7541,7 @@ struct Model::Impl {
     bool verify_rows(int y, const std::vector<int>& drafts, float temperature, float top_p, int top_k, float min_p,
                      uint64_t seed, uint64_t counter, std::vector<int>& picks, std::string& err) {
         const int n = (int) std::min<size_t>(drafts.size(), (size_t) kWin - 1);
-        const int T = n + 1, V = g.vocab;
-        Dev& hd = devs[(size_t) head_dev];
-        cudaSetDevice(hd.id);
-        // Prompt lookup can verify a window without loading DSpark's weights or its proposal buffers.
-        if ((!d_ints && !dalloc(hd, d_ints, 64, err)) || (!d_specq && !dalloc(hd, d_specq, kWin, err)))
-            return false;
+        const int T = n + 1;
         for (int il = 0; il < g.nl; ++il)
             for (int m = 0; m < L[(size_t) il].nm; ++m)
                 if (!init_verify_layer(member(L[(size_t) il], m), err))
@@ -7359,13 +7558,24 @@ struct Model::Impl {
         if (!ok) return false;
         verified_p0 = p0;
         verified_rows = T;
+        return pick_verified_rows(0, drafts, temperature, top_p, top_k, min_p, seed, counter, picks, err);
+    }
+
+    /// Applies the existing speculative sampler to one conversation's logit rows.
+    bool pick_verified_rows(int row0, const std::vector<int>& drafts, float temperature, float top_p, int top_k,
+                            float min_p, uint64_t seed, uint64_t counter, std::vector<int>& picks, std::string& err) {
+        const int n = (int) std::min<size_t>(drafts.size(), (size_t) kWin - 1);
+        const int T = n + 1, V = g.vocab;
+        Dev& hd = devs[(size_t) head_dev];
         cudaSetDevice(hd.id);
+        if ((!d_ints && !dalloc(hd, d_ints, 64, err)) || (!d_specq && !dalloc(hd, d_specq, kWin, err)))
+            return false;
         int m = 0;
         if (temperature <= 0.0f) {
             strata::dsv41k::SamplerParams sp;
             sp.greedy = true;
             sp.temperature = 0.0f;
-            strata::dsv41k::sample_tokens(hd.logits, T, V, nullptr, 0, sp, d_ints + 16, hd.st);   // (the T rows at once)
+            strata::dsv41k::sample_tokens(hd.logits + (size_t) row0 * V, T, V, nullptr, 0, sp, d_ints + 16, hd.st);
             CK(cudaMemcpyAsync(h_idx, d_ints + 16, (size_t) T * 4, cudaMemcpyDeviceToHost, hd.st));
             CK(cudaStreamSynchronize(hd.st));
             while (m < n && h_idx[m] == drafts[(size_t) m]) ++m;
@@ -7396,12 +7606,15 @@ struct Model::Impl {
             sp.min_p = min_p;
             sp.seed = seed;
             sp.counter = counter;
-            strata::dsv41k::sample_verify(hd.logits, n, V, sp, d_specq, d_ints + 32, d_ints + 16, hd.st);
+            strata::dsv41k::sample_verify(hd.logits + (size_t) row0 * V, n, V, sp, d_specq,
+                                         d_ints + 32, d_ints + 16, hd.st);
             CK(cudaMemcpyAsync(h_idx, d_ints + 16, (size_t) n * 4, cudaMemcpyDeviceToHost, hd.st));
             CK(cudaStreamSynchronize(hd.st));
             while (m < n && h_idx[m] == drafts[(size_t) m]) ++m;
             picks.assign(h_idx, h_idx + std::min(m + 1, n));
-            if (m == n) picks.push_back(sample_row(n, temperature, top_p, top_k, min_p, seed, counter + (uint64_t) n, nullptr));
+            if (m == n)
+                picks.push_back(sample_row(row0 + n, temperature, top_p, top_k, min_p, seed,
+                                           counter + (uint64_t) n, nullptr));
         }
         drafts_q = false;
         return true;
@@ -7410,10 +7623,14 @@ struct Model::Impl {
     // the window verify_rows ran keeps its first `keep` rows (at least its first): the rest rolled back, the drafter
     // seeded with the kept ones
     bool keep_verified(int keep, std::string& err) {
-        const int64_t p0 = verified_p0;
-        const int n = verified_rows - 1, m = keep - 1;
-        rollback(p0, verified_rows, keep);
-        if (!seed_drafter(p0, keep, 0, err)) return false;
+        return keep_window(verified_p0, verified_rows, keep, -1, err);
+    }
+
+    /// Commits a window's accepted prefix, using shared-pass scratch when row0 is nonnegative.
+    bool keep_window(int64_t p0, int count, int keep, int row0, std::string& err) {
+        const int n = count - 1, m = keep - 1;
+        rollback(p0, count, keep, row0);
+        if (!seed_drafter(p0, keep, std::max(row0, 0), err)) return false;
         st.drafts_offered += n;
         st.drafts_accepted += m;
         for (int i = 0; i < n && i <= m && i < 8; ++i) {
@@ -7424,7 +7641,7 @@ struct Model::Impl {
     }
 
     /// Gives a trunk layer scratch for restoring state after rejected guesses, independently of DSpark weights.
-    bool init_verify_layer(Layer& l, std::string& err) {
+    bool init_verify_layer(Layer& l, std::string& err, bool joint = false) {
         Dev& d = devs[(size_t) l.dev];
         const size_t first = d.allocs.size(), before = d.scratch;
         if (!l.ring_bak && !dalloc(d, l.ring_bak, (size_t) kWin * win_rb(), err))
@@ -7433,6 +7650,9 @@ struct Model::Impl {
             ((!l.c_snap && !dalloc(d, l.c_snap, (size_t) 2 * l.ratio * g.hd, err)) ||
              (!l.c_rows && !dalloc(d, l.c_rows, (size_t) 2 * kWin * g.hd, err))))
             return false;
+        if (joint && l.c_snap && !l.joint_c_snap &&
+            !dalloc(d, l.joint_c_snap, (size_t) 8 * 2 * l.ratio * g.hd, err))
+            return false;
         l.dense_allocations.insert(l.dense_allocations.end(), d.allocs.begin() + first, d.allocs.end());
         l.dense_scratch_bytes += d.scratch - before;
         return true;
@@ -7440,7 +7660,7 @@ struct Model::Impl {
 
     // a verified window keeps its first `keep` positions: the ring rows and the compressors' state of the rest undone
     // (the compressed KV and the index keys past them are written again when those positions come)
-    void rollback(int64_t p0, int T, int keep) {
+    void rollback(int64_t p0, int T, int keep, int row0 = -1) {
         if (keep >= T) return;
         // the ring rows: one launch a device for all its layers (a launch a layer and member was ~300 on 8-way tensor
         // parallel, a millisecond of the host's before the next draft)
@@ -7451,11 +7671,12 @@ struct Model::Impl {
                 RingBatch& b = rb[(size_t) l.dev];
                 if (b.n == kMaxRingBatch) {   // (more layers on a device than a batch takes: this one alone)
                     cudaSetDevice(devs[(size_t) l.dev].id);
-                    ring_restore(l.win, l.ring_bak, p0, g.win, keep, T, g.hd, devs[(size_t) l.dev].st);
+                    ring_restore(l.win, l.ring_bak + (size_t) std::max(row0, 0) * win_rb(), p0, g.win, keep, T,
+                                 g.hd, devs[(size_t) l.dev].st);
                     continue;
                 }
                 b.ring[b.n] = l.win;
-                b.bak[b.n++] = l.ring_bak;
+                b.bak[b.n++] = l.ring_bak + (size_t) std::max(row0, 0) * win_rb();
             }
         for (size_t di = 0; di < devs.size(); ++di)
             if (rb[di].n > 0) {
@@ -7469,9 +7690,11 @@ struct Model::Impl {
                 if (l.c_snap != nullptr) {
                     cudaSetDevice(d.id);
                     const size_t ns = (size_t) l.ratio * g.hd * 4;
-                    cudaMemcpyAsync(l.c_kv, l.c_snap, ns, cudaMemcpyDeviceToDevice, d.st);
-                    cudaMemcpyAsync(l.c_score, l.c_snap + (size_t) l.ratio * g.hd, ns, cudaMemcpyDeviceToDevice, d.st);
-                    compress_win(l.c_rows, l.c_rows + (size_t) kWin * g.hd, l.c_kv, l.c_score, l.ratio, (int) p0, keep,
+                    const float* snap = row0 < 0 ? l.c_snap : l.joint_c_snap + (size_t) row0 * 2 * l.ratio * g.hd;
+                    const float* rows = l.c_rows + (size_t) std::max(row0, 0) * g.hd;
+                    cudaMemcpyAsync(l.c_kv, snap, ns, cudaMemcpyDeviceToDevice, d.st);
+                    cudaMemcpyAsync(l.c_score, snap + (size_t) l.ratio * g.hd, ns, cudaMemcpyDeviceToDevice, d.st);
+                    compress_win(rows, rows + (size_t) kWin * g.hd, l.c_kv, l.c_score, l.ratio, (int) p0, keep,
                                  g.hd, l.c_norm, g.eps, d.latent, d.st);
                 }
             }
@@ -9075,38 +9298,55 @@ struct Model::Impl {
         return true;
     }
 
-    /// Runs independent rows through each layer once, batching their routed and shared experts.
+    /// Verifies contiguous conversation windows in one layer-major pass.
     bool step_conversations(const std::vector<int>& tokens, const std::function<void(int)>& select,
-                            const std::function<void(int)>& bind, std::string& err) {
+                            const std::function<void(int)>& bind, const std::vector<int>& counts, std::string& err) {
         const int T = (int) tokens.size();
         if (T < 1 || T > 8 || std::any_of(groups.begin(), groups.end(),
                                          [](const Group& group) { return group.mem.size() != 1; })) {
             err = "independent rows require 1 to 8 rows and layer-parallel stages";
             return false;
         }
-        if (!prepare_conversation_rows(tokens, select, h_emb, h_eg, eg_cap, row_positions, row_plans, err))
+        std::fill(std::begin(row_counts), std::end(row_counts), 0);
+        int first = 0;
+        for (int count : counts) {
+            if (count < 1 || first + count > T) {
+                err = "invalid conversation window layout";
+                return false;
+            }
+            row_counts[first] = count;
+            first += count;
+        }
+        if (first != T) {
+            err = "conversation windows do not cover the step";
+            return false;
+        }
+        const bool verify = std::any_of(counts.begin(), counts.end(), [](int n) { return n > 1; });
+        for (int il = 0; verify && il < g.nl; ++il)
+            if (!init_verify_layer(L[(size_t) il], err, true))
+                return false;
+        if (!prepare_conversation_rows(tokens, select, h_emb, h_eg, eg_cap, row_positions, row_plans,
+                                       err, row_counts))
             return false;
         plan_window(0, T, wplan);
         wplan.par = false;
         n_logits = T;
-        prof_window = false;
+        prof_window = prof_on;
         eg_stats();
         select_row = bind;
+        spec_win = verify;
         const double tl = now_ms();
         const bool ok = forward_serial(0, T, err);
         st.layer_ms += now_ms() - tl;
         select_row = {};
+        spec_win = false;
         if (!ok)
             return false;
         for (Dev& d : devs) {
             cudaSetDevice(d.id);
             CK(cudaStreamSynchronize(d.st));
         }
-        for (int row = 0; row < T; ++row) {
-            select(row);
-            if (!seed_drafter(row_positions[row], 1, row, err))
-                return false;
-        }
+        prof_collect();
         st.tokens += T;
         cache_tick(T);
         return true;
@@ -9257,11 +9497,16 @@ struct Model::Impl {
         return ok;
     }
 
-    /// Builds independent attention inputs using the same conversation seating as the serial batch pass.
+    /// Prepares attention positions and Engram inputs for synchronous windows or independent pipeline rows.
     bool prepare_conversation_rows(const std::vector<int>& tokens, const std::function<void(int)>& select,
                                   uint16_t* embeddings, uint8_t* engram, size_t capacity,
-                                  int64_t* positions, WinPlan* plans, std::string& err) {
+                                  int64_t* positions, WinPlan* plans, std::string& err,
+                                  const int* window_counts = nullptr) {
         const int T = (int) tokens.size();
+        if (!window_counts) {
+            std::fill(std::begin(row_counts), std::end(row_counts), 1);
+            window_counts = row_counts;
+        }
         for (int row = 0; row < T; ++row) {
             select(row);
             if (pos >= o.max_context || tokens[row] < 0 || tokens[row] >= g.vocab) {
@@ -9281,7 +9526,8 @@ struct Model::Impl {
                 engram_rows(p0, 1, li, engram + ((size_t) li * capacity + row) * per);
             }
             st.engram_ms += now_ms() - te;
-            plan_window(p0, 1, plans[row], true);
+            if (window_counts[row] > 0)
+                plan_window(p0, window_counts[row], plans[row], true);
         }
         return true;
     }
@@ -9565,14 +9811,27 @@ struct Model::Impl {
                 bases[i] = *fields[i];
             int* topk = d.topk;
             int* cand = d.cand;
-            for (int row = 0; row < T; ++row) {
+            for (int row = 0; row < T; row += row_counts[row]) {
                 active_row = row;
                 select_row(row);
                 for (int i = 0; i < 7; ++i)
                     *fields[i] = bases[i] + (size_t) row * strides[i];
                 d.topk = topk + (size_t) row * topk_stride();
                 d.cand = cand + (size_t) row * cand_stride();
-                const bool ok = run_attention_state(L0, mi, row_positions[row], 1, row_plans[row], err);
+                uint8_t* ring_bak = l.ring_bak;
+                float* c_snap = l.c_snap;
+                float* c_rows = l.c_rows;
+                if (spec_win) {
+                    l.ring_bak += (size_t) row * win_rb();
+                    if (c_snap) {
+                        l.c_snap = l.joint_c_snap + (size_t) row * 2 * l.ratio * HD;
+                        l.c_rows += (size_t) row * HD;
+                    }
+                }
+                const bool ok = run_attention_state(L0, mi, row_positions[row], row_counts[row], row_plans[row], err);
+                l.ring_bak = ring_bak;
+                l.c_snap = c_snap;
+                l.c_rows = c_rows;
                 for (int i = 0; i < 7; ++i)
                     *fields[i] = bases[i];
                 d.topk = topk;
@@ -10180,10 +10439,10 @@ bool Model::set_stage_layers(int stage, int lb, int le, std::string& err) {
             layer.dev = stage;
             layer.grp = stage;
             layer.ring_bak = nullptr;
-            layer.c_snap = layer.c_rows = nullptr;
+            layer.c_snap = layer.c_rows = layer.joint_c_snap = nullptr;
             bool ok = p.load_dense(stage, err, false, il);
             if (ok && saved.ring_bak != nullptr)
-                ok = p.init_verify_layer(layer, err);
+                ok = p.init_verify_layer(layer, err, saved.joint_c_snap != nullptr);
             if (ok && saved.slot_tab != nullptr)
                 ok = p.dalloc(target, layer.slot_tab, (size_t) layer.n_exp, err);
             if (ok && saved.vs_dev != nullptr)
@@ -10364,9 +10623,43 @@ void Model::use_state_memory(int dev, uint8_t* fixed, uint8_t* drafter, const Co
             l.win = (l.mtp ? drafter : fixed) + at.ring[(size_t) l.il];
 }
 bool Model::step_conversations(const std::vector<int>& tokens, const std::function<void(int)>& select,
-                               const std::function<void(int)>& bind, std::string& err) {
-    return p_->step_conversations(tokens, select, bind, err);
+                               const std::function<void(int)>& bind, const std::vector<int>& counts,
+                               std::string& err) {
+    return p_->step_conversations(tokens, select, bind, counts, err);
 }
+bool Model::draft_conversations(std::vector<DraftRequest>& requests, const std::function<void(int)>& select,
+                                const std::function<void(int)>& bind, std::string& err) {
+    return p_->draft_conversations(requests, select, bind, err);
+}
+bool Model::save_joint_draft(int session, int n, std::string& err) {
+    return p_->save_joint_draft(session, n, err);
+}
+bool Model::pick_joint_rows(int session, int row, const std::vector<int>& drafts, float t, float tp, int tk,
+                            float mp, uint64_t seed, uint64_t counter, std::vector<int>& picks, std::string& err) {
+    Impl& p = *p_;
+    const auto it = p.joint_q.find(session);
+    p.drafts_q = it != p.joint_q.end() && it->second.size() >= drafts.size() && !drafts.empty();
+    if (p.drafts_q) {
+        Dev& d = p.devs[(size_t) p.head_dev];
+        const strata::core::OnDevice on(d.id);
+        if (!strata::core::gpu_copy(p.d_specq, it->second.data(), drafts.size() * sizeof(it->second[0]))) {
+            err = "could not restore a conversation's proposal distribution";
+            return false;
+        }
+        p.dq_temp = t;
+        p.dq_top_p = tp;
+        p.dq_top_k = tk;
+        p.dq_min_p = mp;
+        p.dq_seed = seed;
+        p.dq_counter = counter;
+    }
+    return p.pick_verified_rows(row, drafts, t, tp, tk, mp, seed, counter, picks, err);
+}
+bool Model::keep_joint_rows(int row, int count, int keep, std::string& err) {
+    Impl& p = *p_;
+    return p.keep_window(p.row_positions[row], count, keep, row, err);
+}
+
 bool Model::prepare_group(int group, const std::vector<int>& tokens, const std::function<void(int)>& select,
                           const std::function<void(int)>& bind, std::string& err) {
     return p_->prepare_group(group, tokens, select, bind, err);

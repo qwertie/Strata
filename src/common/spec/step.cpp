@@ -154,20 +154,50 @@ void Step::prepare(const std::vector<Decoding*>& active, Work& work, int group, 
     std::vector<int32_t> guesses((size_t) std::max(settings.rows, 1));
     const bool draft = settings.max_draft_conversations == 0 ||
                        std::max((int) going.size(), wave_conversations) <= settings.max_draft_conversations;
+    const auto get_want = [&](size_t i) {
+        const Decoding& d = *going[i];
+        return !draft || !d.draft_enabled ? 0 :
+            (int) std::max<int64_t>(std::min<int64_t>(share[i], d.max_new - d.produced - 1), 0);
+    };
+    std::vector<DraftRequest> proposals;
+    if (model_.propose_batch) {
+        proposals.resize(going.size());
+        for (size_t i = 0; i < going.size(); ++i) {
+            const Decoding& d = *going[i];
+            auto& p = proposals[i];
+            p.session = d.session;
+            p.token = d.next;
+            p.pos = d.pos;
+            const int want = get_want(i);
+            p.limit = want > 0 && d.draft_cooling ? 0 : settings.model_lookahead < 0 ? want :
+                std::min(want, settings.model_lookahead);
+            p.tokens.resize((size_t) std::max(settings.rows, 1));
+            p.confidence.resize((size_t) DraftPolicy::kMaxT);
+            p.context = {d.planner.get(), p.confidence.data(), d.draft_limits};
+        }
+        model_.propose_batch(proposals);
+    }
     for (size_t i = 0; i < going.size(); ++i) {
         Decoding& d = *going[i];
         // no guess past what it may still emit, which also keeps its rows inside the context
-        const int want = !draft || !d.draft_enabled ? 0 :
-            (int) std::max<int64_t>(std::min<int64_t>(share[i], d.max_new - d.produced - 1), 0);
+        const int want = get_want(i);
         std::vector<float> probs((size_t) DraftPolicy::kMaxT);
         DraftContext context{d.planner.get(), probs.data(), d.draft_limits};
-        const bool cooling = model_.propose && want > 0 && d.draft_cooling;
+        const bool cooling = (model_.propose || model_.propose_batch) && want > 0 && d.draft_cooling;
         if (cooling)
             d.draft_cooling = false;
         const int model_want = cooling ? 0 : settings.model_lookahead < 0 ? want :
             std::min(want, settings.model_lookahead);
-        int n = model_.propose ?
-            model_.propose(d.session, d.next, d.pos, model_want, guesses.data(), &context) : 0;
+        int n = 0;
+        if (model_.propose_batch) {
+            auto& p = proposals[i];
+            n = p.count;
+            std::copy_n(p.tokens.begin(), n, guesses.begin());
+            probs = p.confidence;
+            context = p.context;
+            context.probs = probs.data();
+        } else if (model_.propose)
+            n = model_.propose(d.session, d.next, d.pos, model_want, guesses.data(), &context);
         const int offered = n;
         n = count_confident_drafts(probs.data(), n, d.draft_limits.confidence, d.draft_limits.cumulative);
         if (offered > 0 && n == 0 && d.draft_limits.cool_after_rejection)
