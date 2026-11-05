@@ -42,6 +42,16 @@ installed app has none of them.
 <a id="speed-measured"></a>
 ## Speed (measured)
 
+Local comparison, 5 November 2026, Windows HIP on the Ryzen AI MAX+ 395 / Radeon 8060S: New Qwen was faster in all 12
+standalone prompt/mode comparisons, by 4.6–41.9%. New DeepSeek was slower in all six matched standalone comparisons,
+by 6.1–28.9%.
+The baseline is `local` at `debc4619`, not legacy engines rebuilt from `memory-manager`. New is `d1226394`.
+Qwen used IQ3_S with all 24,576 experts on GPU; DeepSeek used IST-DAS 2.00 bpw with about 50 GiB GPU
+and 36 GiB RAM requests. Runs alternated old/new/old/new with equal 20-second idle gaps. Qwen matched all
+24 standalone answer pairs; DeepSeek matched 4 of 12.
+[The report](../bench/results/2026-11-05-old-local-vs-new/README.md) gives per-prompt round ranges,
+row budgets, draft counts, expert counts, binary hashes, exact commands and limits.
+
 **Measured on:** RTX 5070 12 GB, Ryzen 5 7600 (6 cores), 64 GB DDR5-5200, Windows, Qwen3.8-Flash-Next ISTA-DASLab packs,
 engine 0.1.26 with the settings setup writes (`--prefill auto`, 8-bit KV above 4K, KV streaming from 64K). One
 code-agent prompt per length, 256 generated tokens, MTP speculative decoding on. "262K" is the full context window (a
