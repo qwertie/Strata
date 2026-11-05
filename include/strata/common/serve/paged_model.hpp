@@ -235,9 +235,10 @@ public:
     /// fingerprint of the model's files, and one of the settings that change what the saved bytes mean.  False (and
     /// `err`) when a model file cannot be read.  The engine asks once, when it first needs an identity.
     virtual bool get_session_identity(strata::core::SessionFileIdentity& id, std::string& err) const = 0;
+    /// Tells whether a rewind preserves the later branch as a paused conversation.
+    virtual bool keeps_rewind_branch(const PagedParts&, int64_t) const { return true; }
     /// Gets the positions short of its end that the conversation of `parts` can go back to (rewind), so that a prompt
-    /// that leaves it there continues it (strata/common/state/resume_point.hpp): DeepSeek's checkpoints; none by
-    /// default (Qwen3.8's GDN state goes only forward).
+    /// that leaves it there continues it (strata/common/state/resume_point.hpp); none by default.
     virtual std::vector<int64_t> get_rewind_points(const PagedParts&) const { return {}; }
     /// Makes the conversation of `parts` hold its first `tokens` tokens, one of get_rewind_points; false (and `err`)
     /// when it cannot.  The engine then gives back its pages beyond them (PagedPart::truncate).

@@ -1,6 +1,7 @@
 #include "strata/models/qwen38/conversation_snapshot.hpp"
 #include "strata/common/state/conversation_file.hpp"
 #include "strata/models/qwen38/kernels/kv_q4.hpp"
+#include "strata/models/qwen38/kernels/kv_units.hpp"
 #include <cuda_runtime.h>
 
 #include <array>
@@ -300,11 +301,69 @@ void full_session(int fmt, int mode, int experts) {
     check(spare==a.checkpoints[0].dead,"checkpoint rebuilds spare row over a later completed block");
     check(ss.ple_prev[0]==2 && ss.ple_prev[1]==3,"checkpoint PLE token window");
 }
+
+/// Checks rewinding a paged indexer whose later tokens overwrote its spare pooled key.
+void restore_unpaged_units(int format) {
+    Fixture fixture(format, 0);
+    auto& g = fixture.g;
+    auto& state = fixture.state;
+    g.n_layers = 4;
+    g.ssm_state_size = 2;
+    g.ssm_v_heads = 2;
+    g.ssm_conv_channels = 8;
+    SessionState session;
+    session.max_cells = state.max_cells;
+    session.qsa_states = &state;
+    session.layer_hi = g.n_layers;
+    session.gdn_alloc = g.n_gdn_layers();
+    session.qsa_alloc = g.n_qsa_layers();
+    ConversationStateSizes sizes;
+    std::string error;
+    check(conversation_session_sizes(g, session, sizes, error), "paged running-state sizes");
+    fixture.alloc(session.gdn_state, sizes.gdn);
+    fixture.alloc(session.ple_hist, sizes.ple);
+    fixture.alloc(state.idx_tail, sizes.tail);
+    fixture.alloc(state.idx_dead, sizes.dead);
+    fixture.alloc(state.idx_block_pos, sizes.block_pos);
+    const auto layout = kv_unit_layout(qsa_shapes(g), (KvFormat) format);
+    const int64_t blocks = state.max_cells / 4 + 2;
+    uint8_t* units = nullptr;
+    int64_t* table = nullptr;
+    fixture.alloc(units, (size_t) blocks * layout.bytes);
+    fixture.alloc(table, (size_t) blocks * sizeof(int64_t));
+    const auto addresses = kv_unit_table({units}, (uint64_t) blocks * layout.bytes, layout.bytes, blocks);
+    cuda_check(cudaMemcpy(table, addresses.data(), addresses.size() * sizeof(int64_t), cudaMemcpyHostToDevice));
+    qsa_use_units(g, state, table);
+    for (const auto& [pointer, bytes] : std::vector<std::pair<void*, size_t>>{
+             {session.ple_hist, sizes.ple}, {state.idx_tail, sizes.tail},
+             {state.idx_dead, sizes.dead}, {state.idx_block_pos, sizes.block_pos}})
+        cuda_check(cudaMemset(pointer, 19, bytes));
+    std::vector<uint8_t> saved;
+    check(conversation_unpaged_save(session, g, saved, error), "capture paged indexer checkpoint");
+    cuda_check(cudaMemset(units, 91, (size_t) blocks * layout.bytes));
+    cuda_check(cudaMemset(state.idx_dead, 91, sizes.dead));
+    cuda_check(cudaMemset(session.gdn_state, 47, sizes.gdn));
+    const std::vector<int32_t> ids = {1, 2, 3, 4, 5, 6, 7};
+    check(conversation_unpaged_restore(saved, session, g, ids, error), "restore paged indexer checkpoint");
+    std::vector<uint8_t> row(sizes.dead);
+    const size_t resumed = ids.size() / 4;
+    for (size_t i = 0; i < (size_t) blocks; ++i) {
+        cuda_check(cudaMemcpy(row.data(), units + i * layout.bytes + layout.key, row.size(), cudaMemcpyDeviceToHost));
+        check(row == std::vector<uint8_t>(row.size(), i == resumed ? 19 : 91),
+              "paged rewind replaces only the resumed pooled key");
+    }
+    row.resize(sizes.gdn);
+    cuda_check(cudaMemcpy(row.data(), session.gdn_state, row.size(), cudaMemcpyDeviceToHost));
+    check(row == std::vector<uint8_t>(row.size(), 47), "unpaged rewind preserves pooled recurrent state");
+    check(session.ple_prev[0] == 6 && session.ple_prev[1] == 7, "paged rewind reconstructs PLE token window");
+}
 }
 
 int main() {
     int devices=0;
     if (cudaGetDeviceCount(&devices)!=cudaSuccess || !devices) return 77;
+    for (int format : {kKvF16, kKvInt8, kKvQ4, kKvHybrid})
+        restore_unpaged_units(format);
     for (int fmt : std::array<int,4>{kKvF16,kKvInt8,kKvQ4,3}) for (int mode : {0,1,2}) {
         if (fmt==3 && mode!=0) continue;
         Fixture f(fmt,mode);

@@ -95,9 +95,19 @@ bool put_running_state(const StateBuffers& from, SessionState& ss, const std::ve
     StateBuffers source = from, target = get_running_state(ss);
     const size_t row = ids.size() / strata::kernels::qsa_real_shapes().idx_block;
     for (size_t j = 0; j < owned_qsa(ss) && !ids.empty(); ++j) {
+        const QsaState& state = owned(ss, j);
+        uint8_t* pooled = nullptr;
+        if (state.units != nullptr) {
+            int64_t base = 0;
+            if (!gpu_copy(&base, state.units + row, sizeof base))
+                return fail(error, "pooled-key unit lookup failed");
+            pooled = (uint8_t*) ((uintptr_t) state.idx_pooled + (uintptr_t) base);
+        } else {
+            pooled = (uint8_t*) (state.idx_pooled + row * g.idx_key_dim);
+        }
         layout.add(RegionKind::fixed, z.dead);
         source.at.push_back(from.at[2 + 3 * j + 1]);   // layer j's dead row, in describe_running_state's order
-        target.at.push_back((uint8_t*) (owned(ss, j).idx_pooled + row * g.idx_key_dim));
+        target.at.push_back(pooled);
     }
     if (!copy_running_state(layout, source, target, error, queued))
         return false;
@@ -310,12 +320,11 @@ bool conversation_unpaged_restore(const std::vector<uint8_t>& saved, SessionStat
     if (saved.size() != layout.bytes_for(0))
         return fail(error, "the saved running state has the wrong size");
     auto& from = const_cast<std::vector<uint8_t>&>(saved);   // only read: StateBuffers serves as a target too
-    if (!sync(error) ||
-        !copy_running_state(layout, get_host_image(layout, 0, from.data()), get_running_state(ss), error))
+    ConversationStateSizes z;
+    if (!conversation_session_sizes(g, ss, z, error))
         return false;
-    ss.ple_prev[0] = ids.size() >= 2 ? ids[ids.size() - 2] : -1;
-    ss.ple_prev[1] = ids.empty() ? -1 : ids.back();
-    return true;
+    z.gdn = 0;
+    return sync(error) && put_running_state(get_host_image(layout, 0, from.data()), ss, ids, g, z, error);
 }
 
 bool conversation_snapshot_bytes(const ConversationView& view, const SessionState& ss,

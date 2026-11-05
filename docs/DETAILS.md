@@ -708,6 +708,18 @@ one stage and several stages, or between cuts. Moving between cuts needs room fo
 pages are redistributed. The Qwen paged-state fingerprint now identifies this layout; files from the earlier
 stage-bound layout are refused. DeepSeek already stores its running state without stage-count metadata.
 
+The paged Qwen engine also keeps rewind checkpoints. It uses the original engine's turn-boundary selection and
+root-pinned retention policy. `--prompt-cache`, `--prompt-cache-every`, `--prompt-cache-root` and
+`--prompt-cache-spread` control them. `--tail-role-token` keeps a temporary reasoning-effort turn outside the
+checkpoint, so the next tool result can continue from the history before that turn.
+
+Recurrent snapshots occupy fixed regions in the conversation's page pool. They count against its GPU or RAM
+budget and travel with it when paused or saved. The small indexer and PLE metadata stays beside the pages.
+An ordinary turn continuation replaces its old tail in place. A branch through a shared root or an earlier
+periodic checkpoint can keep the original conversation paused. The saved-state fingerprint includes the
+checkpoint layout and slot count; earlier paged Qwen files and files with another slot count are refused.
+`tools/test_qwen_paged_rewind.py` checks continuations, repeated prompts, named saves and RAM/SSD restores.
+
 On startup these engines scan `--pause-dir` for regular `paused-<pid>-*.bin` files whose process no longer runs.
 They check the whole-file checksum, model and settings fingerprints, context limit and layer cut before adopting
 a file. Adoption renames it under the new process's prefix and counts it against `--ssd-pause-mib`. Files beyond

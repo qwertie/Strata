@@ -23,7 +23,7 @@ ConversationPages::~ConversationPages() {
 
 bool ConversationPages::get_layout(const strata::core::ModelGeometry& g, const strata::core::SessionState& ss,
                                    const strata::core::QsaState* drafter, strata::core::StateLayout& layout,
-                                   std::string& err) {
+                                   std::string& err, int checkpoints) {
     using namespace strata::core;
     const int64_t n_qsa = g.n_qsa_layers(), n_gdn = g.n_gdn_layers(), qsa_here = count_qsa_layers(g, ss);
     if (qsa_here == 0 || ss.gdn_alloc == 0 || ss.gdn_state != nullptr) {
@@ -45,6 +45,7 @@ bool ConversationPages::get_layout(const strata::core::ModelGeometry& g, const s
         }
         layout.regions[0].unit_bytes = layout.regions[0].unit_bytes / (uint64_t) n_gdn * (uint64_t) ss.gdn_alloc;
         layout.regions.resize((size_t) (1 + qsa_here));   // the session's own layers
+        layout.regions.insert(layout.regions.begin(), (size_t) std::max(checkpoints, 0), layout.regions.front());
         if (drafter != nullptr)
             layout.add(RegionKind::per_block,
                        strata::kernels::kv_unit_layout(s, (strata::kernels::KvFormat) qsa_kv_format(*drafter)).bytes, 1,
@@ -63,7 +64,11 @@ bool ConversationPages::init(const strata::core::ModelGeometry& g, strata::core:
     const int64_t n_qsa = count_qsa_layers(g, ss);
     unit_bytes_.clear();
     run_bytes_.clear();
-    for (size_t r = 1; r < pool.layout().regions.size(); ++r) {
+    fixed_regions_ = 0;
+    while (fixed_regions_ < pool.layout().regions.size() &&
+           pool.layout().regions[fixed_regions_].kind == RegionKind::fixed)
+        ++fixed_regions_;
+    for (size_t r = fixed_regions_; r < pool.layout().regions.size(); ++r) {
         unit_bytes_.push_back(pool.layout().regions[r].unit_bytes);
         run_bytes_.push_back(pool.block_bytes(r));
     }
@@ -125,7 +130,7 @@ bool ConversationPages::refresh(strata::core::SessionState& ss, std::string& err
 bool ConversationPages::write_tables(bool zero_new, std::string& err) {
     bool added = false;
     for (size_t j = 0; j < tables_.size(); ++j) {
-        const std::vector<strata::core::PageId>& runs = pool_->conversation_blocks(id_, 1 + j);
+        const std::vector<strata::core::PageId>& runs = pool_->conversation_blocks(id_, fixed_regions_ + j);
         if (runs.size() == runs_in_table_[j])
             continue;
         std::vector<uint8_t*> at;
@@ -155,7 +160,7 @@ void ConversationPages::truncate(int64_t tokens) {
     pool_->truncate_conversation(id_, keep);
     reserved_ = keep;
     for (size_t j = 0; j < tables_.size(); ++j)
-        runs_in_table_[j] = pool_->conversation_blocks(id_, 1 + j).size();
+        runs_in_table_[j] = pool_->conversation_blocks(id_, fixed_regions_ + j).size();
 }
 
 void ConversationPages::release() {
@@ -173,9 +178,13 @@ uint64_t ConversationPages::bytes() const {
     if (!is_ready())
         return 0;
     uint64_t bytes = 0;
-    for (size_t r = 0; r <= tables_.size(); ++r)   // the fixed region, then each table's
+    for (size_t r = 0; r < pool_->layout().regions.size(); ++r)
         bytes += pool_->conversation_blocks(id_, r).size() * pool_->block_bytes(r);
     return bytes;
+}
+
+void* ConversationPages::get_checkpoint_state(size_t slot) const {
+    return pool_->page_address(pool_->conversation_blocks(id_, 1 + slot).at(0));
 }
 
 int64_t ConversationPages::count_qsa_layers(const strata::core::ModelGeometry& g,

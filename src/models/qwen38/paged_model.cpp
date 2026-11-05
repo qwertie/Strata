@@ -15,6 +15,8 @@
 #include "strata/common/serve/paged_engine.hpp"
 #include "strata/common/serve/paged_model.hpp"
 #include "strata/common/serve/penalty_history.hpp"
+#include "strata/common/state/checkpoint_retention.hpp"
+#include "strata/common/state/prompt_checkpoint.hpp"
 #include "strata/models/qwen38/conversation.hpp"
 #include "strata/models/qwen38/conversation_drafter.hpp"
 #include "strata/models/qwen38/conversation_pages.hpp"
@@ -78,7 +80,20 @@ using ModelCards = std::deque<ModelCard>;   ///< (a deque, as PagedCards)
 
 /// A conversation's state on one card: a session carved for the card's layers, whose GDN state and K/V are pages of
 /// the card's pool.
+/// A rewind position whose recurrence lives in one of the conversation's fixed page-pool regions.
+struct Checkpoint {
+    int64_t tokens = 0; ///< Consumed prefix length, excluding the next token to read.
+    size_t slot = 0; ///< Index among the recurrent snapshots following the active fixed region.
+    uint64_t used = 0; ///< Recency for the shared root-pinned retention policy.
+    bool turn = false; ///< A continuation may replace the answer and temporary header after this position.
+    bool pinned = false; ///< Shared prefix retained until another pin is requested.
+    std::vector<uint8_t> state; ///< Cut-independent PLE, indexer and rotary metadata.
+};
+
 struct Part final : strata::serve::PagedPart {
+    std::vector<Checkpoint> checks; ///< Only the first card retains the chain shared by all cards.
+    bool checkpoint_enabled = true; ///< The current request's ckpt key.
+    int64_t pin = 0; ///< The current request's shared prefix, or zero.
     std::vector<int32_t> image_positions; ///< rotary coordinates retained with paused state
     const Model& m;
     const ModelCard& card;              ///< its card's model side, whose stream and verify windows it uses
@@ -107,8 +122,14 @@ struct Part final : strata::serve::PagedPart {
     bool can_reserve_without_growth(int64_t tokens) const override {
         return pages.can_reserve_without_growth(tokens);
     }
-    void truncate(int64_t tokens) override { pages.truncate(tokens); }
-    void release() override { pages.release(); }
+    void truncate(int64_t tokens) override {
+        std::erase_if(checks, [tokens](const Checkpoint& c) { return c.tokens > tokens; });
+        pages.truncate(tokens);
+    }
+    void release() override {
+        checks.clear();
+        pages.release();
+    }
     bool refresh(std::string& err) override { return pages.refresh(ss, err) && note_gdn_place(err); }
     void clear_state() override {
         const strata::core::OnDevice on(dev);
@@ -182,9 +203,13 @@ public:
     bool save_state(const PagedParts& parts, std::vector<uint8_t>& state, std::string& err) const override;
     bool restore_state(const std::vector<uint8_t>& state, const PagedParts& parts, const std::vector<int32_t>& live,
                        std::string& err) const override;
+    bool keeps_rewind_branch(const PagedParts& parts, int64_t tokens) const override;
+    std::vector<int64_t> get_rewind_points(const PagedParts& parts) const override;
+    bool rewind(const PagedParts& parts, int64_t tokens, std::string& err) override;
     bool get_session_identity(strata::core::SessionFileIdentity& id, std::string& err) const override {
         strata::core::SessionIdentityBuilder config(get_session_config_fingerprint(m_));
-        config.u64("paged state layout", 2);
+        config.u64("paged state layout", 3);
+        config.u64("rewind slots", (uint64_t) m_.o.prompt_cache);
         id.config = config.digest();
         return get_session_model_fingerprint(m_, &m_.src, id.model, err);
     }
@@ -214,6 +239,17 @@ public:
     void print_done(const strata::serve::RequestDone& done) const override;
 
 private:
+    /// Copies the small state beside the page-pool regions, independent of the current layer cut.
+    bool save_running_state(const PagedParts& parts, std::vector<uint8_t>& state, std::string& err) const;
+    /// Restores the small state and the indexer's partially written pooled row.
+    bool restore_running_state(const std::vector<uint8_t>& state, const PagedParts& parts,
+                               const std::vector<int32_t>& live, std::string& err) const;
+    /// Retains a prompt boundary using the old engine's root-pinned checkpoint policy.
+    bool save_checkpoint(const PagedParts& parts, const std::vector<int64_t>& ids, int64_t tokens,
+                         bool turn, std::string& err);
+    /// Reads a segment between checkpoint boundaries through the prompt path or short verify windows.
+    bool read_prompt_segment(const PagedParts& parts, const std::vector<int64_t>& ids, int64_t from, int64_t n,
+                             bool drafting, const ChunkDone& on_chunk, std::string& err);
     /// Holds the chain layout consumed by both synchronous and pipelined verifier calls.
     struct RowInputs {
         std::array<int, strata::kernels::kVerifyMaxT> sessions{};
@@ -254,6 +290,7 @@ private:
     ConversationDrafter* const drafter_;
     const int sessions_;
     const int prompt_rows_; ///< The legacy verify width used for short prompt reads.
+    uint64_t checkpoint_clock_ = 0; ///< Monotonic recency across active and restored chains.
     std::vector<int32_t> picks_;       ///< the last step's token after each row, for the drafter
     std::vector<const std::vector<int32_t>*> histories_; ///< consumed tokens for the current step
     std::vector<int> history_lengths_; ///< each session's penalty window
@@ -537,7 +574,7 @@ bool get_card_layout(const Model& m, const PagedCard& card, const ModelCard& mc,
                      strata::core::StateLayout& layout, std::string& err) {
     strata::core::SessionState carve = *mc.own;   // (a copy of the description only: the memory stays the session's)
     strata::core::session_set_layers(carve, m.g, lb, le);
-    if (!ConversationPages::get_layout(m.g, carve, nullptr, layout, err))
+    if (!ConversationPages::get_layout(m.g, carve, nullptr, layout, err, m.o.prompt_cache))
         return false;
     if (has_drafter(m, mc))
         layout.regions.push_back(card.experts.pool().layout().regions.back());
@@ -616,12 +653,14 @@ strata::core::LayerSizes PagedQwen::get_layer_sizes(uint64_t page) const {
     const strata::core::ModelGeometry& g = m_.g;
     const std::vector<strata::core::StateRegion>& whole = ram_.pages().pool().layout().regions;   // (every layer's)
     strata::core::LayerSizes sizes;
+    const size_t fixed = (size_t) (1 + m_.o.prompt_cache);
     for (int64_t l = 0, qsa = 0; l < g.n_layers; ++l) {
         const bool is_qsa = is_qsa_layer(g, l);
         sizes.dense.push_back(0);   // (outside the pools)
         sizes.expert.push_back((strata::kernels::cpu::expert_layout().blob_bytes(l) + page - 1) / page * page);
-        sizes.fixed_state.push_back(is_qsa ? 0 : whole[0].unit_bytes / (uint64_t) g.n_gdn_layers());
-        sizes.token_bytes.push_back(is_qsa ? whole[(size_t) (1 + qsa++)].unit_bytes / whole[1].unit_tokens() : 0);
+        sizes.fixed_state.push_back(is_qsa ? 0 : whole[0].unit_bytes * fixed / (uint64_t) g.n_gdn_layers());
+        sizes.token_bytes.push_back(is_qsa
+            ? whole[fixed + (size_t) qsa++].unit_bytes / whole[fixed].unit_tokens() : 0);
     }
     return sizes;
 }
@@ -633,17 +672,24 @@ bool PagedQwen::can_run_layers(int64_t lb, int64_t le) const {
 }
 
 strata::core::RegionSpan PagedQwen::get_gpu_span(const PagedCard& card) const {
-    // its GDN state, then its QSA layers' regions (and the drafter's, last)
-    return {1, SIZE_MAX, 0, 0, card.experts.pool().layout().regions[0].unit_bytes};
+    strata::core::RegionSpan span;
+    span.first = (size_t) (1 + m_.o.prompt_cache);
+    for (size_t r = 0; r < span.first; ++r)
+        span.ranges.push_back({r, 0, card.experts.pool().layout().regions[r].unit_bytes});
+    return span;
 }
 
 strata::core::RegionSpan PagedQwen::get_ram_span(int64_t lb, int64_t le) const {
-    // the card's share of the GDN state, and its QSA layers' regions (and the drafter's, last)
     const strata::core::ModelGeometry& g = m_.g;
     const int64_t interval = std::max<int64_t>(g.qsa_interval, 1), q0 = lb / interval, q1 = le / interval;
-    const uint64_t gdn_layer = ram_.pages().pool().layout().regions[0].unit_bytes / (uint64_t) g.n_gdn_layers();
-    return {(size_t) (1 + q0), le == g.n_layers ? SIZE_MAX : (size_t) (q1 - q0), 0, (uint64_t) (lb - q0) * gdn_layer,
-            (uint64_t) (le - q1 - (lb - q0)) * gdn_layer};
+    const uint64_t layer = ram_.pages().pool().layout().regions[0].unit_bytes / (uint64_t) g.n_gdn_layers();
+    const size_t fixed = (size_t) (1 + m_.o.prompt_cache);
+    strata::core::RegionSpan span;
+    span.first = fixed + (size_t) q0;
+    span.count = le == g.n_layers ? SIZE_MAX : (size_t) (q1 - q0);
+    for (size_t r = 0; r < fixed; ++r)
+        span.ranges.push_back({r, (uint64_t) (lb - q0) * layer, (uint64_t) (le - q1 - (lb - q0)) * layer});
+    return span;
 }
 
 uint64_t PagedQwen::get_weight_bytes(const PagedCard& card) const {
@@ -746,12 +792,24 @@ void PagedQwen::start_request(int session, const strata::serve::RequestStart& r)
         history_lengths_.resize((size_t) sessions_);
     history_lengths_[(size_t) session] = std::min(sp.penalty_last_n, 4096);
     conv_.ver.set_slot_sampling(session, sp);
+    Part& lead = *leads_[(size_t) session];
+    lead.checkpoint_enabled = true;
+    lead.pin = 0;
+    for (const auto& [key, value] : r.keys) {
+        if (key == "ckpt")
+            lead.checkpoint_enabled = std::atoi(value.c_str()) != 0;
+        else if (key == "pin" && m_.o.prompt_cache >= 3)
+            lead.pin = std::max<int64_t>(0, std::atoll(value.c_str()));
+    }
+    if (lead.pin > 0)
+        for (Checkpoint& c : lead.checks)
+            c.pinned = c.tokens == lead.pin;
 }
 
 // The state beside the pages is every QSA layer's indexer state (tail, dead, block_pos) in the layers' order, its
 // size first, then the PLE history of the card that owns layer 1, its size first.
 // Image rotary coordinates, when present, follow the history.
-bool PagedQwen::save_state(const PagedParts& parts, std::vector<uint8_t>& state, std::string& err) const {
+bool PagedQwen::save_running_state(const PagedParts& parts, std::vector<uint8_t>& state, std::string& err) const {
     strata::core::ConversationStateSizes z;
     if (!strata::core::conversation_state_sizes(m_.g, z, err))
         return false;
@@ -782,7 +840,7 @@ bool PagedQwen::save_state(const PagedParts& parts, std::vector<uint8_t>& state,
     return true;
 }
 
-bool PagedQwen::restore_state(const std::vector<uint8_t>& state, const PagedParts& parts,
+bool PagedQwen::restore_running_state(const std::vector<uint8_t>& state, const PagedParts& parts,
                               const std::vector<int32_t>& live, std::string& err) const {
     strata::core::ConversationStateSizes z;
     if (!strata::core::conversation_state_sizes(m_.g, z, err))
@@ -834,7 +892,209 @@ bool PagedQwen::restore_state(const std::vector<uint8_t>& state, const PagedPart
     return true;
 }
 
+bool PagedQwen::save_state(const PagedParts& parts, std::vector<uint8_t>& state, std::string& err) const {
+    std::vector<uint8_t> running;
+    if (!save_running_state(parts, running, err))
+        return false;
+    state.clear();
+    append_size(state, running.size());
+    state.insert(state.end(), running.begin(), running.end());
+    const auto& checks = get_part(*parts.front()).checks;
+    append_size(state, checks.size());
+    for (const Checkpoint& c : checks) {
+        for (uint64_t n : {(uint64_t) c.tokens, (uint64_t) c.slot, c.used, (uint64_t) (c.turn | (c.pinned << 1)),
+                           (uint64_t) c.state.size()})
+            append_size(state, n);
+        state.insert(state.end(), c.state.begin(), c.state.end());
+    }
+    return true;
+}
+
+bool PagedQwen::restore_state(const std::vector<uint8_t>& state, const PagedParts& parts,
+                              const std::vector<int32_t>& live, std::string& err) const {
+    size_t at = 0;
+    const auto read_blob = [&](std::vector<uint8_t>& out) {
+        const uint64_t n = read_size(state, at);
+        if (n > state.size() - at)
+            return false;
+        out.assign(state.begin() + (std::ptrdiff_t) at, state.begin() + (std::ptrdiff_t) (at + n));
+        at += (size_t) n;
+        return true;
+    };
+    std::vector<uint8_t> running;
+    std::vector<Checkpoint> checks;
+    bool valid = read_blob(running);
+    const uint64_t count = read_size(state, at);
+    valid = valid && count <= (uint64_t) m_.o.prompt_cache;
+    for (uint64_t i = 0; valid && i < count; ++i) {
+        Checkpoint c;
+        const uint64_t tokens = read_size(state, at);
+        c.tokens = (int64_t) tokens;
+        c.slot = (size_t) read_size(state, at);
+        c.used = read_size(state, at);
+        const uint64_t flags = read_size(state, at);
+        c.turn = (flags & 1) != 0;
+        c.pinned = (flags & 2) != 0;
+        valid = flags <= 3 && tokens > 0 && tokens <= live.size() && c.slot < (size_t) m_.o.prompt_cache &&
+                (checks.empty() || checks.back().tokens < c.tokens) &&
+                std::none_of(checks.begin(), checks.end(), [&](const Checkpoint& other) {
+                    return other.slot == c.slot;
+                }) && read_blob(c.state) && c.state.size() >= 16;
+        checks.push_back(std::move(c));
+    }
+    if (!valid || at != state.size()) {
+        err = "the paused conversation's rewind directory is damaged";
+        return false;
+    }
+    if (!restore_running_state(running, parts, live, err))
+        return false;
+    get_part(*parts.front()).checks = std::move(checks);
+    return true;
+}
+
+bool PagedQwen::keeps_rewind_branch(const PagedParts& parts, int64_t tokens) const {
+    const auto& checks = get_part(*parts.front()).checks;
+    return std::none_of(checks.begin(), checks.end(), [tokens](const Checkpoint& c) {
+        return c.tokens == tokens && c.turn && !c.pinned;
+    });
+}
+
+std::vector<int64_t> PagedQwen::get_rewind_points(const PagedParts& parts) const {
+    std::vector<int64_t> points;
+    for (const Checkpoint& c : get_part(*parts.front()).checks)
+        points.push_back(c.tokens);
+    return points;
+}
+
+bool PagedQwen::rewind(const PagedParts& parts, int64_t tokens, std::string& err) {
+    auto& checks = get_part(*parts.front()).checks;
+    const auto found = std::find_if(checks.begin(), checks.end(), [tokens](const Checkpoint& c) {
+        return c.tokens == tokens;
+    });
+    if (found == checks.end()) {
+        err = "no checkpoint at token " + std::to_string(tokens);
+        return false;
+    }
+    if (!wait_state(err))
+        return false;
+    for (const auto& part : parts) {
+        Part& p = get_part(*part);
+        const strata::core::OnDevice on(p.dev);
+        strata::core::ConversationStateSizes sizes;
+        if (!strata::core::conversation_session_sizes(m_.g, p.ss, sizes, err) ||
+            !strata::core::gpu_copy(p.ss.gdn_state, p.pages.get_checkpoint_state(found->slot), sizes.gdn)) {
+            if (err.empty())
+                err = "the checkpoint's recurrent state could not be restored";
+            return false;
+        }
+    }
+    // The restore needs the token count for the indexer and the final two IDs for the PLE history.
+    size_t at = 0;
+    const int32_t previous = (int32_t) read_size(found->state, at);
+    const int32_t last = (int32_t) read_size(found->state, at);
+    std::vector<int32_t> ids((size_t) tokens, 0);
+    ids.back() = last;
+    if (tokens > 1)
+        ids[ids.size() - 2] = previous;
+    const std::vector<uint8_t> state(found->state.begin() + (std::ptrdiff_t) at, found->state.end());
+    if (!restore_running_state(state, parts, ids, err))
+        return false;
+    for (const Checkpoint& c : checks)
+        checkpoint_clock_ = std::max(checkpoint_clock_, c.used);
+    found->used = ++checkpoint_clock_;
+    return true;
+}
+
+bool PagedQwen::save_checkpoint(const PagedParts& parts, const std::vector<int64_t>& ids, int64_t tokens,
+                                 bool turn, std::string& err) {
+    auto& checks = get_part(*parts.front()).checks;
+    if (std::any_of(checks.begin(), checks.end(), [tokens](const Checkpoint& c) { return c.tokens == tokens; }))
+        return true;
+    if (!wait_state(err))
+        return false;
+    Checkpoint saved;
+    saved.tokens = tokens;
+    saved.turn = turn;
+    saved.pinned = tokens == get_part(*parts.front()).pin;
+    for (const Checkpoint& c : checks)
+        checkpoint_clock_ = std::max(checkpoint_clock_, c.used);
+    saved.used = ++checkpoint_clock_;
+    append_size(saved.state, tokens > 1 ? (uint64_t) ids[(size_t) tokens - 2] : UINT64_MAX);
+    append_size(saved.state, (uint64_t) ids[(size_t) tokens - 1]);
+    std::vector<uint8_t> state;
+    if (!save_running_state(parts, state, err))
+        return false;
+    saved.state.insert(saved.state.end(), state.begin(), state.end());
+    if (checks.size() == (size_t) m_.o.prompt_cache) {
+        std::vector<uint64_t> stamps;
+        std::vector<int64_t> lengths;
+        auto pinned = std::make_unique<bool[]>(checks.size() + 1);
+        for (size_t i = 0; i < checks.size(); ++i) {
+            stamps.push_back(checks[i].used);
+            lengths.push_back(checks[i].tokens);
+            pinned[i] = checks[i].pinned;
+        }
+        pinned[checks.size()] = saved.pinned;
+        stamps.push_back(saved.used);
+        lengths.push_back(tokens);
+        const size_t victim = m_.o.prompt_cache_spread
+            ? strata::core::conv_cache::spread_victim(lengths.data(), stamps.data(), stamps.size(),
+                                                      m_.o.prompt_cache, nullptr, pinned.get())
+            : strata::core::conv_cache::eviction_victim(stamps.data(), stamps.size(), m_.o.prompt_cache,
+                                                        nullptr, pinned.get());
+        if (victim == checks.size())
+            return true;
+        saved.slot = checks[victim].slot;
+        checks.erase(checks.begin() + (std::ptrdiff_t) victim);
+    } else {
+        while (std::any_of(checks.begin(), checks.end(), [&](const Checkpoint& c) { return c.slot == saved.slot; }))
+            ++saved.slot;
+    }
+    for (const auto& part : parts) {
+        Part& p = get_part(*part);
+        const strata::core::OnDevice on(p.dev);
+        strata::core::ConversationStateSizes sizes;
+        if (!strata::core::conversation_session_sizes(m_.g, p.ss, sizes, err) ||
+            !strata::core::gpu_copy(p.pages.get_checkpoint_state(saved.slot), p.ss.gdn_state, sizes.gdn)) {
+            if (err.empty())
+                err = "the checkpoint's recurrent state could not be saved";
+            return false;
+        }
+    }
+    checks.push_back(std::move(saved));
+    return true;
+}
+
 bool PagedQwen::read_prompt(const PagedParts& parts, const std::vector<int64_t>& ids, int64_t from, int64_t n,
+                            bool drafting, const ChunkDone& on_chunk, std::string& err) {
+    const Part& lead = get_part(*parts.front());
+    const bool enabled = m_.o.prompt_cache > 0 && lead.checkpoint_enabled;
+    const int64_t end = from + n;
+    const int64_t turn = enabled ? strata::core::find_prompt_turn_boundary(
+        ids, 0, m_.o.turn_token, m_.o.tail_role_token) : -1;
+    const int64_t root = enabled ? strata::core::find_prompt_root_boundary(
+        ids, turn, m_.o.turn_token, m_.o.prompt_cache_root) : -1;
+    std::vector<int64_t> cuts;
+    for (const int64_t point : {root, turn, enabled ? lead.pin : 0})
+        if (point > from && point <= end && point + 1 < (int64_t) ids.size())
+            cuts.push_back(point);
+    if (enabled && m_.o.prompt_cache_every > 0)
+        for (int64_t point = (from / m_.o.prompt_cache_every + 1) * m_.o.prompt_cache_every;
+             point <= end && (turn < 0 || point < turn); point += m_.o.prompt_cache_every)
+            cuts.push_back(point);
+    std::sort(cuts.begin(), cuts.end());
+    cuts.erase(std::unique(cuts.begin(), cuts.end()), cuts.end());
+    int64_t at = from;
+    for (int64_t point : cuts) {
+        if (!read_prompt_segment(parts, ids, at, point - at, drafting, on_chunk, err) ||
+            !save_checkpoint(parts, ids, point, point == turn, err))
+            return false;
+        at = point;
+    }
+    return at == end || read_prompt_segment(parts, ids, at, end - at, drafting, on_chunk, err);
+}
+
+bool PagedQwen::read_prompt_segment(const PagedParts& parts, const std::vector<int64_t>& ids, int64_t from, int64_t n,
                             bool drafting, const ChunkDone& on_chunk, std::string& err) {
     if (!activate_images((int) get_part(*parts.front()).id() - 1, err))
         return false;
@@ -1168,7 +1428,8 @@ bool open_pages(Model& m, PagedCard& card, ModelCard& mc, int64_t tokens_min, in
     const std::vector<uint64_t> blobs = get_blob_bytes(m);
     const uint64_t page = strata::core::choose_expert_page_bytes(blobs);
     strata::core::StateLayout layout;
-    if (!ConversationPages::get_layout(m.g, *mc.own, drafting ? &m.mtp.kv_state() : nullptr, layout, err))
+    if (!ConversationPages::get_layout(m.g, *mc.own, drafting ? &m.mtp.kv_state() : nullptr, layout, err,
+                                        m.o.prompt_cache))
         return false;
     uint64_t most = strata::serve::get_conversation_bytes(layout, m.o.max_context, page);
     for (size_t i = 0; i < ranking.size() && (int64_t) i < max_experts; ++i)

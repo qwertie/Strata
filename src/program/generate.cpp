@@ -73,6 +73,7 @@
 #include "strata/program/batch_read.hpp"
 #include "strata/models/qwen38/logits_selection.hpp"
 #include "strata/program/conv_cache.hpp"
+#include "strata/common/state/prompt_checkpoint.hpp"
 #include "strata/models/qwen38/prefill/share_rules.hpp"
 #include "strata/base/platform/host_limits.hpp"
 #include "strata/program/split_ring.hpp"
@@ -7487,19 +7488,8 @@ int main(int argc, char** argv) {
             // (the conversation so far), a checkpoint there, then the new turn's header.  The next request of the same
             // chat renders the same history - but not always the same header or the thinking of this reply - so that
             // checkpoint is the one it reuses.
-            int64_t turn_at = -1;
-            if (o.prompt_cache > 0 && o.turn_token >= 0)
-                for (int64_t i = n - 1; i > resume; --i)
-                    if (ids[(size_t) i] == o.turn_token) { turn_at = i; break; }
-            // #458 (opt-in): a short turn of --tail-role-token's role right before the new assistant turn (the
-            // server's trailing reasoning-effort turn) stays out of the checkpoint, so the next request - another
-            // effort, or the next turn of the chat - finds the conversation without it
-            if (turn_at > 0 && o.tail_role_token >= 0)
-                for (int64_t i = turn_at - 1; i > resume; --i)
-                    if (ids[(size_t) i] == o.turn_token) {
-                        if (ids[(size_t) i + 1] == o.tail_role_token) turn_at = i;
-                        break;
-                    }
+            int64_t turn_at = o.prompt_cache > 0 ? strata::core::find_prompt_turn_boundary(
+                ids, resume, o.turn_token, o.tail_role_token) : -1;
             // A prompt read from token 0 also stops at its FIRST turn boundary: the end of the system prompt (with
             // the tools), which every new chat of the same client shares.  That checkpoint becomes the chain's root,
             // which the retention policy pins (conv_cache.hpp), so the next new chat reads only what comes after it.
@@ -7507,13 +7497,8 @@ int main(int argc, char** argv) {
             // is cheaper to read again than the extra part costs (~0.3 s).
             const int64_t last_turn = turn_at;   // ckpt=0 drops the split there, the root is still looked for before it
             if (!req_ckpt) turn_at = -1;
-            int64_t root_at = -1;
-            if (o.prompt_cache > 0 && o.turn_token >= 0 && o.prompt_cache_root > 0 && (read_from == 0 || resumed_from0))
-                for (int64_t i = 1; i < last_turn; ++i)
-                    if (ids[(size_t) i] == o.turn_token) {
-                        if (i >= o.prompt_cache_root) root_at = i;
-                        break;
-                    }
+            const int64_t root_at = o.prompt_cache > 0 && (read_from == 0 || resumed_from0)
+                ? strata::core::find_prompt_root_boundary(ids, last_turn, o.turn_token, o.prompt_cache_root) : -1;
             static const bool message_checkpoint = [] {
                 const char* e = std::getenv("STRATA_CACHE_MESSAGE_BOUNDARY");
                 return e != nullptr && std::atoi(e) != 0;

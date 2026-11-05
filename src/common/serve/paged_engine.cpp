@@ -1086,9 +1086,9 @@ int64_t PagedEngine::take_conversation(size_t target, const std::vector<int64_t>
         std::swap(at_[target], at_[best]);
     Held& h = get_held(target);
     std::string err;
-    // a conversation on the GPU that `ids` leave before its end pauses whole and comes back from its pause, short of
-    // its end (it goes back in place when it cannot pause)
-    if (back == paused_.end() && most > 0 && most < (int64_t) h.live.size()) {
+    // Preserve independent branches; temporary turn tails can be replaced in place by models that identify them.
+    if (back == paused_.end() && most > 0 && most < (int64_t) h.live.size() &&
+        model_.keeps_rewind_branch(h.parts, most)) {
         if (!pause(h, err)) {
             say("pausing a conversation failed, so it goes back in place and is not kept whole: %s\n", err.c_str());
         } else {
@@ -1108,7 +1108,7 @@ int64_t PagedEngine::take_conversation(size_t target, const std::vector<int64_t>
         pause_or_forget(h);
     if (p) {
         const bool ok = resume(*p, h, err);
-        if (whole) {
+        if (whole || !model_.keeps_rewind_branch(h.parts, most)) {
             drop_pages(*p);
         } else {   // it stays paused whole; the pauses that made room for it did not count its bytes
             paused_.push_back(std::move(*p));
