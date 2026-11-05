@@ -1,0 +1,22 @@
+{
+  "matrix_measured_answers": 76,
+  "all_answers_256_tokens": true,
+  "all_requested_cells_two_or_more_rounds": true,
+  "all_final_ram_budgets_mib": 20480,
+  "expert_read_failures_found": false,
+  "source_profile_matches_owner": true,
+  "optimization_condition_triggered": false,
+  "step_test": "passed",
+  "architecture": "6 passed in 9.90s",
+  "git_diff_check": "passed",
+  "not_run": [
+    "CUDA/SYCL/Metal",
+    "multi-card inference",
+    "long-context quality/speed",
+    "excluded lifecycle and GPU tests"
+  ],
+  "production_engine_changes": false,
+  "remaining_owned_engine_or_harness_processes": 0,
+  "branch": "memory-manager",
+  "head": "73edf255"
+}

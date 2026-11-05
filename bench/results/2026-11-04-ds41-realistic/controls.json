@@ -1,0 +1,483 @@
+{
+  "new-d0-matrix": {
+    "tag": "new-d0-matrix",
+    "summary": {
+      "1-0": {
+        "rounds": 2,
+        "seconds": 45.8137,
+        "tokens": 512,
+        "tps": 11.175696352837688,
+        "per_conversation": 11.175696352837688,
+        "kept": 0,
+        "offered": 0,
+        "diagnostics": [
+          {
+            "steps": 256,
+            "draft_steps": 0,
+            "multi_conversation_draft_steps": 0
+          },
+          {
+            "steps": 256,
+            "draft_steps": 0,
+            "multi_conversation_draft_steps": 0
+          }
+        ],
+        "per_slot_tps": [
+          11.175696352837688
+        ]
+      },
+      "1-1": {
+        "rounds": 2,
+        "seconds": 43.9764,
+        "tokens": 512,
+        "tps": 11.642608308092523,
+        "per_conversation": 11.642608308092523,
+        "kept": 0,
+        "offered": 0,
+        "diagnostics": [
+          {
+            "steps": 256,
+            "draft_steps": 0,
+            "multi_conversation_draft_steps": 0
+          },
+          {
+            "steps": 256,
+            "draft_steps": 0,
+            "multi_conversation_draft_steps": 0
+          }
+        ],
+        "per_slot_tps": [
+          11.642608308092523
+        ]
+      },
+      "1-2": {
+        "rounds": 2,
+        "seconds": 45.5677,
+        "tokens": 512,
+        "tps": 11.236029029334375,
+        "per_conversation": 11.236029029334375,
+        "kept": 0,
+        "offered": 0,
+        "diagnostics": [
+          {
+            "steps": 256,
+            "draft_steps": 0,
+            "multi_conversation_draft_steps": 0
+          },
+          {
+            "steps": 256,
+            "draft_steps": 0,
+            "multi_conversation_draft_steps": 0
+          }
+        ],
+        "per_slot_tps": [
+          11.236029029334375
+        ]
+      },
+      "2": {
+        "rounds": 2,
+        "seconds": 54.93596750003053,
+        "tokens": 1018,
+        "tps": 18.530664814439362,
+        "per_conversation": 9.265332407219681,
+        "kept": 0,
+        "offered": 0,
+        "diagnostics": [
+          {
+            "steps": 257,
+            "draft_steps": 0,
+            "multi_conversation_draft_steps": 0
+          },
+          {
+            "steps": 257,
+            "draft_steps": 0,
+            "multi_conversation_draft_steps": 0
+          }
+        ],
+        "per_slot_tps": [
+          9.24712939659646,
+          9.283535417842902
+        ]
+      },
+      "3": {
+        "rounds": 2,
+        "seconds": 84.936681399995,
+        "tokens": 1524,
+        "tps": 17.942777783169777,
+        "per_conversation": 5.980925927723259,
+        "kept": 0,
+        "offered": 0,
+        "diagnostics": [
+          {
+            "steps": 258,
+            "draft_steps": 0,
+            "multi_conversation_draft_steps": 0
+          },
+          {
+            "steps": 258,
+            "draft_steps": 0,
+            "multi_conversation_draft_steps": 0
+          }
+        ],
+        "per_slot_tps": [
+          5.957378975251908,
+          5.98092592772326,
+          6.004472880194611
+        ]
+      },
+      "4": {
+        "rounds": 2,
+        "seconds": 121.79034960002173,
+        "tokens": 2028,
+        "tps": 16.65156563438946,
+        "per_conversation": 4.162891408597365,
+        "kept": 0,
+        "offered": 0,
+        "diagnostics": [
+          {
+            "steps": 259,
+            "draft_steps": 0,
+            "multi_conversation_draft_steps": 0
+          },
+          {
+            "steps": 259,
+            "draft_steps": 0,
+            "multi_conversation_draft_steps": 0
+          }
+        ],
+        "per_slot_tps": [
+          4.138258915055369,
+          4.1546805774167,
+          4.171102239778031,
+          4.187523902139361
+        ]
+      }
+    },
+    "identity": [
+      {
+        "prompts": [
+          0,
+          1
+        ],
+        "first_difference": [
+          26,
+          null
+        ]
+      },
+      {
+        "prompts": [
+          0,
+          1
+        ],
+        "first_difference": [
+          1,
+          null
+        ]
+      },
+      {
+        "prompts": [
+          0,
+          1,
+          2
+        ],
+        "first_difference": [
+          1,
+          null,
+          2
+        ]
+      },
+      {
+        "prompts": [
+          0,
+          1,
+          2
+        ],
+        "first_difference": [
+          30,
+          null,
+          11
+        ]
+      },
+      {
+        "prompts": [
+          0,
+          1,
+          2,
+          0
+        ],
+        "first_difference": [
+          30,
+          null,
+          2,
+          30
+        ]
+      },
+      {
+        "prompts": [
+          0,
+          1,
+          2,
+          0
+        ],
+        "first_difference": [
+          44,
+          null,
+          2,
+          35
+        ]
+      }
+    ],
+    "repeat_identity": {
+      "0": 1,
+      "1": null,
+      "2": 2
+    },
+    "minimum_physical": 4.806846618652344,
+    "minimum_commit": 0.13397598266601562,
+    "max_commit_limit": 139.44347381591797,
+    "command": {
+      "exe": "C:\\Users\\qwert\\AppData\\Local\\Temp\\ds41-realistic\\strata-ds41.exe",
+      "args": [
+        "--serve",
+        "--pack",
+        "C:\\Users\\qwert\\AppData\\Local\\Temp\\ds41-realistic\\new-d0-matrix",
+        "--max-context",
+        "524288",
+        "--eos",
+        "1",
+        "--dspark",
+        "off",
+        "--dspark-conf",
+        "0.65",
+        "--gpu-mib",
+        "61440",
+        "--ram-mib",
+        "20480",
+        "--expert-cache",
+        "auto",
+        "--batch",
+        "4",
+        "--concurrent",
+        "4",
+        "--remote-experts",
+        "off",
+        "--pause-dir",
+        "C:\\Users\\qwert\\AppData\\Local\\Temp\\ds41-realistic\\new-d0-matrix-pause",
+        "--step-profile",
+        "1"
+      ],
+      "env": {
+        "DS4_COMMIT_CAP_GB": "115",
+        "STRATA_COMMIT_RESERVE_MIB": "0"
+      },
+      "preflight": {
+        "avail_phys": 31.427162170410156,
+        "avail_page": 74.81270980834961,
+        "total_page": 127.29456329345703
+      },
+      "ram_mib": 20480
+    },
+    "exit": 0
+  },
+  "old-d0-final": {
+    "tag": "old-d0-final",
+    "summary": {},
+    "identity": [],
+    "repeat_identity": {},
+    "minimum_physical": 3.994415283203125,
+    "minimum_commit": 0.00679779052734375,
+    "max_commit_limit": 133.31209564208984,
+    "command": {
+      "exe": "C:\\Users\\qwert\\AppData\\Local\\Temp\\ds41-realistic\\strata-dsv41.exe",
+      "args": [
+        "--serve",
+        "--pack",
+        "C:\\Users\\qwert\\AppData\\Local\\Temp\\ds41-realistic\\old-d0-final",
+        "--max-context",
+        "524288",
+        "--eos",
+        "1",
+        "--dspark",
+        "none",
+        "--dspark-conf",
+        "0.65",
+        "--ssd-cache",
+        "21.47483648",
+        "--vram-experts",
+        "1"
+      ],
+      "env": {
+        "DS4_COMMIT_CAP_GB": "73.014444032",
+        "STRATA_COMMIT_RESERVE_MIB": "0",
+        "DS4_UMA_GPU_RESERVE_GB": "4"
+      },
+      "preflight": {
+        "avail_phys": 36.239078521728516,
+        "avail_page": 78.8468246459961,
+        "total_page": 127.29456329345703
+      },
+      "ram_mib": 20480
+    },
+    "exit": 1
+  },
+  "old-d0-ram16": {
+    "tag": "old-d0-ram16",
+    "summary": {
+      "1-0": {
+        "rounds": 2,
+        "seconds": 48.81439999999999,
+        "tokens": 512,
+        "tps": 10.488708250024585,
+        "per_conversation": 10.488708250024585,
+        "kept": 0,
+        "offered": 0,
+        "diagnostics": [
+          {
+            "cpu": 2293,
+            "experts": 51000,
+            "ram_dispatch": 0,
+            "store_misses": 1129,
+            "store_bytes": 9683066880,
+            "store_slots": 1024,
+            "draft_rounds": 0,
+            "steps": 0,
+            "draft_steps": 0,
+            "multi_conversation_draft_steps": 0
+          },
+          {
+            "cpu": 1474,
+            "experts": 51000,
+            "ram_dispatch": 0,
+            "store_misses": 842,
+            "store_bytes": 7197327360,
+            "store_slots": 1024,
+            "draft_rounds": 0,
+            "steps": 0,
+            "draft_steps": 0,
+            "multi_conversation_draft_steps": 0
+          }
+        ],
+        "per_slot_tps": [
+          10.488708250024585
+        ]
+      },
+      "1-1": {
+        "rounds": 2,
+        "seconds": 46.175799999999995,
+        "tokens": 512,
+        "tps": 11.088059113215149,
+        "per_conversation": 11.088059113215149,
+        "kept": 0,
+        "offered": 0,
+        "diagnostics": [
+          {
+            "cpu": 629,
+            "experts": 51000,
+            "ram_dispatch": 0,
+            "store_misses": 353,
+            "store_bytes": 3110492160,
+            "store_slots": 1024,
+            "draft_rounds": 0,
+            "steps": 0,
+            "draft_steps": 0,
+            "multi_conversation_draft_steps": 0
+          },
+          {
+            "cpu": 646,
+            "experts": 51000,
+            "ram_dispatch": 0,
+            "store_misses": 368,
+            "store_bytes": 3230300160,
+            "store_slots": 1024,
+            "draft_rounds": 0,
+            "steps": 0,
+            "draft_steps": 0,
+            "multi_conversation_draft_steps": 0
+          }
+        ],
+        "per_slot_tps": [
+          11.088059113215149
+        ]
+      },
+      "1-2": {
+        "rounds": 2,
+        "seconds": 51.555499999999995,
+        "tokens": 512,
+        "tps": 9.931045184315932,
+        "per_conversation": 9.931045184315932,
+        "kept": 0,
+        "offered": 0,
+        "diagnostics": [
+          {
+            "cpu": 1796,
+            "experts": 51000,
+            "ram_dispatch": 0,
+            "store_misses": 948,
+            "store_bytes": 8136253440,
+            "store_slots": 1024,
+            "draft_rounds": 0,
+            "steps": 0,
+            "draft_steps": 0,
+            "multi_conversation_draft_steps": 0
+          },
+          {
+            "cpu": 1753,
+            "experts": 51000,
+            "ram_dispatch": 0,
+            "store_misses": 976,
+            "store_bytes": 8403886080,
+            "store_slots": 1024,
+            "draft_rounds": 0,
+            "steps": 0,
+            "draft_steps": 0,
+            "multi_conversation_draft_steps": 0
+          }
+        ],
+        "per_slot_tps": [
+          9.931045184315932
+        ]
+      }
+    },
+    "identity": [],
+    "repeat_identity": {
+      "0": 1,
+      "1": null,
+      "2": 9
+    },
+    "minimum_physical": 4.947322845458984,
+    "minimum_commit": 0.005275726318359375,
+    "max_commit_limit": 130.99399185180664,
+    "command": {
+      "exe": "C:\\Users\\qwert\\AppData\\Local\\Temp\\ds41-realistic\\strata-dsv41.exe",
+      "args": [
+        "--serve",
+        "--pack",
+        "C:\\Users\\qwert\\AppData\\Local\\Temp\\ds41-realistic\\old-d0-ram16",
+        "--max-context",
+        "524288",
+        "--eos",
+        "1",
+        "--dspark",
+        "none",
+        "--dspark-conf",
+        "0.65",
+        "--ssd-cache",
+        "17.179869184",
+        "--vram-experts",
+        "1"
+      ],
+      "env": {
+        "DS4_COMMIT_CAP_GB": "73.014444032",
+        "STRATA_COMMIT_RESERVE_MIB": "0",
+        "DS4_UMA_GPU_RESERVE_GB": "4"
+      },
+      "preflight": {
+        "avail_phys": 36.26054000854492,
+        "avail_page": 79.1817398071289,
+        "total_page": 127.29456329345703
+      },
+      "ram_mib": 16384
+    },
+    "exit": 0
+  }
+}

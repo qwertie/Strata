@@ -636,3 +636,21 @@ and cut-10-to-20 runs matched all 96 output tokens. The quarter-pool stress run 
 but diverged at token 71. Settings, limits and the observed GPU expert shortfall are recorded in
 [DETAILS.md](DETAILS.md#deepseek-paged-stages-dense-weights-and-expert-hops).
 Separate-card migration and hop execution remain for the NVIDIA kit.
+
+
+### DeepSeek realistic-pool measurement follow-up, 4 November 2026
+
+The 60 GiB GPU / 20 GiB RAM requested-budget study now covers DSpark off/on, one to four conversations
+for strata-ds41 and one for strata-dsv41, using the owner's IST-DAS 2.00 bpw pack and configured context.
+Available GPU pools fill before READY; final GPU pools are 51.49 / 49.99 GiB (off/on), with old cache
+caps matched to their actual expert bytes. Two measured rounds follow residency convergence. Expert misses,
+file payload reads, per-conversation rates and greedy comparisons are retained. DSpark does no actual
+drafting in the measured concurrent rounds, while retaining its GPU expert allocation.
+
+The owner reports 96–99 °C under load with a quiet fan; per-round clocks were not logged. Sequential
+run order, thermal variation and a restarted new-off segment limit performance attribution. Universal
+greedy identity remains unmet; some normal/story answers also change in legacy standalone repeats.
+No engine source, default or model file was changed. Host diagnostic relinks, shared step and six
+architecture tests passed; other backends, multi-card hardware and excluded GPU/lifecycle tests were not run.
+See the [report](../bench/results/2026-11-04-ds41-realistic/README.md) for the matrix, exact commands,
+watchdog pilot, passed/failed/not-run checks and limits. This does not close cross-card validation.

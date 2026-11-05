@@ -1985,3 +1985,32 @@ output token 71. During the moved cut it held about 69 MB fewer GPU expert bytes
 CPU/GPU arithmetic is a possible cause, not a confirmed diagnosis. Separate-card migration,
 hop correctness and speed remain unmeasured here. The kit's identity check starts at cut 10
 and halves the pool to exercise a move without that expert shortfall.
+
+
+### DeepSeek realistic GPU and RAM pools, 4 November 2026
+
+Windows HIP gfx1151, Ryzen AI MAX+ 395 / Radeon 8060S, IST-DAS 2.00 bpw, five experts per token,
+524,288 configured context, greedy 256-token answers. Requested new pools were 60 GiB GPU / 20 GiB RAM;
+the allocator capped the GPU pool to 51.49 GiB without DSpark and 49.99 GiB with it. Available pools
+were filled before READY and stable through warm-up. Old cache budgets match the actual allocations.
+
+| Engine | DSpark | Chats | Total tok/s | Mean each | Kept/offered | GPU experts | RAM experts/slots |
+|---|---|---:|---:|---:|---:|---|---|
+| Old | Off | 1 | 5.24 | 5.24 | 0/0 | 6266 | 2090 |
+| Old | On | 1 | 7.25 | 7.25 | 710/761 | 5259 + 384 draft | 2090 |
+| New | Off | 1 | 6.82 | 6.82 | 0/0 | 6308 | 2431 |
+| New | Off | 2 | 9.19 | 4.60 | 0/0 | 6308 | 2431 |
+| New | Off | 3 | 9.96 | 3.32 | 0/0 | 6308 | 2431 |
+| New | Off | 4 | 9.44 | 2.36 | 0/0 | 6308 | 2431 |
+| New | On | 1 | 11.16 | 11.16 | 691/746 | 5277 + 384 draft | 2417–2425 |
+| New | On | 2 | 7.52 | 3.76 | 0/0 | 5277 + 384 draft | 2395–2414 |
+| New | On | 3 | 7.65 | 2.55 | 0/0 | 5277 + 384 draft | 2381–2386 |
+| New | On | 4 | 8.96 | 2.24 | 0/0 | 5277 + 384 draft | 2371–2372 |
+
+Rates pool at least two measured rounds; concurrent timing starts after the final admission.
+GPU counts exclude the separate drafter count shown; RAM counts use each engine's own cache representation.
+The owner reports 96–99 °C under load, quiet fan; clocks were not logged per timed round. Thermal variation
+and different greedy answers limit comparisons. Some seasons/story answers also change within each engine.
+No production optimization was applied. A restarted new-off segment preserves completed samples.
+Exact flags, misses, reads, memory minimums, identity checks and validation are in the
+[full report](../bench/results/2026-11-04-ds41-realistic/README.md). Port 8080 and the user's server were untouched.
