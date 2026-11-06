@@ -22,6 +22,12 @@ engine).
   (`src/models/deepseekv41/paged_model.cpp`). What each model's start does before it, `paged_start.cpp`: the engine's
   own options, the runtime's environment, the cards' links, the pools' sizes and their GPU memory, and the RAM's pool
   opened with the experts the GPUs lack first and the copy-back rule (`open_ram_pool`).
+- `decode_selection.hpp`: selects the highest-priority requests for a paged decode step. Equal priorities keep
+  request order until completion or preemption; requests waiting for a turn do not rotate into the selected set.
+  Cancellations drain first without generating rows. `concurrent` limits this selected set, not admitted requests
+  or conversations whose KV cache remains in VRAM.
+  A `BGEN` outside that set hands off with zero admission tokens, so it does not hold the command channel while
+  waiting for a decode turn. Selected requests keep the existing first-token handoff.
 
 Each engine still handles its own requests, SAVE / RESTORE, VRAM and QUIT, and writes its own `T`, `PP`, `DONE`, `BT`
 and `BDONE` lines.

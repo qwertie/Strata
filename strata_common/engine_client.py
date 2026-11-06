@@ -1392,7 +1392,7 @@ class StrataEngine:
     def _bdone_after_eos(self, slot: int, wait_s: float = 2.0):
         """#1869: a request in a slot whose consumer left at the stop token has its BDONE right behind it (the engine prints it
         in the same window).  Read it here, so the request's figures are the slot leg's (the background wait would eat it,
-        and the request kept the admission's single token).  None when it does not come in `wait_s`: then the background
+        and the request kept any admission tokens). None when it does not come in `wait_s`: then the background
         wait takes over."""
         if slot >= len(self.slot_q):
             return None
@@ -1644,6 +1644,7 @@ class StrataEngine:
         slot's own BT lines until BDONE.  Several requests run at once; the control lines (prompt reading, admission)
         are taken one request at a time - and a long prompt read gives way at a chunk boundary to a waiting request
         with a much shorter prompt (#656: `BYIELD <slot>`; the part read waits in a slot and the read goes on after).
+        Admission may hand off with zero tokens (DONE 0 then BADM <slot> 1); output begins with the slot's BT lines.
         A consumer that stops early leaves the engine in step: the solo request is STOPped and read to its DONE, an
         admission to its BADM, a slot is BSTOPped and freed at its BDONE."""
         if not self.alive():
@@ -1818,6 +1819,7 @@ class StrataEngine:
                         raise QueueWaitExpired("the inference queue wait deadline expired; retry later")
                     self.slot_live[slot] = live
                     self._last_done = None                  # (#879: this admission's DONE decides below)
+                    gen0 = len(out)
                     self._send(f"{head} {','.join(str(int(t)) for t in prompt)}")
                     if deadline is not None:
                         cancel._strata_queue_deadline = None
@@ -1896,10 +1898,12 @@ class StrataEngine:
                     taken = None
                 if not cont:
                     return
-                live.update(state="decoding", first_token=time.time(), generated=len(out))
-                gen0 = len(out) - 1                         # the admission's own token: the slot feeds it first
+                live.update(state="decoding", first_token=time.time() if len(out) > gen0 else None, generated=len(out))
                 going_solo = False
                 while True:
+                    if cancel.is_set() and not stop_sent:
+                        self._stop_slot(slot, live)
+                        stop_sent = True
                     try:
                         line = self.slot_q[slot].get(timeout=10.0)
                     except queue.Empty:
@@ -1914,6 +1918,8 @@ class StrataEngine:
                     if line.startswith("BT "):
                         t = int(line.split()[2])
                         out.append(t)
+                        if live["first_token"] is None:
+                            live["first_token"] = time.time()
                         live["generated"] = len(out)
                         if cancel.is_set():
                             if not stop_sent:

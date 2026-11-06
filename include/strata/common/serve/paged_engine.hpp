@@ -14,7 +14,10 @@
 // between the others' steps. A request continues the conversation that holds the longest start of its prompt,
 // reading only the rest; a conversation the prompt leaves before its end goes back to a point it keeps
 // (PagedModel::get_rewind_points), and stays paused whole
-// as well.  A request's `priority=N` key (default 0) orders the conversations of a step, higher first.
+// as well. A request's `priority=N` key (default 0) selects conversations for a step, higher first; equal priorities
+// retain request order. BGEN replies with its admission's T lines, DONE and BADM <slot> <continues>. A request
+// waiting outside the selected set may reply with DONE 0 and BADM <slot> 1 before emitting any token; subsequent
+// output uses BT <slot> <token> and ends with BDONE as usual. Selected requests keep the first-token handoff.
 //
 // The RAM is a second page pool (RamExperts): the experts the GPU's pool does not hold, then copies of those it does
 // while room allows, and the paused conversations.  The experts in neither are read from the SSD without the file

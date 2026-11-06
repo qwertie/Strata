@@ -8,6 +8,7 @@
 #include "strata/common/experts/expert_swaps.hpp"
 #include "strata/common/experts/ram_tier.hpp"
 #include "strata/common/experts/split_rules.hpp"
+#include "strata/common/serve/decode_selection.hpp"
 #include "strata/common/serve/loop.hpp"
 #include "strata/common/state/pause_file.hpp"
 #include "strata/common/state/progress.hpp"
@@ -67,7 +68,6 @@ struct Held {
     /// decoding ones of the same priority
     uint64_t used = 0;
     uint64_t last_tokens_at = 0; ///< Unix seconds when prompt or output tokens last reached this conversation.
-    int64_t stepped = 0;                ///< the decode step it last took part in (decode_step's turns)
 
     /// Gets its place in the order in which conversations give way to others (smallest first): the lowest priority,
     /// then the least recently used.
@@ -214,8 +214,10 @@ private:
     /// STOP, else on a failure that ends the engine (`fatal`: a decode step failed, its ERR printed).
     bool read_prompt(Held& h, const std::vector<int64_t>& ids, int64_t from, int64_t to, Clock::time_point t0,
                      int64_t& read_to, bool& fatal, std::string& err);
-    /// Runs one step of every decoding conversation and prints what it emitted; false (ERR printed) ends the engine.
+    /// Runs one step of the selected conversations and prints what it emitted; false (ERR printed) ends the engine.
     bool decode_step();
+    /// Gets the unfinished requests selected by priority and request order for the next decode step.
+    std::vector<Held*> get_decoding_conversations() const;
     /// Reports failures while draining state before commands or completed requests expose it.
     bool wait_model_state();
     /// Ends the request that batch slot `slot` decodes, so that one of priority `priority` takes the slot, when that is
@@ -885,10 +887,15 @@ bool PagedEngine::serve_request(const std::string& line) {
         h.decoding = true;
         h.slot = -1;
         h.t0 = d0;
-        // a BGEN's request ends with its first token; the slot decodes the rest beside the others
+        // BGEN hands off after its first token, or before decoding when higher-ranked requests occupy the step.
         while (h.decoding && !(req.batch && h.dec.produced > 0)) {
             h.dec.stop |= input_.is_stop_requested();
             take_slot_controls();
+            if (req.batch && !h.dec.stop) {
+                const auto selected = get_decoding_conversations();
+                if (std::find(selected.begin(), selected.end(), &h) == selected.end())
+                    break;
+            }
             if (!decode_step())
                 return false;
         }
@@ -941,23 +948,8 @@ bool PagedEngine::read_prompt(Held& h, const std::vector<int64_t>& ids, int64_t 
 bool PagedEngine::decode_step() {
     const Clock::time_point started = settings_.step_profile ? Clock::now() : Clock::time_point{};
     draft_ms_ = verify_ms_ = commit_ms_ = pages_ms_ = 0;
-    std::vector<Held*> going;
-    for (const std::unique_ptr<Held>& h : held_)
-        if (h->decoding)
-            going.push_back(h.get());
-    // at most `concurrent` of them: the highest priority, then the one that waited longest
-    std::stable_sort(going.begin(), going.end(), [](const Held* a, const Held* b) {
-        return a->dec.priority != b->dec.priority ? a->dec.priority > b->dec.priority
-               : a->stepped != b->stepped         ? a->stepped < b->stepped
-                                                  : a->used < b->used;
-    });
-    if (going.size() > (size_t) settings_.step.concurrent)
-        going.resize((size_t) settings_.step.concurrent);
-    if (facts_.serial_conversations && going.size() > 1)
-        going.resize(1);
+    const auto going = get_decoding_conversations();
     ++steps_;
-    for (Held* h : going)
-        h->stepped = steps_;
     std::vector<strata::spec::Decoding*> active;
     for (Held* h : going)
         active.push_back(&h->dec);
@@ -1029,6 +1021,15 @@ bool PagedEngine::decode_step() {
         say("step-profile rows=%d draft=%.3f verify=%.3f commit=%.3f pages=%.3f total=%.3f ms\n",
             step_rows_, draft_ms_, verify_ms_, commit_ms_, pages_ms_, get_ms_since(started));
     return ok;
+}
+
+std::vector<Held*> PagedEngine::get_decoding_conversations() const {
+    std::vector<Held*> going;
+    for (const std::unique_ptr<Held>& h : held_)
+        if (h->decoding)
+            going.push_back(h.get());
+    strata::serve::select_decode_conversations(going, facts_.serial_conversations ? 1 : settings_.step.concurrent);
+    return going;
 }
 
 bool PagedEngine::preempt(size_t slot, int64_t priority) {

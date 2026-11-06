@@ -202,7 +202,7 @@ while True:
             if slot is not None:
                 print(f"BADM {slot} 0", flush=True)
             continue
-        n = 1 if slot is not None else max_new
+        n = (0 if "--zero-admit" in args else 1) if slot is not None else max_new
         out = 0
         for t in toks[:n]:
             if stop.is_set():
@@ -213,13 +213,13 @@ while True:
         fin = "stop" if out and toks[out - 1] == 257 else ("cancel" if stop.is_set() else "length")
         main_held = prompt + toks[:max(out - 1, 0)]
         if slot is not None:
-            slot_held[slot] = prompt + toks[:1]
+            slot_held[slot] = prompt + toks[:out]
         print(f"DONE {out} {len(ids)} 5.0 {out * STEP * 1000:.1f} {fin} 0 0 {reused(ids)}" +
               (f" 0 0 0 0 0.0 {len(ids) - reused(ids)}" if READF else ""), flush=True)
         if slot is not None:
-            cont = fin == "length" and max_new > 1
+            cont = fin == "length" and max_new > out
             if cont:
-                active[slot] = [toks[1:], max_new, 1]
+                active[slot] = [toks[out:], max_new, out]
             print(f"BADM {slot} {1 if cont else 0}", flush=True)
         continue
     if LISTS and line.startswith(("LIST_CONVERSATIONS", "GET_CONTEXT_WINDOWS")):
@@ -532,6 +532,24 @@ class ContextView(FakeEngineCase):
 class ParallelService(FakeEngineCase):
     """The real StrataEngine and Service over HTTP, the fake engine behind them: slots, queues, benchmarks, telemetry.
     The yielding, restart and failure tests are in strata_server/test_parallel_yield.py (this file alone ran past 100 s)."""
+
+    def test_zero_token_batch_admission_preserves_output_and_cached_prefix(self):
+        self.start(2, more=["--zero-admit"])
+        prompt = list(b"zero-token admission")
+        with self.engine.slot_cv:
+            self.engine.slot_busy[1] = True
+        try:
+            for limit in (3, 1):
+                with self.subTest(max_new=limit):
+                    output = [token for token in self.engine.generate_batched(prompt, limit, {}, threading.Event())
+                              if token is not None]
+                    self.assertEqual(output, list(b"ok,")[:limit])
+                    self.assertEqual(self.engine.slot_held[0], prompt + output[:-1])
+        finally:
+            with self.engine.slot_cv:
+                self.engine.slot_busy[1] = False
+                self.engine.slot_cv.notify_all()
+        self.assertIn("BGEN", self.log.read_text())
 
     def test_bgen_refused_by_the_engine_is_retried_not_a_400(self):
         """#1994: the engine refuses a BGEN ("no such free slot") although the server saw the slot free: the request
