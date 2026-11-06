@@ -297,3 +297,69 @@ test('category names that match Object properties are rendered as labels', () =>
   assert.match(html, /Custom pool \/ Custom block: 1.00 GiB/);
   assert.doesNotMatch(html, /function Object/);
 });
+
+
+test('fixed allocations precede the pool and conversation sublabels precede layers', () => {
+  const memory = {id: 'gpu0', total: 8 * GIB, free: GIB, uses: {
+    experts: 3 * GIB, pool_free: GIB, conversations: GIB, weights: GIB, other: GIB},
+    setting: 5 * GIB, pool_offset: 0, blocks: [
+      {category: 'experts', pool: 'Expert and conversation pool', label: 'Layer 2', bytes: 3 * GIB},
+      {category: 'conversations', pool: 'Expert and conversation pool', label: 'Conversation Alice', bytes: GIB}]};
+  const {element} = mount({available: true, can_change: true, settings: {}, memories: [memory]}, async () => ({}));
+  const html = element.innerHTML;
+  assert.deepEqual([...html.matchAll(/class="mem-seg" data-use="([^"]*)"/g)].map(m => m[1]),
+    ['other', 'weights', 'conversations', 'experts', 'pool_free', 'free']);
+  assert.match(html, /style="left:87.5%"/);
+  const tooltip = /data-use="experts" title="([^"]*)"/.exec(html)[1];
+  assert.ok(tooltip.indexOf('Conversation Alice') < tooltip.indexOf('Layer 2'));
+  assert.doesNotMatch(tooltip, /Expert and conversation pool/);
+  assert.match(tooltip, /Experts give the model most of its knowledge and skill/);
+});
+
+test('RAM expert copies in any GPU are shaded without changing totals or the reading', () => {
+  const block = (group, ids, bytes) => ({category: 'experts', pool: 'Pool', label: group,
+    identity_group: group, ids, bytes});
+  const memories = [
+    {id: 'gpu0', total: 8 * GIB, uses: {experts: GIB}, blocks: [block('layer/1', [0], GIB)]},
+    {id: 'gpu1', total: 8 * GIB, uses: {experts: GIB}, blocks: [block('layer/1', [2], GIB)]},
+    {id: 'ram', total: 8 * GIB, setting: 4 * GIB, pool_offset: 0,
+      uses: {experts: 4 * GIB, weights: GIB}, blocks: [
+      block('layer/1', [0, 1, 2], 3 * GIB), block('layer/2', [0], GIB)]}];
+  const before = structuredClone(memories), ram = rows(draw({available: true, settings: {}, memories}))[2];
+  assert.match(ram, /Experts also in VRAM 2.00 GiB/);
+  assert.match(ram, /Experts 2.00 GiB/);
+  assert.deepEqual(widths(ram), [12.5, 25, 25]);
+  assert.deepEqual(memories, before);
+});
+
+test('SSD scale includes its uncached experts and paused budget, not the full model file', () => {
+  const [ssd] = rows(draw({available: true, settings: {}, memories: [
+    {id: 'ssd', uses: {experts: GIB, paused: GIB}, paused_budget: 7 * GIB}]}));
+  assert.equal(barWidth(ssd), 25);
+  assert.match(ssd, /Experts not cached 1.00 GiB/);
+  assert.match(ssd, /The complete model files remain on disk/);
+  const [empty] = rows(draw({available: true, settings: {}, memories: [{id: 'ssd', uses: {}}]}));
+  assert.equal(barWidth(empty), 0);
+});
+
+
+test('custom categories preserve explicit pool boundaries when display order changes', () => {
+  const {element} = mount({available: true, can_change: true, settings: {}, memories: [{
+    id: 'gpu0', total: 8 * GIB, setting: 3 * GIB, pool_offset: GIB,
+    uses: {'Z fixed': GIB, 'Custom pool': 3 * GIB, experts: 2 * GIB, weights: 2 * GIB}}]}, async () => ({}));
+  const html = element.innerHTML;
+  assert.match(html, /style="left:100%"/);
+  const categories = [...html.matchAll(/class="mem-seg" data-use="([^"]*)"/g)].map(m => m[1]);
+  assert.equal(categories.at(-1), 'Custom pool');
+});
+
+test('a pool interval crossing a category keeps the divider and legend totals correct', () => {
+  const {element} = mount({available: true, can_change: true, settings: {}, memories: [{
+    id: 'ram', total: 8 * GIB, setting: 5 * GIB, pool_offset: 0,
+    uses: {experts: 4 * GIB, other: 2 * GIB}, free: 2 * GIB}]}, async () => ({}));
+  const html = element.innerHTML;
+  assert.match(html, /style="left:75%"/);
+  assert.deepEqual(widths(html), [12.5, 50, 12.5, 25]);
+  const legend = html.split('<div class="mem-legend">')[1].split('</div>')[0];
+  assert.equal((legend.match(/Other 2.00 GiB/g) || []).length, 1);
+});

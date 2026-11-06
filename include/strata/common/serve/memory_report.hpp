@@ -6,7 +6,7 @@
 //     MEMORY <id> [total=<B>] [free=<B>] [unified=1] [<use>=<B> ...] [paused_count=<n>] [paused_budget=<B>]
 //            [pool_pages=<n> allocated_pages=<n> fragmented_pages=<n>] [setting=<B> smallest=<B> largest=<B>]
 //            [mapped=<B>] [name=<text>]                                                   one line per memory, then
-//     [MEMORY_BLOCK <memory-id> <bytes> <category> <pool> <label>]                arbitrary labelled allocations
+//     [MEMORY_BLOCK <memory-id> <bytes> <category> <pool> <label> [<identity-group> <ids>]] labelled allocations
 //     [CONVERSATION <id> <place> <state> <tokens> <capacity> <bytes> <used>]     with per_conversation: one per
 //                                                                                conversation (LIST_CONVERSATIONS')
 //     SETTINGS [context=<tokens>] [concurrent=<n>] [rows=<n>] [lookahead=<n>] [tokens_min=<tokens>]
@@ -87,7 +87,7 @@ struct Memory {
     void add_blocks(const std::vector<core::MemoryBlock>& entries) {
         for (const core::MemoryBlock& b : entries) {
             add(b.name.category, b.bytes);
-            core::add_memory_block(blocks, b.name, b.bytes);
+            core::add_memory_block(blocks, b.name, b.bytes, b.identity_group, b.ids);
         }
     }
 };
@@ -171,10 +171,20 @@ inline std::string format_memory_report(MemoryReport report, const std::vector<c
         if (m.mapped > 0) put("mapped", m.mapped);
         if (!m.name.empty()) s += " name=" + m.name;
         s += '\n';
-        for (const core::MemoryBlock& b : m.blocks)
+        for (const core::MemoryBlock& b : m.blocks) {
             s += "MEMORY_BLOCK " + m.id + " " + std::to_string(b.bytes) + " " +
                  encode_memory_label(b.name.category) + " " + encode_memory_label(b.name.pool) + " " +
-                 encode_memory_label(b.name.label) + '\n';
+                 encode_memory_label(b.name.label);
+            if (!b.identity_group.empty() && !b.ids.empty()) {
+                s += " " + encode_memory_label(b.identity_group) + " ";
+                for (size_t i = 0; i < b.ids.size(); ++i) {
+                    if (i)
+                        s += ',';
+                    s += std::to_string(b.ids[i]);
+                }
+            }
+            s += '\n';
+        }
     }
     if (report.per_conversation)
         for (const core::HeldConversation& c : held)

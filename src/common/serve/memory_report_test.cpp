@@ -91,6 +91,10 @@ int main() {
     check(wire.find("MEMORY_BLOCK gpu0 200 arbitrary%20category Pool%20%2F%20one Drafter%20%26%20buffers") !=
               std::string::npos, "labels are aggregated and protocol-safe without a category list");
     strata::core::MemoryManager manager;
+    labelled.at("ram").add_blocks({{{"experts", "Pool", "Layer 2"}, 20, "expert/2", {7}},
+                                    {{"experts", "Pool", "Layer 2"}, 20, "expert/2", {8}}});
+    check(format_memory_report(labelled, {}).find("MEMORY_BLOCK ram 40 experts Pool Layer%202 expert%2F2 7,8\n") !=
+              std::string::npos, "logical identities survive block aggregation and serialization");
     int allocation = 0;
     manager.add(&allocation, 42, "ram", {"other", "Drafter", "Working buffers"}, true);
     check(manager.get_blocks("ram").size() == 1 && manager.get_mapped_bytes() == 42,

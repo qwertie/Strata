@@ -21,19 +21,24 @@ struct MemoryLabel {
 struct MemoryBlock {
     MemoryLabel name;
     uint64_t bytes = 0;
+    /// Identifies equal-sized logical members across memories; an empty group carries no residency information.
+    std::string identity_group;
+    std::vector<uint32_t> ids;
 };
 
 /// Combines blocks with the same labels without prescribing any category vocabulary.
-inline void add_memory_block(std::vector<MemoryBlock>& blocks, MemoryLabel name, uint64_t bytes) {
+inline void add_memory_block(std::vector<MemoryBlock>& blocks, MemoryLabel name, uint64_t bytes,
+                             std::string identity_group = {}, const std::vector<uint32_t>& ids = {}) {
     if (!bytes)
         return;
     for (MemoryBlock& block : blocks)
-        if (std::tie(block.name.category, block.name.pool, block.name.label) ==
-            std::tie(name.category, name.pool, name.label)) {
+        if (std::tie(block.name.category, block.name.pool, block.name.label, block.identity_group) ==
+            std::tie(name.category, name.pool, name.label, identity_group)) {
             block.bytes += bytes;
+            block.ids.insert(block.ids.end(), ids.begin(), ids.end());
             return;
         }
-    blocks.push_back({std::move(name), bytes});
+    blocks.push_back({std::move(name), bytes, std::move(identity_group), ids});
 }
 
 /// Keeps allocation lifetimes and labels shared by the device allocators and paged pools.

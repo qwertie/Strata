@@ -44,6 +44,7 @@ import select
 import socket
 import shutil
 import subprocess
+import struct
 import sys
 import tempfile
 import threading
@@ -53,6 +54,7 @@ import uuid
 from http.client import HTTPException
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from functools import cached_property
 from typing import Iterator, Protocol
 from urllib.parse import parse_qs, urlsplit
 
@@ -2180,7 +2182,7 @@ class Service:
         if hasattr(self.engine, "replica_view"):        # opt-in replicas: each one's state and requests routed to it
             live["replicas"] = self.engine.replica_view()
         engine = {"model": self.model, "max_context": self.reported_ctx(), "images": self.vision is not None,
-                  **dict(getattr(self.engine, "info", {}) or {})}
+                  **dict(getattr(self.engine, "info", {}) or {}), "model_details": self.model_details}
         tel = self.telemetry.snapshot() if getattr(self, "telemetry", None) else {"now": {}, "history": {}, "static": {}}
         parked = self.conv_log.poll(getattr(self.engine, "log_path", None), getattr(self.engine, "log_start", None))
         return {"engine": engine, "live": live, "requests": hist[::-1][:None if all_requests else 12],
@@ -2242,7 +2244,7 @@ class Service:
         busy, ctx = bool(s.get("busy")), self.reported_ctx()
         images = self.vision is not None
         return {
-            "service": "strata", "model": self.model,
+            "service": "strata", "model": self.model, "model_details": self.model_details,
             "loaded": self.loaded(), "auto_load": hasattr(self.engine, "restart"),
             "structured_output": {"formats": ["json_object", "json_schema"], "method": "prompt_and_validate",
                                   "constrained_decoding": False, "stream_buffered": True},
@@ -2270,6 +2272,35 @@ class Service:
                         "temp_c": hw.get("gpu_temp"), "power_w": hw.get("gpu_power")} if static.get("gpu_name") else None,
                 "ram": {"used_gib": scaled(hw.get("ram_used"), 2 ** 30, 1),
                         "total_gib": scaled(hw.get("ram_total"), 2 ** 30, 1)} if hw.get("ram_total") else None}}
+
+    @cached_property
+    def model_details(self) -> dict:
+        """Gets display metadata from the model header without reading tensor data."""
+        from strata_common.gguf_reader import GGUFFile
+
+        spawn = getattr(self.engine, "spawn", None)
+        root = Path(spawn[2] or ".") if spawn else Path.cwd()
+        source = getattr(self.engine, "model_path", None)
+        path = (root / source).resolve() if source else None
+        if path and path.is_dir():
+            try:
+                metadata = dict(line.split(" ", 1) for line in
+                                (path / "ds4.txt").read_text(encoding="utf-8").splitlines() if " " in line)
+                with (path / "tensors.txt").open(encoding="utf-8") as manifest:
+                    first = next(line[7:].strip() for line in manifest if line.startswith("file 0 "))
+                path = (root / metadata["model_dir"] / first).resolve()
+            except (OSError, KeyError, StopIteration):
+                pass
+        name = self.model
+        if path and path.suffix.lower() == ".gguf":
+            try:
+                name = GGUFFile(path).metadata.get("general.name") or name
+            except (OSError, ValueError, KeyError, struct.error):
+                pass
+        return {"name": name, "engine": Path(spawn[0]).name if spawn else
+                (getattr(self.engine, "info", {}) or {}).get("version"),
+                "config_path": str(Path(self.config_path).resolve()) if self.config_path else None,
+                "model_path": str(path) if path else None}
 
     def render_prompt(self, messages, tools, kwargs) -> str:
         """The template rendered.  #458: with `effort_end`, a request with a non-default effort (low, medium or no

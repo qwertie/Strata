@@ -43,3 +43,16 @@ Pool growth is limited by actual allocation capacity and configured pool limits.
 There is no automatic Windows commit reserve. The operating system and allocator
 can still refuse an allocation, which is reported through the existing refusal
 or shortfall response.
+
+Blocks may append an identity group and comma-separated unsigned member IDs:
+`MEMORY_BLOCK <memory> <bytes> <category> <pool> <label> <identity-group> <ids>`.
+The group is percent-encoded like the labels. Members within one block have
+identical allocated sizes (`bytes / member count`). A group and member ID
+identify the same logical content across memories, independently of display
+labels. Page pools use expert category and layer as the group, and the expert
+index as the member ID. Readers that do not need residency can ignore these
+optional fields. The Python view preserves them as `identity_group` and `ids`.
+
+The diagram shades RAM experts also held by any GPU in darker teal. Those
+copies still count as allocated RAM. SSD experts mean experts held in neither
+VRAM nor RAM, rather than the size of the complete model files on disk.

@@ -115,6 +115,9 @@ void test_labels() {
         if (b.name.category == "experts") {
             experts += b.bytes;
             check(b.name.label.find("Layer 3 (") == 0, "expert labels retain their layer and size class");
+            check(b.identity_group == "expert/experts/3" &&
+                  std::set<uint32_t>(b.ids.begin(), b.ids.end()) == std::set<uint32_t>({0, 1}),
+                  "layer groups retain logical expert IDs across memories");
         }
         conversation = conversation || b.name.label.find("Chat with spaces:") == 0;
     }

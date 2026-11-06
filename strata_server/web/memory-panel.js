@@ -12,7 +12,8 @@
 // seen beside the RAM without becoming a sliver.
 
 /** Names shown for the uses a memory's bar is divided into (`uses` keys and the segments the panel adds). */
-const USES = {weights: "Weights", experts: "Experts", conversations: "Conversations", pool_free: "Free in the pool",
+const USES = {weights: "Weights", experts: "Experts", redundant_experts: "Experts also in VRAM",
+              conversations: "Conversations", pool_free: "Free in the pool",
               paused: "Paused conversations", drafter: "Drafter", drafter_experts: "Drafter experts",
               scratch: "Scratch", engram: "Engram",
               borrowed: "GPU (borrowed from RAM)", other: "Other", other_apps: "Other apps", free: "Free"};
@@ -20,8 +21,10 @@ const USES = {weights: "Weights", experts: "Experts", conversations: "Conversati
 const USE_HELP = {
   weights: "The parts of the model that must always be loaded here (attention, the shared layers, the output head), " +
     "unlike experts, which are loaded as they are needed",
-  experts: "Experts kept here so that they need not be read from slower memory: the model's specialist parts, a few " +
-    "of which each word uses",
+  experts: "Experts give the model most of its knowledge and skill. Fitting more in VRAM makes the model go faster. " +
+    "Conversation memory (KV cache) can take space away from experts.",
+  redundant_experts: "RAM copies of experts also held in VRAM. These avoid reading the model files again " +
+    "or copying weights back from VRAM when an expert is evicted.",
   conversations: "What the model remembers of the conversations it is working on (their context)",
   pool_free: "Room the engine has set aside here that nothing uses yet; experts or conversations take it as needed",
   paused: "Conversations put aside for now, kept here until they continue",
@@ -34,8 +37,8 @@ const USE_HELP = {
   other_apps: "Memory used outside Strata, including other programs and Windows",
   free: "Not in use by anything",
 };
-/** The uses that are the engine's page pool on a GPU or in RAM, whose end is the divider that sets the pool's size. */
-const POOL_USES = ["experts", "conversations", "paused", "pool_free"];
+/** Pool categories used by engines that do not report an explicit adjustable byte interval. */
+const POOL_USES = ["experts", "redundant_experts", "conversations", "paused", "pool_free"];
 /** Size in bytes (32 GiB) at which a memory's bar fills the width. */
 const FULL_BAR = 32 * 1073741824;
 /** Bytes in a MiB, the unit the memory settings are sent in. */
@@ -108,10 +111,12 @@ export function drawMemoryPanel(element, view, onChange) {
  * @typedef {{id: string, name: string | null, total: number | null, free: number | null, unified: boolean,
  *   uses: Record<string, number>, paused_count: number | null, paused_budget: number | null,
  *   other?: number, other_apps?: number,
- *   blocks?: {category: string, pool: string, label: string, bytes: number}[],
+ *   blocks?: MemoryBlock[],
  *   in_share?: number, borrowed?: number | null, gpu_borrowed?: number, allocated_pct?: number | null,
  *   fragmented_pct?: number | null, setting?: number | null, pool_offset?: number | null, smallest?: number | null,
  *   largest?: number | null}} MemoryUse
+ * @typedef {{category: string, pool: string, label: string, bytes: number,
+ *   identity_group?: string, ids?: number[]}} MemoryBlock
  * @typedef {{id: string, place: string, state: string, count: number, capacity: number, bytes: number,
  *   used: number}} HeldConversation
  * @typedef {Record<string, number | boolean>} SettingsChange  POST /v1/memory's "set": MiB for the sizes.
@@ -145,9 +150,10 @@ export function drawMemoryPanel(element, view, onChange) {
  * @param {Panel} panel */
 function render(element, panel) {
   const {view, drag} = panel, editable = !!(view.can_change && panel.onChange);
+  const memories = markRedundantExperts(view.memories);
   if (!view.config)
     panel.save = "session";
-  panel.dividers = editable ? Object.fromEntries(view.memories.map((x) => [x.id, findDivider(x)]).filter(([, d]) => d))
+  panel.dividers = editable ? Object.fromEntries(memories.map((x) => [x.id, findDivider(x)]).filter(([, d]) => d))
     : {};
   const listed = Object.entries(view.settings).filter(([k]) => !UNLISTED.test(k) &&
     !(editable && (k === "drafter" || CONTROLS.some(([key]) => key === k))));
@@ -158,7 +164,7 @@ function render(element, panel) {
   const notice = panel.notice && panel.notice.until > Date.now() ? panel.notice : null;
   const hint = Object.keys(panel.dividers).length && !hasChanged() ?
     `<p class="mem-hint">Drag the dividers to change sizes</p>` : "";
-  element.innerHTML = `<div class="mem-bars">${view.memories.map((x) =>
+  element.innerHTML = `<div class="mem-bars">${memories.map((x) =>
       drawBar(x, panel.dividers[x.id], drag?.id === x.id ? drag : null)).join("")}</div>` +
     drawConversations(view.conversations || []) + (editable ? drawControls(panel) : "") + hint +
     (notice ? `<p class="mem-notice${notice.error ? " mem-error" : ""}" role="status">${esc(notice.text)}` +
@@ -331,8 +337,9 @@ function drawControls(panel) {
 function layOut(x) {
   const named = Object.values(x.uses).reduce((a, b) => a + b, 0);
   const scale = x.in_share == null || !named ? 1 : Math.min(1, x.in_share / named);
-  /** @type {{use: string, bytes: number, drawn?: number}[]} */
-  const parts = Object.entries(x.uses).map(([use, bytes]) => ({use, bytes, drawn: bytes * scale}));
+  const parts = splitPoolParts(x, scale);
+  // Keep the adjustable pool contiguous, with its unused pages nearest the free memory.
+  parts.sort((a, b) => getOrder(a) - getOrder(b) || a.use.localeCompare(b.use));
   if (x.gpu_borrowed)
     parts.push({use: "borrowed", bytes: x.gpu_borrowed});
   if (x.free != null)
@@ -344,6 +351,11 @@ function layOut(x) {
   const used = parts.reduce((a, p) => a + (p.drawn ?? p.bytes), 0);
   const total = x.total || Math.max(used, used - (x.uses.paused || 0) + (x.paused_budget || 0));
   return {parts, scale, total};
+
+  /** Ranks fixed allocations before the pool and its unused pages. */
+  function getOrder(/** @type {{use: string, pool?: boolean}} */ part) {
+    return part.pool ? part.use === "pool_free" ? 2 : 1 : 0;
+  }
 }
 
 /** Gets the divider of a memory's bar: the end of the engine's page pool on a GPU or in RAM (`memory_mib.<id>`), the
@@ -352,11 +364,10 @@ function layOut(x) {
  * @returns {Divider | null} */
 function findDivider(x) {
   const {parts, scale, total} = layOut(x), ssd = x.id === "ssd";
-  const from = ssd ? x.paused_budget : x.setting, first = parts.findIndex((p) => ssd ? p.use === "paused" :
-    POOL_USES.includes(p.use));
+  const from = ssd ? x.paused_budget : x.setting, first = parts.findIndex((p) => ssd ? p.use === "paused" : p.pool);
   if (from == null || !total || (first < 0 && !ssd && x.pool_offset == null))
     return null;
-  const start = !ssd && x.pool_offset != null ? x.pool_offset * scale :
+  const start = !ssd && first < 0 && x.pool_offset != null ? x.pool_offset * scale :
     (first < 0 ? parts : parts.slice(0, first)).reduce((a, p) => a + (p.drawn ?? p.bytes), 0);
   return {key: ssd ? "ssd_pause_mib" : `memory_mib.${x.id}`, from, smallest: x.smallest ?? 0,
           largest: x.largest ?? Infinity, start, scale, total};
@@ -377,6 +388,10 @@ function findRefusal(d, value) {
  * @param {Drag | null} drag */
 function drawBar(x, divider, drag) {
   const {parts, total} = layOut(x);
+  /** @type {Map<string, {use: string, bytes: number}>} */
+  const legend = new Map();
+  for (const part of parts)
+    legend.set(part.use, {use: part.use, bytes: (legend.get(part.use)?.bytes || 0) + part.bytes});
   const name = x.id === "ram" ? "System RAM" : x.id === "ssd" ? "SSD" : x.name || x.id.toUpperCase();
   const label = "borrowed" in x ? `${name} — BIOS share ${gb(x.total)} GiB` :
     x.gpu_borrowed ? `${name} ${gb(x.total)} GiB (GPU borrows ${gb(x.gpu_borrowed)} GiB)` : name;
@@ -385,20 +400,27 @@ function drawBar(x, divider, drag) {
     x.allocated_pct == null ? "" :
     `pool ${fmt(x.allocated_pct, 1)}% allocated, ${fmt(x.fragmented_pct, 2)}% fragmented`]
     .filter(Boolean).join(" · ");
-  const title = (/** @type {{use: string}} */ p) => esc(Object.hasOwn(USES, p.use) ? USES[p.use] : p.use);
+  const title = (/** @type {{use: string}} */ p) => esc(x.id === "ssd" && p.use === "experts" ?
+    "Experts not cached" : Object.hasOwn(USES, p.use) ? USES[p.use] : p.use);
+  const blocks = [...(x.blocks || [])].sort((a, b) =>
+    a.category.localeCompare(b.category) || a.label.localeCompare(b.label, undefined, {numeric: true}));
   const tip = (/** @type {{use: string, bytes: number}} */ p) =>
-    `${title(p)}: ${size(p.bytes)}${Object.hasOwn(USE_HELP, p.use) ? `. ${esc(USE_HELP[p.use])}` : ""}` +
-    (x.blocks || []).filter((b) => b.category === p.use)
-      .map((b) => `&#10;${esc(b.pool)} / ${esc(b.label)}: ${size(b.bytes)}`).join("");
+    `${title(p)}: ${size(p.bytes)}${x.id === "ssd" && p.use === "experts" ?
+      ". Experts held in neither VRAM nor RAM. The complete model files remain on disk." :
+      Object.hasOwn(USE_HELP, p.use) ? `. ${esc(USE_HELP[p.use])}` : ""}` +
+    blocks.filter((b) => POOL_USES.includes(p.use) ? POOL_USES.includes(b.category) : b.category === p.use)
+      .map((b) => `&#10;${POOL_USES.includes(b.category) ? "" : `${esc(b.pool)} / `}` +
+        `${esc(b.label)}: ${size(b.bytes)}`).join("");
   const seg = (/** @type {{use: string, bytes: number, drawn?: number}} */ p) =>
     `<span class="mem-seg" data-use="${esc(p.use)}" title="${tip(p)}" ` +
     `style="width:${total ? (100 * (p.drawn ?? p.bytes)) / total : 0}%"></span>`;
   const key = (/** @type {{use: string, bytes: number}} */ p) =>
     `<span title="${tip(p)}"><i class="mem-key" data-use="${esc(p.use)}"></i>${title(p)} ${size(p.bytes)}</span>`;
   return `<div class="mem-row"><div class="mem-head"><span>${esc(label)}</span><span class="mem-facts">${esc(facts)}` +
-    `</span></div><div class="mem-bar" style="width:${x.total ? 100 * Math.min(x.total / FULL_BAR, 1) : 100}%">` +
+    `</span></div><div class="mem-bar" style="width:${total ? 100 * Math.min(total / FULL_BAR, 1) :
+      x.id === "ssd" ? 0 : 100}%">` +
     `<div class="mem-segs">${parts.map(seg).join("")}</div>${divider ? drawDivider(x.id, divider, drag) : ""}</div>` +
-    `<div class="mem-legend">${parts.map(key).join("")}</div>` +
+    `<div class="mem-legend">${[...legend.values()].map(key).join("")}</div>` +
     `${divider && drag ? drawPreview(divider, drag) : ""}</div>`;
 }
 
@@ -440,6 +462,67 @@ function drawConversations(list) {
   return `<table class="mem-conversations"><thead><tr><th>Conversation</th><th>State</th>` +
     `<th class="mem-num">Tokens</th><th class="mem-num">Memory</th></tr></thead>` +
     `<tbody>${list.map(row).join("")}</tbody></table>`;
+}
+
+/** Splits RAM expert totals by logical residency without changing the server's reading.
+ * @param {MemoryUse[]} memories
+ * @returns {MemoryUse[]} */
+function markRedundantExperts(memories) {
+  /** @type {Map<string, Set<number>>} */
+  const resident = new Map();
+  for (const memory of memories.filter((m) => m.id.startsWith("gpu")))
+    for (const block of memory.blocks || []) {
+      if (!block.identity_group || !block.ids?.length)
+        continue;
+      const ids = resident.get(block.identity_group) || new Set();
+      for (const id of block.ids)
+        ids.add(id);
+      resident.set(block.identity_group, ids);
+    }
+  return memories.map((memory) => {
+    if (memory.id !== "ram")
+      return memory;
+    let redundant = 0;
+    const blocks = (memory.blocks || []).flatMap((block) => {
+      const ids = block.identity_group && resident.get(block.identity_group);
+      if (block.category !== "experts" || !block.ids?.length || !ids)
+        return [block];
+      const copies = block.ids.filter((id) => ids.has(id));
+      const bytes = block.bytes * copies.length / block.ids.length;
+      redundant += bytes;
+      return [{...block, bytes: block.bytes - bytes},
+        {...block, category: "redundant_experts", label: `${block.label} (also in VRAM)`, bytes}]
+        .filter((b) => b.bytes > 0);
+    });
+    if (!redundant)
+      return memory;
+    const uses = Object.fromEntries(Object.entries(memory.uses).flatMap(([use, bytes]) => use === "experts" ?
+      [[use, bytes - redundant], ["redundant_experts", redundant]] : [[use, bytes]]));
+    return {...memory, blocks, uses};
+  });
+}
+
+/** Preserves the engine's adjustable byte interval when categories are reordered for display.
+ * @param {MemoryUse} memory
+ * @param {number} scale
+ * @returns {{use: string, bytes: number, drawn?: number, pool?: boolean}[]} */
+function splitPoolParts(memory, scale) {
+  const start = memory.pool_offset, end = (start ?? 0) + (memory.setting ?? 0);
+  let at = 0;
+  return Object.entries(memory.uses).flatMap(([use, bytes]) => {
+    const before = at;
+    at += bytes;
+    if (bytes <= 0)
+      return [];
+    if (memory.id === "ssd" || start == null)
+      return [{use, bytes, drawn: bytes * scale, pool: POOL_USES.includes(use)}];
+    const boundaries = [before, at, start, end].filter((value) => value >= before && value <= at)
+      .sort((a, b) => a - b);
+    return boundaries.slice(1).flatMap((boundary, i) => {
+      const from = boundaries[i], size = boundary - from;
+      return size ? [{use, bytes: size, drawn: size * scale, pool: from >= start && boundary <= end}] : [];
+    });
+  });
 }
 
 /** Escapes text for HTML. @param {unknown} s */

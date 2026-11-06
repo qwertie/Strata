@@ -4,6 +4,7 @@ import { scopedMonitor, instanceLabel, deviceLabel } from '../lib/runtime-models
 /** The original Strata dashboard, adapted to the current shell and device inventory. */
 import { useRef, useState, type ReactNode } from 'react';
 import { flushSync } from 'react-dom';
+import {getModelHeading} from '../../../../strata_server/web/model-heading.js';
 import { MemoryPanel } from '../components/MemoryPanel';
 import { SnapshotDialog } from '../components/SnapshotDialog';
 import { requestSummary } from '../lib/monitor-summary';
@@ -71,6 +72,8 @@ function LegacyMonitorScreen({ native }: {
     const live = native ? withHostSensors(nativeMonitorData(native, inventory, instanceSelection), storedLive) : storedLive;
     const multipleModels = (runtime?.instances.length ?? 0) > 1;
     const selectedInstance = runtime?.instances.find(i => i.id === instanceSelection) ?? (!multipleModels ? runtime?.instances[0] : undefined);
+    const modelDetails = native?.instances.find(i => i.id === selectedInstance?.id)?.metrics?.engine?.model_details;
+    const modelHeading = getModelHeading(modelDetails, selectedInstance?.name ?? 'Model state');
     const selection = selectedInstance?.id ?? 'all';
     const scoped = native ? live : scopedMonitor(live, runtime ?? null, selection, serving?.requests ?? []);
     const scopeLabel = selectedInstance ? instanceLabel(selectedInstance) : `${runtime?.instances.length ?? 0} loaded models`;
@@ -162,7 +165,30 @@ function LegacyMonitorScreen({ native }: {
     {tr(multipleModels ? <section className="st-card"><h2 className="h4">{tr("Model performance")}</h2><div className="st-tablewrap"><table className="st-table native-performance-table"><thead><tr><th>{tr("Model / device")}</th><th>{tr("Generating tok/s")}</th><th>{tr("Reading tok/s")}</th><th>{tr("State")}</th><th>{tr("Active / queued")}</th></tr></thead><tbody>{tr(runtime?.instances.map(i => { const recent = (data.requests ?? []).find(r => r.instanceId === i.id); const writing = i.phase === 'generating' || i.phase === 'thinking', reading = i.phase === 'reading'; return <tr key={i.id}><td><button className="text-btn strong" onClick={() => chooseInstance(i.id)}>{tr(instanceLabel(i))}</button><small>{tr(deviceLabel(i.gpuIds, inventory))}</small></td><td>{tr(number(writing ? i.outputTps : recent?.tps, 1))}<small>{tr(writing ? 'Now' : recent ? 'Last request' : 'No request yet')}</small></td><td>{tr(number(reading ? i.promptTps : recent?.promptTps, 0))}<small>{tr(reading ? 'Now' : recent ? 'Last request' : 'No request yet')}</small></td><td>{tr(i.phase)}{tr(runtime.mode === 'simulated' ? <small>{tr("Illustrative")}</small> : null)}</td><td>{tr(number(i.active))} / {tr(number(i.queued))}</td></tr>; }))}</tbody></table></div></section> : null)}
     {tr(multipleModels ? <p className="xs muted monitor-scope-note">{tr(selectedInstance ? selectedInstance.gpuIds.length ? 'Requests, context and speed are scoped to this model. GPU readings include all work on the selected devices.' : 'CPU-only model. Requests and context are scoped to this model; system metrics are shared host measurements.' : 'Select a model for its context and speed. GPU readings and system RAM are shared host measurements.')}</p> : null)}
     <section className="st-card monitor-state" aria-label={tr("Model state")} data-snapshot-skip>
-      <div className="monitor-state__head"><h2 className="h4">{tr(multipleScope ? 'Model activity' : 'Model state')}</h2><div className="monitor-state__badges">{tr([{ id: 'idle', label: 'Idle' }, { id: 'reading', label: 'Reading' }, { id: 'generating', label: 'Generating' }, { id: 'queued', label: 'Queued' }, { id: 'error', label: 'Error' }].map(s => <span key={s.id} className="st-badge" data-phase={s.id} data-active={phase === s.id || s.id === 'queued' && data.queue.waiting > 0}>{tr(s.label)}{tr(s.id === 'queued' && data.queue.waiting > 0 ? ` (${data.queue.waiting})` : '')}</span>))}</div><div className="monitor-device-selectors">{tr(devices.length > 1 ? <Select ariaLabel={tr("Monitor GPU")} value={gpuChoice} options={[...(selectedInstance ? [{ value: 'assigned', label: 'Assigned GPUs' }] : []), { value: 'all', label: `All GPUs (${defaultDevices.length})` }, ...devices.map((gpu, i) => ({ value: gpuId(gpu), label: `GPU ${i + 1} · ${gpu.name}` }))]} menuMinWidth={340} onChange={setGpuSelection}/> : null)}{tr(processors.length > 1 ? <Select ariaLabel={tr("Monitor processor")} value={cpuChoice} options={[{ value: 'all', label: `All processors (${processors.length})` }, ...processors.map((p, i) => ({ value: p.id, label: `CPU ${i + 1} · ${p.model}` }))]} onChange={setCpuSelection}/> : null)}</div></div>
+      <div className="monitor-state__head">
+        <h2 className="h4" title={modelHeading.title}>
+          {multipleScope ? tr('Model activity') : modelHeading.name}
+        </h2>
+        <div className="monitor-state__badges">{tr([
+          { id: 'idle', label: 'Idle' }, { id: 'reading', label: 'Reading' },
+          { id: 'generating', label: 'Generating' }, { id: 'queued', label: 'Queued' },
+          { id: 'error', label: 'Error' }
+        ].map(s => <span key={s.id} className="st-badge" data-phase={s.id}
+          data-active={phase === s.id || s.id === 'queued' && data.queue.waiting > 0}>
+          {tr(s.label)}{tr(s.id === 'queued' && data.queue.waiting > 0 ? ` (${data.queue.waiting})` : '')}
+        </span>))}</div>
+        <div className="monitor-device-selectors">
+          {tr(devices.length > 1 ? <Select ariaLabel={tr("Monitor GPU")} value={gpuChoice} options={[
+            ...(selectedInstance ? [{ value: 'assigned', label: 'Assigned GPUs' }] : []),
+            { value: 'all', label: `All GPUs (${defaultDevices.length})` },
+            ...devices.map((gpu, i) => ({ value: gpuId(gpu), label: `GPU ${i + 1} · ${gpu.name}` }))
+          ]} menuMinWidth={340} onChange={setGpuSelection}/> : null)}
+          {tr(processors.length > 1 ? <Select ariaLabel={tr("Monitor processor")} value={cpuChoice} options={[
+            { value: 'all', label: `All processors (${processors.length})` },
+            ...processors.map((p, i) => ({ value: p.id, label: `CPU ${i + 1} · ${p.model}` }))
+          ]} onChange={setCpuSelection}/> : null)}
+        </div>
+      </div>
       <div className="monitor-state__reading small"><span>{tr(multipleScope ? `${number(data.queue.running)} active · ${number(data.queue.waiting)} queued` : data.phase === 'idle' ? 'Waiting for a request' : data.phaseLabel)}</span><span className="muted num">{tr(statusDetail)}</span></div>
       {tr(!multipleScope ? <Bar label={tr("Model progress")} value={progress ?? 0} indeterminate={writing && !hasReading(progress)} tone={data.phase === 'reading' ? 'info' : 'accent'}/> : null)}
     </section>

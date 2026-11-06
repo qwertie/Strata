@@ -1162,6 +1162,9 @@ class StrataEngine:
                 memory["uses"][category] = memory["uses"].get(category, 0) + size
                 memory.setdefault("blocks", []).append({"category": category, "pool": pool,
                                                          "label": label, "bytes": size})
+                if len(f) >= 8:
+                    memory["blocks"][-1].update(identity_group=unquote(f[6]),
+                                                 ids=[int(v) for v in f[7].split(",")])
                 continue
             if f[0] == "CONVERSATION":
                 held.append(parse_conversation_line(f))

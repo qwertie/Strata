@@ -333,7 +333,8 @@ std::vector<MemoryBlock> PagePool::get_memory_blocks() const {
         MemoryLabel name = config_.label_expert ? config_.label_expert(run.expert, weight) :
             MemoryLabel{"experts", config_.label, get_expert_memory_label(run.expert.layer, weight)};
         name.pool = config_.label;
-        add_memory_block(out, std::move(name), bytes);
+        const std::string group = "expert/" + name.category + "/" + std::to_string(run.expert.layer);
+        add_memory_block(out, std::move(name), bytes, group, {(uint32_t) run.expert.expert});
     }
     for (const auto& [id, c] : conversations_)
         for (size_t r = 0; r < c.blocks.size(); ++r) {

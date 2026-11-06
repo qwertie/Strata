@@ -42,3 +42,4 @@
             padding: 0; text-decoration: underline; cursor: pointer; }
 
 .mem-bars [data-use="drafter_experts"] { background-color: var(--st-danger); }
+.mem-bars [data-use="redundant_experts"] { background-color: color-mix(in srgb, var(--st-accent) 50%, black); }

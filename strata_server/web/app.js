@@ -2,6 +2,8 @@
 // The Monitor tab rebuilds PR #22's dashboard idea (code-martin) on the server's own /metrics.
 "use strict";
 
+import {getModelHeading} from "./model-heading.js";
+
 const $ = (id) => document.getElementById(id);
 const SPRITE = "web/sprite.svg";
 const icon = (name, cls = "st-icon") => `<svg class="${cls}" aria-hidden="true"><use href="${SPRITE}#i-${name}"/></svg>`;
@@ -193,6 +195,9 @@ function setPill(state, text) {
 
 function render(m) {
   const live = m.live || {}, hw = m.hardware || {}, st = m.hardware_static || {}, eng = m.engine || {}, h = m.history || {};
+  const heading = getModelHeading(eng.model_details, eng.model || "Model state");
+  $("model-state-title").textContent = heading.name;
+  $("model-state-title").title = heading.title;
   const last = (m.requests || [])[0];
   // the header pill
   if (live.state === "reading") {
