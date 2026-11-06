@@ -81,3 +81,22 @@ rejected before settings change. Saved defaults use `--conversation-tokens`
 for the per-conversation limit; `--max-context` still sets loaded capacity.
 The memory table shows the shared GPU budget beside GPU counts, each individual
 limit in a tooltip, and the combined GPU count in its footer.
+
+`vram_conversations` limits the number of GPU-resident conversations, including
+idle caches and their fixed regions. It defaults to the initial decode
+concurrency. Engines with no requested concurrency default to one; the Terminal
+can choose a larger count from known VRAM (one at 12 GiB or less). Explicit
+concurrency settings are preserved. The residency limit must be at least
+`concurrent` and at most the engine's `slots`; conflicting edits are rejected.
+`--vram-conversations` saves its default. `INFO vram_conversations` advertises
+support and lets Python wait before admitting work that cannot fit. The engine
+enforces the limit before allocating or restoring fixed state, reclaiming idle
+caches first. Lowering the limit can pause the lowest-priority running requests.
+Layer-split state counts as one conversation across all cards. Empty fixed
+regions count too, and are released when their place is needed.
+
+The existing `conversation_bytes` reports fixed pool state per conversation,
+before the growing KV cache. The UI displays this beside the residency control.
+For Qwen this includes the live recurrent state and configured rewind snapshots.
+Those snapshots currently remain in GPU pool pages and use device copies when
+saved or restored; paused conversations move their complete state to RAM or SSD.

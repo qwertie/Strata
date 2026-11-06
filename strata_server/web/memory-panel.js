@@ -52,6 +52,7 @@ const CHANGED_KEY = "strata.memoryPanel.changed";
 /** Names shown for the engine's settings (keys of the view's `settings`); others show as the engine names them.
  * @type {Record<string, string>} */
 const SETTINGS = {context: "Per-conversation token limit", concurrent: "Conversations at once", rows: "Rows per step",
+                  vram_conversations: "Conversations held in VRAM",
                   lookahead: "Lookahead", tokens_min: "Conversation tokens, minimum",
                   tokens_max: "Combined GPU token budget", ssd_pause_mib: "SSD for paused conversations (MiB)",
                   drafter: "Drafter", slots: "Maximum conversations at once"};
@@ -64,7 +65,8 @@ const UNLISTED = /^memory_mib\.|^token_bytes$|^conversation_bytes$|^context_capa
  *   largest: (s: Record<string, number>) => number][]}
  */
 const CONTROLS = [["context", () => 1, (s) => s.context_capacity ?? s.context ?? Infinity],
-                  ["concurrent", () => 1, (s) => Math.min(s.slots ?? 8, s.rows ?? 8)],
+                  ["concurrent", () => 1, (s) => Math.min(s.slots ?? 8, s.rows ?? 8, s.vram_conversations ?? Infinity)],
+                  ["vram_conversations", () => 1, (s) => s.slots ?? 8],
                   ["rows", (s) => s.concurrent ?? 1, () => 8],
                   ["lookahead", () => 0, (s) => s.drafter ? (s.rows ?? 1) - 1 : 0],
                   ["tokens_min", () => 0, (s) => s.tokens_max ?? Infinity],
@@ -273,6 +275,13 @@ function changeControl(element, panel, input) {
   const n = Number(input.value), lo = smallest(s), hi = largest(s);
   const context = key === "context" ? n : s.context;
   const budget = key === "tokens_max" ? n : s.tokens_max;
+  const concurrent = key === "concurrent" ? n : s.concurrent;
+  const resident = key === "vram_conversations" ? n : s.vram_conversations;
+  if ((key === "concurrent" || key === "vram_conversations") && resident != null && resident < concurrent) {
+    panel.notice = {text: "Conversations held in VRAM cannot be fewer than conversations at once. " +
+      "Neither value was changed.", error: true, until: Infinity};
+    return render(element, panel);
+  }
   if ((key === "context" || key === "tokens_max") && s.context_capacity != null && context > budget) {
     panel.notice = {text: "The per-conversation limit cannot exceed the combined GPU token budget. " +
       "Neither value was changed.", error: true, until: Infinity};
@@ -330,8 +339,7 @@ function drawControls(panel) {
   const fields = getEditableControls(s).map(([key, smallest, largest]) =>
     `<label>${esc(SETTINGS[key])} <input class="st-input mem-input" type="number" step="1" data-setting="${key}" ` +
     `value="${s[key]}" min="${smallest(s)}"${largest(s) < Infinity ? ` max="${largest(s)}"` : ""}` +
-    (key === "context" ? ` title="Loaded capacity: ${fmt(s.context_capacity)} tokens. ` +
-      `Increasing that capacity requires a model reload."` : "") + `${off}></label>`);
+    ` title="${esc(getControlHelp(key, s))}"${off}></label>`);
   if (s.drafter != null)
     fields.push(`<label><input type="checkbox" data-setting="drafter"${s.drafter ? " checked" : ""}${off}> ` +
       `${SETTINGS.drafter}</label>`);
@@ -339,13 +347,30 @@ function drawControls(panel) {
     `<option value="${value}"${panel.save === value ? " selected" : ""}>${text}</option>`;
   return `<div class="mem-controls">${fields.join("")}<label>Changes apply <select class="st-input mem-input" ` +
     `data-save${off}>${option("session", "This session")}` +
-    `${panel.view.config ? option("default", "Save as default") : ""}</select></label></div>`;
+    `${panel.view.config ? option("default", "Save as default") : ""}</select></label></div>` +
+    (s.vram_conversations != null && s.conversation_bytes ? `<p class="mem-note">Each conversation held in VRAM ` +
+      `uses ${size(s.conversation_bytes)} of fixed state before its KV cache.</p>` : "");
 }
 
 /** Gets controls supported by this engine; context_capacity advertises a live per-conversation limit.
  * @param {Record<string, number>} settings */
 function getEditableControls(settings) {
   return CONTROLS.filter(([key]) => settings[key] != null && (key !== "context" || settings.context_capacity != null));
+}
+
+/** Gets the meaning and memory cost of controls with limits that are easy to confuse.
+ * @param {string} key
+ * @param {Record<string, number>} settings */
+function getControlHelp(key, settings) {
+  if (key === "context")
+    return `Loaded capacity: ${fmt(settings.context_capacity)} tokens. ` +
+      "Increasing that capacity requires a model reload.";
+  if (key === "vram_conversations")
+    return "Limits active conversations and idle GPU caches together. " +
+      (settings.conversation_bytes ? `Each takes ${size(settings.conversation_bytes)} of fixed state ` +
+        "before its KV cache, including recurrent state and checkpoints where the model uses them. " : "") +
+      "Extra conversations wait, or are paused to RAM or SSD; higher-priority requests run first.";
+  return "";
 }
 
 /** Lays a memory's bar out: its segments (`drawn`: their bytes as drawn, when scaled) and the drawn bytes the bar's

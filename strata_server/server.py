@@ -2057,6 +2057,8 @@ class Service:
             return fail(409, "unsupported", "this engine cannot change its memory settings while it runs")
         if "context" in values and "context_capacity" not in getattr(self.engine, "info", {}):
             return fail(409, "unsupported", "this engine cannot change its per-conversation limit while it runs")
+        if "vram_conversations" in values and "vram_conversations" not in getattr(self.engine, "info", {}):
+            return fail(409, "unsupported", "this engine cannot limit the number of conversations held in VRAM")
         try:
             with self._engine_turn(self.SETTINGS_WAIT_S) as turn:
                 answered = self.engine.change_settings(values) if turn else None

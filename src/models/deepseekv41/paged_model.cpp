@@ -213,6 +213,9 @@ struct Part final : strata::serve::PagedPart {
             blocks[r].reserve(most);
             tables[r] = (uint8_t**) strata::core::gpu_alloc_zeroed(most * sizeof(uint8_t*));
             if (tables[r] == nullptr) {
+                for (uint8_t** table : tables)
+                    strata::core::gpu_free(table);
+                tables.clear();
                 err = "no room for the conversation's block tables";
                 return false;
             }

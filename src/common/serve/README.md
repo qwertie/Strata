@@ -32,6 +32,9 @@ engine).
   or the number of GPUs. Reservations cover prompt reads and decode windows; pausing or forgetting returns them.
   `tokens_max` caps their combined logical tokens. The separate live `context` limit cannot exceed that budget or
   the model's loaded `context_capacity`; inconsistent edits are rejected before changing settings.
+  A separate `vram_conversations` count limits fixed state as well as idle caches, independently of token counts.
+  It starts at the chosen decode concurrency; extra conversations wait or move to RAM/SSD, releasing their fixed
+  pool regions too. Its live value cannot fall below `concurrent`.
 
 Each engine still handles its own requests, SAVE / RESTORE, VRAM and QUIT, and writes its own `T`, `PP`, `DONE`, `BT`
 and `BDONE` lines.

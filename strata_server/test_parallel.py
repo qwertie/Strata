@@ -310,6 +310,23 @@ class ParallelArgs(unittest.TestCase):
 
 
 class PickSlot(unittest.TestCase):
+    def test_vram_conversation_limit_waits_even_when_token_space_is_available(self):
+        engine = self.engine(2)
+        engine.info["vram_conversations"] = 1
+        engine.slot_busy[0] = True
+        engine.slot_live[0] = {"state": "decoding", "priority": 0}
+        self.assertIsNone(engine.pick_slot([1, 2, 3]))
+        self.assertFalse(engine.can_admit_prompt([1, 2, 3], priority=0))
+        self.assertTrue(engine.can_admit_prompt([1, 2, 3], priority=1))
+        engine.slot_live[0]["state"] = "ending"
+        self.assertEqual(engine.pick_slot([1, 2, 3]), 1)
+        engine.slot_live[0] = None
+        engine.slot_held[0] = [4, 5, 6]
+        self.assertEqual(engine.pick_slot([1, 2, 3]), 1, "idle caches can move to RAM without blocking admission")
+        engine.info["vram_conversations"] = 2
+        engine.slot_live[0] = {"state": "reading", "prompt_tokens": 20, "generated": 0, "priority": 0}
+        self.assertEqual(engine.pick_slot([1, 2, 3]), 1, "a live limit increase opens another resident place")
+
     def test_shared_gpu_budget_waits_for_space_without_reserving_unused_output(self):
         engine = self.engine(2)
         engine.max_context = 2000

@@ -116,7 +116,12 @@ struct Part final : strata::serve::PagedPart {
 
     bool is_ready() const override { return pages.is_ready(); }
     bool init(strata::core::PagePool& pool, strata::core::ConversationId id, std::string& err) override {
-        return pages.init(m.g, ss, pool, id, err) && note_gdn_place(err);
+        if (!pages.init(m.g, ss, pool, id, err)) {
+            // Fixed regions may exist before the device tables are ready.
+            pool.remove_conversation(id);
+            return false;
+        }
+        return note_gdn_place(err);
     }
     bool reserve(int64_t tokens, std::string& err) override { return pages.reserve(tokens, err); }
     bool can_reserve_without_growth(int64_t tokens) const override {

@@ -18,7 +18,7 @@ def translate_args(cfg: dict, args: list[str]) -> list[str]:
     lookup_values = {"--suffix-draft": "0", "--lookup-chain": "0"}
     # Both paged families use the shared stage scheduler, including live batch-group sizing.
     common = set("""pack max-context batch batch-groups expert-cache expert-profile layer-split split-device
-        adapt-every adapt-swaps adapt-min-gain adapt-decay tokens-min tokens-max conversation-tokens
+        adapt-every adapt-swaps adapt-min-gain adapt-decay tokens-min tokens-max conversation-tokens vram-conversations
         gpu-mib ram-mib ssd-pause-mib
         rows lookahead concurrent pause-dir copy-back drafter remote-experts suffix-draft mtp-max-t
         lookup-chain lookup-chain-min""".split())

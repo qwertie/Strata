@@ -433,3 +433,24 @@ test('the per-conversation widget respects the capacity loaded into the engine',
   assert.match(element.innerHTML, /Per-conversation token limit: choose a whole number from 1 to 204.800/);
   assert.deepEqual(calls, []);
 });
+
+test('the VRAM conversation cap explains fixed overhead and rejects a count below decoding concurrency', async () => {
+  const view = {...live, settings: {...live.settings, concurrent: 2, vram_conversations: 2,
+    conversation_bytes: 823782400}};
+  const {calls, onChange} = recorder(), {element, fire} = mount(view, onChange);
+  assert.match(element.innerHTML, /Conversations held in VRAM <input/);
+  assert.match(element.innerHTML, /data-setting="vram_conversations" value="2" min="1" max="4"/);
+  assert.match(element.innerHTML, /Limits active conversations and idle GPU caches together\. Each takes 786 MiB/);
+  assert.match(element.innerHTML, /including recurrent state and checkpoints/);
+  assert.match(element.innerHTML, /Each conversation held in VRAM uses 786 MiB of fixed state before its KV cache/);
+  const setting = (key, value) => control('[data-setting]', {dataset: {setting: key}, value});
+  for (const [key, value] of [['vram_conversations', '1'], ['concurrent', '3']]) {
+    fire('change', {target: setting(key, value)});
+    assert.match(element.innerHTML, /cannot be fewer than conversations at once\. Neither value was changed/);
+  }
+  assert.deepEqual(calls, []);
+  fire('change', {target: setting('vram_conversations', '3')});
+  await settle();
+  assert.deepEqual(calls, [[{vram_conversations: 3}, 'session']]);
+  assert.doesNotMatch(mount(live, onChange).element.innerHTML, /data-setting="vram_conversations"/);
+});

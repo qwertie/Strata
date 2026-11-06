@@ -1197,7 +1197,7 @@ class StrataEngine:
                              **{k: keys.pop(k, None) for k in
                                 ("setting", "smallest", "largest", "mapped", "pool_offset")},
                              "uses": keys})
-        for key in ("concurrent", "tokens_max"):
+        for key in ("concurrent", "tokens_max", "vram_conversations"):
             if key in self.info and key in settings:
                 self.info[key] = settings[key]
         if "context_capacity" in self.info and "context" in settings:
@@ -2090,26 +2090,27 @@ class StrataEngine:
                                         bool(self.slot_held[b]), self.slot_used[b]))
 
     def can_admit_prompt(self, prompt: list[int], priority: int | None = None) -> bool:
-        """Checks the shared GPU allowance for the prompt and currently held tokens of active requests.
+        """Checks GPU residency and token allowances against the requests already active.
 
         A higher-priority admission may displace lower-priority requests. Idle cached conversations can be paused
         by the engine and do not reserve admission capacity. Callers hold slot_cv.
         """
-        budget = self.info.get("tokens_max")
-        if budget is None:
+        budget, limit = self.info.get("tokens_max"), self.info.get("vram_conversations")
+        if budget is None and limit is None:
             return True
-        budget = int(budget)
-        if len(prompt) >= budget:
+        if budget is not None and len(prompt) >= int(budget):
             return False
-        used = len(prompt)
+        used, active = len(prompt), 0
         for live in self.slot_live:
             if not live or live.get("state") == "ending":
                 continue
             if priority is not None and live.get("priority", 0) < priority:
                 continue
-            generated = max(0, live.get("generated", 0) - live.get("_generated_start", 0))
-            used += live["prompt_tokens"] + generated - 1
-        return used <= budget
+            active += 1
+            if budget is not None:
+                generated = max(0, live.get("generated", 0) - live.get("_generated_start", 0))
+                used += live["prompt_tokens"] + generated - 1
+        return (limit is None or active < int(limit)) and (budget is None or used <= int(budget))
 
     def get_releasing_prefix(self, prompt: list[int]) -> int:
         """Gets the longest cached-prefix hint in cancelling slots; callers hold slot_cv. Live forks do not wait."""

@@ -37,10 +37,12 @@
 // `memory_mib.gpu<N>.<card>` for a later card on the GPU of an earlier one,
 // `memory_mib.ram`: a pool takes and gives back memory in chunks of 256 MiB; a shrink evicts the experts of the
 // chunks it gives back and moves or pauses the conversations there), `tokens_min`, `tokens_max`, `context`,
-// `ssd_pause_mib`, `drafter` (off gives its weights back), `concurrent`, `rows` and `lookahead`. Pool shrinks must
-// accommodate the biggest decoding conversation at the end of its request and the token minimum. The combined GPU
-// token budget is independent of page padding. The per-conversation limit cannot exceed it or the loaded capacity;
-// reducing it must still leave each active request room for its next token. Conflicting edits change nothing.
+// `ssd_pause_mib`, `drafter` (off gives its weights back), `concurrent`, `vram_conversations`, `rows` and `lookahead`.
+// The GPU residency count includes idle caches and their fixed regions, and cannot fall below `concurrent`.
+// Pool shrinks must accommodate the biggest decoding conversation at the end of its request and the token minimum.
+// The combined GPU token budget is independent of page padding. The per-conversation limit cannot exceed it or the
+// loaded capacity; reducing it must still leave each active request room for its next token. Conflicting edits
+// change nothing.
 #pragma once
 
 #include "strata/common/experts/ram_experts.hpp"
@@ -72,6 +74,7 @@ struct PagedSettings {
     int64_t tokens_min = kDefaultTokensMin;        ///< --tokens-min
     int64_t tokens_max = -1;                       ///< combined GPU logical tokens; -1: --max-context
     int64_t conversation_context = -1;             ///< --conversation-tokens; -1: loaded capacity or tokens_max
+    int64_t vram_conversations = -1;               ///< --vram-conversations; -1: initial decode concurrency
     /// --gpu-mib, per card of a layer split (one value: every card's); empty: what each GPU has free less what it keeps
     std::vector<int64_t> gpu_mib;
     int64_t ram_mib = -1;                          ///< --ram-mib; -1: get_ram_room

@@ -39,8 +39,14 @@ Conversations at once: 2 of 3 | Rows per step: 8 | Lookahead: 4
 | SSD space for paused conversations | how much of the disk paused conversations may take | yes |
 | Drafter on/off (per GPU) | its weights: about 1 GiB for Qwen3.8 | yes (unloading frees the memory) |
 | Conversations at once | how many conversations decode in the same step | yes |
+| Conversations held in VRAM | how many active or cached conversations keep their GPU state, including recurrent state and checkpoints; at least Conversations at once | yes |
 | Rows per step | how many tokens one pass through the model computes (at most 8 today) | yes |
 | Lookahead | the most guesses one conversation may add in a step; 0 turns drafting off | yes |
+
+Conversations held in VRAM defaults to the initial Conversations at once. Without a requested count the engine
+uses one. The Terminal can choose from known VRAM; at 12 GiB or less (or unknown VRAM), it chooses one. Explicit
+settings remain in effect. The panel reports the fixed memory per conversation, before its KV cache, beside this
+control. Extra conversations wait or move to RAM/SSD, freeing their fixed regions as well as the growing cache.
 
 Rows per step must be at least the conversations at once. An edit that would put the per-conversation limit above
 the combined GPU token budget is rejected with an explanation; neither value is adjusted automatically. Raising

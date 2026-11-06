@@ -29,6 +29,14 @@ CFG = {"exe": "engine/strata.exe", "args": ["--pack", "data/packs/q2_0", "--kv",
 
 
 class Apply(unittest.TestCase):
+    def test_live_residency_default_survives_a_restart_without_changing_concurrency(self):
+        values = runconfig.check_live({"vram_conversations": 3}, True)
+        new, changed = runconfig.apply_live({"args": ["--concurrent", "2"]}, values)
+        self.assertEqual(new["args"], ["--concurrent", "2", "--vram-conversations", "3"])
+        self.assertEqual(changed, ["vram_conversations"])
+        with self.assertRaises(ValueError):
+            runconfig.check_live({"vram_conversations": 0}, True)
+
     def test_live_token_defaults_keep_the_loaded_capacity_separate(self):
         cfg = {"args": ["--max-context", "204800", "--tokens-max", "401000"]}
         values = runconfig.check_live({"context": 180000, "tokens_max": 350000}, True)
