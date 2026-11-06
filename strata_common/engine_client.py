@@ -672,6 +672,8 @@ class StrataEngine:
         self.session_save_reclaim = '--session-save-reclaim' in args
         paths = {k: v for k, v in zip(args, args[1:]) if k in ("--native", "--pack")}
         self.model_path = paths.get("--native") or paths.get("--pack", "pack/full")
+        # The engine excludes a temporary effort turn from its reusable history boundary.
+        self._tail_role_token = int(args[args.index("--tail-role-token") + 1]) if "--tail-role-token" in args else -1
         self.log_path = log
         self.proc, self.pump, self.log = None, None, None
         self.ended, self.unloaded = True, True
@@ -1755,7 +1757,7 @@ class StrataEngine:
                                 raise QueueWaitExpired("the inference queue wait deadline expired; retry later")
                             with self.slot_cv:
                                 slot = self.pick_slot(prompt)
-                                if slot is None and self.can_preempt:
+                                if slot is None and self.can_preempt and not self.get_releasing_prefix(prompt):
                                     slot = self._pick_victim(priority)
                                     if slot is not None:
                                         taken = self.slot_handover[slot] = threading.Event()
@@ -1812,6 +1814,7 @@ class StrataEngine:
                         self.slot_q[slot].get_nowait()
                     head = f"BGENI {slot} {left}{keys} {embeddings}" if embeddings else f"BGEN {slot} {left}{keys}"
                     live = {"slot": slot, "request_id": getattr(cancel, "_strata_request_id", None),
+                            "_cancel": cancel, "_prompt": prompt,
                             "state": "reading", "prompt_tokens": len(prompt), "prompt_read": 0, "generated": 0,
                             "started": time.time(), "first_token": None, "priority": priority}
                     deadline = getattr(cancel, "_strata_queue_deadline", None)
@@ -2018,6 +2021,11 @@ class StrataEngine:
                     self.slot_claims.discard(reserved)
                     self.slot_cv.notify_all()
             if slot is not None:
+                if phase == "slot" and not bdone_in:
+                    stream = list(prompt) + out[gen0:] if gen0 is not None and len(out) > gen0 else list(prompt)
+                    with self.slot_cv:
+                        self.slot_held[slot] = stream[:-1]
+                        self.slot_releasing.add(slot)
                 self.slot_live[slot] = None
                 self.slot_used[slot] = time.time()
                 if phase == "slot" and bdone_in:
@@ -2028,8 +2036,6 @@ class StrataEngine:
                         self.slot_claims.discard(slot)
                         self.slot_cv.notify_all()
                 elif phase == "slot":
-                    self.slot_held[slot] = []
-                    stream = list(prompt) + out[gen0:] if gen0 is not None and len(out) > gen0 else None
                     self._release_slot_when_done(slot, stream)    # freed at its BDONE
                     self.slot_claims.discard(slot)                # (the BDONE wait owns it now)
                 else:
@@ -2045,7 +2051,8 @@ class StrataEngine:
     def pick_slot(self, prompt: list[int]) -> int | None:
         """A free slot for `prompt` (the caller holds slot_cv): the one whose held tokens are the longest start of the
         prompt (the engine then reads only the rest), else an empty one, else the one used longest ago - so the
-        conversations other slots hold stay for their next turns.  None: every slot is busy."""
+        conversations other slots hold stay for their next turns. None: all slots are busy, or a cancelling slot
+        must finish before its longer cached prefix can be reused."""
         free = [b for b in self.slot_order if not self.slot_busy[b]]
         if not free:
             return None
@@ -2060,23 +2067,12 @@ class StrataEngine:
                 g0 = b - b % gs
                 return any(self.slot_busy[x] for x in range(b + 1, g0 + gs))
             return min(free, key=lambda b: (not fills_hole(b), self.slot_order.index(b)))
-        def held_prefix(b):
-            # what of `prompt` the slot's cache serves: the slot's whole held stream (the prompt and what it decoded)
-            # when this prompt continues it, else its turn checkpoint - the engine takes one at the last <|im_start|> of
-            # a prompt (the next request of the chat renders the history again, but not the reply it decoded or the
-            # assistant header), so a prompt that agrees with the held tokens up to there is that chat's next turn
-            # too (#2518: it was only found by the engine's own source search, after pick_slot had sent it to another
-            # slot and the request in that slot had overwritten the chat whose cache the next one needed)
-            h = self.slot_held[b]
-            if not h:
-                return 0
-            if len(h) < len(prompt) and prompt[:len(h)] == h:
-                return len(h)
-            k = len(h) - 1 - h[::-1].index(self.TURN_ID) if self.TURN_ID in h else 0
-            return k if 0 < k < len(prompt) and prompt[:k] == h[:k] else 0
-        best = max(free, key=held_prefix)
+        best = max(free, key=lambda b: self.get_cached_prefix(self.slot_held[b], prompt))
+        prefix = self.get_cached_prefix(self.slot_held[best], prompt)
+        if self.get_releasing_prefix(prompt) > prefix:
+            return None
         # without --batch-groups a held prefix of any length is taken, as before
-        if held_prefix(best) >= (self.SLOT_PREFIX_MIN if self.slot_groups > 1 else 1):
+        if prefix >= (self.SLOT_PREFIX_MIN if self.slot_groups > 1 else 1):
             return best
         # with --batch-groups: the group with the fewest busy slots first, so the requests spread over the
         # pipeline's stages (two requests in one group leave the other stage idle); then empty, then least recent
@@ -2086,6 +2082,37 @@ class StrataEngine:
                 busy_in[self.slot_group[b]] = busy_in.get(self.slot_group[b], 0) + 1
         return min(free, key=lambda b: (busy_in.get(self.slot_group[b], 0) if self.slot_groups > 1 else 0,
                                         bool(self.slot_held[b]), self.slot_used[b]))
+
+    def get_releasing_prefix(self, prompt: list[int]) -> int:
+        """Gets the longest cached-prefix hint in cancelling slots; callers hold slot_cv. Live forks do not wait."""
+        if getattr(self, "slot_gs", 0) > 1:
+            return 0
+        best = 0
+        for b, live in enumerate(self.slot_live):
+            if b in self.slot_handover:
+                continue
+            cancel = live.get("_cancel") if live else None
+            if b in self.slot_releasing:
+                stream = self.slot_held[b]
+            elif live and (live.get("state") == "ending" or (cancel and cancel.is_set())):
+                stream = live.get("_prompt", [])
+            else:
+                continue
+            best = max(best, self.get_cached_prefix(stream, prompt))
+        return best
+
+    def get_cached_prefix(self, held: list[int], prompt: list[int]) -> int:
+        """Estimates cached tokens from a full prefix match or the engine's reusable history boundary."""
+        if not held:
+            return 0
+        if len(held) < len(prompt) and prompt[:len(held)] == held:
+            return len(held)
+        boundary = len(held) - 1 - held[::-1].index(self.TURN_ID) if self.TURN_ID in held else 0
+        if boundary > 0 and self._tail_role_token >= 0:
+            previous = next((i for i in range(boundary - 1, 0, -1) if held[i] == self.TURN_ID), 0)
+            if previous and held[previous + 1] == self._tail_role_token:
+                boundary = previous
+        return boundary if 0 < boundary < len(prompt) and prompt[:boundary] == held[:boundary] else 0
 
     def slots_view(self) -> list[dict]:
         """/metrics: each batch slot - idle (with the tokens it holds for a next turn), reading or decoding."""

@@ -3820,11 +3820,8 @@ def make_handler(svc: Service):
             super().end_headers()
 
         def _watch_client(self, cancel: threading.Event) -> None:
-            """#430 #431: cancel the request as soon as its client hangs up.  A non-streamed request writes nothing
-            until it ends, and a streamed one only a keep-alive per prompt chunk (and the first write after a hang-up
-            usually still succeeds), so a dropped request kept the engine busy until its answer or the whole prompt
-            was done.  Every 0.5 s: the socket readable with nothing to read (EOF) means the client closed it.  A
-            request is HTTP/1.0 and fully read here, so no later bytes are expected - data is not a hang-up."""
+            """Watches for connection EOF while this handler owns the request. Socket readiness wakes the watcher
+            on disconnect. The HTTP/1.0 request body is fully read here; unexpected extra bytes are not EOF."""
             done = self.watch_done = threading.Event()
             self.cancel_event = cancel
             with svc.status_lock:
@@ -3832,18 +3829,21 @@ def make_handler(svc: Service):
             sock = self.connection
 
             def watch():
-                while not done.wait(0.5) and not cancel.is_set():
+                while not done.is_set() and not cancel.is_set():
                     try:
-                        readable, _, _ = select.select([sock], [], [], 0)
+                        readable, _, _ = select.select([sock], [], [], 0.5)
                         gone = bool(readable) and sock.recv(1, socket.MSG_PEEK) == b""
                     except (ConnectionError, TimeoutError):
                         gone = True
                     except (OSError, ValueError):            # the socket was closed here: the request has ended
                         return
-                    if gone and not done.is_set():
-                        self._note(outcome="disconnected")
-                        svc.note_client_disconnect(cancel)
+                    if gone:
+                        if not done.is_set():
+                            self._note(outcome="disconnected")
+                            svc.note_client_disconnect(cancel)
                         return
+                    if readable:
+                        done.wait(0.5)
 
             threading.Thread(target=watch, daemon=True, name="strata-client-watch").start()
 

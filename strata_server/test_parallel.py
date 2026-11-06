@@ -305,6 +305,20 @@ class ParallelArgs(unittest.TestCase):
 
 
 class PickSlot(unittest.TestCase):
+    def test_temporary_effort_turn_does_not_hide_a_cancelling_conversations_checkpoint(self):
+        engine = self.engine(2)
+        engine._tail_role_token = 8678
+        history = list(range(1000, 1600))
+        marker = engine.TURN_ID
+        held = history + [marker, 8678, 4, 5, marker, 74455, 6]
+        prompt = history + [marker, 846, 7, 8, marker, 8678, 9, marker, 74455, 6]
+        cancelled = threading.Event()
+        cancelled.set()
+        engine.slot_busy[0] = True
+        engine.slot_live[0] = {"state": "decoding", "_cancel": cancelled, "_prompt": held}
+        self.assertEqual(engine.get_cached_prefix(held, prompt), len(history))
+        self.assertIsNone(engine.pick_slot(prompt))
+
     def engine(self, n):
         e = StrataEngine("missing-executable", [], lazy=True)
         e.batch = n
@@ -313,6 +327,8 @@ class PickSlot(unittest.TestCase):
         e.slot_held = [[] for _ in range(n)]
         e.slot_used = [0.0] * n
         e.slot_live = [None] * n
+        e.slot_handover = {}
+        e.slot_releasing = set()
         e.slot_group = [0] * n
         return e
 
@@ -532,6 +548,58 @@ class ContextView(FakeEngineCase):
 class ParallelService(FakeEngineCase):
     """The real StrataEngine and Service over HTTP, the fake engine behind them: slots, queues, benchmarks, telemetry.
     The yielding, restart and failure tests are in strata_server/test_parallel_yield.py (this file alone ran past 100 s)."""
+
+    def test_followup_waits_for_cancelling_cache_instead_of_prefilling_another_slot(self):
+        self.start(2)
+        engine, cancel = self.engine, threading.Event()
+        history = [7] * 600
+        original = history + [engine.TURN_ID, 8, 9]
+        followup = history + [engine.TURN_ID, 10, 11]
+        with engine.slot_cv:
+            engine.slot_busy[0] = True
+            engine.slot_claims.add(0)
+            engine.slot_live[0] = {"state": "decoding", "_cancel": cancel, "_prompt": original}
+            self.assertEqual(engine.pick_slot(followup), 1, "an intentional live fork must not wait")
+            cancel.set()
+            self.assertIsNone(engine.pick_slot(followup), "cancellation must hand the matching cache back first")
+            engine.slot_held[1] = original
+            self.assertEqual(engine.pick_slot(followup), 1, "an equally useful free cache need not wait")
+            engine.slot_held[1] = []
+            self.assertEqual(engine.pick_slot([12] * 600), 1, "an unrelated request need not wait")
+            engine.slot_handover[0] = threading.Event()
+            self.assertEqual(engine.pick_slot(followup), 1, "preemption must not wait for its own handover")
+            engine.slot_handover.clear()
+            engine.slot_held[0] = original
+            engine.slot_releasing.add(0)
+            engine.slot_live[0] = None
+            self.assertIsNone(engine.pick_slot(followup), "the BDONE drain keeps the reuse barrier")
+        output, failures = [], []
+
+        def run():
+            try:
+                output.extend(t for t in engine.generate_batched(followup, 3, {}, threading.Event()) if t is not None)
+            except Exception as error:
+                failures.append(error)
+
+        worker = threading.Thread(target=run)
+        worker.start()
+        try:
+            end = time.monotonic() + 3
+            while engine.admitting == 0 and time.monotonic() < end:
+                time.sleep(0.01)
+            self.assertEqual(engine.admitting, 1)
+            self.assertNotIn("BGEN", self.log.read_text())
+        finally:
+            with engine.slot_cv:
+                engine.slot_busy[0] = False
+                engine.slot_releasing.discard(0)
+                engine.slot_claims.discard(0)
+                engine.slot_cv.notify_all()
+            worker.join(10)
+        self.assertFalse(worker.is_alive())
+        self.assertEqual(failures, [])
+        self.assertEqual(output, list(b"ok,"))
+        self.assertIn("BGEN 0 ", self.log.read_text())
 
     def test_zero_token_batch_admission_preserves_output_and_cached_prefix(self):
         self.start(2, more=["--zero-admit"])
