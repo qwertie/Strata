@@ -108,6 +108,25 @@ int main() {
           "a completed release cannot erase another thread's new allocation at the same address");
     manager.remove_if_current(&allocation, manager.get_allocation_id(&allocation));
     check(manager.get_blocks("ram").empty(), "a matching lifetime is removed");
+    uint8_t storage[128];
+    manager.add(storage, sizeof storage, "ram", {"other", "Device allocations", "Engine buffers"}, true);
+    check(!manager.mark_pool_backing(storage, 0, "Page pool") &&
+              manager.get_blocks("ram").at(0).name.label == "Engine buffers",
+          "an empty view does not claim an allocation or rename its unpooled bytes");
+    check(manager.mark_pool_backing(storage + 13, 64, "Page pool") &&
+              manager.mark_pool_backing(storage + 13, 64, "Page pool") &&
+              manager.get_blocks("ram").at(0).bytes == 64,
+          "repeated registration of an aligned view does not subtract its bytes twice");
+    check(manager.mark_pool_backing(storage + 50, 40, "Page pool") &&
+              manager.get_blocks("ram").at(0).bytes == 51,
+          "overlapping backing ranges are counted as one union");
+    check(!manager.mark_pool_backing(storage + 127, 2, "Page pool") &&
+              manager.get_blocks("ram").at(0).bytes == 51,
+          "a range outside its allocation changes nothing");
+    check(manager.mark_pool_backing(storage, sizeof storage, "Page pool") &&
+              manager.get_blocks("ram").empty() && manager.get_mapped_bytes() == sizeof storage,
+          "fully covered backing disappears from categories while mapped RAM is counted once");
+    manager.remove(storage);
     using Values = std::vector<std::pair<std::string, std::string>>;
     Values values;
     std::string err;

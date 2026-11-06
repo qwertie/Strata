@@ -102,14 +102,21 @@ int test_managed_allocations() {
         found_host = found_host || (block.name.category == "allocation_test" && block.bytes == bytes &&
                                    block.name.label == "Host block");
     const bool counted = found_device && found_host && get_memory_manager().get_mapped_bytes() == mapped + bytes;
+    const bool backed = get_memory_manager().mark_pool_backing((uint8_t*) gpu + 256, bytes - 512,
+                                                              "Aligned test pool");
+    uint64_t padding = 0;
+    for (const MemoryBlock& block : get_memory_manager().get_blocks(memory))
+        if (block.name.pool == "Aligned test pool")
+            padding += block.bytes;
     const bool released_host = release_host(host) == cudaSuccess;
     const bool released_device = release_device(gpu) == cudaSuccess;
     bool retained = false;
     for (const std::string& place : {memory, std::string("ram")})
         for (const MemoryBlock& block : get_memory_manager().get_blocks(place))
             retained = retained || block.name.category == "allocation_test";
-    const bool ok = counted && released_host && released_device && !retained &&
+    const bool ok = counted && backed && padding == 512 && released_host && released_device && !retained &&
+                    get_memory_manager().get_allocation_id(gpu) == 0 &&
                     get_memory_manager().get_mapped_bytes() == mapped;
-    std::printf("managed allocations: labels, aliases and releases %s\n", ok ? "passed" : "FAILED");
+    std::printf("managed allocations: labels, aligned backing, aliases and releases %s\n", ok ? "passed" : "FAILED");
     return ok ? 0 : 1;
 }

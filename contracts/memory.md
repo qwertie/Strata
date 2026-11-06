@@ -23,6 +23,8 @@ Blocks are disjoint totals, grouped by matching labels. Backing allocations for 
 page pool are excluded when its blocks are reported. Page padding belongs to the
 block, and unused pool space is reported separately. Experts retain their layer
 and size class; conversation blocks retain their conversation and state labels.
+When a pool starts inside its backing allocation for alignment, prefix and suffix
+bytes are reported separately as `Alignment padding`.
 
 The GPU and pinned-host allocators retain allocation lifetimes through
 `base/gpu/managed_memory.hpp` and the shared `MemoryManager`. Page pools use the

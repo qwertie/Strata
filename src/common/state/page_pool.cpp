@@ -125,7 +125,7 @@ PoolResize PagePool::resize(uint64_t bytes) {
                       std::to_string(chunks) + " chunks";
             break;
         }
-        get_memory_manager().set_label(chunk, {"", config_.label, "Backing storage"});
+        get_memory_manager().mark_pool_backing(chunk, config_.chunk_bytes, config_.label);
         const PageId first = page_count();
         chunks_.push_back(chunk);
         runs_[first].pages = (uint32_t) pages_per_chunk_;

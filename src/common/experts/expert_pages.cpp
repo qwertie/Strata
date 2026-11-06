@@ -25,7 +25,6 @@ bool ExpertPages::open(ExpertCache& cache, ChunkMemory memory, uint64_t bytes, c
     config.chunk_bytes = pages * page;
     cache_ = &cache;
     arena_ = cache.device_slot(0);
-    get_memory_manager().set_label(arena_, {"", config.label, "Backing storage"});
     if (!open_pool(std::move(memory), std::max(bytes, config.chunk_bytes), layout, config, blob_bytes, n_expert,
                    max_experts, ranking, err))
         return false;

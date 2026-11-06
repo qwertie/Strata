@@ -1,5 +1,7 @@
 #pragma once
 
+#include <algorithm>
+#include <cstddef>
 #include <cstdint>
 #include <map>
 #include <mutex>
@@ -42,7 +44,7 @@ public:
         if (!address)
             return;
         std::lock_guard<std::mutex> lock(mutex_);
-        allocations_[address] = {std::move(memory), {std::move(name), bytes}, mapped, ++next_id_};
+        allocations_[address] = {std::move(memory), {std::move(name), bytes}, mapped, ++next_id_, {}};
     }
     /// Forgets an allocation after its allocator successfully releases it.
     void remove(void* address) {
@@ -69,14 +71,45 @@ public:
         if (it != allocations_.end())
             it->second.block.name = std::move(name);
     }
+    /// Assigns an aligned view to a pool, retaining uncovered bytes as padding.
+    /// Returns false unless a nonempty view fits entirely inside a recorded allocation.
+    bool mark_pool_backing(void* address, uint64_t bytes, const std::string& pool) {
+        if (!bytes)
+            return false;
+        std::lock_guard<std::mutex> lock(mutex_);
+        auto it = allocations_.upper_bound(address);
+        if (it == allocations_.begin())
+            return false;
+        --it;
+        const uintptr_t base = reinterpret_cast<uintptr_t>(it->first), at = reinterpret_cast<uintptr_t>(address);
+        Allocation& allocation = it->second;
+        if (at < base || bytes > allocation.block.bytes || at - base > allocation.block.bytes - bytes)
+            return false;
+        auto& ranges = allocation.backing;
+        ranges.emplace_back(at - base, at - base + bytes);
+        std::sort(ranges.begin(), ranges.end());
+        size_t count = 0;
+        for (const auto& range : ranges) {
+            if (count && range.first <= ranges[count - 1].second)
+                ranges[count - 1].second = std::max(ranges[count - 1].second, range.second);
+            else
+                ranges[count++] = range;
+        }
+        ranges.resize(count);
+        allocation.block.name = {"other", pool, "Alignment padding"};
+        return true;
+    }
     /// Gets totals by label, excluding pool backing whose blocks are reported by the pool itself.
     std::vector<MemoryBlock> get_blocks(const std::string& memory) const {
         std::lock_guard<std::mutex> lock(mutex_);
         std::map<std::tuple<std::string, std::string, std::string>, uint64_t> totals;
         for (const auto& [address, allocation] : allocations_) {
             const MemoryBlock& b = allocation.block;
-            if (allocation.memory == memory && !b.name.category.empty())
-                totals[{b.name.category, b.name.pool, b.name.label}] += b.bytes;
+            uint64_t bytes = b.bytes;
+            for (const auto& range : allocation.backing)
+                bytes -= range.second - range.first;
+            if (allocation.memory == memory && !b.name.category.empty() && bytes)
+                totals[{b.name.category, b.name.pool, b.name.label}] += bytes;
         }
         std::vector<MemoryBlock> out;
         for (const auto& [name, bytes] : totals)
@@ -100,6 +133,7 @@ private:
         MemoryBlock block;
         bool mapped = false;
         uint64_t id = 0;   ///< distinguishes successive allocations at the same address
+        std::vector<std::pair<uint64_t, uint64_t>> backing;   ///< merged half-open ranges reported by page pools
     };
     mutable std::mutex mutex_;
     std::map<void*, Allocation> allocations_;

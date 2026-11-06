@@ -128,6 +128,39 @@ void test_labels() {
     check(paused == f.pool.report().paused.bytes, "paused blocks follow their conversation's lifetime");
 }
 
+/// Exercises the aligned views returned by ExpertPages rather than exact allocation addresses.
+void test_aligned_backing() {
+    constexpr size_t prefix = 13, padding = 20;
+    const std::string memory = "aligned-pool-test";
+    auto& manager = get_memory_manager();
+    PagePoolHooks hooks;
+    hooks.alloc = [&](size_t bytes) -> void* {
+        auto* raw = (uint8_t*) std::calloc(1, bytes + padding);
+        manager.add(raw, bytes + padding, memory, {"other", "Device allocations", "Engine buffers"});
+        return raw ? raw + prefix : nullptr;
+    };
+    hooks.free = [&](void* view) {
+        auto* raw = (uint8_t*) view - prefix;
+        manager.remove(raw);
+        std::free(raw);
+    };
+    {
+        PagePool pool(get_layout(), get_config(), std::move(hooks));
+        check(pool.resize(2 * chunk).refusal.empty(), "aligned pool grows to two allocations");
+        const auto blocks = manager.get_blocks(memory);
+        check(blocks.size() == 1 && blocks[0].name.label == "Alignment padding" &&
+                  blocks[0].bytes == 2 * padding,
+              "aligned backing is excluded while prefix and suffix padding remain visible");
+        uint64_t total = blocks[0].bytes;
+        for (const MemoryBlock& block : pool.get_memory_blocks())
+            total += block.bytes;
+        check(total == 2 * (chunk + padding), "pool and ledger totals partition physical backing exactly");
+        check(pool.resize(chunk).refusal.empty() && manager.get_blocks(memory).at(0).bytes == padding,
+              "shrinking an aligned pool releases the original allocation and its padding");
+    }
+    check(manager.get_blocks(memory).empty(), "destroying an aligned pool leaves no backing allocations");
+}
+
 void test_allocation() {
     Fixture f;
     check(f.pool.report().total.pages == 12 && f.pool.report().free.pages == 12, "a new pool's pages are free");
@@ -655,6 +688,7 @@ void test_many_pages() {
 
 int main() {
     test_labels();
+    test_aligned_backing();
     test_allocation();
     test_runs();
     test_experts_tile();
