@@ -436,13 +436,13 @@ test('the per-conversation widget respects the capacity loaded into the engine',
 
 test('the VRAM conversation cap explains fixed overhead and rejects a count below decoding concurrency', async () => {
   const view = {...live, settings: {...live.settings, concurrent: 2, vram_conversations: 2,
-    conversation_bytes: 823782400}};
+    conversation_bytes: 117683200}};
   const {calls, onChange} = recorder(), {element, fire} = mount(view, onChange);
   assert.match(element.innerHTML, /Conversations held in VRAM <input/);
   assert.match(element.innerHTML, /data-setting="vram_conversations" value="2" min="1" max="4"/);
-  assert.match(element.innerHTML, /Limits active conversations and idle GPU caches together\. Each takes 786 MiB/);
-  assert.match(element.innerHTML, /including recurrent state and checkpoints/);
-  assert.match(element.innerHTML, /Each conversation held in VRAM uses 786 MiB of fixed state before its KV cache/);
+  assert.match(element.innerHTML, /Limits active conversations and idle GPU caches together\. Each takes 112 MiB/);
+  assert.match(element.innerHTML, /Rewind checkpoints are allocated separately in RAM as needed/);
+  assert.match(element.innerHTML, /Each conversation held in VRAM uses 112 MiB of fixed state before its KV cache/);
   const setting = (key, value) => control('[data-setting]', {dataset: {setting: key}, value});
   for (const [key, value] of [['vram_conversations', '1'], ['concurrent', '3']]) {
     fire('change', {target: setting(key, value)});
@@ -453,4 +453,18 @@ test('the VRAM conversation cap explains fixed overhead and rejects a count belo
   await settle();
   assert.deepEqual(calls, [[{vram_conversations: 3}, 'session']]);
   assert.doesNotMatch(mount(live, onChange).element.innerHTML, /data-setting="vram_conversations"/);
+});
+
+test('idle eviction age is configurable without implying that age alone evicts a conversation', async () => {
+  const view = {...live, settings: {...live.settings, conversation_idle_seconds: 66}};
+  const {calls, onChange} = recorder(), {element, fire} = mount(view, onChange);
+  assert.match(element.innerHTML, /data-setting="conversation_idle_seconds" value="66" min="0"/);
+  assert.match(element.innerHTML, /when experts or another conversation need space/);
+  assert.match(element.innerHTML, /age alone does not evict anything/);
+  const target = value => control('[data-setting]', {dataset: {setting: 'conversation_idle_seconds'}, value});
+  fire('change', {target: target('-1')});
+  assert.deepEqual(calls, []);
+  fire('change', {target: target('90')});
+  await settle();
+  assert.deepEqual(calls, [[{conversation_idle_seconds: 90}, 'session']]);
 });

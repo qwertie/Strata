@@ -13,6 +13,7 @@
 #include "strata/common/experts/split_rules.hpp"
 #include "strata/common/serve/paged_engine.hpp"
 #include "strata/common/serve/paged_model.hpp"
+#include "strata/common/state/state_bytes.hpp"
 
 #include <cuda_runtime.h>
 
@@ -370,6 +371,7 @@ public:
         return true;
     }
     std::vector<int64_t> get_rewind_points(const PagedParts& parts) const override;
+    uint64_t get_host_state_bytes(const PagedParts& parts) const override;
     bool rewind(const PagedParts& parts, int64_t tokens, std::string& err) override;
     void forget_drafts(int) override {}
     int64_t get_prompt_chunk() const override { return m_.feed_unit(); }
@@ -877,6 +879,16 @@ bool PagedDeepSeek::restore_state(const std::vector<uint8_t>& state, const Paged
 std::vector<int64_t> PagedDeepSeek::get_rewind_points(const PagedParts& parts) const {
     const Part& p = get_part(*parts[0]);
     return !p.is_ready() ? std::vector<int64_t>{} : seated_ == &p ? m_.check_positions() : get_check_positions(p.state);
+}
+
+uint64_t PagedDeepSeek::get_host_state_bytes(const PagedParts& parts) const {
+    Part& p = get_part(*parts.front());
+    p.leave_seat();
+    uint64_t bytes = strata::core::get_owned_vector_bytes(p.state.tokens);
+    for (const auto& checkpoint : p.state.checks)
+        bytes += strata::core::get_owned_vector_bytes(checkpoint.win) +
+                 strata::core::get_owned_vector_bytes(checkpoint.comp);
+    return bytes;
 }
 
 bool PagedDeepSeek::rewind(const PagedParts& parts, int64_t tokens, std::string& err) {

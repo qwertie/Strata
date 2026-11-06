@@ -33,8 +33,14 @@ engine).
   `tokens_max` caps their combined logical tokens. The separate live `context` limit cannot exceed that budget or
   the model's loaded `context_capacity`; inconsistent edits are rejected before changing settings.
   A separate `vram_conversations` count limits fixed state as well as idle caches, independently of token counts.
-  It starts at the chosen decode concurrency; extra conversations wait or move to RAM/SSD, releasing their fixed
-  pool regions too. Its live value cannot fall below `concurrent`.
+  Its default adds one cached place to decode concurrency, plus one more for Qwen on cards with at least 10 GiB.
+  Extra conversations wait or move to RAM/SSD, releasing their fixed pool regions too. Its live value cannot fall
+  below `concurrent`. `conversation_idle_seconds` defaults to 66: old idle state may give way to expert refill or
+  conversation allocations, between steps, while active decode and prompt reads remain protected.
+- `state_bytes.hpp` in common/state: bounded host-state fields shared by Qwen, DeepSeek and the pause-file wrapper.
+  Qwen's recurrent rewind snapshots and DeepSeek's ring/compressor checkpoints live in ordinary RAM. Both travel
+  in the shared pause file's host header. Disk-paused headers retain only lookup metadata in RAM; checkpoint
+  payloads are read back from the file on resume.
 
 Each engine still handles its own requests, SAVE / RESTORE, VRAM and QUIT, and writes its own `T`, `PP`, `DONE`, `BT`
 and `BDONE` lines.

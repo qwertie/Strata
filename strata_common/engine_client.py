@@ -1197,7 +1197,7 @@ class StrataEngine:
                              **{k: keys.pop(k, None) for k in
                                 ("setting", "smallest", "largest", "mapped", "pool_offset")},
                              "uses": keys})
-        for key in ("concurrent", "tokens_max", "vram_conversations"):
+        for key in ("concurrent", "tokens_max", "vram_conversations", "conversation_idle_seconds"):
             if key in self.info and key in settings:
                 self.info[key] = settings[key]
         if "context_capacity" in self.info and "context" in settings:

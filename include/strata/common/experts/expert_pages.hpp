@@ -104,6 +104,8 @@ public:
     uint64_t get_time() const { return now_(); }
     /// Tells whether experts that conversations evicted wait for pages that may be free for them now or soon.
     bool is_refill_wanted() const;
+    /// Tells whether desired experts are missing, including when refill is blocked by occupied pages.
+    bool is_refill_pending() const { return !evicted_.empty(); }
     /// Puts back up to `max` evicted experts, hottest first, into free pages experts may take; it evicts no expert,
     /// since one there now may be one that decoding uses more (the adaptive tier's).  Gets how many (-1 when a copy
     /// failed, with `err`); `wait_ms` gets 0, or the milliseconds until more pages open to experts when the next

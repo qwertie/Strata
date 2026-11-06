@@ -11,7 +11,7 @@ from strata_cli.launch.settings import LaunchSettings
 class PagedLaunchTests(unittest.TestCase):
     def test_saved_token_limits_reach_both_engines(self):
         args = ['--max-context', '204800', '--conversation-tokens', '180000', '--tokens-max', '401000',
-                '--vram-conversations', '1']
+                '--vram-conversations', '3', '--conversation-idle-seconds', '66']
         for exe in ('strata-q38', 'strata-ds41'):
             with self.subTest(exe=exe):
                 self.assertEqual(engine_client.engine_args({'exe': exe, 'args': args}), args)

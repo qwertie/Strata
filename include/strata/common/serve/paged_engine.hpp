@@ -74,7 +74,8 @@ struct PagedSettings {
     int64_t tokens_min = kDefaultTokensMin;        ///< --tokens-min
     int64_t tokens_max = -1;                       ///< combined GPU logical tokens; -1: --max-context
     int64_t conversation_context = -1;             ///< --conversation-tokens; -1: loaded capacity or tokens_max
-    int64_t vram_conversations = -1;               ///< --vram-conversations; -1: initial decode concurrency
+    int64_t vram_conversations = -1;               ///< --vram-conversations; -1: model-aware cached-place allowance
+    int64_t conversation_idle_seconds = 66;        ///< --conversation-idle-seconds: age eligible under memory pressure
     /// --gpu-mib, per card of a layer split (one value: every card's); empty: what each GPU has free less what it keeps
     std::vector<int64_t> gpu_mib;
     int64_t ram_mib = -1;                          ///< --ram-mib; -1: get_ram_room

@@ -127,6 +127,14 @@ class MemorySettings(FakeEngineCase):
         self.assertEqual(self.sent(), [])
         self.assertEqual(self.cfg_path.read_bytes(), before)
 
+    def test_legacy_engine_cannot_claim_a_stale_eviction_policy(self):
+        self.start(config=True)
+        before = self.cfg_path.read_bytes()
+        status, got = self.post({"set": {"conversation_idle_seconds": 66}, "save": "default"})
+        self.assertEqual((status, got["error"]["type"]), (409, "unsupported"), got)
+        self.assertEqual(self.sent(), [])
+        self.assertEqual(self.cfg_path.read_bytes(), before)
+
     def test_saved_as_default(self):
         self.start(config=True)
         status, got = self.post({"set": {"rows": 4, "tokens_min": 512, "drafter": "off"}, "save": "default"})

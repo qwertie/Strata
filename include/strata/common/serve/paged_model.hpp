@@ -104,6 +104,7 @@ struct PagedModelFacts {
     /// the most conversations one step may run; 0: as many as the step has rows
     int max_concurrent = 0;
     bool serial_conversations = false;     ///< the model switches shared inputs between conversations
+    uint64_t extra_resident_vram = UINT64_MAX; ///< Smallest card VRAM allowing an extra cached conversation by default.
     std::vector<uint64_t> expert_bytes;     ///< per layer: one expert's bytes
     /// on a layer split, the first --expert-cache experts of the whole model's profile, hottest first (what one GPU
     /// would hold); empty without a split
@@ -234,6 +235,8 @@ public:
     /// Gets the positions short of its end that the conversation of `parts` can go back to (rewind), so that a prompt
     /// that leaves it there continues it (strata/common/state/resume_point.hpp); none by default.
     virtual std::vector<int64_t> get_rewind_points(const PagedParts&) const { return {}; }
+    /// Gets heap capacity owned by this conversation's host-side checkpoints and metadata, excluding page pools.
+    virtual uint64_t get_host_state_bytes(const PagedParts&) const { return 0; }
     /// Makes the conversation of `parts` hold its first `tokens` tokens, one of get_rewind_points; false (and `err`)
     /// when it cannot.  The engine then gives back its pages beyond them (PagedPart::truncate).
     virtual bool rewind(const PagedParts&, int64_t tokens, std::string& err) {

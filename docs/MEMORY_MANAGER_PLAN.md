@@ -39,14 +39,26 @@ Conversations at once: 2 of 3 | Rows per step: 8 | Lookahead: 4
 | SSD space for paused conversations | how much of the disk paused conversations may take | yes |
 | Drafter on/off (per GPU) | its weights: about 1 GiB for Qwen3.8 | yes (unloading frees the memory) |
 | Conversations at once | how many conversations decode in the same step | yes |
-| Conversations held in VRAM | how many active or cached conversations keep their GPU state, including recurrent state and checkpoints; at least Conversations at once | yes |
+| Conversations held in VRAM | how many active or cached conversations keep their GPU state; at least Conversations at once | yes |
+| Idle conversation eviction age | how old idle GPU state must be to give way under memory pressure; 66 seconds by default | yes |
 | Rows per step | how many tokens one pass through the model computes (at most 8 today) | yes |
 | Lookahead | the most guesses one conversation may add in a step; 0 turns drafting off | yes |
 
-Conversations held in VRAM defaults to the initial Conversations at once. Without a requested count the engine
-uses one. The Terminal can choose from known VRAM; at 12 GiB or less (or unknown VRAM), it chooses one. Explicit
-settings remain in effect. The panel reports the fixed memory per conversation, before its KV cache, beside this
-control. Extra conversations wait or move to RAM/SSD, freeing their fixed regions as well as the growing cache.
+Conversations held in VRAM defaults to one more than Conversations at once. Qwen adds a further cached place on
+cards with at least 10 GiB each: with one decoder the default is two on 8 GiB and three on 10 GiB or more. DeepSeek
+keeps the smaller default to leave more VRAM for experts. Explicit settings remain in effect. The panel reports
+fixed GPU memory per conversation before its KV cache; checkpoint snapshots are allocated separately in RAM.
+
+Idle conversation eviction age defaults to 66 seconds (`--conversation-idle-seconds`). Completed prompt chunks and
+decode steps update the activity time. Old idle state can give way when experts or another conversation need pages;
+age alone never removes it. In-progress prompt reads and decoding requests are protected. The hard conversation
+count may reclaim younger idle state, and priorities can pause requests safely between steps.
+
+Qwen keeps only live recurrent state in its GPU pool. Rewind snapshots grow in RAM as captured and are freed on
+checkpoint eviction. DeepSeek already keeps its ring and compressor checkpoints in RAM. Shared host-state readers,
+RAM accounting and disk pause/restore carry both families' checkpoints. Active checkpoint heap RAM is reported
+separately from the RAM page pool; paused host payloads count against its pause allowance. Qwen's layout identity is
+4, so files from the former GPU-checkpoint layout cannot be resumed by this build. No migration is provided.
 
 Rows per step must be at least the conversations at once. An edit that would put the per-conversation limit above
 the combined GPU token budget is rejected with an explanation; neither value is adjusted automatically. Raising

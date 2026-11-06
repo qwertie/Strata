@@ -1,5 +1,6 @@
 // src/common/state/pause_file.cpp - the file of a paused conversation, which is also a saved session (pause_file.hpp).
 #include "strata/common/state/pause_file.hpp"
+#include "strata/common/state/state_bytes.hpp"
 
 #include "strata/base/gpu/on_device.hpp"
 
@@ -21,39 +22,6 @@ namespace {
 constexpr char kMagic[8] = {'S', 'T', 'R', 'P', 'A', 'U', 'S', '2'};
 constexpr uint64_t kHashSeed = 0x5041555345484452ull;   // "PAUSEHDR"
 
-void append_bytes(std::vector<uint8_t>& out, const void* from, size_t n);
-
-/// Appends a list's length, then its elements.
-template <class T>
-void append_list(std::vector<uint8_t>& out, const std::vector<T>& list) {
-    const uint64_t n = list.size();
-    append_bytes(out, &n, sizeof n);
-    append_bytes(out, list.data(), list.size() * sizeof(T));
-}
-
-/// Reads a header's fields back from its bytes; a field that would pass the end fails.
-struct Reader {
-    const std::vector<uint8_t>& bytes;
-    size_t at = 0;
-
-    bool get(void* to, size_t n) {
-        if (n > bytes.size() - at)
-            return false;
-        if (n > 0)
-            std::memcpy(to, bytes.data() + at, n);
-        at += n;
-        return true;
-    }
-    template <class T>
-    bool get_list(std::vector<T>& list) {
-        uint64_t n = 0;
-        if (!get(&n, sizeof n) || n > (bytes.size() - at) / sizeof(T))
-            return false;
-        list.resize((size_t) n);
-        return get(list.data(), (size_t) n * sizeof(T));
-    }
-};
-
 bool flush_to_drive(std::FILE* f);
 
 std::FILE* open_file(const std::string& path, const char* mode);
@@ -70,15 +38,20 @@ bool publish_file(PauseStream& file, const std::string& temporary, const std::st
 bool write_pause_file(const std::string& path, const SessionFileIdentity& identity, const PauseHeader& head,
                       const std::vector<PauseSection>& sections, std::string& err) {
     std::vector<uint8_t> body;
-    append_bytes(body, &identity, sizeof identity);
-    append_list(body, head.live);
-    append_list(body, head.points);
-    append_list(body, head.state);
-    append_list(body, head.cut);
+    body.reserve(sizeof identity + 4 * sizeof(uint64_t) + head.live.size() * sizeof(head.live[0]) +
+                 head.points.size() * sizeof(head.points[0]) + head.state.size() +
+                 head.cut.size() * sizeof(head.cut[0]) +
+                 (head.image_key != 0 || head.last_tokens_at != 0 ? sizeof head.image_key : 0) +
+                 (head.last_tokens_at != 0 ? sizeof head.last_tokens_at : 0));
+    append_state_bytes(body, &identity, sizeof identity);
+    append_state_vector(body, head.live);
+    append_state_vector(body, head.points);
+    append_state_vector(body, head.state);
+    append_state_vector(body, head.cut);
     if (head.image_key != 0 || head.last_tokens_at != 0)
-        append_bytes(body, &head.image_key, sizeof head.image_key);
+        append_state_bytes(body, &head.image_key, sizeof head.image_key);
     if (head.last_tokens_at != 0)
-        append_bytes(body, &head.last_tokens_at, sizeof head.last_tokens_at);
+        append_state_bytes(body, &head.last_tokens_at, sizeof head.last_tokens_at);
     const uint64_t size = body.size(), hash = session_hash64(body.data(), body.size(), kHashSeed);
     const std::string temporary = path + ".tmp";
     PauseStream f;
@@ -155,13 +128,14 @@ SessionError open_pause_file(const std::string& path, const SessionFileIdentity&
     if (std::fread(body.data(), 1, body.size(), file.get()) != body.size() ||
         std::fread(&hash, sizeof hash, 1, file.get()) != 1 || hash != session_hash64(body.data(), body.size(), kHashSeed))
         return refuse(SessionError::invalid, "damaged");
-    Reader r{body};
+    StateReader r{body};
     SessionFileIdentity bound;
     PauseHeader read;
-    if (!r.get(&bound, sizeof bound) || !r.get_list(read.live) || !r.get_list(read.points) || !r.get_list(read.state) ||
-        !r.get_list(read.cut) ||
-        (r.at != body.size() && !r.get(&read.image_key, sizeof read.image_key)) ||
-        (r.at != body.size() && !r.get(&read.last_tokens_at, sizeof read.last_tokens_at)) || r.at != body.size())
+    if (!r.take(&bound, sizeof bound) || !r.take_vector(read.live) || !r.take_vector(read.points) ||
+        !r.take_vector(read.state) ||
+        !r.take_vector(read.cut) ||
+        (r.at != body.size() && !r.take(&read.image_key, sizeof read.image_key)) ||
+        (r.at != body.size() && !r.take(&read.last_tokens_at, sizeof read.last_tokens_at)) || r.at != body.size())
         return refuse(SessionError::invalid, "damaged");
     if (bound.model != identity.model || bound.config != identity.config)
         return refuse(SessionError::invalid, "saved by another model or with other settings");
@@ -175,12 +149,6 @@ SessionError open_pause_file(const std::string& path, const SessionFileIdentity&
 }
 
 namespace {
-
-/// Appends `n` bytes at `from` to `out`.
-void append_bytes(std::vector<uint8_t>& out, const void* from, size_t n) {
-    if (n > 0)
-        out.insert(out.end(), (const uint8_t*) from, (const uint8_t*) from + n);
-}
 
 /// Flushes `f` to the drive.
 bool flush_to_drive(std::FILE* f) {

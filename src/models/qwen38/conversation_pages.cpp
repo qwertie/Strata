@@ -24,7 +24,7 @@ ConversationPages::~ConversationPages() {
 
 bool ConversationPages::get_layout(const strata::core::ModelGeometry& g, const strata::core::SessionState& ss,
                                    const strata::core::QsaState* drafter, strata::core::StateLayout& layout,
-                                   std::string& err, int checkpoints) {
+                                   std::string& err) {
     using namespace strata::core;
     const int64_t n_qsa = g.n_qsa_layers(), n_gdn = g.n_gdn_layers(), qsa_here = count_qsa_layers(g, ss);
     if (qsa_here == 0 || ss.gdn_alloc == 0 || ss.gdn_state != nullptr) {
@@ -46,9 +46,6 @@ bool ConversationPages::get_layout(const strata::core::ModelGeometry& g, const s
         }
         layout.regions[0].unit_bytes = layout.regions[0].unit_bytes / (uint64_t) n_gdn * (uint64_t) ss.gdn_alloc;
         layout.regions.resize((size_t) (1 + qsa_here));   // the session's own layers
-        if (checkpoints > 0)
-            layout.regions.front().label = std::to_string(checkpoints) + " Checkpoints + recurrent state";
-        layout.regions.insert(layout.regions.begin(), (size_t) std::max(checkpoints, 0), layout.regions.front());
         if (drafter != nullptr)
             layout.add(RegionKind::per_block,
                        strata::kernels::kv_unit_layout(s, (strata::kernels::KvFormat) qsa_kv_format(*drafter)).bytes, 1,
@@ -186,10 +183,6 @@ uint64_t ConversationPages::bytes() const {
     for (size_t r = 0; r < pool_->layout().regions.size(); ++r)
         bytes += pool_->conversation_blocks(id_, r).size() * pool_->block_bytes(r);
     return bytes;
-}
-
-void* ConversationPages::get_checkpoint_state(size_t slot) const {
-    return pool_->page_address(pool_->conversation_blocks(id_, 1 + slot).at(0));
 }
 
 int64_t ConversationPages::count_qsa_layers(const strata::core::ModelGeometry& g,

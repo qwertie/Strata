@@ -53,6 +53,7 @@ const CHANGED_KEY = "strata.memoryPanel.changed";
  * @type {Record<string, string>} */
 const SETTINGS = {context: "Per-conversation token limit", concurrent: "Conversations at once", rows: "Rows per step",
                   vram_conversations: "Conversations held in VRAM",
+                  conversation_idle_seconds: "Idle conversation eviction age (seconds)",
                   lookahead: "Lookahead", tokens_min: "Conversation tokens, minimum",
                   tokens_max: "Combined GPU token budget", ssd_pause_mib: "SSD for paused conversations (MiB)",
                   drafter: "Drafter", slots: "Maximum conversations at once"};
@@ -67,6 +68,7 @@ const UNLISTED = /^memory_mib\.|^token_bytes$|^conversation_bytes$|^context_capa
 const CONTROLS = [["context", () => 1, (s) => s.context_capacity ?? s.context ?? Infinity],
                   ["concurrent", () => 1, (s) => Math.min(s.slots ?? 8, s.rows ?? 8, s.vram_conversations ?? Infinity)],
                   ["vram_conversations", () => 1, (s) => s.slots ?? 8],
+                  ["conversation_idle_seconds", () => 0, () => Infinity],
                   ["rows", (s) => s.concurrent ?? 1, () => 8],
                   ["lookahead", () => 0, (s) => s.drafter ? (s.rows ?? 1) - 1 : 0],
                   ["tokens_min", () => 0, (s) => s.tokens_max ?? Infinity],
@@ -160,7 +162,8 @@ function render(element, panel) {
     : {};
   const listed = Object.entries(view.settings).filter(([k]) => !UNLISTED.test(k) &&
     !(editable && (k === "drafter" || getEditableControls(view.settings).some(([key]) => key === k))));
-  const note = [listed.map(([k, v]) => `${SETTINGS[k] || k}: ${k === "drafter" ? (v ? "on" : "off") : fmt(v)}` +
+  const note = [listed.map(([k, v]) => `${SETTINGS[k] || k}: ${k === "drafter" ?
+    (v ? "on" : "off") : fmt(v)}` +
       (k === "context" ? " tokens" : "")).join(" · "),
     view.can_change === false ? "these change when the model starts again" : "",
     view.busy ? "a request has the engine: the last reading" : view.error || ""].filter(Boolean).join(" · ");
@@ -365,10 +368,13 @@ function getControlHelp(key, settings) {
   if (key === "context")
     return `Loaded capacity: ${fmt(settings.context_capacity)} tokens. ` +
       "Increasing that capacity requires a model reload.";
+  if (key === "conversation_idle_seconds")
+    return "Idle GPU conversations this old may move to RAM or SSD when experts or another conversation need space. " +
+      "Prompt-processing and decoding requests are protected; age alone does not evict anything.";
   if (key === "vram_conversations")
     return "Limits active conversations and idle GPU caches together. " +
       (settings.conversation_bytes ? `Each takes ${size(settings.conversation_bytes)} of fixed state ` +
-        "before its KV cache, including recurrent state and checkpoints where the model uses them. " : "") +
+        "before its KV cache. Rewind checkpoints are allocated separately in RAM as needed. " : "") +
       "Extra conversations wait, or are paused to RAM or SSD; higher-priority requests run first.";
   return "";
 }

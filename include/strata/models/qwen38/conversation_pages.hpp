@@ -29,12 +29,12 @@ public:
     ConversationPages& operator=(const ConversationPages&) = delete;
 
     /// Gets the regions a conversation of session `ss` keeps in a page pool: the GDN state of the session's layers,
-    /// its `checkpoints` recurrent-state snapshots, then each QSA layer's units and, with `drafter` supplied,
+    /// then each QSA layer's units and, with `drafter` supplied,
     /// the MTP drafter's units. The session may be a layer split's card's, carved for a range of the layers.  False (and
     /// `err`) when `ss` was carved with its state, or its range lacks a GDN or a QSA layer.
     static bool get_layout(const strata::core::ModelGeometry& g, const strata::core::SessionState& ss,
                            const strata::core::QsaState* drafter, strata::core::StateLayout& layout,
-                           std::string& err, int checkpoints = 0);
+                           std::string& err);
     /// Gives the conversation `id` of `pool` (a pool made with get_layout's regions; it must outlive this object) its
     /// fixed region and points `ss` at it: `ss.gdn_state`, and each QSA state's K/V and pooled keys as units
     /// (QsaState::units, device tables made at the first init and kept).  The drafter's units, when the pool has
@@ -60,8 +60,6 @@ public:
     /// Gets the tokens the pool counts for a conversation whose positions below `tokens` are written: the blocks
     /// `reserve(tokens)` takes, as tokens.
     int64_t get_pool_tokens(int64_t tokens) const;
-    /// Gets the recurrent-state buffer of rewind slot `slot`, owned by this conversation's page pool.
-    void* get_checkpoint_state(size_t slot) const;
     /// Gets the conversation's id in its pool.
     strata::core::ConversationId id() const { return id_; }
     /// Gets the bytes of the pool's pages the conversation holds (0 before init).
@@ -79,7 +77,7 @@ private:
     std::vector<uint64_t> unit_bytes_;           ///< per table, the bytes of one block's unit
     /// per table, the bytes of one of the pool's blocks for it (PagePool::block_bytes): a run of pages of many units
     std::vector<uint64_t> run_bytes_;
-    size_t fixed_regions_ = 1; ///< Active recurrence followed by its rewind slots.
+    size_t fixed_regions_ = 1; ///< The live recurrent state; rewind snapshots stay in RAM.
     bool has_drafter_ = false;                   ///< the last table is the drafter's
     int64_t idx_block_ = 0;
     int64_t max_blocks_ = 0;                     ///< entries of each table (the session's max_cells in blocks, + 2)

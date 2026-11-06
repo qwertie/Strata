@@ -51,6 +51,7 @@ SPEC = {k: kind for k, kind, _ in EDITABLE}
 LIVE_FLAGS = {"memory_mib.gpu0": "--gpu-mib", "memory_mib.ram": "--ram-mib", "tokens_min": "--tokens-min",
               "context": "--conversation-tokens",
               "vram_conversations": "--vram-conversations",
+              "conversation_idle_seconds": "--conversation-idle-seconds",
               "tokens_max": "--tokens-max", "ssd_pause_mib": "--ssd-pause-mib", "rows": "--rows",
               "lookahead": "--lookahead", "concurrent": "--concurrent", "drafter": "--drafter"}
 # The numeric live settings whose range is not "at least 0": (least, most); the engine checks the rest (concurrent

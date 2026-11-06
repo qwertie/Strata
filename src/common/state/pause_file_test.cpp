@@ -64,7 +64,7 @@ int main() {
     PauseHeader head;
     head.live = {5, 6, 7, 8};
     head.points = {2, 4};
-    head.state = {9, 8, 7};
+    head.state.assign(1u << 20, 7);
     head.cut = {12};
     head.image_key = 0x123456789abcdef0ull;
     head.last_tokens_at = 1700000000;

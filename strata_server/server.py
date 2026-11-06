@@ -2059,6 +2059,9 @@ class Service:
             return fail(409, "unsupported", "this engine cannot change its per-conversation limit while it runs")
         if "vram_conversations" in values and "vram_conversations" not in getattr(self.engine, "info", {}):
             return fail(409, "unsupported", "this engine cannot limit the number of conversations held in VRAM")
+        if ("conversation_idle_seconds" in values and
+                "conversation_idle_seconds" not in getattr(self.engine, "info", {})):
+            return fail(409, "unsupported", "this engine cannot change its idle conversation eviction age")
         try:
             with self._engine_turn(self.SETTINGS_WAIT_S) as turn:
                 answered = self.engine.change_settings(values) if turn else None

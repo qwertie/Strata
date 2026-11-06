@@ -83,10 +83,10 @@ The memory table shows the shared GPU budget beside GPU counts, each individual
 limit in a tooltip, and the combined GPU count in its footer.
 
 `vram_conversations` limits the number of GPU-resident conversations, including
-idle caches and their fixed regions. It defaults to the initial decode
-concurrency. Engines with no requested concurrency default to one; the Terminal
-can choose a larger count from known VRAM (one at 12 GiB or less). Explicit
-concurrency settings are preserved. The residency limit must be at least
+idle caches and their fixed regions. Its default leaves one cached place beyond decode concurrency. Qwen gets
+one further place when every participating card has at least 10 GiB VRAM.
+With decode concurrency one, these defaults are two and three. DeepSeek keeps
+the smaller default to leave more space for experts. Explicit settings are preserved. The residency limit must be at least
 `concurrent` and at most the engine's `slots`; conflicting edits are rejected.
 `--vram-conversations` saves its default. `INFO vram_conversations` advertises
 support and lets Python wait before admitting work that cannot fit. The engine
@@ -97,6 +97,24 @@ regions count too, and are released when their place is needed.
 
 The existing `conversation_bytes` reports fixed pool state per conversation,
 before the growing KV cache. The UI displays this beside the residency control.
-For Qwen this includes the live recurrent state and configured rewind snapshots.
-Those snapshots currently remain in GPU pool pages and use device copies when
-saved or restored; paused conversations move their complete state to RAM or SSD.
+For Qwen this includes only live recurrent state. Rewind checkpoints are
+allocated individually in RAM as they are captured; evicting a checkpoint frees
+its payload. DeepSeek already keeps its ring and compressor checkpoints in RAM.
+Both families report host checkpoint storage under the RAM category `Checkpoints`,
+labelled by conversation. Active checkpoint heap storage is outside the adjustable
+RAM page pool. Paused host payloads count against the RAM pause allowance.
+
+`conversation_idle_seconds` (`--conversation-idle-seconds`) defaults to 66.
+Every completed prompt-processing chunk and decode step updates `last_tokens_at`.
+When an allocation needs pages, idle conversations at least this old may move to
+RAM or SSD before experts are displaced. Blocked expert refill can reclaim those
+same idle conversations. Age alone does not evict anything. The prompt reader
+and decoding requests are excluded, and queued GPU state writes drain before
+copying or releasing pages. A zero age makes all idle caches eligible immediately.
+The hard count limit may reclaim newer conversations when necessary.
+
+RAM checkpoints are serialized inside the shared pause-file host header, so named
+SAVE/RESTORE and automatic SSD pauses retain them. Disk-paused payloads are released
+from RAM after writing and read back on resume. Qwen uses layout identity 4; files
+from its former GPU-checkpoint layout are rejected without changing them. DeepSeek's
+existing host-state file layout is unchanged.

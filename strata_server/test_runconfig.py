@@ -29,6 +29,14 @@ CFG = {"exe": "engine/strata.exe", "args": ["--pack", "data/packs/q2_0", "--kv",
 
 
 class Apply(unittest.TestCase):
+    def test_stale_conversation_age_is_saved_independently_of_residency_capacity(self):
+        values = runconfig.check_live({"conversation_idle_seconds": 66}, True)
+        new, changed = runconfig.apply_live({"args": ["--vram-conversations", "3"]}, values)
+        self.assertEqual(new["args"], ["--vram-conversations", "3", "--conversation-idle-seconds", "66"])
+        self.assertEqual(changed, ["conversation_idle_seconds"])
+        with self.assertRaises(ValueError):
+            runconfig.check_live({"conversation_idle_seconds": -1}, True)
+
     def test_live_residency_default_survives_a_restart_without_changing_concurrency(self):
         values = runconfig.check_live({"vram_conversations": 3}, True)
         new, changed = runconfig.apply_live({"args": ["--concurrent", "2"]}, values)

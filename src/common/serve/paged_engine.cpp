@@ -9,10 +9,12 @@
 #include "strata/common/experts/ram_tier.hpp"
 #include "strata/common/experts/split_rules.hpp"
 #include "strata/common/serve/decode_selection.hpp"
+#include "strata/common/serve/conversation_residency.hpp"
 #include "strata/common/serve/loop.hpp"
 #include "strata/common/serve/token_budget.hpp"
 #include "strata/common/state/pause_file.hpp"
 #include "strata/common/state/progress.hpp"
+#include "strata/common/state/state_bytes.hpp"
 #include "strata/common/state/resume_point.hpp"
 
 #include <algorithm>
@@ -96,7 +98,7 @@ struct Held {
     bool is_resident() const {
         return std::any_of(parts.begin(), parts.end(), [](const auto& part) { return part->is_ready(); });
     }
-    /// Returns both the growing KV pages and the fixed recurrent/checkpoint regions to the pools.
+    /// Returns the KV pages and live recurrence to their pools, and releases host checkpoints.
     void release() {
         forget();
         for (const auto& part : parts)
@@ -241,6 +243,12 @@ private:
     bool can_admit_conversation(int64_t tokens, int64_t priority) const;
     /// Gets how many conversations own fixed state on any GPU; a layer split counts once.
     int get_resident_conversations() const;
+    /// Tests activity age only for GPU caches outside prompt processing and decoding.
+    bool is_stale(const Held& h) const;
+    /// Finds idle GPU state eligible for age-based reclamation, preserving `keep`.
+    Held* find_stale(const Held* keep = nullptr) const;
+    /// Reclaims old idle state before an allocation would displace experts from this card.
+    bool reclaim_stale_gpu_state(PagedCard& card, uint64_t free_bytes, const Held* keep, std::string& err);
     /// Checks the live decode and cache counts against the engine's capacity.
     std::string get_conversation_count_error(const PagedSettings& settings) const;
     /// Pauses idle caches, then eligible running requests, until the GPU holds at most `maximum` conversations.
@@ -273,7 +281,7 @@ private:
     void end_preempted(size_t slot);
     /// Finds idle GPU state to release: empty first, then the lowest priority and oldest use, among those `can_go`
     /// accepts besides `keep` and the one whose prompt is read; null when none.
-    Held* find_idle(const Held* keep, const std::function<bool(const Held&)>& can_go = nullptr);
+    Held* find_idle(const Held* keep, const std::function<bool(const Held&)>& can_go = nullptr) const;
     /// Gives `h` its fixed regions in the pools of the cards where it has none.
     bool init_pages(Held& h, std::string& err, std::optional<int64_t> priority = std::nullopt);
     /// Moves `h`'s conversation out of the cards' pools into the RAM's (first moving the RAM's paused conversations
@@ -478,8 +486,20 @@ PagedEngine::PagedEngine(PagedModel& model, PagedCards& cards, strata::core::Ram
       step_(get_step_model(), model.facts.end_tokens) {
     if (settings_.tokens_max < 0)
         settings_.tokens_max = facts_.context;
-    if (settings_.vram_conversations < 0)
+    if (settings_.vram_conversations < 0) {
         settings_.vram_conversations = settings_.step.concurrent;
+        uint64_t smallest = UINT64_MAX;
+        for (const auto& card : cards_) {
+            std::string name;
+            uint64_t total = 0, free = 0;
+            bool unified = false;
+            strata::core::read_gpu_memory(card.dev, name, total, free, unified);
+            smallest = std::min(smallest, total);
+        }
+        settings_.vram_conversations = strata::serve::get_default_resident_conversations(
+            settings_.step.concurrent, get_most_concurrent(), smallest == UINT64_MAX ? 0 : smallest,
+            facts_.extra_resident_vram);
+    }
     apply_step_settings();
     if (settings_.conversation_context < 0)
         settings_.conversation_context = std::min(facts_.context, settings_.tokens_max);
@@ -591,6 +611,7 @@ int PagedEngine::serve() {
                          std::min(step_.settings.rows, step_.settings.lookahead + 1) : 0);
     std::printf("INFO concurrent=%d\n", settings_.step.concurrent);
     std::printf("INFO vram_conversations=%lld\n", (long long) settings_.vram_conversations);
+    std::printf("INFO conversation_idle_seconds=%lld\n", (long long) settings_.conversation_idle_seconds);
     std::printf("INFO tokens_max=%lld\n", (long long) settings_.tokens_max);
     std::printf("INFO context_capacity=%lld\n", (long long) facts_.context);
     if (settings_.batch_groups != "1") {
@@ -661,19 +682,20 @@ void PagedEngine::save_session(const std::string& path) {
     if (held == nullptr && paused == nullptr)
         return refuse(SessionError::invalid, "no complete session to save");
     const size_t tokens = (paused != nullptr ? paused->head.live : held->live).size();
-    const uint64_t pages_bytes = paused != nullptr ? paused->bytes : held->get_bytes();
+    const uint64_t estimated_bytes = paused != nullptr ? paused->bytes :
+        held->get_bytes() + model_.get_host_state_bytes(held->parts);
     std::error_code ec;
     const auto parent = std::filesystem::absolute(std::filesystem::u8path(path)).parent_path();
     const std::filesystem::space_info room = std::filesystem::space(parent, ec);
-    if (!ec && room.available < pages_bytes)
+    if (!ec && room.available < estimated_bytes)
         return refuse(SessionError::storage,
-                      "not enough room on the drive for " + std::to_string(pages_bytes >> 20) + " MiB");
+                       "not enough room on the drive for " + std::to_string(estimated_bytes >> 20) + " MiB");
     std::string err;
     if (!identity_)
         announce_wait("fingerprint", 2u << 20);
     if (!find_identity(err))
         return refuse(SessionError::io, err);
-    announce_wait("write", pages_bytes);
+    announce_wait("write", estimated_bytes);
     Paused saved;
     bool ok = true;
     if (paused != nullptr && !paused->file.empty()) {
@@ -737,6 +759,7 @@ void PagedEngine::restore_session(const std::string& path) {
         drop_pages(p);
         return refuse(SessionError::io, err);
     }
+    std::vector<uint8_t>().swap(p.head.state);
     p.used = ++requests_;   // as if its conversation had just served a request
     const size_t tokens = p.head.live.size();
     const uint64_t serial = p.serial, bytes = p.bytes;
@@ -774,6 +797,7 @@ void PagedEngine::adopt_pause_files(const std::string& dir) {
             std::filesystem::rename(path, p.file, ec);
             if (ec)
                 continue;
+            std::vector<uint8_t>().swap(p.head.state);
             p.used = ++requests_;
             paused_.push_back(std::move(p));
             trim_ssd();
@@ -1094,8 +1118,7 @@ bool PagedEngine::decode_step() {
         }
     }
     strata::core::progress_beat();
-    if (refilling_ && !is_refill_wanted())
-        refilling_ = false;
+    refilling_ = is_refill_wanted();
     const bool ok = time_step_if(settings_.step_profile != 0, pages_ms_,
         [&] { return adapt_experts() && (!refilling_ || refill_experts()); });
     if (settings_.step_profile)
@@ -1144,7 +1167,31 @@ int PagedEngine::get_resident_conversations() const {
     return (int) std::count_if(held_.begin(), held_.end(), [](const auto& h) { return h->is_resident(); });
 }
 
+bool PagedEngine::is_stale(const Held& h) const {
+    const auto now = (uint64_t) std::chrono::system_clock::to_time_t(std::chrono::system_clock::now());
+    return h.is_resident() && strata::serve::is_conversation_stale(
+        h.decoding, &h == reading_, h.last_tokens_at, now, (uint64_t) settings_.conversation_idle_seconds);
+}
+
+Held* PagedEngine::find_stale(const Held* keep) const {
+    return find_idle(keep, [this](const Held& h) { return is_stale(h); });
+}
+
+bool PagedEngine::reclaim_stale_gpu_state(PagedCard& card, uint64_t free_bytes, const Held* keep, std::string& err) {
+    while (card.experts.pool().report().free.bytes < free_bytes) {
+        Held* stale = find_stale(keep);
+        if (!stale)
+            break;
+        if (!model_.wait_state(err))
+            return false;
+        pause_or_forget(*stale);
+    }
+    return true;
+}
+
 std::string PagedEngine::get_conversation_count_error(const PagedSettings& settings) const {
+    if (settings.conversation_idle_seconds < 0)
+        return "conversation idle seconds cannot be negative";
     if (settings.vram_conversations < settings.step.concurrent)
         return "conversations held in VRAM (" + std::to_string(settings.vram_conversations) +
                ") cannot be fewer than conversations at once (" + std::to_string(settings.step.concurrent) + ")";
@@ -1280,6 +1327,12 @@ bool PagedEngine::make_room(Held& h, int64_t tokens, std::string& err, std::opti
     }
     for (size_t k = 0; k < h.parts.size(); ++k) {
         const strata::core::OnDevice on(cards_[k].dev);
+        const auto& pool = cards_[k].experts.pool();
+        const uint64_t wanted = pool.pages_for(h.parts[k]->get_pool_tokens(tokens)) * pool.page_bytes();
+        if (!reclaim_stale_gpu_state(cards_[k], wanted - std::min(wanted, h.parts[k]->bytes()), &h, err)) {
+            h.gpu_tokens.shrink_to(before);
+            return false;
+        }
         while (!h.parts[k]->reserve(tokens, err)) {
             if (!model_.wait_state(err)) {
                 h.gpu_tokens.shrink_to(before);
@@ -1317,7 +1370,7 @@ void PagedEngine::pause_for_capacity(Held& h) {
     pause_or_forget(h);
 }
 
-Held* PagedEngine::find_idle(const Held* keep, const std::function<bool(const Held&)>& can_go) {
+Held* PagedEngine::find_idle(const Held* keep, const std::function<bool(const Held&)>& can_go) const {
     Held* idle = nullptr;
     for (const std::unique_ptr<Held>& x : held_)
         if (x.get() != keep && x.get() != reading_ && !x->decoding && x->is_resident() && (!can_go || can_go(*x)) &&
@@ -1345,6 +1398,10 @@ bool PagedEngine::init_pages(Held& h, std::string& err, std::optional<int64_t> p
         PagedPart& part = *h.parts[card.index];
         if (part.is_ready())   // an earlier call failed on a later card
             continue;
+        const auto& pool = card.experts.pool();
+        if (!reclaim_stale_gpu_state(card, pool.pages_for(0) * pool.page_bytes(), &h, err)) {
+            return false;
+        }
         const strata::core::OnDevice on(card.dev);
         if (!part.init(card.experts.pool(), (strata::core::ConversationId) h.session + 1, err)) {
             h.release();
@@ -1369,7 +1426,7 @@ bool PagedEngine::pause(Held& h, std::string& err, bool ram_only) {
         return false;
     strata::core::PagePool& ram = ram_.pages().pool();
     const int64_t tokens = h.parts[0]->get_pool_tokens((int64_t) h.live.size());
-    p.bytes = ram.pages_for(tokens) * ram.page_bytes();
+    p.bytes = ram.pages_for(tokens) * ram.page_bytes() + p.head.state.capacity();
     const uint64_t budget = ram_only ? UINT64_MAX : get_ram_pause_budget();
     while (p.bytes <= budget && get_paused_bytes(true) + p.bytes > budget)
         if (!move_down())
@@ -1398,8 +1455,10 @@ bool PagedEngine::pause(Held& h, std::string& err, bool ram_only) {
         drop_pages(p);
         return false;
     }
-    if (!in_ram)
+    if (!in_ram) {
         p.bytes = std::filesystem::file_size(p.file);
+        std::vector<uint8_t>().swap(p.head.state);
+    }
     say("a conversation of %zu tokens is paused %s (%.0f MiB in %.0f ms)\n", h.live.size(),
         p.file.empty() ? "in RAM" : "on the SSD", (double) p.bytes / 1048576.0, get_ms_since(t0));
     h.release();
@@ -1416,9 +1475,9 @@ bool PagedEngine::resume(const Paused& p, Held& h, std::string& err, std::option
         return false;
     strata::core::PagePool& ram = ram_.pages().pool();
     strata::core::PauseStream file;
-    strata::core::PauseHeader unused;   // (p.head is the file's own)
+    strata::core::PauseHeader saved;
     if (!p.file.empty() &&
-        (!find_identity(err) || open_pause_file(p.file, *identity_, (uint64_t) facts_.context, file, unused, err) !=
+        (!find_identity(err) || open_pause_file(p.file, *identity_, (uint64_t) facts_.context, file, saved, err) !=
                                     strata::core::SessionError::none))
         return false;
     // sections of cards at another cut come together in the RAM's pool, whose layout has every layer
@@ -1450,7 +1509,7 @@ bool PagedEngine::resume(const Paused& p, Held& h, std::string& err, std::option
     }
     if (through_ram)
         ram.remove_conversation(p.serial);
-    if (!ok || !model_.restore_state(p.head.state, h.parts, live, err))
+    if (!ok || !model_.restore_state(p.file.empty() ? p.head.state : saved.state, h.parts, live, err))
         return false;
     h.policy = p.policy;
     h.live = live;
@@ -1478,6 +1537,7 @@ void PagedEngine::move_to_ssd(std::vector<Paused>::iterator p) {
     if (ok) {
         p->file = file;
         p->bytes = std::filesystem::file_size(file);
+        std::vector<uint8_t>().swap(p->head.state);
         trim_ssd();
         return;
     }
@@ -1600,6 +1660,12 @@ bool PagedEngine::refill_experts() {
     int loaded = 0;
     for (PagedCard& card : cards_) {
         uint64_t card_wait_ms = 0;
+        if (card.experts.is_refill_pending() && !card.experts.is_refill_wanted())
+            if (Held* stale = find_stale()) {
+                if (!wait_model_state())
+                    return false;
+                pause_or_forget(*stale);
+            }
         const int got = card.experts.is_refill_wanted() ? card.experts.refill(card.refill_batch, card_wait_ms, err) : 0;
         loaded = got < 0 ? -1 : loaded + got;
         if (card_wait_ms > 0 && (wait_ms == 0 || card_wait_ms < wait_ms))
@@ -1623,8 +1689,12 @@ bool PagedEngine::refill_experts() {
 }
 
 bool PagedEngine::is_refill_wanted() const {
-    return ram_.pages().is_refill_wanted() ||
-           std::any_of(cards_.begin(), cards_.end(), [](const PagedCard& c) { return c.experts.is_refill_wanted(); });
+    if (ram_.pages().is_refill_wanted() ||
+        std::any_of(cards_.begin(), cards_.end(), [](const auto& card) { return card.experts.is_refill_wanted(); }))
+        return true;
+    return find_stale() != nullptr && std::any_of(cards_.begin(), cards_.end(), [](const auto& card) {
+        return card.experts.is_refill_pending();
+    });
 }
 
 bool PagedEngine::publish_residency(std::string& err) {
@@ -1702,6 +1772,15 @@ strata::serve::MemoryReport PagedEngine::describe_memory() const {
     strata::serve::Memory& ram = report.at("ram");
     ram.add_blocks(ram_.pages().pool().get_memory_blocks());
     ram.add_blocks(strata::core::get_memory_manager().get_blocks("ram"));
+    for (size_t i = 0; i < at_.size(); ++i) {
+        const auto& h = get_held(i);
+        const std::string id = i + 1 == at_.size() ? "main" : "slot" + std::to_string(i);
+        ram.add_blocks({{{"Checkpoints", "Host checkpoints", "Conversation " + id},
+                         model_.get_host_state_bytes(h.parts)}});
+    }
+    for (const auto& p : paused_)
+        ram.add_blocks({{{"Checkpoints", "Host checkpoints", "Paused conversation " + std::to_string(p.serial)},
+                         strata::core::get_owned_vector_bytes(p.head.state)}});
     ram.paused_budget = get_ram_pause_budget();
     ram.pool_pages = rr.total.pages;
     ram.allocated_pages = rr.allocated.pages;
@@ -1731,6 +1810,7 @@ strata::serve::MemoryReport PagedEngine::describe_memory() const {
                        {"context_capacity", facts_.context},
                        {"concurrent", settings_.step.concurrent},
                        {"vram_conversations", settings_.vram_conversations},
+                       {"conversation_idle_seconds", settings_.conversation_idle_seconds},
                        {"slots", get_most_concurrent()},
                        {"rows", settings_.step.rows},
                        {"lookahead", settings_.step.lookahead},
@@ -1784,6 +1864,8 @@ std::string PagedEngine::change_settings(const SettingValues& values, std::strin
             s.step.concurrent = (int) v;
         else if (name == "vram_conversations")
             s.vram_conversations = v;
+        else if (name == "conversation_idle_seconds")
+            s.conversation_idle_seconds = v;
         else if (name == "rows")
             s.step.rows = (int) v;
         else if (name == "lookahead")
@@ -1837,6 +1919,7 @@ std::string PagedEngine::change_settings(const SettingValues& values, std::strin
         return why;
     (void) trim_gpu_conversations((int) s.vram_conversations);
     settings_.vram_conversations = s.vram_conversations;
+    settings_.conversation_idle_seconds = s.conversation_idle_seconds;
     std::string err;
     if (!s.drafter && settings_.drafter)
         (void) switch_drafter(false, err);
