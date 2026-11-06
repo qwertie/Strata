@@ -221,7 +221,7 @@ bool describe_conversation(const ModelGeometry& g, uint64_t kv_cell_bytes, State
     layout.add(RegionKind::fixed, z.gdn, 1, 1, "Recurrent state");
     for (uint64_t j = 0; j < n_qsa; ++j)
         layout.add(RegionKind::per_block, (uint64_t) g.idx_block * kv_cell_bytes + z.dead, 1, g.idx_block,
-                   "Attention context");
+                   "KV cache");
     return true;
 }
 

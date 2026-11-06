@@ -86,3 +86,18 @@ class MemoryLabels(FakeEngineCase):
         assert first == second
         assert gpu["uses"]["other"] == 600
         assert len(gpu["blocks"]) == 1
+
+
+def test_conversation_activity_and_pause_folder_survive_the_protocol():
+    from strata_common.engine_client import parse_conversation_line
+
+    line = "CONVERSATION parked1 disk parked 3 3 200 200 last_tokens_at=1700000000 1,2,3".split()
+    conversation = parse_conversation_line(line)
+    assert conversation["last_tokens_at"] == 1700000000
+    assert conversation["preview"] == [1, 2, 3]
+    engine = StrataEngine("missing-executable", [], lazy=True)
+    lines = [["MEMORY", "ssd"], line, ["PAUSE_DIRECTORY", "C:/pause", "files"], ["SETTINGS"]]
+    with mock.patch.object(engine, "_ask", return_value=iter(lines)):
+        report = engine.memory()
+    assert report["pause_directory"] == "C:/pause files"
+    assert report["conversations"][0]["last_tokens_at"] == 1700000000

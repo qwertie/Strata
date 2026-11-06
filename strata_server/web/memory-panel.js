@@ -105,7 +105,7 @@ export function drawMemoryPanel(element, view, onChange) {
  * `shortfall` (POST /v1/memory's answer): what the change got less of than asked, in the engine's words.
  * @typedef {{available: boolean, reason?: string, busy?: boolean, error?: string | null, can_change?: boolean,
  *   config?: boolean, memories: MemoryUse[], settings: Record<string, number>,
- *   conversations?: HeldConversation[], shortfall?: string}} MemoryView
+ *   conversations?: HeldConversation[], shortfall?: string, pause_directory?: string}} MemoryView
  * `setting`: the size of the engine's page pool there now, which `memory_mib.<id>` changes; `smallest`, `largest`:
  * the sizes it accepts now.  Bytes.
  * @typedef {{id: string, name: string | null, total: number | null, free: number | null, unified: boolean,
@@ -118,7 +118,7 @@ export function drawMemoryPanel(element, view, onChange) {
  * @typedef {{category: string, pool: string, label: string, bytes: number,
  *   identity_group?: string, ids?: number[]}} MemoryBlock
  * @typedef {{id: string, place: string, state: string, count: number, capacity: number, bytes: number,
- *   used: number}} HeldConversation
+ *   used: number, last_tokens_at?: number}} HeldConversation
  * @typedef {Record<string, number | boolean>} SettingsChange  POST /v1/memory's "set": MiB for the sizes.
  * @callback ChangeSettings  Sends a change to the engine's server (POST /v1/memory) and says how it went: `view` is
  *   the reading after it, `error` the server's reason for not changing anything (a refusal, 409).
@@ -165,8 +165,8 @@ function render(element, panel) {
   const hint = Object.keys(panel.dividers).length && !hasChanged() ?
     `<p class="mem-hint">Drag the dividers to change sizes</p>` : "";
   element.innerHTML = `<div class="mem-bars">${memories.map((x) =>
-      drawBar(x, panel.dividers[x.id], drag?.id === x.id ? drag : null)).join("")}</div>` +
-    drawConversations(view.conversations || []) + (editable ? drawControls(panel) : "") + hint +
+      drawBar(x, panel.dividers[x.id], drag?.id === x.id ? drag : null, view)).join("")}</div>` +
+    drawConversations(view.conversations || [], view.pause_directory) + (editable ? drawControls(panel) : "") + hint +
     (notice ? `<p class="mem-notice${notice.error ? " mem-error" : ""}" role="status">${esc(notice.text)}` +
       (notice.undo && !panel.busy ? ` <button type="button" class="mem-undo" data-undo>Undo</button>` : "") + "</p>"
       : "") +
@@ -385,8 +385,9 @@ function findRefusal(d, value) {
  *  bar's legend.
  * @param {MemoryUse} x
  * @param {Divider | undefined} divider
- * @param {Drag | null} drag */
-function drawBar(x, divider, drag) {
+ * @param {Drag | null} drag
+ * @param {MemoryView} view */
+function drawBar(x, divider, drag, view) {
   const {parts, total} = layOut(x);
   /** @type {Map<string, {use: string, bytes: number}>} */
   const legend = new Map();
@@ -404,19 +405,27 @@ function drawBar(x, divider, drag) {
     "Experts not cached" : Object.hasOwn(USES, p.use) ? USES[p.use] : p.use);
   const blocks = [...(x.blocks || [])].sort((a, b) =>
     a.category.localeCompare(b.category) || a.label.localeCompare(b.label, undefined, {numeric: true}));
+  const pauseFolder = view.pause_directory ? `SSD pause folder: ${view.pause_directory}` : "";
+  const paused = (view.conversations || []).filter((c) => c.state === "parked" &&
+    c.place === (x.id === "ssd" ? "disk" : x.id));
   const tip = (/** @type {{use: string, bytes: number}} */ p) =>
     `${title(p)}: ${size(p.bytes)}${x.id === "ssd" && p.use === "experts" ?
       ". Experts held in neither VRAM nor RAM. The complete model files remain on disk." :
       Object.hasOwn(USE_HELP, p.use) ? `. ${esc(USE_HELP[p.use])}` : ""}` +
+    (p.use === "paused" ? [pauseFolder,
+      ...paused.map((c) => `${c.id}: last tokens ${getActivityAge(c.last_tokens_at)}`)]
+      .filter(Boolean).map((line) => `&#10;${esc(line)}`).join("") : "") +
     blocks.filter((b) => POOL_USES.includes(p.use) ? POOL_USES.includes(b.category) : b.category === p.use)
-      .map((b) => `&#10;${POOL_USES.includes(b.category) ? "" : `${esc(b.pool)} / `}` +
+      .map((b) => `&#10;${POOL_USES.includes(b.category) || b.pool === "Expert and conversation pool" ?
+        "" : `${esc(b.pool)} / `}` +
         `${esc(b.label)}: ${size(b.bytes)}`).join("");
   const seg = (/** @type {{use: string, bytes: number, drawn?: number}} */ p) =>
     `<span class="mem-seg" data-use="${esc(p.use)}" title="${tip(p)}" ` +
     `style="width:${total ? (100 * (p.drawn ?? p.bytes)) / total : 0}%"></span>`;
   const key = (/** @type {{use: string, bytes: number}} */ p) =>
     `<span title="${tip(p)}"><i class="mem-key" data-use="${esc(p.use)}"></i>${title(p)} ${size(p.bytes)}</span>`;
-  return `<div class="mem-row"><div class="mem-head"><span>${esc(label)}</span><span class="mem-facts">${esc(facts)}` +
+  return `<div class="mem-row"><div class="mem-head" title="${x.id === "ssd" ? esc(pauseFolder) : ""}">` +
+    `<span>${esc(label)}</span><span class="mem-facts">${esc(facts)}` +
     `</span></div><div class="mem-bar" style="width:${total ? 100 * Math.min(total / FULL_BAR, 1) :
       x.id === "ssd" ? 0 : 100}%">` +
     `<div class="mem-segs">${parts.map(seg).join("")}</div>${divider ? drawDivider(x.id, divider, drag) : ""}</div>` +
@@ -450,18 +459,35 @@ function drawPreview(d, drag) {
     (refusal ? `: ${esc(refusal)}; releasing here changes nothing` : ": release to apply, Escape cancels") + "</p>";
 }
 
-/** Gets the markup of the table of conversations the engine holds; none for an empty list or an engine that does
- *  not list them (all but strata-q38).
- * @param {HeldConversation[]} list */
-function drawConversations(list) {
+/** Gets the conversation table, including engine-reported activity ages when available.
+ * @param {HeldConversation[]} list
+ * @param {string} [pauseDirectory] */
+function drawConversations(list, pauseDirectory) {
   if (!list.length)
     return "";
-  const row = (/** @type {HeldConversation} */ c) => `<tr><td>${esc(c.id)}</td>` +
+  const activity = list.some((c) => c.last_tokens_at || c.state === "parked");
+  const row = (/** @type {HeldConversation} */ c) => `<tr><td${c.state === "parked" && pauseDirectory ?
+    ` title="${esc(`SSD pause folder: ${pauseDirectory}`)}"` : ""}>${esc(c.id)}</td>` +
     `<td>${esc(c.state)} (${esc(PLACES[c.place] || c.place)})</td>` +
-    `<td class="mem-num">${fmt(c.count)} / ${fmt(c.capacity)}</td><td class="mem-num">${size(c.bytes)}</td></tr>`;
+    `<td class="mem-num">${fmt(c.count)} / ${fmt(c.capacity)}</td><td class="mem-num">${size(c.bytes)}</td>` +
+    (activity ? `<td class="mem-num" title="${c.last_tokens_at ?
+      esc(new Date(c.last_tokens_at * 1000).toLocaleString()) : "Unknown"}">` +
+      `${esc(getActivityAge(c.last_tokens_at))}</td>` : "") + "</tr>";
   return `<table class="mem-conversations"><thead><tr><th>Conversation</th><th>State</th>` +
-    `<th class="mem-num">Tokens</th><th class="mem-num">Memory</th></tr></thead>` +
+    `<th class="mem-num">Tokens</th><th class="mem-num">Memory</th>` +
+    (activity ? `<th class="mem-num">Last tokens</th>` : "") + "</tr></thead>" +
     `<tbody>${list.map(row).join("")}</tbody></table>`;
+}
+
+/** Gets time since the engine last processed tokens; missing timestamps remain unknown.
+ * @param {number | undefined} timestamp */
+function getActivityAge(timestamp) {
+  if (!timestamp)
+    return "Unknown";
+  const seconds = Math.max(0, Math.floor(Date.now() / 1000 - timestamp));
+  const [unit, divisor] = seconds >= 86400 ? ["d", 86400] : seconds >= 3600 ? ["h", 3600] :
+    seconds >= 60 ? ["min", 60] : ["s", 1];
+  return `${Math.floor(seconds / divisor)} ${unit} ago`;
 }
 
 /** Splits RAM expert totals by logical residency without changing the server's reading.

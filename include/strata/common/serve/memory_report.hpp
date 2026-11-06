@@ -7,6 +7,7 @@
 //            [pool_pages=<n> allocated_pages=<n> fragmented_pages=<n>] [setting=<B> smallest=<B> largest=<B>]
 //            [mapped=<B>] [name=<text>]                                                   one line per memory, then
 //     [MEMORY_BLOCK <memory-id> <bytes> <category> <pool> <label> [<identity-group> <ids>]] labelled allocations
+//     [PAUSE_DIRECTORY <path>]                                                  folder for automatic SSD pauses
 //     [CONVERSATION <id> <place> <state> <tokens> <capacity> <bytes> <used>]     with per_conversation: one per
 //                                                                                conversation (LIST_CONVERSATIONS')
 //     SETTINGS [context=<tokens>] [concurrent=<n>] [rows=<n>] [lookahead=<n>] [tokens_min=<tokens>]
@@ -100,6 +101,8 @@ struct MemoryReport {
     bool per_conversation = false;
     /// CHANGE_SETTINGS' answer: what the change got less of than asked, in words (a SHORTFALL line); empty: nothing.
     std::string shortfall;
+    /// Folder used by this engine for automatic SSD pause files.
+    std::string pause_directory;
 
     /// Gets the memory named `id`, adding an empty one at the end when there is none.
     Memory& at(const std::string& id) {
@@ -189,6 +192,8 @@ inline std::string format_memory_report(MemoryReport report, const std::vector<c
     if (report.per_conversation)
         for (const core::HeldConversation& c : held)
             s += core::format_conversation_line(c) + '\n';
+    if (!report.pause_directory.empty())
+        s += "PAUSE_DIRECTORY " + report.pause_directory + "\n";
     s += "SETTINGS";
     for (const auto& [key, v] : report.settings)
         s += " " + key + "=" + std::to_string(v);

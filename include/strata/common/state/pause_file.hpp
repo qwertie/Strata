@@ -2,8 +2,8 @@
 //
 // Format STRPAUS2 is little-endian: magic, header size, header bytes and their hash, then one page section per card
 // (write_conversation_section), followed by a hash of all preceding bytes. The header holds the identity, tokens,
-// rewind positions, model state and layer cut, then an optional image identity. Hashes detect accidental damage;
-// restore trusted files only.
+// rewind positions, model state and layer cut, then an optional image identity and last-token Unix time.
+// Hashes detect accidental damage; restore trusted files only.
 #pragma once
 
 #include "strata/common/state/conversation_file.hpp"
@@ -25,6 +25,8 @@ struct PauseHeader {
     /// the layer cut the sections were written at: the first layer of each card after the first (so one section more
     /// than it has numbers)
     std::vector<int64_t> cut;
+    /// Unix seconds when tokens were last processed; zero means unknown.
+    uint64_t last_tokens_at = 0;
 };
 
 /// One card's pages of a conversation, as a section of a pause file: where they are now.

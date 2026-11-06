@@ -46,6 +46,8 @@ bool ConversationPages::get_layout(const strata::core::ModelGeometry& g, const s
         }
         layout.regions[0].unit_bytes = layout.regions[0].unit_bytes / (uint64_t) n_gdn * (uint64_t) ss.gdn_alloc;
         layout.regions.resize((size_t) (1 + qsa_here));   // the session's own layers
+        if (checkpoints > 0)
+            layout.regions.front().label = std::to_string(checkpoints) + " Checkpoints + recurrent state";
         layout.regions.insert(layout.regions.begin(), (size_t) std::max(checkpoints, 0), layout.regions.front());
         if (drafter != nullptr)
             layout.add(RegionKind::per_block,

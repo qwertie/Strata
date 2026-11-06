@@ -66,6 +66,7 @@ struct Held {
     /// the request count when it last served a request: the oldest goes first, as an idle one to pause and among
     /// decoding ones of the same priority
     uint64_t used = 0;
+    uint64_t last_tokens_at = 0; ///< Unix seconds when prompt or output tokens last reached this conversation.
     int64_t stepped = 0;                ///< the decode step it last took part in (decode_step's turns)
 
     /// Gets its place in the order in which conversations give way to others (smallest first): the lowest priority,
@@ -75,6 +76,7 @@ struct Held {
     /// Forgets its tokens and gives back its growing pages.
     void forget() {
         live.clear();
+        last_tokens_at = 0;
         policy.reset();
         image_key = 0;
         for (const std::unique_ptr<PagedPart>& p : parts)
@@ -627,6 +629,7 @@ void PagedEngine::save_session(const std::string& path) {
             saved.head = paused->head;
         } else {
             saved.head.live = held->live;
+            saved.head.last_tokens_at = held->last_tokens_at;
             saved.head.image_key = held->image_key;
             saved.head.points = model_.get_rewind_points(held->parts);
             ok = model_.save_state(held->parts, saved.head.state, err);
@@ -907,6 +910,7 @@ bool PagedEngine::read_prompt(Held& h, const std::vector<int64_t>& ids, int64_t 
     reading_ = &h;
     const PagedModel::ChunkDone on_chunk = [&](int64_t pos0, int64_t T, std::string& e) -> bool {
         read_to = pos0 + T;
+        h.last_tokens_at = (uint64_t) std::chrono::system_clock::to_time_t(std::chrono::system_clock::now());
         const double ms = get_ms_since(t0);
         std::printf("PP %lld %lld %.0f %.1f\n", (long long) read_to, (long long) ids.size(), ms,
                     ms > 0 ? 1000.0 * (double) (read_to - from) / ms : 0.0);
@@ -976,6 +980,8 @@ bool PagedEngine::decode_step() {
         if (d.planner)
             h->policy = d.planner->policy;
         h->live.insert(h->live.end(), d.fed.begin(), d.fed.end());
+        if (!d.fed.empty() || !d.emitted.empty())
+            h->last_tokens_at = (uint64_t) std::chrono::system_clock::to_time_t(std::chrono::system_clock::now());
         for (const int32_t t : d.emitted)
             if (h->slot < 0)
                 std::printf("T %d\n", (int) t);
@@ -1100,6 +1106,7 @@ int64_t PagedEngine::take_conversation(size_t target, const std::vector<int64_t>
         if (!ok) {
             say("resuming a paused conversation failed, so its prompt is read again: %s\n", err.c_str());
             h.live.clear();
+            h.last_tokens_at = 0;
             return 0;
         }
     }
@@ -1174,6 +1181,7 @@ bool PagedEngine::pause(Held& h, std::string& err, bool ram_only) {
     p.used = h.used;
     p.policy = h.policy;
     p.head.live = h.live;
+    p.head.last_tokens_at = h.last_tokens_at;
     p.head.image_key = h.image_key;
     p.head.points = model_.get_rewind_points(h.parts);
     if (!model_.save_state(h.parts, p.head.state, err))
@@ -1214,6 +1222,7 @@ bool PagedEngine::pause(Held& h, std::string& err, bool ram_only) {
     say("a conversation of %zu tokens is paused %s (%.0f MiB in %.0f ms)\n", h.live.size(),
         p.file.empty() ? "in RAM" : "on the SSD", (double) p.bytes / 1048576.0, get_ms_since(t0));
     h.live.clear();
+    h.last_tokens_at = 0;
     for (const std::unique_ptr<PagedPart>& part : h.parts)
         part->release();
     paused_.push_back(std::move(p));
@@ -1266,6 +1275,7 @@ bool PagedEngine::resume(const Paused& p, Held& h, std::string& err) {
         return false;
     h.policy = p.policy;
     h.live = live;
+    h.last_tokens_at = p.head.last_tokens_at;
     h.image_key = p.head.image_key;
     say("a conversation of %zu tokens is back from %s (%.0f ms)\n", live.size(), p.file.empty() ? "RAM" : "the SSD",
         get_ms_since(t0));
@@ -1476,6 +1486,7 @@ std::vector<strata::core::HeldConversation> PagedEngine::list_conversations() co
         c.n = h.live.size();
         c.capacity = (uint64_t) facts_.context;
         c.bytes = c.used = h.get_bytes();
+        c.last_tokens_at = h.last_tokens_at;
         list.push_back(c);
     }
     for (const Paused& p : paused_) {
@@ -1486,6 +1497,7 @@ std::vector<strata::core::HeldConversation> PagedEngine::list_conversations() co
         c.ids = p.head.live.data();
         c.n = c.capacity = p.head.live.size();
         c.bytes = c.used = p.bytes;
+        c.last_tokens_at = p.head.last_tokens_at;
         list.push_back(c);
     }
     return list;
@@ -1494,6 +1506,7 @@ std::vector<strata::core::HeldConversation> PagedEngine::list_conversations() co
 strata::serve::MemoryReport PagedEngine::describe_memory() const {
     const strata::core::PagePoolReport rr = ram_.pages().pool().report();
     strata::serve::MemoryReport report;
+    report.pause_directory = std::filesystem::absolute(pause_prefix_).parent_path().string();
     for (const PagedCard& card : cards_) {
         const strata::core::PagePoolReport r = card.experts.pool().report();
         strata::serve::Memory& gpu = report.at(card.id);

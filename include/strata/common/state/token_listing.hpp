@@ -4,7 +4,7 @@
 // commands are parsed and answered here, so the lines are the same on every path.
 //
 //   LIST_CONVERSATIONS [<marker> <n>]
-//     CONVERSATION <id> <place> <state> <tokens> <capacity> <bytes> <used> [<preview>]   one line each, then
+//     CONVERSATION <id> <place> <state> <tokens> <capacity> <bytes> <used> [last_tokens_at=<seconds>] [<preview>]
 //     END_CONVERSATIONS
 //   GET_CONTEXT_WINDOWS <id> [<id> ...]
 //     CONTEXT_WINDOW <id> <n> [<ids>]   or   CONTEXT_WINDOW <id> gone   one line each, then END_CONTEXT_WINDOWS
@@ -41,6 +41,8 @@ struct HeldConversation {
     uint64_t capacity = 0;     // the most it can hold, in tokens
     uint64_t bytes = 0;        // its physical size
     uint64_t used = 0;         // what its tokens take of that
+    /// Unix seconds when tokens were last processed; zero means unknown.
+    uint64_t last_tokens_at = 0;
 };
 
 inline bool is_conversation_command(const std::string& line) {
@@ -72,10 +74,11 @@ inline void put(const std::string& s) { std::fwrite(s.data(), 1, s.size(), stdou
 }  // namespace token_listing_detail
 
 /// Gets LIST_CONVERSATIONS' line for `c`, without its preview and its end of line:
-/// `CONVERSATION <id> <place> <state> <tokens> <capacity> <bytes> <used>`.
+/// `CONVERSATION <id> <place> <state> <tokens> <capacity> <bytes> <used> [last_tokens_at=<seconds>]`.
 inline std::string format_conversation_line(const HeldConversation& c) {
     return "CONVERSATION " + c.id + " " + c.place + " " + c.state + " " + std::to_string(c.n) + " " +
-           std::to_string(c.capacity) + " " + std::to_string(c.bytes) + " " + std::to_string(c.used);
+           std::to_string(c.capacity) + " " + std::to_string(c.bytes) + " " + std::to_string(c.used) +
+           (c.last_tokens_at ? " last_tokens_at=" + std::to_string(c.last_tokens_at) : "");
 }
 
 /// Answers `line` (is_conversation_command) from `held`.  A malformed command answers `ERR <why>`.

@@ -304,7 +304,8 @@ test('fixed allocations precede the pool and conversation sublabels precede laye
     experts: 3 * GIB, pool_free: GIB, conversations: GIB, weights: GIB, other: GIB},
     setting: 5 * GIB, pool_offset: 0, blocks: [
       {category: 'experts', pool: 'Expert and conversation pool', label: 'Layer 2', bytes: 3 * GIB},
-      {category: 'conversations', pool: 'Expert and conversation pool', label: 'Conversation Alice', bytes: GIB}]};
+      {category: 'conversations', pool: 'Expert and conversation pool', label: 'Conversation Alice', bytes: GIB},
+      {category: 'other', pool: 'Expert and conversation pool', label: 'Alignment padding', bytes: 1024}]};
   const {element} = mount({available: true, can_change: true, settings: {}, memories: [memory]}, async () => ({}));
   const html = element.innerHTML;
   assert.deepEqual([...html.matchAll(/class="mem-seg" data-use="([^"]*)"/g)].map(m => m[1]),
@@ -313,6 +314,8 @@ test('fixed allocations precede the pool and conversation sublabels precede laye
   const tooltip = /data-use="experts" title="([^"]*)"/.exec(html)[1];
   assert.ok(tooltip.indexOf('Conversation Alice') < tooltip.indexOf('Layer 2'));
   assert.doesNotMatch(tooltip, /Expert and conversation pool/);
+  assert.match(html, /&#10;Alignment padding: 0 MiB/);
+  assert.doesNotMatch(html, /Expert and conversation pool \/ Alignment padding/);
   assert.match(tooltip, /Experts give the model most of its knowledge and skill/);
 });
 
@@ -362,4 +365,25 @@ test('a pool interval crossing a category keeps the divider and legend totals co
   assert.deepEqual(widths(html), [12.5, 50, 12.5, 25]);
   const legend = html.split('<div class="mem-legend">')[1].split('</div>')[0];
   assert.equal((legend.match(/Other 2.00 GiB/g) || []).length, 1);
+});
+
+
+test('paused conversations show last-token ages and the SSD pause folder', () => {
+  const now = Math.floor(Date.now() / 1000);
+  const html = draw({available: true, settings: {}, pause_directory: 'C:/pause <files>',
+    memories: [{id: 'ssd', uses: {paused: GIB}, paused_budget: 8 * GIB}],
+    conversations: [{id: 'parked1', place: 'disk', state: 'parked', count: 5, capacity: 5,
+      bytes: GIB, used: GIB, last_tokens_at: now - 7200},
+      {id: 'parked2', place: 'disk', state: 'parked', count: 5, capacity: 5, bytes: 1, used: 1}]});
+  assert.match(html, /parked1: last tokens 2 h ago/);
+  assert.match(html, /parked2: last tokens Unknown/);
+  assert.match(html, /SSD pause folder: C:\/pause &lt;files&gt;/);
+  assert.match(html, /Last tokens<\/th>/);
+});
+
+test('RAM uses the same 32 GiB bar scale as GPU and SSD memory', () => {
+  const [ram] = rows(draw({available: true, settings: {}, memories: [
+    {id: 'ram', total: 8 * GIB, free: 6 * GIB, uses: {experts: 2 * GIB}}]}));
+  assert.equal(barWidth(ram), 25);
+  assert.deepEqual(widths(ram), [25, 75]);
 });

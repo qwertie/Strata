@@ -625,10 +625,13 @@ def parse_stage_in_flight_sample(line: str) -> dict | None:
 
 
 def parse_conversation_line(f: list[str]) -> dict:
-    """Gets the fields of a `CONVERSATION <id> <place> <state> <tokens> <capacity> <bytes> <used> [<preview>]` line
+    """Gets a CONVERSATION line's state, optional last-token Unix time and token preview
     (LIST_CONVERSATIONS', and GET_MEMORY_USE's from strata-q38) as StrataEngine.list_conversations gives them."""
+    fields = dict(v.split("=", 1) for v in f[8:] if "=" in v)
+    preview = next((v for v in f[8:] if "=" not in v), "")
     return {"id": f[1], "place": f[2], "state": f[3], "count": int(f[4]), "capacity": int(f[5]), "bytes": int(f[6]),
-            "used": int(f[7]), "preview": [int(x) for x in f[8].split(",")] if len(f) > 8 else []}
+            "used": int(f[7]), "preview": [int(x) for x in preview.split(",")] if preview else [],
+            **({"last_tokens_at": int(fields["last_tokens_at"])} if "last_tokens_at" in fields else {})}
 
 
 class StrataEngine:
@@ -1150,11 +1153,15 @@ class StrataEngine:
 
     def _ask_memory_report(self, command: str, refused: type[Exception] | None = None) -> dict:
         """Sends `command` and parses its GET_MEMORY_USE-style answer for memory() and change_settings()."""
-        memories, settings, held, shortfall = [], {}, [], None
+        memories, settings, held, shortfall, pause_directory = [], {}, [], None, None
         for f in self._ask(command, "MEMORY", end="END_MEMORY",
-                           also=("SETTINGS", "CONVERSATION", "SHORTFALL", "MEMORY_BLOCK"), refused=refused):
+                           also=("SETTINGS", "CONVERSATION", "SHORTFALL", "MEMORY_BLOCK", "PAUSE_DIRECTORY"),
+                           refused=refused):
             # MEMORY <id> [key=value ...] [name=<text to the end>]  /  CONVERSATION ...  /  SETTINGS [key=value ...]  /
             # SHORTFALL <text>
+            if f[0] == "PAUSE_DIRECTORY":
+                pause_directory = " ".join(f[1:])
+                continue
             if f[0] == "MEMORY_BLOCK":
                 memory = next(m for m in memories if m["id"] == f[1])
                 category, pool, label = ("" if v == "~" else unquote(v) for v in f[3:6])
@@ -1191,7 +1198,8 @@ class StrataEngine:
         if "concurrent" in self.info and "concurrent" in settings:
             self.info["concurrent"] = settings["concurrent"]
         return {"memories": memories, "settings": settings, **({"conversations": held} if held else {}),
-                **({"shortfall": shortfall} if shortfall else {})}
+                **({"shortfall": shortfall} if shortfall else {}),
+                **({"pause_directory": pause_directory} if pause_directory else {})}
 
     @staticmethod
     def sampling_keys(sampling: dict) -> str:

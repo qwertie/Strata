@@ -56,3 +56,11 @@ optional fields. The Python view preserves them as `identity_group` and `ids`.
 The diagram shades RAM experts also held by any GPU in darker teal. Those
 copies still count as allocated RAM. SSD experts mean experts held in neither
 VRAM nor RAM, rather than the size of the complete model files on disk.
+
+`CONVERSATION` lines can append `last_tokens_at=<Unix seconds>` before the
+optional token preview. This is the last time prompt or generated tokens
+reached that logical conversation. Pausing, copying and restoring preserve
+it. Missing times are unknown, including files written before this field
+was recorded. `PAUSE_DIRECTORY <path>` gives the engine's folder for its
+automatic SSD pause files, with spaces retained to the end of the line.
+The memory view passes it through as `pause_directory`.

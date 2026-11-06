@@ -90,6 +90,14 @@ int main() {
     check(wire.find("pool_offset=10") != std::string::npos, "labelled pools declare their divider position");
     check(wire.find("MEMORY_BLOCK gpu0 200 arbitrary%20category Pool%20%2F%20one Drafter%20%26%20buffers") !=
               std::string::npos, "labels are aggregated and protocol-safe without a category list");
+    labelled.pause_directory = "C:/pause files";
+    auto recent = held[0];
+    recent.last_tokens_at = 1700000000;
+    labelled.per_conversation = true;
+    const std::string activity = format_memory_report(labelled, {recent});
+    check(activity.find("last_tokens_at=1700000000") != std::string::npos &&
+          activity.find("PAUSE_DIRECTORY C:/pause files\n") != std::string::npos,
+          "activity times and pause folder survive shared reporting");
     strata::core::MemoryManager manager;
     labelled.at("ram").add_blocks({{{"experts", "Pool", "Layer 2"}, 20, "expert/2", {7}},
                                     {{"experts", "Pool", "Layer 2"}, 20, "expert/2", {8}}});
