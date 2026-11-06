@@ -753,6 +753,10 @@ size and how its first user message begins. A session's size is the tokens it ho
 tokens and its snapshot in RAM or on disk. Pick one, and its tokens are read from the engine then. The
 panel opens on the session a request used last.
 
+The words below — session, slot, parked — are the **original engine's**
+([ARCHITECTURE.md](ARCHITECTURE.md#two-command-loops-in-the-tree)); the paged engines (`strata-q38`, `strata-ds41`)
+hold conversations in page pools instead, and list them as paused.
+
 - **Session** (or **Solo session** with `"parallel"`, `--batch`): the engine's own session. A request that is alone
   runs there, and with `--batch` every request is read there before it is copied into its slot.
 - **Slot N**: a batch slot's session, idle or decoding. Qwen3.6-35B-A3B's engine has no session of its own: a request
@@ -775,8 +779,8 @@ then shows the list it read last, and the tokens it read last if they are the sa
 were read. It needs an engine that lists its conversations (its `READY` line ends in `conversations`); with an older
 engine the panel says so.
 
-With `--batch`, Qwen3.8-Flash-Next's engine keeps its own session next to the slots, so `--batch 2` holds three sessions,
-each allocated for the whole context. The engine's log gives 2.88 GiB per slot session at a 204,800-token context with
+With `--batch`, Qwen3.8-Flash-Next's original engine keeps its own session next to the slots, so `--batch 2` holds
+three sessions, each allocated for the whole context. The engine's log gives 2.88 GiB per slot session at a 204,800-token context with
 `--kv int8` (on a Radeon 8060S, Strix Halo); its own session is allocated the same way and is not in that figure.
 
 `GET /api/context` returns `{"available", "loaded", "max_context", "busy", "error", "at", "entries": [{"id", "name",

@@ -9,6 +9,12 @@ conversations at the same time instead of waiting for each other.
 
 It is opt-in and changes nothing when the options are absent (#465; the engine part is PR #559).
 
+This page is about the **original engine's** batch slots, where each conversation holds a session allocated for the
+whole context ([ARCHITECTURE.md](ARCHITECTURE.md#two-command-loops-in-the-tree)). The paged engines (`strata-q38`,
+`strata-ds41`) share one page pool instead and decide each step how many conversations decode in it and how the rows
+left over go to the drafter: [DETAILS.md](DETAILS.md#rows-per-step-lookahead-and-conversations-at-once-strata-q38).
+There, `"parallel"` sets how many requests the server admits, not how many sessions exist.
+
 **Qwen3.6-35B-A3B** has the same option on its own engine path (`"parallel": N`, `--batch N`, `--batch-mtp`, up to 8 slots, the same
 engine protocol and the same server): its numbers, what a slot costs and where setup recommends it are in [QWEN36.md](QWEN36.md).
 

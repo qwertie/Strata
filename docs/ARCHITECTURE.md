@@ -31,7 +31,7 @@ Folder names are chosen so that, in alphabetical order, shared code comes before
 | 1 | `src/common/experts/` | The expert store: RAM tier, VRAM slots, prefetch, eviction | |
 | 1 | `src/common/kernels/` | Device kernels that work for any model | |
 | 1 | `src/common/sample/` | The sampler chain, logit bias | |
-| 1 | `src/common/serve/` | The engine protocol, request queue, scheduler, streaming, cancel | |
+| 1 | `src/common/serve/` | The engine protocol, request queue, scheduler, streaming, cancel; and the shared paged engine | |
 | 1 | `src/common/spec/` | Speculative decoding: drafting, accept/reject, rollback | |
 | 1 | `src/common/state/` | Per-conversation state: the state descriptor, page pool, snapshots, swap, conversation files | |
 | 2 | `src/models/common/` | Code shared by several model families: model geometry, tensor layout tables, GDN / gated attention / MoE-routing layers and their kernels | layers 0–1 |
@@ -39,6 +39,24 @@ Folder names are chosen so that, in alphabetical order, shared code comes before
 | 4 | `src/program/` | One thin `main()` per program | layers 0–3 |
 
 Inside `src/common/`, the subfolders may use each other as long as they do not form a cycle.
+
+### Two command loops in the tree
+
+An engine program is a command loop plus a model. There are two command loops today, and both speak the server's line
+protocol (`contracts/`), so the server does not have to know which one it started.
+
+- **The paged engine** — `src/common/serve/paged_engine.cpp`, with its start in `paged_start.cpp`. Conversations live
+  in page pools (GPU, RAM, SSD): several decode in one step, and one that is not decoding is paused down a tier
+  instead of dropped. `strata-q38` (`src/program/q38_main.cpp`) runs it for Qwen3.8 and `strata-ds41`
+  (`src/program/ds41_main.cpp`) for DeepSeek V4.1, each through its own `PagedModel`. **New engine work goes here.**
+- **The older engine** — the `main()` of `src/program/generate.cpp` (`strata`), and the same shape inside Qwen3.6's
+  `Serve` (`src/models/qwen36/q36_engine.cu`) and DeepSeek V4.1's `serve` (`src/models/deepseekv41/ds4_main.cpp`).
+  Each conversation holds a session allocated for the whole context, so conversations at once counts sessions
+  (`--batch`); the paged engine counts rows instead, and its `slots` is that capacity, not an allocation. It is still
+  what the installers ship, and what most of [DETAILS.md](DETAILS.md) describes.
+
+`src/common/serve/README.md` lists which parts each one uses. When a doc says "session", "slot" or "`--batch`", check
+which loop it means.
 
 ### Other engine backends
 
@@ -89,7 +107,8 @@ These replace practices that the old code has, and that new code must not copy:
 - **`main()` parses its arguments and calls a library.** It is not the engine itself (as the 9,500-line
   `main()` in `src/program/generate.cpp` still is; its option parser, model loader and one-conversation step are
   `strata::qwen38::parse_options`, `Model` and `Conversation`, in `src/models/qwen38/`, which `strata-q38`'s
-  `main()` calls too).
+  `main()` calls too). That `main()` is the older command loop: see
+  [Two command loops in the tree](#two-command-loops-in-the-tree).
 - **No import or include cycles,** and no reaching up a layer, also not at run time (loading `setup.py` or a
   `tools/` script through `importlib` or `sys.path`). `tests/architecture/test_layering.py` checks the new folders;
   its `KNOWN_UPWARD_LOADS` lists the files that still do it.
