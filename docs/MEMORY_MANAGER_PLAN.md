@@ -33,14 +33,19 @@ Conversations at once: 2 of 3 | Rows per step: 8 | Lookahead: 4
 | Setting | What it limits | Changes live |
 |---|---|---|
 | Memory used, per GPU and in RAM | the total the engine takes from each memory; it gives memory back or takes more | yes |
-| Conversation tokens: minimum and maximum | the K/V of all conversations kept in RAM and on the GPUs, in tokens, in any mix (one conversation of 2,000,000 tokens or 8 of 250,000); the minimum is kept free of experts so a new conversation never waits | yes |
+| Combined GPU token budget | the total logical tokens of all GPU-resident conversations; paused RAM and SSD conversations do not count | yes |
+| Per-conversation token limit | the most tokens one conversation may use; cannot exceed the combined GPU budget or the loaded model capacity | yes |
+| Conversation tokens, minimum | the space kept free of experts in each pool for conversation state | yes |
 | SSD space for paused conversations | how much of the disk paused conversations may take | yes |
 | Drafter on/off (per GPU) | its weights: about 1 GiB for Qwen3.8 | yes (unloading frees the memory) |
 | Conversations at once | how many conversations decode in the same step | yes |
 | Rows per step | how many tokens one pass through the model computes (at most 8 today) | yes |
 | Lookahead | the most guesses one conversation may add in a step; 0 turns drafting off | yes |
 
-Rows per step must be at least the conversations at once.
+Rows per step must be at least the conversations at once. An edit that would put the per-conversation limit above
+the combined GPU token budget is rejected with an explanation; neither value is adjusted automatically. Raising
+the loaded model capacity still requires a model reload. The existing RAM pause-cache allowance is derived from
+the maximum setting independently; RAM and SSD caches do not consume the GPU token budget.
 
 There is no expert-cache setting: experts get every page the conversations are not using, the most-used on the GPUs,
 then in RAM, and the rest are read from the SSD as needed. So a small conversation leaves almost all the memory to

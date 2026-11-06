@@ -49,11 +49,12 @@ SPEC = {k: kind for k, kind, _ in EDITABLE}
 # the engine flag in "args" that holds its default.  Not in EDITABLE: the memory endpoint is their one writer.  A GPU
 # other than the first (memory_mib.gpu<N>) can be changed live, but has no flag to save it to.
 LIVE_FLAGS = {"memory_mib.gpu0": "--gpu-mib", "memory_mib.ram": "--ram-mib", "tokens_min": "--tokens-min",
+              "context": "--conversation-tokens",
               "tokens_max": "--tokens-max", "ssd_pause_mib": "--ssd-pause-mib", "rows": "--rows",
               "lookahead": "--lookahead", "concurrent": "--concurrent", "drafter": "--drafter"}
 # The numeric live settings whose range is not "at least 0": (least, most); the engine checks the rest (concurrent
 # against its batch slots, lookahead against rows).
-_LIVE_RANGE = {"rows": (1, 8), "concurrent": (1, None)}
+_LIVE_RANGE = {"rows": (1, 8), "concurrent": (1, None), "context": (1, None)}
 
 
 def _arg(cfg: dict, flag: str):

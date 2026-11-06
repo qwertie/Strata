@@ -9,6 +9,12 @@ from strata_cli.launch.settings import LaunchSettings
 
 
 class PagedLaunchTests(unittest.TestCase):
+    def test_saved_token_limits_reach_both_engines(self):
+        args = ['--max-context', '204800', '--conversation-tokens', '180000', '--tokens-max', '401000']
+        for exe in ('strata-q38', 'strata-ds41'):
+            with self.subTest(exe=exe):
+                self.assertEqual(engine_client.engine_args({'exe': exe, 'args': args}), args)
+
     def test_both_families_translate_generated_options(self):
         for exe in ('strata-q38.exe', 'strata-ds41.exe'):
             with self.subTest(exe=exe), contextlib.redirect_stdout(io.StringIO()) as log:

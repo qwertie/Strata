@@ -97,7 +97,7 @@ class MemorySettings(FakeEngineCase):
 
     def test_bad_requests(self):
         self.start()
-        for body in ({"set": {"context": 4096}}, {"set": {"rows": 0}}, {"set": {"rows": 9}},
+        for body in ({"set": {"context": 0}}, {"set": {"rows": 0}}, {"set": {"rows": 9}},
                      {"set": {"tokens_min": 1.5}}, {"set": {"concurrent": True}}, {"set": {"drafter": "yes"}},
                      {"set": {"drafter": 1}}, {"set": {}}, {"set": {"rows": 4}, "save": "forever"},
                      {"set": {"rows": 4}, "save": "default"}, {"nothing": 1}, b"not json"):
@@ -109,6 +109,15 @@ class MemorySettings(FakeEngineCase):
         status, got = self.post({"set": {"memory_mib.gpu1": 100}, "save": "default"})   # no flag to save it to
         self.assertEqual(status, 400, got)
         self.assertEqual(self.sent(), [])
+
+    def test_legacy_engine_cannot_change_its_context_limit(self):
+        self.start(config=True)
+        before = self.cfg_path.read_bytes()
+        status, got = self.post({"set": {"context": 2048}, "save": "default"})
+        self.assertEqual((status, got["error"]["type"]), (409, "unsupported"), got)
+        self.assertIn("per-conversation limit", got["error"]["message"])
+        self.assertEqual(self.sent(), [])
+        self.assertEqual(self.cfg_path.read_bytes(), before)
 
     def test_saved_as_default(self):
         self.start(config=True)

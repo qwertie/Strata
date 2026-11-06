@@ -299,6 +299,27 @@ int main() {
         check(ends.run({&c}, err) && fm.kept == std::vector<int>{2} && c.emitted == std::vector<int32_t>({11, 12}) &&
                   std::string(c.finish) == "stop", "an end token among the guesses ends it there");
     }
+    for (bool lookup : {false, true}) {
+        FakeModel fm;
+        fm.room_limit = 9;
+        fm.right = 3;
+        auto hooks = fm.hooks();
+        if (!lookup)
+            fm.add_drafter(hooks);
+        Step step(hooks, {});
+        step.settings = {1, 8, 3};
+        Decoding d = conversation(0, 12, 8, 20);
+        if (lookup) {
+            d.produced = 1;
+            d.planner = std::make_unique<WindowPlanner>(8, 8, 3, 0, 3, 64);
+            const std::vector<int32_t> history{10, 11, 12, 13, 14, 15, 10, 11, 12};
+            d.planner->sfx.append(history.data(), history.size());
+        }
+        std::string err;
+        check(step.run({&d}, err) && d.finish == nullptr && d.emitted == std::vector<int32_t>{13} &&
+                  fm.room[0] == 9 && fm.kept == std::vector<int>{1},
+              "an unaffordable model or lookup window falls back to the conversation's own row");
+    }
     {   // non-finite logits and a full memory end the conversation they concern
         FakeModel fm;
         fm.poisoned = 1;

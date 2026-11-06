@@ -158,6 +158,11 @@ while True:
             if slot is not None:
                 print(f"BADM {slot} 0", flush=True)
             continue
+        if slot is not None and b"PREEMPTADMIT" in pb and "preemptadmit" not in fired:
+            fired.add("preemptadmit")
+            print(f"DONE 0 {len(ids)} 5.0 0.0 preempted 0 0 {reused(ids)}", flush=True)
+            print(f"BADM {slot} 0", flush=True)
+            continue
         if slot is not None and b"NFSLOT" in pb:
             nf_slots.add(slot)
         toks = reply(ids)
@@ -305,6 +310,23 @@ class ParallelArgs(unittest.TestCase):
 
 
 class PickSlot(unittest.TestCase):
+    def test_shared_gpu_budget_waits_for_space_without_reserving_unused_output(self):
+        engine = self.engine(2)
+        engine.max_context = 2000
+        engine.info["tokens_max"] = 1000
+        engine.slot_busy[0] = True
+        engine.slot_live[0] = {"state": "decoding", "prompt_tokens": 600, "generated": 101, "priority": 0}
+        prompt = [1] * 300
+        self.assertEqual(engine.pick_slot(prompt), 1)
+        self.assertIsNone(engine.pick_slot(prompt + [1]), "the combined live token count must fit")
+        self.assertFalse(engine.can_admit_prompt(prompt + [1], priority=0))
+        self.assertTrue(engine.can_admit_prompt(prompt + [1], priority=1), "higher priority can displace lower work")
+        engine.slot_live[0]["_generated_start"] = 100
+        self.assertEqual(engine.pick_slot([1] * 400), 1, "continued legs must not count earlier output twice")
+        engine.slot_live[0] = None
+        engine.slot_held[0] = [2] * 900
+        self.assertEqual(engine.pick_slot(prompt + [1]), 1, "idle caches can be paused by the engine")
+
     def test_temporary_effort_turn_does_not_hide_a_cancelling_conversations_checkpoint(self):
         engine = self.engine(2)
         engine._tail_role_token = 8678
@@ -618,6 +640,22 @@ class ParallelService(FakeEngineCase):
                 self.engine.slot_busy[1] = False
                 self.engine.slot_cv.notify_all()
         self.assertIn("BGEN", self.log.read_text())
+
+    def test_preempted_zero_token_admission_waits_and_continues(self):
+        self.start(2)
+        prompt = list(b"PREEMPTADMIT")
+        with self.engine.slot_cv:
+            self.engine.slot_busy[1] = True
+        try:
+            output = [token for token in self.engine.generate_batched(prompt, 3, {}, threading.Event())
+                      if token is not None]
+            self.assertEqual(output, list(b"ok,"))
+            self.assertEqual(self.engine.slot_held[0], prompt + output[:-1])
+            self.assertEqual(sum(line.startswith("BGEN") for line in self.log.read_text().splitlines()), 2)
+        finally:
+            with self.engine.slot_cv:
+                self.engine.slot_busy[1] = False
+                self.engine.slot_cv.notify_all()
 
     def test_bgen_refused_by_the_engine_is_retried_not_a_400(self):
         """#1994: the engine refuses a BGEN ("no such free slot") although the server saw the slot free: the request

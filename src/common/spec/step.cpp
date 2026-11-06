@@ -220,8 +220,13 @@ void Step::prepare(const std::vector<Decoding*>& active, Work& work, int group, 
             n = window.rows() - 1;
         }
         if (!model_.make_room(d.session, d.pos + 1 + n)) {
-            d.finish = "length";
-            continue;
+            // Optional guesses must not prevent the conversation's own next token from fitting.
+            if (n == 0 || !model_.make_room(d.session, d.pos + 1)) {
+                d.finish = "length";
+                continue;
+            }
+            n = 0;
+            window = Window{1};
         }
         windows.push_back(window);
         stepping.push_back(&d);

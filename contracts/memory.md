@@ -64,3 +64,20 @@ it. Missing times are unknown, including files written before this field
 was recorded. `PAUSE_DIRECTORY <path>` gives the engine's folder for its
 automatic SSD pause files, with spaces retained to the end of the line.
 The memory view passes it through as `pause_directory`.
+
+Paged engines report three distinct token settings. `tokens_max` is the combined
+logical token allowance for conversations resident on the GPUs; a conversation
+split across GPUs counts once. GPU state that moves to RAM or SSD returns its
+allowance. Physical KV padding and speculative claims do not increase the
+displayed conversation counts. Admission and decode growth both enforce the
+allowance, pausing idle caches first and then the lowest-priority running request
+when needed. Equal priorities keep older requests running first.
+
+`context` is the per-conversation token limit, and `context_capacity` is the
+capacity loaded into the model. The latter also advertises that `context` may
+change live. Both `context` and `tokens_max` may change in `CHANGE_SETTINGS`,
+but a proposed `context` above either `tokens_max` or `context_capacity` is
+rejected before settings change. Saved defaults use `--conversation-tokens`
+for the per-conversation limit; `--max-context` still sets loaded capacity.
+The memory table shows the shared GPU budget beside GPU counts, each individual
+limit in a tooltip, and the combined GPU count in its footer.

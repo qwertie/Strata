@@ -32,6 +32,23 @@ def test_logical_members_survive_the_engine_protocol():
     assert block["ids"] == [7, 8]
 
 
+def test_live_token_limits_update_request_validation_only_for_engines_that_advertise_them():
+    engine = StrataEngine("missing-executable", [], lazy=True)
+    engine.max_context = 204800
+    engine.info.update(context_capacity=204800, tokens_max=401000)
+    lines = [["SETTINGS", "context=180000", "context_capacity=204800", "tokens_max=350000"]]
+    with mock.patch.object(engine, "_ask", return_value=iter(lines)):
+        report = engine.change_settings({"context": 180000, "tokens_max": 350000})
+    assert report["settings"]["context_capacity"] == 204800
+    assert engine.max_context == 180000
+    assert engine.info["tokens_max"] == 350000
+    engine.info.clear()
+    with mock.patch.object(engine, "_ask", return_value=iter([["SETTINGS", "context=4096", "tokens_max=8192"]])):
+        engine.memory()
+    assert engine.max_context == 180000
+    assert "tokens_max" not in engine.info
+
+
 class MemoryLabels(FakeEngineCase):
     def test_packed_model_heading_follows_the_manifest_to_its_first_gguf(self):
         from pathlib import Path

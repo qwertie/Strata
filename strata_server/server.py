@@ -2055,6 +2055,8 @@ class Service:
             return fail(503, "unavailable", "no model is loaded")
         if not getattr(self.engine, "can_change_settings", False):
             return fail(409, "unsupported", "this engine cannot change its memory settings while it runs")
+        if "context" in values and "context_capacity" not in getattr(self.engine, "info", {}):
+            return fail(409, "unsupported", "this engine cannot change its per-conversation limit while it runs")
         try:
             with self._engine_turn(self.SETTINGS_WAIT_S) as turn:
                 answered = self.engine.change_settings(values) if turn else None

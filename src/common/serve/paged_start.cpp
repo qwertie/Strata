@@ -32,6 +32,7 @@ int take_paged_options(int& argc, char** argv, const std::string& program, Paged
     int64_t rows = s.step.rows, lookahead = -1, concurrent = -1, mtp_rows = 0;   // -1: chosen after parsing
     std::string drafter = "on", gpu_mib;
     const Own own[] = {{"--tokens-min", &s.tokens_min},       {"--tokens-max", &s.tokens_max},
+                       {"--conversation-tokens", &s.conversation_context},
                        {"--gpu-mib", nullptr, &gpu_mib},      {"--ram-mib", &s.ram_mib},
                        {"--ssd-pause-mib", &s.ssd_pause_mib}, {"--rows", &rows},
                        {"--mtp-max-t", &mtp_rows},            {"--lookup-chain", &s.lookup_chain},

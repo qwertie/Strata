@@ -28,6 +28,10 @@ engine).
   or conversations whose KV cache remains in VRAM.
   A `BGEN` outside that set hands off with zero admission tokens, so it does not hold the command channel while
   waiting for a decode turn. Selected requests keep the existing first-token handoff.
+- `token_budget.hpp`: accounts for each GPU-resident conversation once, independently of its physical page layout
+  or the number of GPUs. Reservations cover prompt reads and decode windows; pausing or forgetting returns them.
+  `tokens_max` caps their combined logical tokens. The separate live `context` limit cannot exceed that budget or
+  the model's loaded `context_capacity`; inconsistent edits are rejected before changing settings.
 
 Each engine still handles its own requests, SAVE / RESTORE, VRAM and QUIT, and writes its own `T`, `PP`, `DONE`, `BT`
 and `BDONE` lines.

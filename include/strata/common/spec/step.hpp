@@ -108,7 +108,7 @@ bool run_stage_groups(StageModel model, std::vector<StepGroup>& groups, std::str
 struct StepModel {
     /// Prepares the model for the number of conversations sharing this pass.
     std::function<void(int)> begin;
-    /// Gives `session` room for its first `tokens` tokens; false when there is none (the conversation then ends).
+    /// Gives `session` room for its first `tokens` tokens; false retries without guesses, then ends if none fit.
     std::function<bool(int session, int64_t tokens)> make_room;
     /// Runs `rows` in one pass through the model: picks[r] gets the token that follows row r, or -1 when row r's
     /// logits were not finite.  A conversation's rows are consecutive.  False (with `err`) ends the engine.

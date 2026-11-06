@@ -70,7 +70,8 @@ test('the conversations the engine holds are listed with their state, tokens and
 });
 
 test('the settings line names the settings and says when the reading is an old one', () => {
-  assert.match(draw(fixture), new RegExp('<p class="mem-note">Context: 32.768 tokens · Conversations at once: 3 · ' +
+  assert.match(draw(fixture), new RegExp('<p class="mem-note">Per-conversation token limit: 32.768 tokens · ' +
+    'Conversations at once: 3 · ' +
     'Rows per step: 8 · Lookahead: 0 · Conversation tokens, minimum: 8.192</p>'));
   assert.match(draw({ ...fixture, busy: true }), /mem-note">[^<]* · a request has the engine: the last reading</);
 });
@@ -205,7 +206,8 @@ test('the controls change the other settings within their ranges', async () => {
   await settle();
   assert.deepEqual(calls, [[{ concurrent: 2 }, 'session'], [{ drafter: false }, 'session']]);
   // the controls' settings are not listed again in the line under the panel
-  assert.match(element.innerHTML, /<p class="mem-note">Context:.*Maximum conversations at once: 4<\/p>/);
+  assert.match(element.innerHTML,
+    /<p class="mem-note">Per-conversation token limit:.*Maximum conversations at once: 4<\/p>/);
 });
 
 test('every segment of a bar says in its tooltip what it is', () => {
@@ -386,4 +388,48 @@ test('RAM uses the same 32 GiB bar scale as GPU and SSD memory', () => {
     {id: 'ram', total: 8 * GIB, free: 6 * GIB, uses: {experts: 2 * GIB}}]}));
   assert.equal(barWidth(ram), 25);
   assert.deepEqual(widths(ram), [25, 75]);
+});
+
+test('the GPU table shows the combined allowance, its total and each conversation limit', () => {
+  const conversation = (id, place, count) => ({id, place, count, capacity: 204800, state: 'holding', bytes: MIB});
+  const view = {...live, settings: {...live.settings, context: 204800, context_capacity: 204800, tokens_max: 401000},
+    conversations: [conversation('slot0', 'vram', 180000), conversation('slot1', 'vram', 190000),
+      conversation('parked0', 'ram', 100000)]};
+  const html = draw(view);
+  assert.match(html, /Shared GPU budget: 401.000 tokens; per-conversation context limit: 204.800 tokens/);
+  assert.match(html, />180.000 \/ 401.000<\/td>/);
+  assert.match(html, />100.000 \/ 204.800<\/td>/);
+  assert.match(html, /GPU total \(shared budget\)[^]*>370.000 \/ 401.000<\/td>/);
+  assert.doesNotMatch(html, /class="mem-num mem-over-budget"/);
+  view.conversations[1].count = 230000;
+  assert.match(draw(view), /class="mem-num mem-over-budget">410.000 \/ 401.000/);
+});
+
+test('separate token controls reject conflicting edits without sending or changing either setting', async () => {
+  const view = {...live, settings: {...live.settings, context: 204800, context_capacity: 401000, tokens_max: 401000}};
+  const {calls, onChange} = recorder(), {element, fire} = mount(view, onChange);
+  assert.match(element.innerHTML, /Per-conversation token limit <input[^>]*data-setting="context"/);
+  assert.match(element.innerHTML, /data-setting="context" value="204800" min="1" max="401000"/);
+  assert.match(element.innerHTML, /Combined GPU token budget <input[^>]*data-setting="tokens_max"/);
+  const setting = (key, value) => control('[data-setting]', {dataset: {setting: key}, value});
+  for (const [key, value] of [['tokens_max', '200000'], ['context', '401001']]) {
+    fire('change', {target: setting(key, value)});
+    await settle();
+    assert.match(element.innerHTML, /cannot exceed the combined GPU token budget\. Neither value was changed/);
+    assert.match(element.innerHTML, /data-setting="context" value="204800"/);
+    assert.match(element.innerHTML, /data-setting="tokens_max" value="401000"/);
+  }
+  assert.deepEqual(calls, []);
+  fire('change', {target: setting('context', '300000')});
+  await settle();
+  assert.deepEqual(calls, [[{context: 300000}, 'session']]);
+  assert.doesNotMatch(mount(live, onChange).element.innerHTML, /data-setting="context"/);
+});
+
+test('the per-conversation widget respects the capacity loaded into the engine', () => {
+  const view = {...live, settings: {...live.settings, context: 204800, context_capacity: 204800, tokens_max: 401000}};
+  const {calls, onChange} = recorder(), {element, fire} = mount(view, onChange);
+  fire('change', {target: control('[data-setting]', {dataset: {setting: 'context'}, value: '300000'})});
+  assert.match(element.innerHTML, /Per-conversation token limit: choose a whole number from 1 to 204.800/);
+  assert.deepEqual(calls, []);
 });

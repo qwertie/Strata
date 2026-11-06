@@ -29,6 +29,16 @@ CFG = {"exe": "engine/strata.exe", "args": ["--pack", "data/packs/q2_0", "--kv",
 
 
 class Apply(unittest.TestCase):
+    def test_live_token_defaults_keep_the_loaded_capacity_separate(self):
+        cfg = {"args": ["--max-context", "204800", "--tokens-max", "401000"]}
+        values = runconfig.check_live({"context": 180000, "tokens_max": 350000}, True)
+        new, changed = runconfig.apply_live(cfg, values)
+        self.assertEqual(changed, ["context", "tokens_max"])
+        self.assertEqual(new["args"], ["--max-context", "204800", "--tokens-max", "350000",
+                                       "--conversation-tokens", "180000"])
+        self.assertEqual(cfg["args"], ["--max-context", "204800", "--tokens-max", "401000"])
+        self.assertEqual(runconfig._arg(new, "--conversation-tokens"), 180000)
+
     def test_only_the_named_keys_change(self):
         new, changed = runconfig.apply(CFG, {"sampling.top_p": 0.95, "reasoning_budget_tokens": 4096,
                                              "vram_reserve_mib": 2048, "aliases": "qwen, local", "lazy_load": True})
