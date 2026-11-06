@@ -1,3 +1,4 @@
+#include "strata/base/gpu/managed_memory.hpp"
 // Adapted from llama.cpp 3cf03257f219afbe7334045ff7c6a06ac68c627d:
 // ggml/src/ggml-cuda/{quantize.cu,vecdotq.cuh,mmvq.cu,common.cuh}
 // and ggml/src/ggml-common.h. See docs/native-mmvq.md for exact scope.
@@ -2259,7 +2260,7 @@ bool native_q8_0_sm60_pack(const void* weights, int n_in, int n_out, const char*
     const std::size_t count = std::size_t(n_in / 32) * std::size_t(n_out);
     const std::size_t bytes = count * 34;
     void* packed = nullptr;
-    if (cudaMalloc(&packed, bytes) != cudaSuccess) {
+    if (strata::core::allocate_device(&packed, bytes, {"other", "Packed output heads", what}) != cudaSuccess) {
         cudaGetLastError();
         std::fprintf(stderr, "strata q8 sm60: no VRAM for the packed %s (%.0f MiB); it keeps the GGUF layout\n", what,
                      double(bytes) / 1048576.0);
@@ -2270,7 +2271,7 @@ bool native_q8_0_sm60_pack(const void* weights, int n_in, int n_out, const char*
     q8sm60::pack_kernel<<<unsigned((count + 255) / 256), 256>>>(static_cast<const Q80Block*>(weights), qs, d, count);
     if (cudaDeviceSynchronize() != cudaSuccess) {
         cudaGetLastError();
-        cudaFree(packed);
+        strata::core::release_device(packed);
         std::fprintf(stderr, "strata q8 sm60: packing the %s failed; it keeps the GGUF layout\n", what);
         return false;
     }
@@ -2287,7 +2288,7 @@ void native_q8_0_sm60_release(const void* weights) {
     const auto it = owned.find(weights);
     if (it == owned.end()) return;
     q8_packed_registry().erase(weights);
-    cudaFree(it->second);
+    strata::core::release_device(it->second);
     owned.erase(it);
 }
 
@@ -2341,9 +2342,10 @@ bool native_q6_k_pack(const void* weights, int n_in, int n_out, const char* what
         std::memcpy(packed.data() + o_d + b * 2, &host[b].d, 2);
     }
     void* dev = nullptr;
-    if (cudaMalloc(&dev, total) != cudaSuccess) { cudaGetLastError(); return false; }
+    if (strata::core::allocate_device(&dev, total,
+        {"other", "Packed output heads", what}) != cudaSuccess) { cudaGetLastError(); return false; }
     if (cudaMemcpy(dev, packed.data(), total, cudaMemcpyHostToDevice) != cudaSuccess) {
-        cudaFree(dev); cudaGetLastError(); return false;
+        strata::core::release_device(dev); cudaGetLastError(); return false;
     }
     auto* base = static_cast<uint8_t*>(dev);
     q6_packed_registry()[weights] = Q6Packed{dev, reinterpret_cast<const int*>(base),
@@ -2365,9 +2367,12 @@ bool native_q6_k_pack(const void* weights, int n_in, int n_out, const char* what
             blk.ds = __floats2half2_rn(0.001f + float(r >> 8) * 1e-9f, 0.0f);
         }
         void *dx = nullptr, *ya = nullptr, *yb = nullptr;
-        cudaMalloc(&dx, hx.size() * sizeof(Q81Block));
-        cudaMalloc(&ya, std::size_t(4) * n_out * 4);
-        cudaMalloc(&yb, std::size_t(4) * n_out * 4);
+        strata::core::allocate_device(&dx, hx.size() * sizeof(Q81Block),
+            {"other", "Device allocations", "Packed output heads"});
+        strata::core::allocate_device(&ya, std::size_t(4) * n_out * 4,
+            {"other", "Device allocations", "Packed output heads"});
+        strata::core::allocate_device(&yb, std::size_t(4) * n_out * 4,
+            {"other", "Device allocations", "Packed output heads"});
         cudaMemcpy(dx, hx.data(), hx.size() * sizeof(Q81Block), cudaMemcpyHostToDevice);
         std::vector<float> a(std::size_t(4) * n_out), c(std::size_t(4) * n_out);
         bool same = true;
@@ -2425,7 +2430,7 @@ bool native_q6_k_pack(const void* weights, int n_in, int n_out, const char* what
             g_q6p_grid_override = 0;
         }
         cudaEventDestroy(e0); cudaEventDestroy(e1);
-        cudaFree(dx); cudaFree(ya); cudaFree(yb);
+        strata::core::release_device(dx); strata::core::release_device(ya); strata::core::release_device(yb);
         cudaStreamDestroy(s);
         if (!same) { native_q6_k_unpack(weights); return false; }
     }
@@ -2436,7 +2441,7 @@ void native_q6_k_unpack(const void* weights) {
     auto& registry = q6_packed_registry();
     const auto found = registry.find(weights);
     if (found == registry.end()) return;
-    cudaFree(found->second.base);
+    strata::core::release_device(found->second.base);
     registry.erase(found);
 }
 

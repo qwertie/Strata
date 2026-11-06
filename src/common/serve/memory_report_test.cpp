@@ -81,6 +81,33 @@ int main() {
     check(format_memory_report(budget, {}) == "MEMORY ram paused_count=0 paused_budget=5 mapped=7\nSETTINGS\n"
                                               "SHORTFALL the GPU's pool: out of memory\nEND_MEMORY\n",
           "the GPU-mapped bytes, and a change's shortfall before the end");
+    MemoryReport labelled;
+    labelled.gpu(0).add_blocks({{{"arbitrary category", "Pool / one", "Drafter & buffers"}, 123},
+                                {{"arbitrary category", "Pool / one", "Drafter & buffers"}, 77}});
+    labelled.gpu(0).setting = 200;
+    labelled.gpu(0).pool_offset = 10;
+    const std::string wire = format_memory_report(labelled, {});
+    check(wire.find("pool_offset=10") != std::string::npos, "labelled pools declare their divider position");
+    check(wire.find("MEMORY_BLOCK gpu0 200 arbitrary%20category Pool%20%2F%20one Drafter%20%26%20buffers") !=
+              std::string::npos, "labels are aggregated and protocol-safe without a category list");
+    strata::core::MemoryManager manager;
+    int allocation = 0;
+    manager.add(&allocation, 42, "ram", {"other", "Drafter", "Working buffers"}, true);
+    check(manager.get_blocks("ram").size() == 1 && manager.get_mapped_bytes() == 42,
+          "mapped RAM is counted once with its owning labels");
+    manager.set_label(&allocation, {"", "Page pool", "Backing"});
+    check(manager.get_blocks("ram").empty() && manager.get_mapped_bytes() == 42,
+          "pool backing is excluded from totals but retains its mapping");
+    manager.remove(&allocation);
+    check(manager.get_mapped_bytes() == 0, "release removes the allocation's mapping and labels");
+    manager.add(&allocation, 42, "ram", {"other", "Pool", "First lifetime"});
+    const uint64_t first_id = manager.get_allocation_id(&allocation);
+    manager.add(&allocation, 84, "ram", {"other", "Pool", "Reused address"});
+    manager.remove_if_current(&allocation, first_id);
+    check(manager.get_blocks("ram").at(0).bytes == 84,
+          "a completed release cannot erase another thread's new allocation at the same address");
+    manager.remove_if_current(&allocation, manager.get_allocation_id(&allocation));
+    check(manager.get_blocks("ram").empty(), "a matching lifetime is removed");
     using Values = std::vector<std::pair<std::string, std::string>>;
     Values values;
     std::string err;

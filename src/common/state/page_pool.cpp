@@ -125,6 +125,7 @@ PoolResize PagePool::resize(uint64_t bytes) {
                       std::to_string(chunks) + " chunks";
             break;
         }
+        get_memory_manager().set_label(chunk, {"", config_.label, "Backing storage"});
         const PageId first = page_count();
         chunks_.push_back(chunk);
         runs_[first].pages = (uint32_t) pages_per_chunk_;
@@ -320,6 +321,33 @@ PagePoolReport PagePool::report() const {
     out.allocated = use(page_count() - free_pages_);
     out.fragmented = use(fragmented_pages_);
     return out;
+}
+std::vector<MemoryBlock> PagePool::get_memory_blocks() const {
+    std::vector<MemoryBlock> out;
+    for (const auto& [page, run] : runs_) {
+        if (run.use != RunUse::expert)
+            continue;
+        const uint64_t bytes = run.pages * config_.page_bytes;
+        const uint64_t weight = (size_t) run.expert.layer < config_.expert_bytes.size() ?
+            config_.expert_bytes[(size_t) run.expert.layer] : bytes;
+        MemoryLabel name = config_.label_expert ? config_.label_expert(run.expert, weight) :
+            MemoryLabel{"experts", config_.label, get_expert_memory_label(run.expert.layer, weight)};
+        name.pool = config_.label;
+        add_memory_block(out, std::move(name), bytes);
+    }
+    for (const auto& [id, c] : conversations_)
+        for (size_t r = 0; r < c.blocks.size(); ++r) {
+            const StateRegion& region = layout_.regions[r];
+            const std::string label = (c.label.empty() ? "Conversation " + std::to_string(id) : c.label) + ": " +
+                (region.label.empty() ? (is_fixed(r) ? "Fixed state" : "Context") : region.label);
+            add_memory_block(out, {c.paused ? "paused" : "conversations", config_.label, label},
+                             c.blocks[r].size() * block_pages_[r] * config_.page_bytes);
+        }
+    add_memory_block(out, {"pool_free", config_.label, "Unused pages"}, report().free.bytes);
+    return out;
+}
+void PagePool::set_conversation_label(ConversationId id, std::string label) {
+    conversations_.at(id).label = std::move(label);
 }
 
 /// Places each expert size's home point: above the token minimum's reserve, the sizes in order (smallest lowest),
@@ -749,6 +777,12 @@ void PagePool::FreeRuns::give(PageId first, uint32_t n) {
             return;
         }
     runs.emplace(first, n);
+}
+
+std::string get_expert_memory_label(int32_t layer, uint64_t bytes) {
+    char label[96];
+    std::snprintf(label, sizeof label, "Layer %d (%.2f MiB experts)", layer, (double) bytes / 1048576.0);
+    return label;
 }
 
 }  // namespace strata::core

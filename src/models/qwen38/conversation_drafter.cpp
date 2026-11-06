@@ -1,3 +1,4 @@
+#include "strata/base/gpu/managed_memory.hpp"
 // src/models/qwen38/conversation_drafter.cpp - Qwen3.8's MTP drafter for strata-q38's conversations
 // (conversation_drafter.hpp).
 #include "strata/models/qwen38/conversation_drafter.hpp"
@@ -13,8 +14,8 @@ namespace strata::qwen38 {
 
 ConversationDrafter::~ConversationDrafter() {
     const strata::core::OnDevice on(device_);
-    (void) cudaFree(rows_);
-    (void) cudaFree(saved_rows_);
+    (void) strata::core::release_device(rows_);
+    (void) strata::core::release_device(saved_rows_);
 }
 
 bool ConversationDrafter::init(Model& m, int sessions, std::string& err) {
@@ -23,7 +24,8 @@ bool ConversationDrafter::init(Model& m, int sessions, std::string& err) {
     const int max_t = max_rows_ = mtp_->max_t();
     const GpuStage* st = m.get_drafter_stage();
     const strata::core::OnDevice on(device_ = mtp_->device());
-    if (rows_ == nullptr && cudaMalloc((void**) &rows_, (size_t) max_t * row_floats_ * sizeof(float)) != cudaSuccess) {
+    if (rows_ == nullptr && strata::core::allocate_device((void**) &rows_, (size_t) max_t * row_floats_ * sizeof(float),
+        {"other", "Device allocations", "Drafter snapshots"}) != cudaSuccess) {
         (void) cudaGetLastError();
         err = "the drafter's residual rows do not fit";
         return false;
@@ -46,8 +48,9 @@ bool ConversationDrafter::read_prompt(strata::prefill::Prefill* sp, const Conver
 
 bool ConversationDrafter::reserve_snapshots(const float* residuals, std::string& err) {
     const strata::core::OnDevice on(device_);
-    if (saved_rows_ == nullptr && cudaMalloc((void**) &saved_rows_,
-        last_.size() * (size_t) max_rows_ * row_floats_ * sizeof(float)) != cudaSuccess) {
+    if (saved_rows_ == nullptr && strata::core::allocate_device((void**) &saved_rows_,
+        last_.size() * (size_t) max_rows_ * row_floats_ * sizeof(float), {"other", "Device allocations",
+            "Drafter snapshots"}) != cudaSuccess) {
         err = "the drafter's per-conversation residual snapshots do not fit";
         return false;
     }

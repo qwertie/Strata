@@ -1,3 +1,4 @@
+#include "strata/base/gpu/managed_memory.hpp"
 // Copyright (c) 2026 Peasant Smith and the Project Maya contributors (MIT; https://github.com/mw00/project-maya, v1.1.17).
 // Ported into Strata (third_party/project-maya/NOTICE.md, LICENSE); changes are in the git history of this file.
 // src/ds4/ds4_vision.cu - DeepSeek-V4.1's vision tower (see ds4_vision.cuh).
@@ -196,7 +197,7 @@ template <class T>
 bool VisionTower::dalloc(T*& p, size_t n, std::string& err) {
     void* v = nullptr;
     const size_t b = (n * sizeof(T) + 255) / 256 * 256;
-    if (cudaMalloc(&v, b) != cudaSuccess) {
+    if (strata::core::allocate_device(&v, b, {"other", "Device allocations", "Vision encoder"}) != cudaSuccess) {
         err = "vision: cudaMalloc " + std::to_string(b >> 20) + " MiB on CUDA" + std::to_string(at_) + " failed";
         return false;
     }
@@ -221,8 +222,10 @@ void VisionTower::release() {
     if (blas_) cublasDestroy((cublasHandle_t) blas_);
     if (st_) cudaStreamDestroy((cudaStream_t) st_);
     if (cs_) cudaStreamDestroy((cudaStream_t) cs_);
-    for (void* p : dallocs_) cudaFree(p);
-    if (host_) cudaFreeHost(host_);
+    for (void* p : dallocs_)
+        strata::core::release_device(p);
+    if (host_)
+        strata::core::release_host(host_);
     cudaSetDevice(cur);
     blas_ = st_ = cs_ = nullptr;
     dallocs_.clear();
@@ -291,7 +294,8 @@ bool VisionTower::load(const VisionGeo& g, int device, const Reader& read, std::
     al1_off_ = block_n_ * g.layers;
     al2_off_ = al1_off_ + (size_t) g.out * D * M * M;
     const size_t host_n = al2_off_ + (size_t) g.out * g.out;
-    if (cudaHostAlloc((void**) &host_, host_n * 2, cudaHostAllocDefault) != cudaSuccess) {
+    if (strata::core::allocate_host((void**) &host_, host_n * 2, cudaHostAllocDefault,
+        {"other", "Device allocations", "Vision encoder"}) != cudaSuccess) {
         host_ = nullptr;
         err = "vision: pinning " + std::to_string((host_n * 2) >> 20) + " MiB of host memory failed";
         return false;

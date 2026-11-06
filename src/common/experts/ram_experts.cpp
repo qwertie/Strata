@@ -189,7 +189,9 @@ uint8_t* RamExperts::alloc(uint64_t bytes) {
             return nullptr;
         page_locked_ = false;
     }
-    return new (std::nothrow) uint8_t[(size_t) bytes];
+    auto* p = new (std::nothrow) uint8_t[(size_t) bytes];
+    get_memory_manager().add(p, bytes, "ram", {"other", "Expert staging", "SSD read buffers"});
+    return p;
 }
 
 /// Gives back what alloc gave.
@@ -200,6 +202,7 @@ void RamExperts::free(uint8_t* p) {
         views_.erase(p);
         gpu_host_free(p);
     } else {
+        get_memory_manager().remove(p);
         delete[] p;
     }
 }

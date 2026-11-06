@@ -1963,9 +1963,10 @@ class Service:
         "can_change": the engine changes settings live (POST /v1/memory), "defaults": the run config's values for
         them (runconfig.read_live_defaults), "config": there is a run config to save defaults to.  `answered`: the
         engine's report, read already (POST /v1/memory's change_settings), so the engine is not asked again.
-        The engine's `ram` gets the machine's size and free RAM, and each memory with a size gets "other": what is in
-        use there that the engine did not name (other programs, buffers it does not count).  A GPU whose memory is
-        system RAM (`unified`) is shown as the BIOS divides it, where read_shared_gpu_memory can read that: its total
+        The engine's `ram` gets the machine's size and free RAM. Each memory with a size gets "other_apps":
+        what is in use beyond the engine's accounted allocations. Where Windows identifies the engine's own
+        dedicated usage, unnamed runtime bytes stay under its Other category. A GPU whose memory is system RAM
+        (`unified`) is shown as the BIOS divides it, where read_shared_gpu_memory can read that: its total
         and free are the BIOS share's, and what it borrows beyond the share counts against the RAM (the RAM's
         `gpu_borrowed`).  The engine's RAM the GPU maps (the RAM's `mapped`: strata-q38's page-locked pool) is in the
         GPU's borrowed use too, as Windows and Linux count it, and is not borrowed again: the RAM's bar has it as the
@@ -1995,7 +1996,8 @@ class Service:
                 self.memory_last = {"at": time.time(), **answered}
         except engine_client.EngineDied as e:
             error = str(e)
-        memories = [dict(m) for m in self.memory_last["memories"]]
+        memories = [{**m, "uses": dict(m["uses"]), "blocks": list(m.get("blocks", []))}
+                    for m in self.memory_last["memories"]]
         borrowed = 0                             # what GPUs whose memory is system RAM hold beyond their BIOS share
         mapped = next((m.get("mapped") or 0 for m in memories if m["id"] == "ram"), 0)   # left to take off "borrowed"
         for m in memories:
@@ -2018,8 +2020,14 @@ class Service:
                     m["total"], m["free"] = ram.total, ram.available
                 m["gpu_borrowed"] = borrowed
             if m["total"] is not None and m["free"] is not None:
-                named = min(sum(m["uses"].values()), m.get("in_share", math.inf)) + m.get("gpu_borrowed", 0)
-                m["other"] = max(0, m["total"] - m["free"] - named)
+                used = sum(m["uses"].values())
+                runtime = max(0, m.get("in_share", 0) - used)
+                if runtime:
+                    m["uses"]["other"] = m["uses"].get("other", 0) + runtime
+                    m["blocks"].append({"category": "other", "pool": "Graphics runtime",
+                                        "label": "Runtime allocations and allocation padding", "bytes": runtime})
+                named = min(used + runtime, m.get("in_share", math.inf)) + m.get("gpu_borrowed", 0)
+                m["other_apps"] = max(0, m["total"] - m["free"] - named)
         return {"available": True, **base, "busy": busy, "error": error, **self.memory_last, "memories": memories}
 
     def change_memory_settings(self, raw: bytes) -> tuple[int, dict]:

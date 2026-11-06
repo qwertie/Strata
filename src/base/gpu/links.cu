@@ -1,4 +1,5 @@
 // src/base/gpu/links.cu - links.hpp on the CUDA runtime (HIP through the hip_compat headers).
+#include "strata/base/gpu/managed_memory.hpp"
 #include "strata/base/gpu/links.hpp"
 
 #include "strata/base/gpu/on_device.hpp"
@@ -71,13 +72,15 @@ LinkSpeed measure_host_link(int dev, size_t bytes) {
     void* h = nullptr;
     void* d = nullptr;
     LinkSpeed s;
-    if (cudaMallocHost(&h, bytes) == cudaSuccess && cudaMalloc(&d, bytes) == cudaSuccess) {
+    if (strata::core::allocate_host(&h, bytes, cudaHostAllocDefault,
+        {"other", "Link measurement", "Probe buffers"}) == cudaSuccess && strata::core::allocate_device(&d, bytes,
+            {"other", "Link measurement", "Probe buffers"}) == cudaSuccess) {
         std::memset(h, 0, bytes);   // its pages in before the timing
         s = measure(h, d, bytes, -1, dev);
     }
     (void) cudaGetLastError();
-    (void) cudaFree(d);
-    (void) cudaFreeHost(h);
+    (void) strata::core::release_device(d);
+    (void) strata::core::release_host(h);
     return s;
 }
 
@@ -87,18 +90,18 @@ LinkSpeed measure_card_link(int from, int to, size_t bytes) {
     LinkSpeed s;
     {
         const OnDevice on(from);
-        (void) cudaMalloc(&a, bytes);
+        (void) strata::core::allocate_device(&a, bytes, {"other", "Link measurement", "Probe buffers"});
     }
     {
         const OnDevice on(to);
-        (void) cudaMalloc(&b, bytes);
+        (void) strata::core::allocate_device(&b, bytes, {"other", "Link measurement", "Probe buffers"});
     }
     if (a != nullptr && b != nullptr)
         s = measure(a, b, bytes, from, to);
     (void) cudaGetLastError();
     for (const auto& [dev, p] : {std::make_pair(from, a), std::make_pair(to, b)}) {
         const OnDevice on(dev);
-        (void) cudaFree(p);
+        (void) strata::core::release_device(p);
     }
     return s;
 }

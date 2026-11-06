@@ -1,3 +1,4 @@
+#include "strata/base/gpu/managed_memory.hpp"
 // src/models/qwen38/model.cpp - Model::load, Qwen3.8's model loader (it was inline in main() in
 // src/program/generate.cpp), and the helpers it shares with that program's serve loop.
 #include "strata/models/qwen38/model.hpp"
@@ -1087,7 +1088,8 @@ int Model::load() {
         std::fprintf(stderr, "strata generate: %s\n", err.c_str());
         return 1;
     }
-    if (const cudaError_t ce = cudaMalloc(&arena, pool_bytes); ce != cudaSuccess) {
+    if (const cudaError_t ce = strata::core::allocate_device(&arena, pool_bytes,
+        {"weights", "Device allocations", "Dense weight arena"}); ce != cudaSuccess) {
         // #486: the arena is the first large allocation and its size does not depend on the context, so what is
         // missing is held by something else: say how much was free
         cudaGetLastError();
@@ -1176,7 +1178,8 @@ int Model::load() {
         mrope_host.resize((size_t) cells * 3);
         for (int64_t c = 0; c < cells; ++c)
             mrope_host[(size_t) c * 3] = mrope_host[(size_t) c * 3 + 1] = mrope_host[(size_t) c * 3 + 2] = (int32_t) c;
-        if (cudaMalloc(&d_mrope, mrope_host.size() * sizeof(int32_t)) != cudaSuccess ||
+        if (strata::core::allocate_device(&d_mrope, mrope_host.size() * sizeof(int32_t),
+            {"other", "Device allocations", "Model working buffers"}) != cudaSuccess ||
             cudaMemcpy(d_mrope, mrope_host.data(), mrope_host.size() * sizeof(int32_t), cudaMemcpyHostToDevice) !=
                 cudaSuccess) {
             std::fprintf(stderr, "strata generate: cannot allocate the image position table\n");
@@ -1227,7 +1230,8 @@ int Model::load() {
             return 1;
         }
         const size_t n = (size_t) g.n_layers * (size_t) half_stride;
-        if (cudaHostAlloc((void**) &half_stage, n * sizeof(float), cudaHostAllocDefault) != cudaSuccess) {
+        if (strata::core::allocate_host((void**) &half_stage, n * sizeof(float), cudaHostAllocDefault,
+            {"other", "Device allocations", "Model working buffers"}) != cudaSuccess) {
             std::fprintf(stderr, "strata generate: cannot pin the half-dump staging buffer\n");
             return 1;
         }
@@ -1386,8 +1390,10 @@ int Model::load() {
         // `ss.ple.hist` and the ready() check wait for `session_init`, which carves the history - the session is
         // now allocated after the layer-split search (see the carve), and the wiring lands there
         ss.ple.emb_host = ple_emb_host.data();
-        if (cudaMalloc((void**) &ple_emb_dev, (size_t) strata::kernels::NG_N_EMBD * 4) != cudaSuccess ||
-            cudaMalloc((void**) &ple_scratch, strata::core::ple_run_scratch_bytes()) != cudaSuccess) {
+        if (strata::core::allocate_device((void**) &ple_emb_dev, (size_t) strata::kernels::NG_N_EMBD * 4,
+            {"other", "Device allocations", "Model working buffers"}) != cudaSuccess ||
+            strata::core::allocate_device((void**) &ple_scratch, strata::core::ple_run_scratch_bytes(),
+                {"other", "Device allocations", "Model working buffers"}) != cudaSuccess) {
             std::fprintf(stderr, "strata generate: the PLE buffers failed\n");
             return 1;
         }
@@ -1399,7 +1405,8 @@ int Model::load() {
                      "  The tokens below are NOT this model's; this is only useful for A/B measurement.\n");
     }
 
-    if (cudaMalloc(&d_parts, (size_t) K * g.n_embd * 4) != cudaSuccess ||
+    if (strata::core::allocate_device(&d_parts, (size_t) K * g.n_embd * 4,
+        {"other", "Device allocations", "Model working buffers"}) != cudaSuccess ||
         cudaMemset(d_parts, 0, (size_t) K * g.n_embd * 4) != cudaSuccess) {
         std::fprintf(stderr, "strata generate: the parts buffer failed\n");
         return 1;
@@ -1536,7 +1543,8 @@ int Model::load() {
             skip_s = skip;
         }
         void* arena_s = nullptr;
-        if (cudaMalloc(&arena_s, pool_s) != cudaSuccess ||
+        if (strata::core::allocate_device(&arena_s, pool_s,
+            {"weights", "Device allocations", "Dense weight arena"}) != cudaSuccess ||
             !st.wt.load(o.pack, arena_s, pool_s, err, skip_s.empty() ? nullptr : &skip_s)) {
             cudaGetLastError();
             size_t free_b = 0, total_b = 0;   // #486: what that card had free
@@ -1589,7 +1597,8 @@ int Model::load() {
         // --vision: this device's image-position table (the identity until a picture request), read by every rope
         // kernel its stage runs - set before any of its graphs is captured
         if (o.vision) {
-            if (cudaMalloc(&st.mrope, mrope_host.size() * sizeof(int32_t)) != cudaSuccess ||
+            if (strata::core::allocate_device(&st.mrope, mrope_host.size() * sizeof(int32_t),
+                {"other", "Device allocations", "Model working buffers"}) != cudaSuccess ||
                 cudaMemcpy(st.mrope, mrope_host.data(), mrope_host.size() * sizeof(int32_t), cudaMemcpyHostToDevice) !=
                     cudaSuccess) {
                 std::fprintf(stderr, "strata generate: layer split, CUDA%d: the image position table failed\n", st.dev);
@@ -2070,7 +2079,8 @@ int Model::load() {
         session_layers.emplace_back(0, hi0);
         // strata-q38 moves the cut while it runs (session_set_layers), so its sessions are carved for every layer
         const int64_t carved_hi = own_stages ? -1 : hi0;
-        if (cudaMalloc(&sbuf, strata::core::session_bytes(g, o.max_context, K, 0, carved_hi)) != cudaSuccess) {
+        if (strata::core::allocate_device(&sbuf, strata::core::session_bytes(g, o.max_context, K, 0, carved_hi),
+            {"other", "Device allocations", "Model working buffers"}) != cudaSuccess) {
             std::fprintf(stderr, "strata generate: session state allocation failed\n");
             return 1;
         }
@@ -2109,7 +2119,9 @@ int Model::load() {
         void* sbuf_s = nullptr;
         session_layers.emplace_back(st.lb, st.le);
         const int64_t carved_lb = own_stages ? 0 : st.lb, carved_le = own_stages ? -1 : st.le;   // (as CUDA0's)
-        if (cudaMalloc(&sbuf_s, strata::core::session_bytes(g, o.max_context, K, carved_lb, carved_le)) !=
+        if (strata::core::allocate_device(&sbuf_s, strata::core::session_bytes(g, o.max_context, K, carved_lb,
+            carved_le),
+            {"other", "Device allocations", "Model working buffers"}) !=
                 cudaSuccess ||
             strata::core::session_init(g, o.max_context, K, sbuf_s, st.ss, carved_lb, carved_le) == 0) {
             std::fprintf(stderr, "strata generate: layer split, CUDA%d: the session state failed\n", st.dev);
@@ -2259,9 +2271,12 @@ int Model::load() {
             for (int b = 0; b < fit; ++b) {
                 auto u = std::make_unique<strata::core::SessionState>();
                 void* buf = nullptr;
-                if (cudaMalloc(&buf, bytes) != cudaSuccess || strata::core::session_init(g, o.max_context, K, buf, *u, lo, hi) == 0) {
+                if (strata::core::allocate_device(&buf, bytes,
+                    {"other", "Device allocations", "Model working buffers"}) != cudaSuccess ||
+                        strata::core::session_init(g, o.max_context, K, buf, *u, lo, hi) == 0) {
                     cudaGetLastError();
-                    if (buf != nullptr) cudaFree(buf);
+                    if (buf != nullptr)
+                        strata::core::release_device(buf);
                     size_t fb = 0, tb = 0;
                     cudaMemGetInfo(&fb, &tb);
                     std::fprintf(stderr, "strata generate: WARNING: --batch %d: slot %d's session does not fit on CUDA%d "
@@ -2407,7 +2422,8 @@ int Model::load() {
     }
     logits.resize((size_t) n_vocab);
     mem_mark("the native head");
-    if (cudaMalloc(&d_logits, (size_t) n_vocab * 4) != cudaSuccess) {
+    if (strata::core::allocate_device(&d_logits, (size_t) n_vocab * 4,
+        {"other", "Device allocations", "Model working buffers"}) != cudaSuccess) {
         (void) cudaGetLastError();
         std::fprintf(stderr, "strata generate: the logits buffer failed%s\n", vram_free_note().c_str());
         return 1;
@@ -3647,15 +3663,21 @@ int Model::load() {
     float* d_hit_out = nullptr;
     if (o.expert_cache > 0 && !o.no_pool) {
         const uint64_t sb = strata::kernels::moe_hit_grouped_scratch_bytes(K, g.n_embd, strata::kernels::cpu::FF);
-        if (cudaMalloc(&hit_scratch, (size_t) sb) != cudaSuccess ||
-            cudaMalloc((void**) &d_hit_slot, (size_t) K * sizeof(int32_t)) != cudaSuccess ||
-            cudaMalloc((void**) &d_hit_dst, (size_t) K * sizeof(int32_t)) != cudaSuccess ||
-            cudaMalloc((void**) &d_hit_q8, (size_t) (g.n_embd / 32) * 34) != cudaSuccess ||
+        if (strata::core::allocate_device(&hit_scratch, (size_t) sb,
+            {"other", "Device allocations", "Model working buffers"}) != cudaSuccess ||
+            strata::core::allocate_device((void**) &d_hit_slot, (size_t) K * sizeof(int32_t),
+                {"other", "Device allocations", "Model working buffers"}) != cudaSuccess ||
+            strata::core::allocate_device((void**) &d_hit_dst, (size_t) K * sizeof(int32_t),
+                {"other", "Device allocations", "Model working buffers"}) != cudaSuccess ||
+            strata::core::allocate_device((void**) &d_hit_q8, (size_t) (g.n_embd / 32) * 34,
+                {"other", "Device allocations", "Model working buffers"}) != cudaSuccess ||
             // R4.2h: the fp32 activation scales.  Without this the GPU's hits use the block's fp16 `d`
             // while the CPU's misses use `ActQ::scale`, which is fp32 - a 4.761e-04 relative disagreement on
             // every chunk, and the reason enabling the cache changed the tokens.
-            cudaMalloc((void**) &d_hit_q8_scale, (size_t) (g.n_embd / 32) * sizeof(float)) != cudaSuccess ||
-            cudaMalloc((void**) &d_hit_out, (size_t) K * g.n_embd * 4) != cudaSuccess) {
+            strata::core::allocate_device((void**) &d_hit_q8_scale, (size_t) (g.n_embd / 32) * sizeof(float),
+                {"other", "Device allocations", "Model working buffers"}) != cudaSuccess ||
+            strata::core::allocate_device((void**) &d_hit_out, (size_t) K * g.n_embd * 4,
+                {"other", "Device allocations", "Model working buffers"}) != cudaSuccess) {
             std::fprintf(stderr, "strata generate: the R4 hit path could not allocate its device buffers\n");
             return 1;
         }
@@ -3836,8 +3858,10 @@ int Model::build_hit_tables(bool dumping_layers) {
                 host_res[(size_t) (l * g.n_expert + e)] = slot;
                 if (slot != strata::core::kNotResident) ++resident;
             }
-        if (cudaMalloc((void**) &d_res, host_res.size() * sizeof(int32_t)) != cudaSuccess ||
-            cudaMalloc((void**) &d_hit_count, sizeof(int32_t)) != cudaSuccess ||
+        if (strata::core::allocate_device((void**) &d_res, host_res.size() * sizeof(int32_t),
+            {"other", "Device allocations", "Model working buffers"}) != cudaSuccess ||
+            strata::core::allocate_device((void**) &d_hit_count, sizeof(int32_t),
+                {"other", "Device allocations", "Model working buffers"}) != cudaSuccess ||
             put_residency(d_res) != cudaSuccess) {
             std::fprintf(stderr, "strata generate: the device residency table could not be staged\n");
             return 1;
@@ -3867,7 +3891,8 @@ int Model::build_hit_tables(bool dumping_layers) {
         }
         for (auto& st : stages) {   // layer split across GPUs: the same table on every device
             const strata::core::OnDevice on(st->dev);
-            if (cudaMalloc((void**) &st->d_res, host_res.size() * sizeof(int32_t)) != cudaSuccess ||
+            if (strata::core::allocate_device((void**) &st->d_res, host_res.size() * sizeof(int32_t),
+                {"other", "Device allocations", "Model working buffers"}) != cudaSuccess ||
                 put_residency(st->d_res) != cudaSuccess) {
                 std::fprintf(stderr, "strata generate: layer split: CUDA%d residency table failed\n", st->dev);
                 return 1;
@@ -3958,7 +3983,8 @@ bool alloc_split_handoffs(const strata::core::ModelGeometry& g, int rows, std::v
     const size_t bytes = (size_t) rows * (size_t) strata::core::Verifier::handoff_floats(g) * sizeof(float);
     for (float*& h : hand) {
         float* host = nullptr;
-        if (cudaHostAlloc((void**) &host, bytes, cudaHostAllocMapped | cudaHostAllocPortable) != cudaSuccess ||
+        if (strata::core::allocate_host((void**) &host, bytes, cudaHostAllocMapped | cudaHostAllocPortable,
+            {"other", "Device allocations", "Model working buffers"}) != cudaSuccess ||
             cudaHostGetDevicePointer((void**) &h, host, 0) != cudaSuccess)
             return false;
         std::memset(host, 0, bytes);
@@ -4492,9 +4518,11 @@ double probe_pcie_h2d_gbps(std::string* samples) {
     constexpr int kBursts = 4;
     void* h = nullptr;
     void* d = nullptr;
-    if (cudaMallocHost(&h, kBytes) != cudaSuccess) return -1.0;
-    if (cudaMalloc(&d, kBytes) != cudaSuccess) {
-        cudaFreeHost(h);
+    if (strata::core::allocate_host(&h, kBytes, cudaHostAllocDefault,
+        {"other", "Device allocations", "Model working buffers"}) != cudaSuccess) return -1.0;
+    if (strata::core::allocate_device(&d, kBytes,
+        {"other", "Device allocations", "Model working buffers"}) != cudaSuccess) {
+        strata::core::release_host(h);
         return -1.0;
     }
     std::memset(h, 0, kBytes);   // fault the pages in before timing
@@ -4540,8 +4568,8 @@ double probe_pcie_h2d_gbps(std::string* samples) {
         }
     }
     if (!ok) (void) cudaGetLastError();
-    cudaFree(d);
-    cudaFreeHost(h);
+    strata::core::release_device(d);
+    strata::core::release_host(h);
     if (bw > 0.0) g_last_h2d_gbps = bw;
     return bw;
 }

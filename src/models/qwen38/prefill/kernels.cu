@@ -1,3 +1,4 @@
+#include "strata/base/gpu/managed_memory.hpp"
 // src/models/qwen38/prefill/kernels.cu - see include/strata/models/qwen38/prefill/kernels.hpp.
 #include "strata/models/qwen38/prefill/kernels.hpp"
 #include "strata/models/qwen38/prefill/gdn_chunk.hpp"
@@ -1160,7 +1161,8 @@ float* gdn_chunk_scratch() {
     if (cudaGetDevice(&dev) != cudaSuccess || dev < 0 || dev >= 64) { cudaGetLastError(); return nullptr; }
     if (bufs[dev] == nullptr) {
         const size_t n = (size_t) (GSB / GCH) * HV * (2 * GCH * GCH + GCH);
-        if (cudaMalloc((void**) &bufs[dev], n * sizeof(float)) != cudaSuccess) {
+        if (strata::core::allocate_device((void**) &bufs[dev], n * sizeof(float),
+            {"other", "Device allocations", "kernels buffers"}) != cudaSuccess) {
             cudaGetLastError();
             bufs[dev] = nullptr;
         }

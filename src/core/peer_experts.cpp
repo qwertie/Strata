@@ -1,4 +1,5 @@
 // src/core/peer_experts.cpp - see include/strata/core/peer_experts.hpp.
+#include "strata/base/gpu/managed_memory.hpp"
 #include "strata/core/peer_experts.hpp"
 
 #include "strata/base/gpu/device.hpp"   // primary_device() (STRATA_PRIMARY_DEVICE)
@@ -52,7 +53,8 @@ bool p2p_copies_data(int device) {
     bool ok = true, tested = true;
     for (int k = 0; k < 2 && tested; ++k) {
         OnDevice on(dev[k]);
-        if (cudaMalloc((void**) &d[k], kN * 4) != cudaSuccess) { cudaGetLastError(); tested = false; }
+        if (strata::core::allocate_device((void**) &d[k], kN * 4,
+            {"other", "Peer experts", "Peer transfer buffers"}) != cudaSuccess) { cudaGetLastError(); tested = false; }
     }
     for (int dir = 0; dir < 2 && tested && ok; ++dir) {   // 0: device 0 -> peer, 1: peer -> device 0
         const int from = dir == 0 ? 0 : 1, to = 1 - from;
@@ -72,7 +74,7 @@ bool p2p_copies_data(int device) {
         ok = std::memcmp(back.data(), h.data(), kN * 4) == 0;
     }
     for (int k = 0; k < 2; ++k)
-        if (d[k] != nullptr) { OnDevice on(dev[k]); cudaFree(d[k]); }
+        if (d[k] != nullptr) { OnDevice on(dev[k]); strata::core::release_device(d[k]); }
     if (!tested) { cudaGetLastError(); return true; }
     return ok;
 }
@@ -94,14 +96,14 @@ void PeerExperts::close() {
         if (stream_) cudaStreamSynchronize(stream_);
         if (refill_) cudaStreamSynchronize(refill_);
         cache_.close();
-        if (d_x_) cudaFree(d_x_);
-        if (d_out_) cudaFree(d_out_);
-        if (d_meta_) cudaFree(d_meta_);
-        if (d_q8_) cudaFree(d_q8_);
-        if (d_scratch_) cudaFree(d_scratch_);
-        if (h_x_) cudaFreeHost(h_x_);
-        if (h_out_) cudaFreeHost(h_out_);
-        if (h_meta_) cudaFreeHost(h_meta_);
+        if (d_x_) strata::core::release_device(d_x_);
+        if (d_out_) strata::core::release_device(d_out_);
+        if (d_meta_) strata::core::release_device(d_meta_);
+        if (d_q8_) strata::core::release_device(d_q8_);
+        if (d_scratch_) strata::core::release_device(d_scratch_);
+        if (h_x_) strata::core::release_host(h_x_);
+        if (h_out_) strata::core::release_host(h_out_);
+        if (h_meta_) strata::core::release_host(h_meta_);
         if (refill_ev_) cudaEventDestroy(refill_ev_);
         if (stream_) cudaStreamDestroy(stream_);
         if (refill_) cudaStreamDestroy(refill_);
@@ -242,14 +244,24 @@ bool PeerExperts::open_buffers(int device, std::string& err) {
         ck(cudaStreamCreateWithFlags(&stream_, cudaStreamNonBlocking), "stream", err) &&
         ck(cudaStreamCreateWithFlags(&refill_, cudaStreamNonBlocking), "refill stream", err) &&
         ck(cudaEventCreateWithFlags(&refill_ev_, cudaEventDisableTiming), "event", err) &&
-        ck(cudaHostAlloc((void**) &h_x_, (size_t) CAP * H * sizeof(float), cudaHostAllocPortable | cudaHostAllocMapped), "input staging", err) &&
-        ck(cudaHostAlloc((void**) &h_out_, (size_t) CAP * H * sizeof(float), cudaHostAllocPortable | cudaHostAllocMapped), "result staging", err) &&
-        ck(cudaHostAlloc(&h_meta_, sizeof(Meta), cudaHostAllocPortable | cudaHostAllocMapped), "plan staging", err) &&
-        ck(cudaMalloc((void**) &d_x_, (size_t) CAP * H * sizeof(float)), "input", err) &&
-        ck(cudaMalloc((void**) &d_out_, (size_t) CAP * H * sizeof(float)), "result", err) &&
-        ck(cudaMalloc(&d_meta_, sizeof(Meta)), "plan", err) &&
-        ck(cudaMalloc((void**) &d_q8_, (size_t) CAP * (H / 32) * 36), "activations", err) &&
-        ck(cudaMalloc(&d_scratch_, scratch), "scratch", err);
+        ck(strata::core::allocate_host((void**) &h_x_, (size_t) CAP * H * sizeof(float), cudaHostAllocPortable |
+            cudaHostAllocMapped,
+            {"other", "Peer experts", "Peer transfer buffers"}), "input staging", err) &&
+        ck(strata::core::allocate_host((void**) &h_out_, (size_t) CAP * H * sizeof(float), cudaHostAllocPortable |
+            cudaHostAllocMapped,
+            {"other", "Peer experts", "Peer transfer buffers"}), "result staging", err) &&
+        ck(strata::core::allocate_host(&h_meta_, sizeof(Meta), cudaHostAllocPortable | cudaHostAllocMapped,
+            {"other", "Peer experts", "Peer transfer buffers"}), "plan staging", err) &&
+        ck(strata::core::allocate_device((void**) &d_x_, (size_t) CAP * H * sizeof(float),
+            {"other", "Peer experts", "Peer transfer buffers"}), "input", err) &&
+        ck(strata::core::allocate_device((void**) &d_out_, (size_t) CAP * H * sizeof(float),
+            {"other", "Peer experts", "Peer transfer buffers"}), "result", err) &&
+        ck(strata::core::allocate_device(&d_meta_, sizeof(Meta),
+            {"other", "Peer experts", "Peer transfer buffers"}), "plan", err) &&
+        ck(strata::core::allocate_device((void**) &d_q8_, (size_t) CAP * (H / 32) * 36,
+            {"other", "Peer experts", "Peer transfer buffers"}), "activations", err) &&
+        ck(strata::core::allocate_device(&d_scratch_, scratch,
+            {"other", "Peer experts", "Peer transfer buffers"}), "scratch", err);
     if (!alloc_ok) { close(); return false; }
     if (strata::kernels::cpu::hadamard_spec().any()) {   // APR: this device's copies of the sign vectors
         d_sx_ = strata::kernels::hadamard_device_signs(strata::kernels::cpu::hadamard_signs((int) H), (int) H);

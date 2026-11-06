@@ -1,3 +1,4 @@
+#include "strata/base/gpu/managed_memory.hpp"
 // #1996 (0.1.43.1): host-to-device uploads whose host side is pageable go up through pinned bounce slots.
 //
 // A cudaMemcpyAsync from pageable memory is staged by the runtime, and the staging is not ordered the way a pinned copy
@@ -58,9 +59,11 @@ public:
             if (cudaEventSynchronize(sl.ev) != cudaSuccess) { cudaGetLastError(); return nullptr; }
         }
         if (sl.cap < bytes) {
-            if (sl.p) { cudaFreeHost(sl.p); sl.p = nullptr; sl.cap = 0; }   // idle: its last copy was waited for above
+            if (sl.p) { strata::core::release_host(sl.p); sl.p = nullptr; sl.cap = 0; }
+            // idle: its last copy was waited for above
             const size_t cap = bytes < kMinCap ? kMinCap : bytes;
-            if (cudaHostAlloc(&sl.p, cap, cudaHostAllocPortable) != cudaSuccess) {
+            if (strata::core::allocate_host(&sl.p, cap, cudaHostAllocPortable,
+                {"other", "Device allocations", "Transfer buffers"}) != cudaSuccess) {
                 cudaGetLastError();
                 sl.p = nullptr;
                 return nullptr;
@@ -130,9 +133,10 @@ public:
                 if (cudaEventSynchronize(sl.ev) != cudaSuccess) { cudaGetLastError(); return false; }
             }
             if (sl.cap < bytes) {
-                if (sl.p) { cudaFreeHost(sl.p); sl.p = nullptr; sl.cap = 0; }
+                if (sl.p) { strata::core::release_host(sl.p); sl.p = nullptr; sl.cap = 0; }
                 const size_t cap = bytes < kMinCap ? kMinCap : bytes;
-                if (cudaHostAlloc(&sl.p, cap, cudaHostAllocPortable) != cudaSuccess) {
+                if (strata::core::allocate_host(&sl.p, cap, cudaHostAllocPortable,
+                    {"other", "Device allocations", "Transfer buffers"}) != cudaSuccess) {
                     cudaGetLastError();
                     sl.p = nullptr;
                     return false;
@@ -152,7 +156,8 @@ public:
         for (Slot& sl : slots_) {
             if (sl.pending && sl.ev) cudaEventSynchronize(sl.ev);
             if (sl.ev) cudaEventDestroy(sl.ev);
-            if (sl.p) cudaFreeHost(sl.p);
+            if (sl.p)
+                strata::core::release_host(sl.p);
             sl = Slot{};
         }
         cudaGetLastError();

@@ -1,4 +1,5 @@
 // src/common/kernels/prefill/gemm.cu - see include/strata/common/kernels/prefill/gemm.hpp.
+#include "strata/base/gpu/managed_memory.hpp"
 #include "strata/common/kernels/prefill/gemm.hpp"
 #include "strata/common/kernels/dequant_bf16.hpp"
 #if defined(STRATA_PREFILL_MMQ) && defined(__HIPCC__)
@@ -613,9 +614,11 @@ const uint16_t* Gemm::unpad_x(const uint16_t* X, int64_t T, int64_t K, int64_t l
     if (X == nullptr || T <= 0 || K <= 0 || ldx <= K) return nullptr;
     const int64_t need = T * K;
     if (need > unpadded_x_elems_) {
-        if (unpadded_x_ != nullptr) { cudaFree(unpadded_x_); unpadded_x_ = nullptr; unpadded_x_elems_ = 0; }
+        if (unpadded_x_ != nullptr) { strata::core::release_device(unpadded_x_); unpadded_x_ = nullptr;
+            unpadded_x_elems_ = 0; }
         void* p = nullptr;
-        if (cudaMalloc(&p, (size_t) need * sizeof(uint16_t)) != cudaSuccess) { cudaGetLastError(); return nullptr; }
+        if (strata::core::allocate_device(&p, (size_t) need * sizeof(uint16_t),
+            {"other", "Prompt GEMM", "Working buffers"}) != cudaSuccess) { cudaGetLastError(); return nullptr; }
         unpadded_x_ = (uint16_t*) p;
         unpadded_x_elems_ = need;
     }
@@ -631,7 +634,7 @@ const uint16_t* Gemm::unpad_x(const uint16_t* X, int64_t T, int64_t K, int64_t l
 Gemm::~Gemm() {
 #if defined(STRATA_PREFILL_MMQ) && defined(__HIPCC__)
     delete static_cast<strata::prefill::mmq::Context*>(mmq_ctx_);
-    if (mmq_buf_) cudaFree(mmq_buf_);
+    if (mmq_buf_) strata::core::release_device(mmq_buf_);
 #endif
 #if defined(__HIPCC__) && defined(STRATA_HIPBLASLT_AVAILABLE)
     delete static_cast<HipLtState*>(hipblaslt_state_);
@@ -640,12 +643,12 @@ Gemm::~Gemm() {
     delete static_cast<RocBlasState*>(rocblas_state_);
 #endif
     if (handle_) cublasDestroy((cublasHandle_t) handle_);
-    if (tc_w_) cudaFree(tc_w_);
-    if (tc_x_) cudaFree(tc_x_);
-    if (unpadded_x_) cudaFree(unpadded_x_);
+    if (tc_w_) strata::core::release_device(tc_w_);
+    if (tc_x_) strata::core::release_device(tc_x_);
+    if (unpadded_x_) strata::core::release_device(unpadded_x_);
     if (!external_) {
-        if (scratch_) cudaFree(scratch_);
-        if (workspace_) cudaFree(workspace_);
+        if (scratch_) strata::core::release_device(scratch_);
+        if (workspace_) strata::core::release_device(workspace_);
     }
 }
 
@@ -700,7 +703,8 @@ bool Gemm::init(void* stream, int64_t scratch_elems, std::string& err) {
     note(cublasSetStream(h, (cudaStream_t) stream), "cublasSetStream");
     // A fixed workspace so the handle never allocates on the way (and graphs could capture it later).
     const size_t ws = 32u << 20;
-    if (const cudaError_t e = cudaMalloc(&workspace_, ws); e != cudaSuccess) {
+    if (const cudaError_t e = strata::core::allocate_device(&workspace_, ws,
+        {"other", "Prompt GEMM", "Working buffers"}); e != cudaSuccess) {
         err = std::string("prefill gemm: workspace of 32 MiB: ") + cudaGetErrorString(e);
         return false;
     }
@@ -713,7 +717,8 @@ bool Gemm::init(void* stream, int64_t scratch_elems, std::string& err) {
     rocblas_state_ = create_rocblas_state(stream).release();
 #endif
     if (scratch_elems > 0) {
-        if (const cudaError_t e = cudaMalloc((void**) &scratch_, (size_t) scratch_elems * 2); e != cudaSuccess) {
+        if (const cudaError_t e = strata::core::allocate_device((void**) &scratch_, (size_t) scratch_elems * 2,
+            {"other", "Prompt GEMM", "Working buffers"}); e != cudaSuccess) {
             err = "prefill gemm: dequant scratch of " + std::to_string(scratch_elems * 2 >> 20) + " MiB: " +
                   cudaGetErrorString(e);
             return false;
@@ -795,10 +800,11 @@ int bf16_path() {
 }
 bool grow(uint16_t*& p, int64_t& have, int64_t want) {   // `have`, `want`: 2-byte elements
     if (have >= want) return true;
-    if (p) cudaFree(p);
+    if (p) strata::core::release_device(p);
     p = nullptr;
     have = 0;
-    if (cudaMalloc((void**) &p, (size_t) want * 2) != cudaSuccess) { cudaGetLastError(); p = nullptr; return false; }
+    if (strata::core::allocate_device((void**) &p, (size_t) want * 2,
+        {"other", "Prompt GEMM", "Working buffers"}) != cudaSuccess) { cudaGetLastError(); p = nullptr; return false; }
     have = want;
     return true;
 }
@@ -941,10 +947,12 @@ bool rdna2_sgemm_on(int64_t N) {
 bool rdna2_grow(uint16_t*& p, int64_t& have_u16, int64_t want_f32) {
     const int64_t want = 2 * want_f32;
     if (have_u16 >= want) return true;
-    if (p) cudaFree(p);
+    if (p) strata::core::release_device(p);
     p = nullptr;
     have_u16 = 0;
-    if (cudaMalloc((void**) &p, (size_t) want * 2) != cudaSuccess) { (void) cudaGetLastError(); p = nullptr; return false; }
+    if (strata::core::allocate_device((void**) &p, (size_t) want * 2,
+        {"other", "Prompt GEMM", "Working buffers"}) != cudaSuccess) { (void) cudaGetLastError(); p = nullptr; return
+            false; }
     have_u16 = want;
     return true;
 }
@@ -1229,7 +1237,8 @@ bool Gemm::native_mmq(const uint16_t* X, int type, const void* W, float* Y, int6
     const size_t ident_off = up(mmq::q8_bytes(kRows, kMaxK));
     const size_t bounds_off = ident_off + up((size_t) kRows * 4);
     if (!mmq_buf_) {
-        if (cudaMalloc(&mmq_buf_, bounds_off + 256) != cudaSuccess) {
+        if (strata::core::allocate_device(&mmq_buf_, bounds_off + 256,
+            {"other", "Prompt GEMM", "Working buffers"}) != cudaSuccess) {
             cudaGetLastError();
             mmq_failed_ = true;
             return false;

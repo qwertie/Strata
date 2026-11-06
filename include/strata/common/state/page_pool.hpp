@@ -4,6 +4,7 @@
 #pragma once
 
 #include "strata/common/state/state_layout.hpp"
+#include "strata/base/platform/memory_manager.hpp"
 
 #include <chrono>
 #include <cstdint>
@@ -45,6 +46,10 @@ struct PagePoolConfig {
     /// The pages of each expert the pool may hold, hottest first (an expert profile's order).  The ones that fit tell
     /// how much room each expert size should get, which places each size's home point (PagePool::get_home).
     std::vector<uint32_t> expert_ranking;
+    std::string label = "Expert and conversation pool";   ///< the name of this pool in allocation details
+    std::vector<uint64_t> expert_bytes;   ///< actual weight bytes per layer, before rounding to pages
+    /// Supplies engine-specific category and purpose labels; empty uses the layer and expert size.
+    std::function<MemoryLabel(ExpertKey, uint64_t)> label_expert;
 };
 
 /// What the pool calls outside itself.  The engine passes a device allocator (base/gpu) and a page copy on its
@@ -97,6 +102,9 @@ struct PoolResize {
 /// tables can count; when the divisor is not, the multiple of 256 bytes from 16 KiB to 512 KiB that wastes the least
 /// of the pages the experts take.
 uint64_t choose_expert_page_bytes(const std::vector<uint64_t>& blob_bytes);
+
+/// Names an expert size class consistently in GPU pools, RAM pools and model files.
+std::string get_expert_memory_label(int32_t layer, uint64_t bytes);
 
 /// Gets how many consecutive pages of `page_bytes` make one block of region `region`: a fixed region's whole size;
 /// for a growing region the fewest pages whose waste (the bytes past the last whole unit of tokens) is at most 1%, up
@@ -197,6 +205,10 @@ public:
     /// Gets the pages one conversation of `tokens` tokens takes.
     uint64_t pages_for(int64_t tokens) const;
     PagePoolReport report() const;
+    /// Gets disjoint block totals with their category, pool and purpose, including unused pool space.
+    std::vector<MemoryBlock> get_memory_blocks() const;
+    /// Names a conversation's blocks; a missing name is shown as its numeric handle.
+    void set_conversation_label(ConversationId id, std::string label);
 
 private:
     /// Free runs of consecutive pages inside a hole, each as long as it can be.
@@ -221,6 +233,7 @@ private:
     using Runs = std::map<PageId, Run>;   ///< by first page
     using UseOrder = std::set<std::tuple<uint64_t, uint64_t, PageId>>;   ///< experts by (last use, uses, first page)
     struct Conversation {
+        std::string label;
         int64_t tokens = 0;
         bool paused = false;
         std::vector<std::vector<PageId>> blocks;   ///< per region of the layout, each block's first page

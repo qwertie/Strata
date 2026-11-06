@@ -1,3 +1,4 @@
+#include "strata/base/gpu/managed_memory.hpp"
 // Copyright (c) 2026 Peasant Smith and the Project Maya contributors (MIT; https://github.com/mw00/project-maya, v1.1.17).
 // Ported into Strata (third_party/project-maya/NOTICE.md, LICENSE); changes are in the git history of this file.
 // src/ds4/ds4_iq.cu - a GGUF's low-bit routed experts on the device (see ds4_iq.cuh).  The block layouts and grids are
@@ -1208,10 +1209,14 @@ LightBuf* light_buf(cudaStream_t s, int k) {
     LightBuf& b = g_light[{dev, s}];
     const size_t need = (size_t) kLightMaxExp * kLightRows * (size_t) std::max(k, 8192);
     if (b.cap < need) {
-        if (b.q != nullptr) cudaFree(b.q);
-        if (b.d != nullptr) cudaFree(b.d);
+        if (b.q != nullptr)
+            strata::core::release_device(b.q);
+        if (b.d != nullptr)
+            strata::core::release_device(b.d);
         b = LightBuf{};
-        if (cudaMalloc(&b.q, need) != cudaSuccess || cudaMalloc(&b.d, need / 32 * sizeof(float)) != cudaSuccess) {
+        if (strata::core::allocate_device(&b.q, need,
+            {"other", "Device allocations", "ds4 iq buffers"}) != cudaSuccess || strata::core::allocate_device(&b.d,
+                need / 32 * sizeof(float), {"other", "Device allocations", "ds4 iq buffers"}) != cudaSuccess) {
             std::fprintf(stderr, "ds4 iq: the light sets' scratch (%zu MB) failed\n", need >> 20);
             return nullptr;
         }

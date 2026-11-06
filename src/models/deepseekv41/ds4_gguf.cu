@@ -1,3 +1,4 @@
+#include "strata/base/gpu/managed_memory.hpp"
 // Copyright (c) 2026 Peasant Smith and the Project Maya contributors (MIT; https://github.com/mw00/project-maya, v1.1.17).
 // Ported into Strata (third_party/project-maya/NOTICE.md, LICENSE); changes are in the git history of this file.
 // src/ds4/ds4_gguf.cu - a GGUF's BF16 matrices and MXFP4 experts on the device (see ds4_gguf.cuh).
@@ -1031,10 +1032,20 @@ Scratch* scratch(cudaStream_t s) {
     Scratch sc;
     const size_t nx = (size_t) kMaxEnt * kMaxEmbd, nh = (size_t) kMaxEnt * 8 * kMaxEmbd,
                  nm = (size_t) x3::kMaxMvJobs * x3::kMaxMvCols * kMaxQK;
-    if (cudaMalloc(&sc.part, (size_t) 8 * kMaxEmbd * sizeof(float)) != cudaSuccess ||
-        cudaMalloc(&sc.xq, nx) != cudaSuccess || cudaMalloc(&sc.xd, nx / 32 * 4) != cudaSuccess ||
-        cudaMalloc(&sc.hq, nh) != cudaSuccess || cudaMalloc(&sc.hd, nh / 32 * 4) != cudaSuccess ||
-        cudaMalloc(&sc.mq, nm) != cudaSuccess || cudaMalloc(&sc.md, nm / 32 * 4) != cudaSuccess) {
+    if (strata::core::allocate_device(&sc.part, (size_t) 8 * kMaxEmbd * sizeof(float),
+        {"other", "Device allocations", "ds4 gguf buffers"}) != cudaSuccess ||
+        strata::core::allocate_device(&sc.xq, nx,
+            {"other", "Device allocations", "ds4 gguf buffers"}) != cudaSuccess ||
+                strata::core::allocate_device(&sc.xd, nx / 32 * 4, {"other", "Device allocations", "ds4 gguf buffers"})
+                    != cudaSuccess ||
+        strata::core::allocate_device(&sc.hq, nh,
+            {"other", "Device allocations", "ds4 gguf buffers"}) != cudaSuccess ||
+                strata::core::allocate_device(&sc.hd, nh / 32 * 4, {"other", "Device allocations", "ds4 gguf buffers"})
+                    != cudaSuccess ||
+        strata::core::allocate_device(&sc.mq, nm,
+            {"other", "Device allocations", "ds4 gguf buffers"}) != cudaSuccess ||
+                strata::core::allocate_device(&sc.md, nm / 32 * 4, {"other", "Device allocations", "ds4 gguf buffers"})
+                    != cudaSuccess) {
         fail("scratch: cudaMalloc failed");
         return nullptr;
     }

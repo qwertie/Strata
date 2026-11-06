@@ -1,3 +1,4 @@
+#include "strata/base/gpu/managed_memory.hpp"
 // src/models/qwen38/kernels/cuda/fused_gr.cu - see include/strata/models/qwen38/kernels/fused_gr.hpp.
 #include "strata/base/gpu/emulate.hpp"
 #include "strata/base/gpu/sm75_series.hpp"
@@ -2423,7 +2424,8 @@ bool fused_gr_selftest(bool ok_variant[4], std::string why[4]) {
     const size_t bytes = h_down.size() * 2 + h_up.size() * 2 + h_inj.size() * 2 +
                          (h_norm.size() + h_R.size() + h_bo.size() + h_ip.size() + NV * n_set) * 4 + 32 * 256;
     uint8_t* base = nullptr;
-    if (cudaMalloc((void**) &base, bytes) != cudaSuccess) {
+    if (strata::core::allocate_device((void**) &base, bytes,
+        {"other", "Device allocations", "fused gr buffers"}) != cudaSuccess) {
         cudaGetLastError();
         why[0] = "no room for the check (" + std::to_string(bytes >> 20) + " MiB)";
         return false;
@@ -2529,7 +2531,7 @@ bool fused_gr_selftest(bool ok_variant[4], std::string why[4]) {
         cudaStreamSynchronize(st);
         cudaStreamDestroy(st);
     }
-    cudaFree(base);
+    strata::core::release_device(base);
     cudaGetLastError();
     if (!ok) ok_variant[2] = ok_variant[3] = false;
     return ok;
@@ -2904,11 +2906,18 @@ void fused_gr_persist_init() {
         return;
     }
     const int mp = prop.multiProcessorCount;   // only for the confirmation line (WGPs on RDNA)
-    bool ok = cudaMalloc((void**) &st.part, (size_t) kFusedGrMaxT * hcp::NR * hcp::NB * sizeof(float)) == cudaSuccess &&
-              cudaMalloc((void**) &st.ssp, (size_t) kFusedGrMaxT * hcp::NB * sizeof(float)) == cudaSuccess &&
-              cudaMalloc((void**) &st.bar, 64 * sizeof(unsigned)) == cudaSuccess &&
-              cudaMalloc((void**) &st.partd, (size_t) kFusedGrMaxT * hcp::NR * hcp::NB * sizeof(double)) == cudaSuccess &&
-              cudaMalloc((void**) &st.sspd, (size_t) kFusedGrMaxT * hcp::NB * sizeof(double)) == cudaSuccess &&
+    bool ok = strata::core::allocate_device((void**) &st.part, (size_t) kFusedGrMaxT * hcp::NR * hcp::NB *
+        sizeof(float),
+        {"other", "Device allocations", "fused gr buffers"}) == cudaSuccess &&
+              strata::core::allocate_device((void**) &st.ssp, (size_t) kFusedGrMaxT * hcp::NB * sizeof(float),
+                  {"other", "Device allocations", "fused gr buffers"}) == cudaSuccess &&
+              strata::core::allocate_device((void**) &st.bar, 64 * sizeof(unsigned),
+                  {"other", "Device allocations", "fused gr buffers"}) == cudaSuccess &&
+              strata::core::allocate_device((void**) &st.partd, (size_t) kFusedGrMaxT * hcp::NR * hcp::NB *
+                  sizeof(double),
+                  {"other", "Device allocations", "fused gr buffers"}) == cudaSuccess &&
+              strata::core::allocate_device((void**) &st.sspd, (size_t) kFusedGrMaxT * hcp::NB * sizeof(double),
+                  {"other", "Device allocations", "fused gr buffers"}) == cudaSuccess &&
               cudaMemset(st.bar, 0, 64 * sizeof(unsigned)) == cudaSuccess;
     if (!ok) {
         cudaGetLastError();
@@ -2935,12 +2944,24 @@ void fused_gr_persist_init() {
     for (auto& x : wi) x = bf(0.02f * nd(rng));
     float *dR, *dbo, *dinj, *dwn, *dxn, *dlo, *drs, *dio, *dmix;
     uint16_t *dwd, *dwu, *dwi;
-    cudaMalloc((void**) &dR, R.size() * 4); cudaMalloc((void**) &dbo, bo.size() * 4);
-    cudaMalloc((void**) &dinj, inj.size() * 4); cudaMalloc((void**) &dwn, wn.size() * 4);
-    cudaMalloc((void**) &dxn, (size_t) TM * D * 4); cudaMalloc((void**) &dlo, (size_t) TM * LR * 4);
-    cudaMalloc((void**) &drs, (size_t) TM * HC * 4); cudaMalloc((void**) &dio, (size_t) TM * HC * 4);
-    cudaMalloc((void**) &dmix, (size_t) TM * N * 4);
-    cudaMalloc((void**) &dwd, wd.size() * 2); cudaMalloc((void**) &dwu, wu.size() * 2); cudaMalloc((void**) &dwi, wi.size() * 2);
+    strata::core::allocate_device((void**) &dR, R.size() * 4,
+        {"other", "Device allocations", "fused gr buffers"}); strata::core::allocate_device((void**) &dbo, bo.size() *
+            4, {"other", "Device allocations", "fused gr buffers"});
+    strata::core::allocate_device((void**) &dinj, inj.size() * 4,
+        {"other", "Device allocations", "fused gr buffers"}); strata::core::allocate_device((void**) &dwn, wn.size() *
+            4, {"other", "Device allocations", "fused gr buffers"});
+    strata::core::allocate_device((void**) &dxn, (size_t) TM * D * 4,
+        {"other", "Device allocations", "fused gr buffers"}); strata::core::allocate_device((void**) &dlo, (size_t) TM
+            * LR * 4, {"other", "Device allocations", "fused gr buffers"});
+    strata::core::allocate_device((void**) &drs, (size_t) TM * HC * 4,
+        {"other", "Device allocations", "fused gr buffers"}); strata::core::allocate_device((void**) &dio, (size_t) TM
+            * HC * 4, {"other", "Device allocations", "fused gr buffers"});
+    strata::core::allocate_device((void**) &dmix, (size_t) TM * N * 4,
+        {"other", "Device allocations", "fused gr buffers"});
+    strata::core::allocate_device((void**) &dwd, wd.size() * 2,
+        {"other", "Device allocations", "fused gr buffers"}); strata::core::allocate_device((void**) &dwu, wu.size() *
+            2, {"other", "Device allocations", "fused gr buffers"}); strata::core::allocate_device((void**) &dwi,
+                wi.size() * 2, {"other", "Device allocations", "fused gr buffers"});
     cudaMemcpy(dbo, bo.data(), bo.size() * 4, cudaMemcpyHostToDevice);
     cudaMemcpy(dinj, inj.data(), inj.size() * 4, cudaMemcpyHostToDevice);
     cudaMemcpy(dwn, wn.data(), wn.size() * 4, cudaMemcpyHostToDevice);
@@ -3001,8 +3022,11 @@ void fused_gr_persist_init() {
         if (r != 0) break;
         max_t = T;
     }
-    cudaFree(dR); cudaFree(dbo); cudaFree(dinj); cudaFree(dwn); cudaFree(dxn); cudaFree(dlo); cudaFree(drs);
-    cudaFree(dio); cudaFree(dmix); cudaFree(dwd); cudaFree(dwu); cudaFree(dwi);
+    strata::core::release_device(dR); strata::core::release_device(dbo); strata::core::release_device(dinj);
+        strata::core::release_device(dwn); strata::core::release_device(dxn); strata::core::release_device(dlo);
+            strata::core::release_device(drs);
+    strata::core::release_device(dio); strata::core::release_device(dmix); strata::core::release_device(dwd);
+        strata::core::release_device(dwu); strata::core::release_device(dwi);
     cudaMemset(st.bar, 0, 64 * sizeof(unsigned));
     cudaDeviceSynchronize();
     cudaGetLastError();

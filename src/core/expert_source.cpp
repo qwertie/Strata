@@ -1,4 +1,5 @@
 // src/core/expert_source.cpp - the adapter.  See the header for the three clauses of the contract.
+#include "strata/base/gpu/managed_memory.hpp"
 #include "strata/core/expert_source.hpp"
 #include "strata/core/foresight_swap.hpp"
 #include "strata/base/gpu/on_device.hpp"
@@ -1125,7 +1126,7 @@ void FileExpertSource::close() {
     io_stop();
     inputs_.clear();
     if (complement_arena_ != nullptr) {
-        if (complement_pinned_ && !complement_registered_) (void) cudaFreeHost(complement_arena_);
+        if (complement_pinned_ && !complement_registered_) (void) strata::core::release_host(complement_arena_);
         else {
             if (complement_registered_) (void) cudaHostUnregister(complement_arena_);
             if (complement_locked_ > 0)
@@ -1134,7 +1135,7 @@ void FileExpertSource::close() {
         }
     }
     if (xstage_ != nullptr) {
-        if (xstage_pinned_) (void) cudaFreeHost(xstage_);
+        if (xstage_pinned_) (void) strata::core::release_host(xstage_);
         else std::free(xstage_);
     }
     xstage_ = nullptr;
@@ -1386,7 +1387,7 @@ bool FileExpertSource::copy_from_files(int64_t layer, int64_t expert, uint8_t* d
 // prompt in the 0.1.41 release gate (48 tokens of id 0; off = identical to 0.1.40.4): with page-locked buffers the cache-fill
 // copy is truly asynchronous, so a recycled stage buffer can be overwritten before its copy finishes.  Off until that is fixed.
 void FileExpertSource::StageBufFree::operator()(uint8_t* p) const noexcept {
-    if (pinned) (void) cudaFreeHost(p);
+    if (pinned) (void) strata::core::release_host(p);
     else delete[] p;
 }
 
@@ -1432,7 +1433,8 @@ bool FileExpertSource::claim_stage(int64_t key, size_t& v, bool& fill, bool ahea
         }();
         void* p = nullptr;
         cudaError_t pin_err = cudaSuccess;
-        if (want_pin) pin_err = cudaHostAlloc(&p, (size_t) stage_blob_, cudaHostAllocDefault);
+        if (want_pin) pin_err = strata::core::allocate_host(&p, (size_t) stage_blob_, cudaHostAllocDefault,
+            {"other", "Expert file staging", "Read and transfer buffers"});
         const bool pinned = want_pin && pin_err == cudaSuccess && p != nullptr;
         if (!pinned) (void) cudaGetLastError();   // the failed alloc's sticky error is ours, not the caller's
         uint8_t* raw = pinned ? (uint8_t*) p : new (std::nothrow) uint8_t[(size_t) stage_blob_];
@@ -2295,6 +2297,7 @@ bool FileExpertSource::read_direct(const Fill* fills, size_t n) const {
         std::vector<Req> req;
         std::vector<DWORD> got;
         ~Scratch() {
+            get_memory_manager().remove(buf);
             if (buf != nullptr) VirtualFree(buf, 0, MEM_RELEASE);
             for (HANDLE e : ev) CloseHandle(e);
         }
@@ -2352,10 +2355,12 @@ bool FileExpertSource::read_direct(const Fill* fills, size_t n) const {
         x.in_req = 0;
     }
     if (total > sc.cap) {
+        get_memory_manager().remove(sc.buf);
         if (sc.buf != nullptr) VirtualFree(sc.buf, 0, MEM_RELEASE);
         sc.cap = (size_t) ((total + (1u << 20) - 1) >> 20 << 20);
         sc.buf = (uint8_t*) VirtualAlloc(nullptr, sc.cap, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
         if (sc.buf == nullptr) { sc.cap = 0; return false; }
+        get_memory_manager().add(sc.buf, sc.cap, "ram", {"other", "SSD reads", "Expert read staging"});
     }
     while (sc.ev.size() < sc.req.size()) {
         HANDLE e = CreateEventW(nullptr, TRUE, FALSE, nullptr);
@@ -2411,6 +2416,7 @@ bool FileExpertSource::read_direct(const Fill* fills, size_t n) const {
         std::vector<iocb*> cbp;
         std::vector<io_event> ev;
         ~Scratch() {
+            get_memory_manager().remove(buf);
             std::free(buf);
             if (ctx != 0) (void) syscall(SYS_io_destroy, ctx);
         }
@@ -2472,11 +2478,13 @@ bool FileExpertSource::read_direct(const Fill* fills, size_t n) const {
         x.in_req = 0;
     }
     if (total > sc.cap) {
+        get_memory_manager().remove(sc.buf);
         std::free(sc.buf);
         sc.cap = (size_t) ((total + (1u << 20) - 1) >> 20 << 20);
         void* p = nullptr;
         sc.buf = posix_memalign(&p, (size_t) kSector, sc.cap) == 0 ? (uint8_t*) p : nullptr;
         if (sc.buf == nullptr) { sc.cap = 0; return false; }
+        get_memory_manager().add(sc.buf, sc.cap, "ram", {"other", "SSD reads", "Expert read staging"});
     }
     sc.got.assign(sc.req.size(), -1);
     sc.cb.resize(std::min<size_t>(sc.req.size(), (size_t) kDepth));
@@ -3269,7 +3277,7 @@ bool FileExpertSource::pin_cache_complement(
 #endif
     auto release = [&]() {
         if (arena == nullptr) return;
-        if (pinned_ok) (void) cudaFreeHost(arena);
+        if (pinned_ok) (void) strata::core::release_host(arena);
         else {
             if (partial_pin > 0) (void) cudaHostUnregister(arena);
             if (locked > 0) strata::platform::unlock_resident((uint8_t*) arena + lock_off, locked);
@@ -3363,8 +3371,9 @@ bool FileExpertSource::pin_cache_complement(
         }
 #endif
         if (pin && !paced) {
-            const cudaError_t allocated = cudaHostAlloc(&arena, (size_t) bytes,
-                                                         cudaHostAllocMapped | cudaHostAllocPortable);
+            const cudaError_t allocated = strata::core::allocate_host(&arena, (size_t) bytes,
+                                                         cudaHostAllocMapped | cudaHostAllocPortable, {"other",
+                                                             "Expert file staging", "Read and transfer buffers"});
             if (allocated == cudaSuccess) {
                 void* alias = nullptr;
                 const cudaError_t aliased = cudaHostGetDevicePointer(&alias, arena, 0);
@@ -3375,7 +3384,7 @@ bool FileExpertSource::pin_cache_complement(
                 } else {
                     note = std::string("no device alias (") + cudaGetErrorString(aliased) + ")";
                     (void) cudaGetLastError();
-                    (void) cudaFreeHost(arena);
+                    (void) strata::core::release_host(arena);
                     arena = nullptr;
                 }
             } else {
@@ -3749,7 +3758,7 @@ bool FileExpertSource::reserve_exchanges(int64_t n, std::string& err, int64_t bo
     for (const uint64_t b : layer_blob_bytes_) blob = std::max(blob, b);
     if (blob == 0 || n <= 0) { err = "FileExpertSource: no expert geometry for the exchange buffers"; return false; }
     if (xstage_ != nullptr) {
-        if (xstage_pinned_) (void) cudaFreeHost(xstage_);
+        if (xstage_pinned_) (void) strata::core::release_host(xstage_);
         else std::free(xstage_);
         xstage_ = nullptr;
         xstage_cap_ = 0;
@@ -3767,7 +3776,8 @@ bool FileExpertSource::reserve_exchanges(int64_t n, std::string& err, int64_t bo
                           complement_host_ && complement_device_ && complement_bytes_ > 0;
     const size_t total = eligible ? (size_t) rotate_total : (size_t) n * (size_t) blob;
     void* p = nullptr;
-    if (cudaHostAlloc(&p, total, eligible ? cudaHostAllocMapped : cudaHostAllocDefault) == cudaSuccess && p != nullptr) {
+    if (strata::core::allocate_host(&p, total, eligible ? cudaHostAllocMapped : cudaHostAllocDefault,
+        {"other", "Expert file staging", "Read and transfer buffers"}) == cudaSuccess && p != nullptr) {
         xstage_pinned_ = true;
     } else {
         (void) cudaGetLastError();
@@ -5711,7 +5721,8 @@ bool ForesightSwap::init(int slots_per_layer, int64_t layers, int64_t experts, c
         if (bytes == 0) continue;
         const OnDevice on(devices[c]);
         cudaStream_t s = nullptr;
-        if (cudaMalloc(&card_mem[c], bytes) != cudaSuccess ||
+        if (strata::core::allocate_device(&card_mem[c], bytes,
+            {"other", "Expert file staging", "Read and transfer buffers"}) != cudaSuccess ||
             cudaStreamCreateWithFlags(&s, cudaStreamNonBlocking) != cudaSuccess) {
             cudaGetLastError();
             err = "cannot allocate " + std::to_string(bytes >> 20) + " MiB on CUDA" + std::to_string(devices[c]) +
@@ -5753,7 +5764,7 @@ ForesightSwap::~ForesightSwap() {
     for (size_t c = 0; c < card_dev.size(); ++c) {
         const OnDevice on(card_dev[c]);
         if (card_stream[c]) cudaStreamSynchronize((cudaStream_t) card_stream[c]);
-        if (card_mem[c]) cudaFree(card_mem[c]);
+        if (card_mem[c]) strata::core::release_device(card_mem[c]);
         if (card_stream[c]) cudaStreamDestroy((cudaStream_t) card_stream[c]);
     }
     if (slot)

@@ -1,4 +1,5 @@
 // src/base/gpu/device.cu - P2.S1: the CUDA side of the runtime core.
+#include "strata/base/gpu/managed_memory.hpp"
 #include "strata/base/gpu/device.hpp"
 
 #include <cuda_runtime.h>
@@ -330,7 +331,8 @@ DeviceArena::DeviceArena(uint64_t bytes, int ordinal, bool poison)
     check(cudaSetDevice(ordinal), "cudaSetDevice");
     // One allocation for the whole region.  cudaMalloc of a large block is the thing that can fail late, so it
     // happens once, here, before anything depends on it.
-    check(cudaMalloc(&base_, (size_t) bytes), "cudaMalloc");
+    check(strata::core::allocate_device(&base_, (size_t) bytes,
+        {"other", "Device arena", "Backing allocation"}), "cudaMalloc");
 #if defined(STRATA_GPU_METAL)   // unified memory: the CPU writes the pattern through the allocation's CPU view
     if (poison_) {
         uint32_t* h = (uint32_t*) strata::gpu::host_view(base_);
@@ -355,7 +357,7 @@ DeviceArena::DeviceArena(uint64_t bytes, int ordinal, bool poison)
 }
 
 DeviceArena::~DeviceArena() {
-    if (base_) cudaFree(base_);          // best effort: a destructor must not throw
+    if (base_) strata::core::release_device(base_);          // best effort: a destructor must not throw
 }
 
 void* DeviceArena::alloc(uint64_t bytes, uint64_t align) {

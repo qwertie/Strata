@@ -1,3 +1,4 @@
+#include "strata/base/gpu/managed_memory.hpp"
 #include "strata/core/remote_experts.hpp"
 #include "strata/base/gpu/device.hpp"   // primary_device() (STRATA_PRIMARY_DEVICE)
 #include "strata/core/remote_expert_opt.hpp"
@@ -103,16 +104,16 @@ void RemoteExperts::close() {
         if (stream_) cudaStreamSynchronize(stream_);
         if (read_stream_) cudaStreamSynchronize(read_stream_);
         cache_.close();
-        if (d_x_) cudaFree(d_x_);
-        if (d_out_) cudaFree(d_out_);
-        if (d_q8_) cudaFree(d_q8_);
-        if (d_scales_) cudaFree(d_scales_);
-        if (d_xr_) cudaFree(d_xr_);
-        if (d_scratch_) cudaFree(d_scratch_);
-        if (d_meta_) cudaFree(d_meta_);
-        if (h_x_) cudaFreeHost(h_x_);
-        if (h_out_) cudaFreeHost(h_out_);
-        if (h_meta_) cudaFreeHost(h_meta_);
+        if (d_x_) strata::core::release_device(d_x_);
+        if (d_out_) strata::core::release_device(d_out_);
+        if (d_q8_) strata::core::release_device(d_q8_);
+        if (d_scales_) strata::core::release_device(d_scales_);
+        if (d_xr_) strata::core::release_device(d_xr_);
+        if (d_scratch_) strata::core::release_device(d_scratch_);
+        if (d_meta_) strata::core::release_device(d_meta_);
+        if (h_x_) strata::core::release_host(h_x_);
+        if (h_out_) strata::core::release_host(h_out_);
+        if (h_meta_) strata::core::release_host(h_meta_);
         if (stream_) cudaStreamDestroy(stream_);
         if (read_stream_) cudaStreamDestroy(read_stream_);
     }
@@ -209,17 +210,29 @@ bool RemoteExperts::open(int device, int slots, int64_t layers, int64_t experts,
     const size_t meta_bytes = sizeof(RemoteMeta) + (remote_opt_ ? remote_opt_->metadata_bytes() : 0);
     const bool allocated =
         check(cudaStreamCreateWithFlags(&stream_, cudaStreamNonBlocking), "stream", err, device) &&
-        check(cudaHostAlloc((void**) &h_x_, (size_t) CAP * H * sizeof(float), cudaHostAllocPortable | cudaHostAllocMapped), "input staging", err, device) &&
-        check(cudaHostAlloc((void**) &h_out_, (size_t) CAP * H * sizeof(float), cudaHostAllocPortable | cudaHostAllocMapped), "result staging", err, device) &&
-        check(cudaHostAlloc(&h_meta_, meta_bytes, cudaHostAllocPortable), "metadata staging", err, device) &&
-        check(cudaMalloc((void**) &d_x_, (size_t) CAP * H * sizeof(float)), "input", err, device) &&
-        check(cudaMalloc((void**) &d_out_, (size_t) CAP * H * sizeof(float)), "result", err, device) &&
-        check(cudaMalloc((void**) &d_q8_, (size_t) CAP * (H / 32) * 36), "activation", err, device) &&
-        check(cudaMalloc((void**) &d_scales_, (size_t) CAP * (H / 32) * sizeof(float)), "activation scales", err, device) &&
-        check(cudaMalloc(&d_scratch_, scratch), "scratch", err, device) &&
-        check(cudaMalloc(&d_meta_, meta_bytes), "group metadata", err, device) &&
+        check(strata::core::allocate_host((void**) &h_x_, (size_t) CAP * H * sizeof(float), cudaHostAllocPortable |
+            cudaHostAllocMapped,
+            {"other", "Remote experts", "Remote transfer buffers"}), "input staging", err, device) &&
+        check(strata::core::allocate_host((void**) &h_out_, (size_t) CAP * H * sizeof(float), cudaHostAllocPortable |
+            cudaHostAllocMapped,
+            {"other", "Remote experts", "Remote transfer buffers"}), "result staging", err, device) &&
+        check(strata::core::allocate_host(&h_meta_, meta_bytes, cudaHostAllocPortable,
+            {"other", "Remote experts", "Remote transfer buffers"}), "metadata staging", err, device) &&
+        check(strata::core::allocate_device((void**) &d_x_, (size_t) CAP * H * sizeof(float),
+            {"other", "Remote experts", "Remote transfer buffers"}), "input", err, device) &&
+        check(strata::core::allocate_device((void**) &d_out_, (size_t) CAP * H * sizeof(float),
+            {"other", "Remote experts", "Remote transfer buffers"}), "result", err, device) &&
+        check(strata::core::allocate_device((void**) &d_q8_, (size_t) CAP * (H / 32) * 36,
+            {"other", "Remote experts", "Remote transfer buffers"}), "activation", err, device) &&
+        check(strata::core::allocate_device((void**) &d_scales_, (size_t) CAP * (H / 32) * sizeof(float),
+            {"other", "Remote experts", "Remote transfer buffers"}), "activation scales", err, device) &&
+        check(strata::core::allocate_device(&d_scratch_, scratch,
+            {"other", "Remote experts", "Remote transfer buffers"}), "scratch", err, device) &&
+        check(strata::core::allocate_device(&d_meta_, meta_bytes,
+            {"other", "Remote experts", "Remote transfer buffers"}), "group metadata", err, device) &&
         (!strata::kernels::cpu::hadamard_spec().any() ||
-         check(cudaMalloc((void**) &d_xr_, (size_t) CAP * H * sizeof(float)), "rotated input", err, device));
+         check(strata::core::allocate_device((void**) &d_xr_, (size_t) CAP * H * sizeof(float),
+             {"other", "Remote experts", "Remote transfer buffers"}), "rotated input", err, device));
     if (!allocated) { close(); return false; }
     if (!check(cudaStreamCreateWithFlags(&read_stream_, cudaStreamNonBlocking), "cache read stream", err, device)) {
         close();

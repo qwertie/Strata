@@ -1,3 +1,4 @@
+#include "strata/base/gpu/managed_memory.hpp"
 // src/models/qwen38/prefill/gdn_chunk.cu - see include/strata/models/qwen38/prefill/gdn_chunk.hpp for the math and the
 // contract.
 //
@@ -455,15 +456,21 @@ struct Ws {
     size_t cap = 0;          // in chunks
     void ensure(size_t chunks) {
         if (chunks <= cap) return;
-        if (A) cudaFree(A);
-        if (P) cudaFree(P);
-        if (gcum) cudaFree(gcum);
+        if (A)
+            strata::core::release_device(A);
+        if (P)
+            strata::core::release_device(P);
+        if (gcum)
+            strata::core::release_device(gcum);
         cudaGetLastError();   // a free of another device's pointer must not surface in the mallocs below
         cap = chunks;
         const size_t mat = chunks * HV * CH * CH;
-        if (cudaMalloc((void**) &A, mat * sizeof(float)) != cudaSuccess ||
-            cudaMalloc((void**) &P, mat * sizeof(float)) != cudaSuccess ||
-            cudaMalloc((void**) &gcum, (size_t) chunks * CH * HV * sizeof(float)) != cudaSuccess) {
+        if (strata::core::allocate_device((void**) &A, mat * sizeof(float),
+            {"other", "Device allocations", "gdn chunk buffers"}) != cudaSuccess ||
+            strata::core::allocate_device((void**) &P, mat * sizeof(float),
+                {"other", "Device allocations", "gdn chunk buffers"}) != cudaSuccess ||
+            strata::core::allocate_device((void**) &gcum, (size_t) chunks * CH * HV * sizeof(float),
+                {"other", "Device allocations", "gdn chunk buffers"}) != cudaSuccess) {
             int dev = 0;
             cudaGetDevice(&dev);
             size_t fb = 0, tb = 0;
@@ -477,9 +484,12 @@ struct Ws {
     ~Ws() {
         // A prompt's stage threads are created per request (std::async in the layer split): without this, each
         // request would leak its device's ~50 MB workspace until the card runs out.
-        if (A) cudaFree(A);
-        if (P) cudaFree(P);
-        if (gcum) cudaFree(gcum);
+        if (A)
+            strata::core::release_device(A);
+        if (P)
+            strata::core::release_device(P);
+        if (gcum)
+            strata::core::release_device(gcum);
     }
 };
 

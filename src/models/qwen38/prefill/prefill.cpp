@@ -1,3 +1,4 @@
+#include "strata/base/gpu/managed_memory.hpp"
 // src/models/qwen38/prefill/prefill.cpp - see include/strata/models/qwen38/prefill/prefill.hpp.
 #include "strata/models/qwen38/kernels/fused_gr.hpp"
 #include "strata/models/qwen38/prefill/prefill.hpp"
@@ -518,7 +519,9 @@ struct Alloc {
         }
         if (base != nullptr && !spill) { ok = false; failed_bytes = bytes; return nullptr; }
         void* p = nullptr;
-        if (cudaMalloc(&p, bytes) != cudaSuccess) { ok = false; failed_bytes = bytes; return nullptr; }
+        if (strata::core::allocate_device(&p, bytes,
+            {"other", "Device allocations", "Prompt processing"}) != cudaSuccess) { ok = false; failed_bytes = bytes;
+                return nullptr; }
         spilled = true;
         owned->push_back(p);
         used += bytes;
@@ -568,11 +571,15 @@ struct Stager {
         dma_done.assign((size_t) kRing, nullptr);
         pageable.resize(kRing);
         for (int i = 0; i < kRing; ++i) {
-            pinned[i] = !force_pageable() && cudaHostAlloc((void**) &buf[i], blob_bytes, cudaHostAllocDefault) == cudaSuccess;
+            pinned[i] = !force_pageable() && strata::core::allocate_host((void**) &buf[i], blob_bytes,
+                cudaHostAllocDefault,
+                {"other", "Device allocations", "Prompt processing"}) == cudaSuccess;
             if (!pinned[i]) {
                 cudaGetLastError();
                 pageable[(size_t) i].resize(blob_bytes);
                 buf[i] = pageable[(size_t) i].data();
+                core::get_memory_manager().add(buf[i], blob_bytes, "ram",
+                    {"other", "Prompt processing", "Pageable expert staging"});
             }
             if (cudaEventCreateWithFlags(&dma_done[i], stager_sleep() ? (cudaEventDisableTiming | cudaEventBlockingSync)
                                                                       : cudaEventDisableTiming) != cudaSuccess) return false;
@@ -597,7 +604,10 @@ struct Stager {
         for (auto& t : threads) t.join();
         for (int i = 0; i < kRing; ++i) {
             if (dma_done[i]) cudaEventDestroy(dma_done[i]);
-            if (buf[i] && pinned[i]) cudaFreeHost(buf[i]);
+            if (buf[i] && pinned[i])
+                strata::core::release_host(buf[i]);
+            else
+                core::get_memory_manager().remove(buf[i]);
         }
     }
     void work() {
@@ -802,7 +812,8 @@ struct PeerPrefill {
         if (s) cudaStreamSynchronize(s);
         ctx.reset();
         up_ring.release();
-        for (void* p : owned) cudaFree(p);
+        for (void* p : owned)
+            strata::core::release_device(p);
         if (ev_done) cudaEventDestroy(ev_done);
         if (s_out) cudaStreamSynchronize(s_out);
         for (cudaEvent_t e : ev_grp) if (e) cudaEventDestroy(e);
@@ -817,16 +828,26 @@ struct PeerPrefill {
         if (ev_in) cudaEventDestroy(ev_in);
         if (x_stream) { cudaStreamSynchronize(x_stream); cudaStreamDestroy(x_stream); }
         if (ev_x) cudaEventDestroy(ev_x);
-        if (host_x) cudaFreeHost(host_x);
-        if (host_rows) cudaFreeHost(host_rows);
-        if (host_src) cudaFreeHost(host_src);
-        if (host_bounds) cudaFreeHost(host_bounds);
-        if (host_w) cudaFreeHost(host_w);
-        if (host_sum) cudaFreeHost(host_sum);
-        if (host_pair) cudaFreeHost(host_pair);
-        if (host_x16) cudaFreeHost(host_x16);
-        if (host_sum16) cudaFreeHost(host_sum16);
-        if (host_adds) cudaFreeHost(host_adds);
+        if (host_x)
+            strata::core::release_host(host_x);
+        if (host_rows)
+            strata::core::release_host(host_rows);
+        if (host_src)
+            strata::core::release_host(host_src);
+        if (host_bounds)
+            strata::core::release_host(host_bounds);
+        if (host_w)
+            strata::core::release_host(host_w);
+        if (host_sum)
+            strata::core::release_host(host_sum);
+        if (host_pair)
+            strata::core::release_host(host_pair);
+        if (host_x16)
+            strata::core::release_host(host_x16);
+        if (host_sum16)
+            strata::core::release_host(host_sum16);
+        if (host_adds)
+            strata::core::release_host(host_adds);
     }
 };
 
@@ -840,7 +861,8 @@ struct PinnedUpload {
     cudaEvent_t ev = nullptr;
     void init(size_t count) {
         if (p || force_pageable()) return;
-        if (cudaHostAlloc((void**) &p, count * sizeof(int32_t), cudaHostAllocDefault) != cudaSuccess) {
+        if (strata::core::allocate_host((void**) &p, count * sizeof(int32_t), cudaHostAllocDefault,
+            {"other", "Device allocations", "Prompt processing"}) != cudaSuccess) {
             cudaGetLastError();
             p = nullptr;
             return;
@@ -848,7 +870,7 @@ struct PinnedUpload {
         n = count;
         if (cudaEventCreateWithFlags(&ev, cudaEventDisableTiming) != cudaSuccess) {
             cudaGetLastError();
-            cudaFreeHost(p);
+            strata::core::release_host(p);
             p = nullptr;
             n = 0;
             ev = nullptr;
@@ -863,7 +885,8 @@ struct PinnedUpload {
     }
     void release() {
         if (ev) cudaEventDestroy(ev);
-        if (p) cudaFreeHost(p);
+        if (p)
+            strata::core::release_host(p);
         p = nullptr;
         ev = nullptr;
         n = 0;
@@ -1061,7 +1084,7 @@ Prefill::~Prefill() {
 
 void Prefill::clear_taps() {
     if (tap_dev_ != nullptr) {
-        cudaFree(tap_dev_);
+        strata::core::release_device(tap_dev_);
         tap_dev_ = nullptr;
     }
     tap_layers_.clear();
@@ -1085,28 +1108,35 @@ void Prefill::release() {
         if (impl_->used[i]) cudaEventDestroy(impl_->used[i]);
     }
     for (int b = 0; b < 2; ++b) {
-        if (impl_->hand[b]) cudaFreeHost(impl_->hand[b]);
+        if (impl_->hand[b])
+            strata::core::release_host(impl_->hand[b]);
         if (impl_->hand_done[b]) cudaEventDestroy(impl_->hand_done[b]);
         for (cudaEvent_t& e : impl_->hand_ev[b])
             if (e) cudaEventDestroy(e);
         if (impl_->ple_copied[b]) cudaEventDestroy(impl_->ple_copied[b]);
-        if (impl_->ple_emb_host[b] && impl_->ple_pageable[b].empty()) cudaFreeHost(impl_->ple_emb_host[b]);
+        if (impl_->ple_emb_host[b] && impl_->ple_pageable[b].empty())
+            strata::core::release_host(impl_->ple_emb_host[b]);
+        else
+            core::get_memory_manager().remove(impl_->ple_emb_host[b]);
     }
     if (impl_->copy) cudaStreamDestroy(impl_->copy);
     if (impl_->kv_copy) cudaStreamDestroy(impl_->kv_copy);
     if (impl_->kv_released) cudaEventDestroy(impl_->kv_released);
     if (impl_->kv_ready) cudaEventDestroy(impl_->kv_ready);
-    if (impl_->grp_host) cudaFreeHost(impl_->grp_host);
+    if (impl_->grp_host)
+        strata::core::release_host(impl_->grp_host);
     impl_->steps_up.release();
     impl_->tok_up.release();
     impl_->up_ring.release();
     for (float* p : {impl_->cpu_x, impl_->cpu_rows, impl_->cpu_ones})
-        if (p) cudaFreeHost(p);
+        if (p)
+            strata::core::release_host(p);
     for (cudaEvent_t e : impl_->cpu_ev)
         if (e) cudaEventDestroy(e);
     for (cudaEvent_t e : impl_->cpu_wall)
         if (e) cudaEventDestroy(e);
-    for (void* p : impl_->owned) cudaFree(p);
+    for (void* p : impl_->owned)
+        strata::core::release_device(p);
 }
 
 namespace {
@@ -1345,8 +1375,12 @@ void warm_gemm_libraries(int device) {
     uint16_t *x = nullptr, *w = nullptr;
     float* y = nullptr;
     cudaStream_t st = nullptr;
-    bool ok = cudaStreamCreate(&st) == cudaSuccess && cudaMalloc((void**) &x, (size_t) T * K * 2) == cudaSuccess &&
-              cudaMalloc((void**) &w, (size_t) Nn * K * 2) == cudaSuccess && cudaMalloc((void**) &y, (size_t) T * Nn * 4) == cudaSuccess;
+    bool ok = cudaStreamCreate(&st) == cudaSuccess && strata::core::allocate_device((void**) &x, (size_t) T * K * 2,
+        {"other", "Device allocations", "Prompt processing"}) == cudaSuccess &&
+              strata::core::allocate_device((void**) &w, (size_t) Nn * K * 2,
+                  {"other", "Device allocations", "Prompt processing"}) == cudaSuccess &&
+                      strata::core::allocate_device((void**) &y, (size_t) T * Nn * 4, {"other", "Device allocations",
+                          "Prompt processing"}) == cudaSuccess;
     if (ok) {
         Gemm gm;
         std::string err;
@@ -1360,9 +1394,12 @@ void warm_gemm_libraries(int device) {
         }
     }
     (void) cudaGetLastError();
-    if (x) cudaFree(x);
-    if (w) cudaFree(w);
-    if (y) cudaFree(y);
+    if (x)
+        strata::core::release_device(x);
+    if (w)
+        strata::core::release_device(w);
+    if (y)
+        strata::core::release_device(y);
     if (st) cudaStreamDestroy(st);
     if (prev != device) cudaSetDevice(prev);
     if (ok)
@@ -1417,7 +1454,9 @@ bool Prefill::init(const core::WeightTable& wt, const core::ModelGeometry& g, co
     // the CPU share's staged-chunk limit, before the ring is sized below (a caller that sizes loans first armed it)
     arm_cpu_share(cpu_pool_ != nullptr);
     for (int b = 0; next_ != nullptr && b < 2; ++b)
-        if (!m.hand[b] && cudaHostAlloc((void**) &m.hand[b], (size_t) chunk * D * 4, cudaHostAllocPortable) != cudaSuccess) {
+        if (!m.hand[b] && strata::core::allocate_host((void**) &m.hand[b], (size_t) chunk * D * 4,
+            cudaHostAllocPortable,
+            {"other", "Device allocations", "Prompt processing"}) != cudaSuccess) {
             err = "prefill: the layer split's hand-off buffers";
             return false;
         }
@@ -1432,7 +1471,8 @@ bool Prefill::init(const core::WeightTable& wt, const core::ModelGeometry& g, co
         m.hand_pieces = handoff_pipe_pieces();
     }
     if (m.tok_dev == nullptr) {
-        if (const cudaError_t e = cudaMalloc((void**) &m.tok_dev, (size_t) chunk * sizeof(int32_t)); e != cudaSuccess) {
+        if (const cudaError_t e = strata::core::allocate_device((void**) &m.tok_dev, (size_t) chunk * sizeof(int32_t),
+            {"other", "Device allocations", "Prompt processing"}); e != cudaSuccess) {
             err = std::string("prefill: the token id buffer (") + cudaGetErrorString(e) + ")";
             return false;
         }
@@ -1492,29 +1532,37 @@ bool Prefill::init(const core::WeightTable& wt, const core::ModelGeometry& g, co
         const size_t need = 3 * T * K + (size_t) (2 * (m.g->n_expert + m.g->n_expert / MMQ_GROUP + 2));
         const char* gc = std::getenv("STRATA_GROUP_COPY");
         if (m.grp_n < need && !(gc && gc[0] == '1')) {
-            if (m.grp_host) cudaFreeHost(m.grp_host);
+            if (m.grp_host)
+                strata::core::release_host(m.grp_host);
             m.grp_host = m.grp_dev = nullptr;
             m.grp_n = m.grp_tk = 0;
             void *h = nullptr, *d = nullptr;
             if (!force_pageable() &&
-                cudaHostAlloc(&h, need * 4, cudaHostAllocMapped | (core::peer_portable() ? cudaHostAllocPortable : 0)) == cudaSuccess &&
+                strata::core::allocate_host(&h, need * 4, cudaHostAllocMapped | (core::peer_portable() ?
+                    cudaHostAllocPortable : 0),
+                    {"other", "Device allocations", "Prompt processing"}) == cudaSuccess &&
                 cudaHostGetDevicePointer(&d, h, 0) == cudaSuccess) {
                 m.grp_host = (int32_t*) h;
                 m.grp_dev = (int32_t*) d;
                 m.grp_n = need;
                 m.grp_tk = T * K;
             } else {                              // the copies, as before
-                if (h) cudaFreeHost(h);
+                if (h)
+                    strata::core::release_host(h);
                 cudaGetLastError();
             }
         }
     }
     for (int b = 0; b < 2; ++b) {
         if (!m.ple_emb_host[b] &&
-            (force_pageable() || cudaHostAlloc((void**) &m.ple_emb_host[b], (size_t) T * N * 4, cudaHostAllocDefault) != cudaSuccess)) {
+            (force_pageable() || strata::core::allocate_host((void**) &m.ple_emb_host[b], (size_t) T * N * 4,
+                cudaHostAllocDefault,
+                {"other", "Device allocations", "Prompt processing"}) != cudaSuccess)) {
             cudaGetLastError();
             m.ple_pageable[b].resize(T * N);          // pageable: the upload is staged before it returns
             m.ple_emb_host[b] = m.ple_pageable[b].data();
+            core::get_memory_manager().add(m.ple_emb_host[b], m.ple_pageable[b].capacity() * sizeof(float), "ram",
+                {"other", "Prompt processing", "Pageable embedding staging"});
         }
         if (!m.ple_copied[b] && cudaEventCreateWithFlags(&m.ple_copied[b], cudaEventDisableTiming) != cudaSuccess)
             ok = false;
@@ -1524,7 +1572,8 @@ bool Prefill::init(const core::WeightTable& wt, const core::ModelGeometry& g, co
         const int64_t pages = ss.qsa_states[ss.qsa_primary()].n_pages;
         std::vector<int32_t> ident((size_t) pages);
         for (int64_t i = 0; i < pages; ++i) ident[(size_t) i] = (int32_t) i;
-        if (cudaMalloc((void**) &m.ident_table, ident.size() * 4) != cudaSuccess ||
+        if (strata::core::allocate_device((void**) &m.ident_table, ident.size() * 4,
+            {"other", "Device allocations", "Prompt processing"}) != cudaSuccess ||
             cudaMemcpy(m.ident_table, ident.data(), ident.size() * 4, cudaMemcpyHostToDevice) != cudaSuccess)
             ok = false;
         else
@@ -2016,10 +2065,12 @@ bool Prefill::bind_stage_helper(int64_t T) {
     if (!P.p2p) {   // grown once to the largest chunk it helped
         auto grow = [](auto*& p, size_t& cap, size_t n) {
             if (cap >= n) return true;
-            if (p) cudaFreeHost(p);
+            if (p)
+                strata::core::release_host(p);
             p = nullptr;
             cap = 0;
-            if (cudaHostAlloc((void**) &p, n * sizeof(*p), cudaHostAllocPortable | cudaHostAllocMapped) != cudaSuccess) {
+            if (strata::core::allocate_host((void**) &p, n * sizeof(*p), cudaHostAllocPortable | cudaHostAllocMapped,
+                {"other", "Device allocations", "Prompt processing"}) != cudaSuccess) {
                 cudaGetLastError();
                 p = nullptr;
                 return false;
@@ -2089,7 +2140,8 @@ bool Prefill::set_peer(core::PeerExperts* peer, int64_t cap_rows, std::string& e
     }
     auto take = [&](size_t bytes) -> void* {
         void* p = nullptr;
-        if (!ok || cudaMalloc(&p, bytes) != cudaSuccess) { ok = false; return nullptr; }
+        if (!ok || strata::core::allocate_device(&p, bytes,
+            {"other", "Device allocations", "Prompt processing"}) != cudaSuccess) { ok = false; return nullptr; }
         pp->owned.push_back(p);
         return p;
     };
@@ -2168,7 +2220,9 @@ bool Prefill::set_peer(core::PeerExperts* peer, int64_t cap_rows, std::string& e
     }
     if (ok && !pp->p2p) {   // the host route's mapped buffers, sized for the largest chunk
         auto host = [&](auto*& ptr, size_t& cap, size_t n) {
-            if (cudaHostAlloc((void**) &ptr, n * sizeof(*ptr), cudaHostAllocPortable | cudaHostAllocMapped) != cudaSuccess) {
+            if (strata::core::allocate_host((void**) &ptr, n * sizeof(*ptr), cudaHostAllocPortable |
+                cudaHostAllocMapped,
+                {"other", "Device allocations", "Prompt processing"}) != cudaSuccess) {
                 cudaGetLastError();
                 ptr = nullptr;
                 ok = false;
@@ -2482,8 +2536,10 @@ bool bf16_proj(Gemm& gm, const core::WeightRef* w, const uint16_t* X, float* Y, 
         static uint16_t* scratch = nullptr;
         static int64_t cap = 0;
         if (w->elements > cap) {
-            if (scratch) cudaFree(scratch);
-            if (cudaMalloc((void**) &scratch, (size_t) w->elements * 2) != cudaSuccess) {
+            if (scratch)
+                strata::core::release_device(scratch);
+            if (strata::core::allocate_device((void**) &scratch, (size_t) w->elements * 2,
+                {"other", "Device allocations", "Prompt processing"}) != cudaSuccess) {
                 scratch = nullptr; cap = 0; err = "prefill: the STRATA_HC_REQ8 scratch"; return false;
             }
             cap = w->elements;
@@ -2703,7 +2759,9 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
     std::vector<int> tap_slot;
     if (!tap_layers_.empty() && stage_lb_ == 0 && (stage_le_ < 0 || stage_le_ == g.n_layers)) {
         if (tap_dev_ == nullptr &&
-            cudaMalloc((void**) &tap_dev_, (size_t) tap_cap_ * tap_layers_.size() * (size_t) g.n_embd * 4) != cudaSuccess) {
+            strata::core::allocate_device((void**) &tap_dev_, (size_t) tap_cap_ * tap_layers_.size() * (size_t)
+                g.n_embd * 4,
+                {"other", "Device allocations", "Prompt processing"}) != cudaSuccess) {
             (void) cudaGetLastError();
             tap_dev_ = nullptr;
             err = "prefill: the DFlash2 tap staging does not fit in VRAM";
@@ -3437,9 +3495,12 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
                         static long long queries = 0, same = 0, sel_queries = 0;
                         const int64_t rows = st.idx_pooled_rows;
                         if (pooled16 == nullptr &&
-                            (cudaMalloc((void**) &pooled16, (size_t) rows * s.idx_dim * 4) != cudaSuccess ||
-                             cudaMalloc((void**) &dead16, (size_t) s.idx_dim * 4) != cudaSuccess ||
-                             cudaMalloc((void**) &ids16, (size_t) (m.T * m.cap) * 4) != cudaSuccess)) {
+                            (strata::core::allocate_device((void**) &pooled16, (size_t) rows * s.idx_dim * 4,
+                                {"other", "Device allocations", "Prompt processing"}) != cudaSuccess ||
+                             strata::core::allocate_device((void**) &dead16, (size_t) s.idx_dim * 4,
+                                 {"other", "Device allocations", "Prompt processing"}) != cudaSuccess ||
+                             strata::core::allocate_device((void**) &ids16, (size_t) (m.T * m.cap) * 4,
+                                 {"other", "Device allocations", "Prompt processing"}) != cudaSuccess)) {
                             err = "STRATA_IDX_FP16_CHECK: no room for its buffers";
                             return false;
                         }
@@ -3766,10 +3827,13 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
                             const size_t want = (size_t) T * N;
                             if (m.cpu_x_n < want) {
                                 cpu_cold = true;
-                                if (m.cpu_x) cudaFreeHost(m.cpu_x);
+                                if (m.cpu_x)
+                                    strata::core::release_host(m.cpu_x);
                                 m.cpu_x = nullptr;
                                 m.cpu_x_n = 0;
-                                if (cudaHostAlloc((void**) &m.cpu_x, want * sizeof(float), cudaHostAllocDefault) != cudaSuccess) {
+                                if (strata::core::allocate_host((void**) &m.cpu_x, want * sizeof(float),
+                                    cudaHostAllocDefault,
+                                    {"other", "Device allocations", "Prompt processing"}) != cudaSuccess) {
                                     (void) cudaGetLastError();
                                     m.cpu_x = nullptr;
                                     cpu_share_off("the activation buffer");
@@ -3789,10 +3853,13 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
                         if (cpu_maybe) {   // the rows buffer, once, at its largest (an expert takes at most MAXT tokens' rows)
                             const size_t cap = (size_t) std::min<int64_t>(T * K, (int64_t) strata::kernels::cpu::MAXT * m.g->n_expert) * N;
                             if (m.cpu_rows_n < cap) {
-                                if (m.cpu_rows) cudaFreeHost(m.cpu_rows);
+                                if (m.cpu_rows)
+                                    strata::core::release_host(m.cpu_rows);
                                 m.cpu_rows = nullptr;
                                 m.cpu_rows_n = 0;
-                                if (cudaHostAlloc((void**) &m.cpu_rows, cap * sizeof(float), cudaHostAllocDefault) != cudaSuccess) {
+                                if (strata::core::allocate_host((void**) &m.cpu_rows, cap * sizeof(float),
+                                    cudaHostAllocDefault,
+                                    {"other", "Device allocations", "Prompt processing"}) != cudaSuccess) {
                                     (void) cudaGetLastError();
                                     m.cpu_rows = nullptr;
                                     cpu_share_off("the rows buffer");
@@ -3987,11 +4054,14 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
                             const size_t want = (size_t) rows_cpu * N;
                             if (m.cpu_rows_n < want) {
                                 cpu_cold = true;
-                                if (m.cpu_rows) cudaFreeHost(m.cpu_rows);
+                                if (m.cpu_rows)
+                                    strata::core::release_host(m.cpu_rows);
                                 m.cpu_rows = nullptr;
                                 m.cpu_rows_n = 0;
                                 const size_t cap_rows = (size_t) rows_cpu * 2;   // headroom: few reallocations
-                                if (cudaHostAlloc((void**) &m.cpu_rows, cap_rows * N * sizeof(float), cudaHostAllocDefault) != cudaSuccess) {
+                                if (strata::core::allocate_host((void**) &m.cpu_rows, cap_rows * N * sizeof(float),
+                                    cudaHostAllocDefault,
+                                    {"other", "Device allocations", "Prompt processing"}) != cudaSuccess) {
                                     err = "prefill: cannot allocate the CPU experts' rows";
                                     return false;
                                 }
@@ -4000,11 +4070,14 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
                             // this fork (NVFP4): row_sd 1 for the CPU's rows, which carry s_down already - sized on its
                             // own, as the rows buffer is now taken once at its largest above (0.1.42)
                             if (m.cpu_ones_n < (size_t) rows_cpu) {
-                                if (m.cpu_ones) cudaFreeHost(m.cpu_ones);
+                                if (m.cpu_ones)
+                                    strata::core::release_host(m.cpu_ones);
                                 m.cpu_ones = nullptr;
                                 m.cpu_ones_n = 0;
                                 const size_t n1 = std::max<size_t>((size_t) rows_cpu * 2, m.cpu_rows_n / N);
-                                if (cudaHostAlloc((void**) &m.cpu_ones, n1 * sizeof(float), cudaHostAllocDefault) != cudaSuccess) {
+                                if (strata::core::allocate_host((void**) &m.cpu_ones, n1 * sizeof(float),
+                                    cudaHostAllocDefault,
+                                    {"other", "Device allocations", "Prompt processing"}) != cudaSuccess) {
                                     err = "prefill: cannot allocate the CPU experts' row scales";
                                     return false;
                                 }
@@ -4839,8 +4912,11 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
                         --checks;
                         float *Rc = nullptr, *rc = nullptr;
                         uint16_t* xc = nullptr;
-                        cudaMalloc(&Rc, (size_t) T * D * 4); cudaMalloc(&rc, (size_t) T * HC * 4);
-                        cudaMalloc(&xc, (size_t) T * D * 2);
+                        strata::core::allocate_device(&Rc, (size_t) T * D * 4,
+                            {"other", "Device allocations", "Prompt processing"}); strata::core::allocate_device(&rc,
+                                (size_t) T * HC * 4, {"other", "Device allocations", "Prompt processing"});
+                        strata::core::allocate_device(&xc, (size_t) T * D * 2,
+                            {"other", "Device allocations", "Prompt processing"});
                         cudaMemcpyAsync(Rc, m.R, (size_t) T * D * 4, cudaMemcpyDeviceToDevice, m.cs);
                         gr_write(Rc, m.bo, m.inj, HC, T, m.cs);
                         strata::kernels::cvec_apply(Rc, l, T, D, nullptr, 0, nullptr, 0, false, m.cs);
@@ -4857,7 +4933,8 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
                         cudaMemcpyAsync(xa.data(), m.xn16, xa.size() * 2, cudaMemcpyDeviceToHost, m.cs);
                         cudaMemcpyAsync(xb.data(), xc, xb.size() * 2, cudaMemcpyDeviceToHost, m.cs);
                         cudaStreamSynchronize(m.cs);
-                        cudaFree(Rc); cudaFree(rc); cudaFree(xc);
+                        strata::core::release_device(Rc); strata::core::release_device(rc);
+                            strata::core::release_device(xc);
                         std::fprintf(stderr, "strata: STRATA_CVEC_FUSE_CHECK layer %lld T %lld: R %s, rs %s, xn16 %s\n",
                                      (long long) l, (long long) T,
                                      std::memcmp(a.data(), b.data(), a.size() * 4) ? "DIFFERS" : "identical",

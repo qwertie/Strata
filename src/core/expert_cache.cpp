@@ -1,3 +1,4 @@
+#include "strata/base/gpu/managed_memory.hpp"
 // src/core/expert_cache.cpp - R4's slot storage and residency table.  Read the header first.
 #include "strata/core/expert_cache.hpp"
 
@@ -296,12 +297,14 @@ bool ExpertCache::grow(int64_t want_bytes, std::string& err) {
 bool ExpertCache::ensure_blocking_staging(std::size_t bytes, std::string& err) {
     if (bytes <= blocking_staging_bytes_) return true;
     void* next = nullptr;
-    const cudaError_t status = cudaHostAlloc(&next, bytes, cudaHostAllocDefault);
+    const cudaError_t status = strata::core::allocate_host(&next, bytes, cudaHostAllocDefault,
+        {"other", "Device allocations", "Expert cache metadata"});
     if (status != cudaSuccess) {
         err = std::string("ExpertCache: HIP blocking staging allocation: ") + cudaGetErrorString(status);
         return false;
     }
-    if (blocking_staging_) (void) cudaFreeHost(blocking_staging_);
+    if (blocking_staging_) (void)
+        strata::core::release_host(blocking_staging_);
     blocking_staging_ = static_cast<uint8_t*>(next);
     blocking_staging_bytes_ = bytes;
     return true;
@@ -364,7 +367,8 @@ bool ExpertCache::open(int64_t n_slots, int64_t n_layers, int64_t n_expert, int6
         }
         base_ = r->base();
         vmm_ = std::move(r);
-    } else if (cudaMalloc((void**) &base_, (size_t) want) != cudaSuccess) {
+    } else if (strata::core::allocate_device((void**) &base_, (size_t) want,
+        {"other", "Device allocations", "Expert cache metadata"}) != cudaSuccess) {
         base_ = nullptr;
         char buf[256];
         std::snprintf(buf, sizeof buf, "ExpertCache: cudaMalloc(%.2f GiB) failed: %s",
@@ -442,7 +446,8 @@ bool ExpertCache::open_sized(const std::vector<int64_t>& slot_bytes, int64_t n_l
 
 void ExpertCache::close() {
 #if defined(STRATA_USE_HIP)
-    if (blocking_staging_) (void) cudaFreeHost(blocking_staging_);
+    if (blocking_staging_) (void)
+        strata::core::release_host(blocking_staging_);
     blocking_staging_ = nullptr;
     blocking_staging_bytes_ = 0;
 #endif
@@ -454,7 +459,7 @@ void ExpertCache::close() {
         vmm_.reset();   // unmaps and frees every chunk it still holds
         base_ = nullptr;
     } else if (base_ != nullptr) {
-        cudaFree(base_);
+        strata::core::release_device(base_);
         base_ = nullptr;
     }
     residency_.clear();

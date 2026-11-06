@@ -1,3 +1,4 @@
+#include "strata/base/gpu/managed_memory.hpp"
 // Copyright (c) 2026 Peasant Smith and the Project Maya contributors (MIT; https://github.com/mw00/project-maya, v1.1.17).
 // Ported into Strata (third_party/project-maya/NOTICE.md, LICENSE); changes are in the git history of this file.
 // src/ds4/ds4_model.cu - DeepSeek-V4.1-Flash on Maya (see ds4_model.hpp).
@@ -149,7 +150,18 @@ std::vector<std::vector<int>> node_cores() {
     return nodes;
 }
 // anonymous memory on one NUMA node (node < 0: wherever the first touch puts it), transparent huge pages
-void* node_map(size_t bytes, int node, int n_nodes) { return platform::anon_alloc(bytes, node, n_nodes); }
+/// Allocates owned host expert storage; file mappings remain the operating system's cache.
+void* node_map(size_t bytes, int node, int n_nodes,
+               strata::core::MemoryLabel name = {"experts", "Host expert storage", "Layer weights"}) {
+    void* p = platform::anon_alloc(bytes, node, n_nodes);
+    strata::core::get_memory_manager().add(p, bytes, "ram", std::move(name));
+    return p;
+}
+/// Releases host storage and the allocation labels recorded by node_map.
+void free_node_memory(void* p, size_t bytes) {
+    strata::core::get_memory_manager().remove(p);
+    platform::anon_free(p, bytes);
+}
 void pin_self(int cpu) { platform::pin_self(cpu); }
 // the RAM this process can still get: MemAvailable, and below it the tightest cgroup v2 limit on the way to the root
 // (its limit less what is charged, the page cache counted as free: the kernel takes it back); ~0: not known
@@ -483,7 +495,7 @@ struct ExpertHop {
         if (d.st != nullptr)
             cudaStreamSynchronize(d.st);
         for (void* ptr : d.allocs)
-            cudaFree(ptr);
+            strata::core::release_device(ptr);
         if (d.st != nullptr)
             cudaStreamDestroy(d.st);
     }
@@ -1299,14 +1311,16 @@ struct Model::Impl {
         for (std::thread& t : cache_ths)
             if (t.joinable()) t.join();
         if (ram_th.joinable()) ram_th.join();
-        for (size_t i = 0; i < ram_chunks.size(); ++i) platform::anon_free(ram_chunks[i], ram_chunk_bytes[i]);
+        for (size_t i = 0; i < ram_chunks.size(); ++i) free_node_memory(ram_chunks[i], ram_chunk_bytes[i]);
         for (Dev& d : devs) {
             cudaSetDevice(d.id);
-            for (void* p : d.allocs) cudaFree(p);
+            for (void* p : d.allocs)
+                strata::core::release_device(p);
             if (d.st) cudaStreamDestroy(d.st);
             if (d.ev) cudaEventDestroy(d.ev);
         }
-        for (void* p : host_allocs) cudaFreeHost(p);
+        for (void* p : host_allocs)
+            strata::core::release_host(p);
         for (Layer& l : L)
             for (uint8_t* b : l.host)
                 if (b != nullptr) {
@@ -1314,7 +1328,7 @@ struct Model::Impl {
                 }
         for (auto& m : host_maps) {
             if (chunk > 0) cudaHostUnregister(m.first);
-            platform::anon_free(m.first, m.second);
+            free_node_memory(m.first, m.second);
         }
     }
     std::vector<std::pair<void*, size_t>> host_maps;
@@ -1326,14 +1340,16 @@ struct Model::Impl {
         void* v = nullptr;
         cudaSetDevice(d.id);
         const size_t b = align256(n * sizeof(T));
-        if (cudaMalloc(&v, b) != cudaSuccess) {
+        if (strata::core::allocate_device(&v, b,
+                {acct == &d.weights && !d.loading_drafter ? "weights" : "other", "Device allocations",
+                 d.loading_drafter ? "Drafter" : "DeepSeek working buffers"}) != cudaSuccess) {
             err = "cudaMalloc " + std::to_string(b >> 20) + " MiB on CUDA" + std::to_string(d.id) + " failed";
             return false;
         }
         // zeroed before anything lands in it: the loads copy in on the default stream, which the non-blocking d.st
         // does not order against - a zeroing still queued there could wipe the weights just copied
         if (cudaMemsetAsync(v, 0, b, d.st) != cudaSuccess || cudaStreamSynchronize(d.st) != cudaSuccess) {
-            cudaFree(v);
+            strata::core::release_device(v);
             err = "zeroing " + std::to_string(b >> 20) + " MiB on CUDA" + std::to_string(d.id) + " failed";
             return false;
         }
@@ -1360,7 +1376,8 @@ struct Model::Impl {
     template <class T>
     bool hmap(T*& p, size_t n, std::string& err) {
         void* v = nullptr;
-        if (cudaHostAlloc(&v, n * sizeof(T) + 64, cudaHostAllocMapped | cudaHostAllocPortable) != cudaSuccess) {
+        if (strata::core::allocate_host(&v, n * sizeof(T) + 64, cudaHostAllocMapped | cudaHostAllocPortable,
+            {"other", "Device allocations", "DeepSeek working buffers"}) != cudaSuccess) {
             err = "host-mapped memory (" + std::to_string((n * sizeof(T)) >> 20) + " MiB)";
             return false;
         }
@@ -1372,7 +1389,8 @@ struct Model::Impl {
     template <class T>
     bool halloc(T*& p, size_t n, std::string& err) {
         void* v = nullptr;
-        if (cudaHostAlloc(&v, n * sizeof(T) + 64, cudaHostAllocPortable) != cudaSuccess) {
+        if (strata::core::allocate_host(&v, n * sizeof(T) + 64, cudaHostAllocPortable,
+            {"other", "Device allocations", "DeepSeek working buffers"}) != cudaSuccess) {
             err = "cudaHostAlloc " + std::to_string((n * sizeof(T)) >> 20) + " MiB failed";
             return false;
         }
@@ -2694,13 +2712,13 @@ struct Model::Impl {
                         if (chunks[di]->cs) cudaStreamDestroy(chunks[di]->cs);
                     }
                     while (d.allocs.size() > na0[di]) {
-                        cudaFree(d.allocs.back());
+                        strata::core::release_device(d.allocs.back());
                         d.allocs.pop_back();
                     }
                     d.scratch = sc0[di];
                 }
                 while (host_allocs.size() > nh) {
-                    cudaFreeHost(host_allocs.back());
+                    strata::core::release_host(host_allocs.back());
                     host_allocs.pop_back();
                 }
                 chunks.clear();
@@ -2850,13 +2868,15 @@ struct Model::Impl {
         }
         {
             void* m = nullptr;
-            if (cudaHostAlloc(&m, sizeof(Req) * kRing, cudaHostAllocMapped | cudaHostAllocPortable) != cudaSuccess) {
+            if (strata::core::allocate_host(&m, sizeof(Req) * kRing, cudaHostAllocMapped | cudaHostAllocPortable,
+                {"other", "Device allocations", "DeepSeek working buffers"}) != cudaSuccess) {
                 err = "host-mapped memory for the decode path's requests";
                 return false;
             }
             host_allocs.push_back(m);
             reqs = (Req*) m;
-            if (cudaHostAlloc(&m, sizeof(Resp) * kRing, cudaHostAllocMapped | cudaHostAllocPortable) != cudaSuccess) {
+            if (strata::core::allocate_host(&m, sizeof(Resp) * kRing, cudaHostAllocMapped | cudaHostAllocPortable,
+                {"other", "Device allocations", "DeepSeek working buffers"}) != cudaSuccess) {
                 err = "host-mapped memory for the decode path's answers";
                 return false;
             }
@@ -4198,7 +4218,8 @@ struct Model::Impl {
                 Dev& d = devs[(size_t) x.dev];
                 cudaSetDevice(d.id);
                 void* v = nullptr;
-                if (cudaMalloc(&v, (size_t) l.n_slots * unit(x)) != cudaSuccess) {
+                if (strata::core::allocate_device(&v, (size_t) l.n_slots * unit(x),
+                    {"other", "Device allocations", "DeepSeek working buffers"}) != cudaSuccess) {
                     err = "cudaMalloc of layer " + std::to_string(l.il) + "'s " + std::to_string(l.n_slots) +
                           " experts on CUDA" + std::to_string(d.id) + " failed";
                     return false;
@@ -4310,8 +4331,10 @@ struct Model::Impl {
         for (int t = 0; t < 12; ++t)
             th.emplace_back([&] {
                 uint8_t *stage = nullptr, *stage2 = nullptr;
-                cudaHostAlloc((void**) &stage, maxb, cudaHostAllocPortable);
-                cudaHostAlloc((void**) &stage2, maxb, cudaHostAllocPortable);
+                strata::core::allocate_host((void**) &stage, maxb, cudaHostAllocPortable,
+                    {"other", "Device allocations", "DeepSeek working buffers"});
+                strata::core::allocate_host((void**) &stage2, maxb, cudaHostAllocPortable,
+                    {"other", "Device allocations", "DeepSeek working buffers"});
                 for (;;) {
                     const size_t i = next.fetch_add(1);
                     if (i >= jobs.size() || failed.load()) break;
@@ -4336,8 +4359,10 @@ struct Model::Impl {
                         std::fprintf(stderr, "ds4: experts %zu / %zu (%.1f GB, %.2f GB/s)\n", i, jobs.size(), db / 1e9,
                                      db / 1e6 / std::max(1.0, now_ms() - t0));
                 }
-                if (stage) cudaFreeHost(stage);
-                if (stage2) cudaFreeHost(stage2);
+                if (stage)
+                    strata::core::release_host(stage);
+                if (stage2)
+                    strata::core::release_host(stage2);
             });
         for (auto& t : th) t.join();
         if (failed.load()) {
@@ -4385,7 +4410,7 @@ struct Model::Impl {
             const size_t want = std::min(warm.size(), (size_t) (warm_bytes / maxb));
             while (ram_slots.size() < want + 1) {
                 const size_t n = std::min<size_t>(32, want + 1 - ram_slots.size());
-                uint8_t* c = (uint8_t*) platform::anon_alloc(n * maxb, -1, 1);
+                uint8_t* c = (uint8_t*) node_map(n * maxb, -1, 1);
                 if (c == nullptr) break;
                 ram_chunks.push_back(c);
                 ram_chunk_bytes.push_back(n * maxb);
@@ -4649,8 +4674,10 @@ struct Model::Impl {
             th.emplace_back([&] {
                 std::vector<uint8_t> region(maxr);
                 uint8_t *stage = nullptr, *stage2 = nullptr;
-                cudaHostAlloc((void**) &stage, maxb, cudaHostAllocPortable);
-                cudaHostAlloc((void**) &stage2, maxb, cudaHostAllocPortable);
+                strata::core::allocate_host((void**) &stage, maxb, cudaHostAllocPortable,
+                    {"other", "Device allocations", "DeepSeek working buffers"});
+                strata::core::allocate_host((void**) &stage2, maxb, cudaHostAllocPortable,
+                    {"other", "Device allocations", "DeepSeek working buffers"});
                 int cur_dev = -1;
                 for (;;) {
                     const size_t i = next.fetch_add(1);
@@ -4695,8 +4722,10 @@ struct Model::Impl {
                         std::fprintf(stderr, "ds4: experts %zu / %zu (%.1f GB, %.2f GB/s)\n", i, jobs.size(),
                                      db / 1e9, db / 1e6 / std::max(1.0, now_ms() - t0));
                 }
-                if (stage) cudaFreeHost(stage);
-                if (stage2) cudaFreeHost(stage2);
+                if (stage)
+                    strata::core::release_host(stage);
+                if (stage2)
+                    strata::core::release_host(stage2);
             });
         for (auto& t : th) t.join();
         if (failed.load()) {
@@ -4907,13 +4936,16 @@ struct Model::Impl {
             } else {
                 zc_stride = (store->max_blob() + 4095) & ~(size_t) 4095;
                 cudaSetDevice(devs[0].id);
-                if (cudaMalloc((void**) &zc_stage_buf, zc_stride * kPicks) != cudaSuccess) {
+                if (strata::core::allocate_device((void**) &zc_stage_buf, zc_stride * kPicks,
+                    {"other", "Device allocations", "DeepSeek working buffers"}) != cudaSuccess) {
                     (void) cudaGetLastError();
                     zc_stage_buf = nullptr;
                     for (Layer& l : L) l.zc.clear();
                 } else {
                     for (Layer& l : L)
-                        if (!l.zc.empty() && cudaMalloc((void**) &l.zc_tab, (size_t) l.n_exp * 8) == cudaSuccess) cudaMemset(l.zc_tab, 0, (size_t) l.n_exp * 8);
+                        if (!l.zc.empty() && strata::core::allocate_device((void**) &l.zc_tab, (size_t) l.n_exp * 8,
+                            {"other", "Device allocations", "DeepSeek working buffers"}) == cudaSuccess)
+                                cudaMemset(l.zc_tab, 0, (size_t) l.n_exp * 8);
                         else if (!l.zc.empty()) {
                             (void) cudaGetLastError();
                             l.zc.clear();
@@ -8001,14 +8033,15 @@ struct Model::Impl {
             std::lock_guard<std::mutex> lk(dump_mu);
             if (pred_f != nullptr) {
                 float* dp = nullptr;
-                CK(cudaMalloc(&dp, (size_t) T * 256 * 4));
+                CK(strata::core::allocate_device(&dp, (size_t) T * 256 * 4,
+                    {"other", "Device allocations", "DeepSeek working buffers"}));
                 pred_proj_k<<<T, 256, 0, s>>>(c.x, (int) D, dp);
                 std::vector<float> hp((size_t) T * 256), hl((size_t) T * l.n_exp);
                 CK(cudaMemcpyAsync(hp.data(), dp, hp.size() * 4, cudaMemcpyDeviceToHost, s));
                 CK(cudaMemcpy2DAsync(hl.data(), (size_t) l.n_exp * 4, c.glog, 1024 * 4, (size_t) l.n_exp * 4, (size_t) T,
                                      cudaMemcpyDeviceToHost, s));
                 CK(cudaStreamSynchronize(s));
-                CK(cudaFree(dp));
+                CK(strata::core::release_device(dp));
                 std::vector<uint16_t> o(hp.size() + hl.size());
                 for (size_t i = 0; i < hl.size(); ++i) o[i] = strata::kernels::f16_from_f32(hl[i]);
                 for (size_t i = 0; i < hp.size(); ++i) o[hl.size() + i] = strata::kernels::f16_from_f32(hp[i]);
@@ -8784,16 +8817,18 @@ struct Model::Impl {
         }
         if (lc_bytes < blob_max) return false;
         void* st_p = nullptr;
-        c.lm_pinned = cudaHostAlloc(&st_p, state_b, cudaHostAllocPortable) == cudaSuccess;
+        c.lm_pinned = strata::core::allocate_host(&st_p, state_b, cudaHostAllocPortable,
+            {"other", "Device allocations", "DeepSeek working buffers"}) == cudaSuccess;
         if (!c.lm_pinned) {
             cudaGetLastError();
-            st_p = platform::anon_alloc(state_b, -1, 1);
+            st_p = node_map(state_b, -1, 1, {"conversations", "Prompt processing", "Checkpoint state"});
             if (st_p == nullptr) return false;
         }
-        c.lc = (uint8_t*) platform::anon_alloc(lc_bytes, -1, 1);
+        c.lc = (uint8_t*) node_map(lc_bytes, -1, 1, {"other", "Prompt processing", "Layer cache"});
         if (c.lc == nullptr) {
-            if (c.lm_pinned) cudaFreeHost(st_p);
-            else platform::anon_free(st_p, state_b);
+            if (c.lm_pinned)
+                strata::core::release_host(st_p);
+            else free_node_memory(st_p, state_b);
             return false;
         }
         c.lm_state = (uint8_t*) st_p;
@@ -8814,9 +8849,10 @@ struct Model::Impl {
             cudaStreamSynchronize(c.cs);          // copies done, every read the run issued done - a failed run's too)
             for (size_t i = c.base; i < c.n_read; ++i)
                 while (fit(c, i).left.load(std::memory_order_acquire) != 0) c.io->wait_any(500);
-            if (c.lm_pinned) cudaFreeHost(c.lm_state);
-            else platform::anon_free(c.lm_state, c.lm_state_bytes);
-            platform::anon_free(c.lc, c.lc_bytes);
+            if (c.lm_pinned)
+                strata::core::release_host(c.lm_state);
+            else free_node_memory(c.lm_state, c.lm_state_bytes);
+            free_node_memory(c.lc, c.lc_bytes);
             c.lm_state = c.lc = nullptr;
             c.lm_state_bytes = c.lc_bytes = 0;
             c.lm = c.lm_pinned = false;
@@ -10450,7 +10486,7 @@ bool Model::set_stage_layers(int stage, int lb, int le, std::string& err) {
             if (!ok) {
                 cudaSetDevice(target.id);
                 for (size_t i = first; i < target.allocs.size(); ++i)
-                    cudaFree(target.allocs[i]);
+                    strata::core::release_device(target.allocs[i]);
                 target.allocs.resize(first);
                 target.weights = weights;
                 target.scratch = scratch;
@@ -10459,7 +10495,7 @@ bool Model::set_stage_layers(int stage, int lb, int le, std::string& err) {
             }
             cudaSetDevice(old.id);
             for (void* ptr : allocations) {
-                cudaFree(ptr);
+                strata::core::release_device(ptr);
                 old.allocs.erase(std::remove(old.allocs.begin(), old.allocs.end(), ptr), old.allocs.end());
             }
             old.weights -= saved.weight_bytes;

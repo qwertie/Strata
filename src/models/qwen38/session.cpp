@@ -1,3 +1,4 @@
+#include "strata/base/gpu/managed_memory.hpp"
 // src/models/qwen38/session.cpp - one token through all 48 layers.  See the header for why the graphs are per-layer.
 #include "strata/models/qwen38/session.hpp"
 #include "strata/base/gpu/pin_budget.hpp"
@@ -459,7 +460,8 @@ bool session_replay_stage_prefixes(const ModelGeometry& g, int64_t pos, int32_t 
     const size_t r_floats = (size_t) g.hc * (size_t) g.n_embd;
 
     float* saved = nullptr;
-    if (cudaMalloc((void**) &saved, r_floats * sizeof(float)) != cudaSuccess) {
+    if (strata::core::allocate_device((void**) &saved, r_floats * sizeof(float),
+        {"other", "Device allocations", "Session tables"}) != cudaSuccess) {
         err = "session_replay_stage_prefixes: could not save the residual";
         return false;
     }
@@ -468,14 +470,14 @@ bool session_replay_stage_prefixes(const ModelGeometry& g, int64_t pos, int32_t 
     for (auto& e : ev) if (cudaEventCreate(&e) != cudaSuccess) { ev_ok = false; break; }
     if (!ev_ok) {
         for (auto& e : ev) cudaEventDestroy(e);
-        cudaFree(saved);
+        strata::core::release_device(saved);
         err = "session_replay_stage_prefixes: event create";
         return false;
     }
     struct Cleanup {
         std::vector<cudaEvent_t>* v;
         float* p;
-        ~Cleanup() { for (auto& e : *v) cudaEventDestroy(e); cudaFree(p); }
+        ~Cleanup() { for (auto& e : *v) cudaEventDestroy(e); strata::core::release_device(p); }
     } cleanup{&ev, saved};
 
     double t[5] = {0, 0, 0, 0, 0};
@@ -605,7 +607,7 @@ void SessionLoopScratch::free() {
         pinned_core = {};
     }
     if (probe != nullptr) { cudaEventDestroy(probe); probe = nullptr; }
-    if (y_miss != nullptr) { cudaFreeHost(y_miss); y_miss = nullptr; }
+    if (y_miss != nullptr) { strata::core::release_host(y_miss); y_miss = nullptr; }
     parts_bytes = 0;
 }
 

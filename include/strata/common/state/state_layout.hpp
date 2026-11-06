@@ -7,6 +7,7 @@
 #include "strata/base/gpu/runtime.hpp"
 
 #include <cstdint>
+#include <string>
 #include <utility>
 #include <vector>
 
@@ -26,6 +27,7 @@ struct StateRegion {
     uint64_t unit_bytes = 0;   ///< the bytes of one row's token or block; of the whole region when fixed
     uint64_t rows = 1;
     int64_t block = 1;         ///< tokens per block (per_block)
+    std::string label;         ///< the purpose shown for blocks of this region
 
     /// Gets how many tokens or blocks a row holds for `tokens` tokens (1 for a fixed region).
     uint64_t units_for(int64_t tokens) const {
@@ -48,8 +50,9 @@ struct StateLayout {
     std::vector<StateRegion> regions;
 
     /// Appends a region and returns its index.
-    size_t add(RegionKind kind, uint64_t unit_bytes, uint64_t rows = 1, int64_t block = 1) {
-        regions.push_back({kind, unit_bytes, rows, block});
+    size_t add(RegionKind kind, uint64_t unit_bytes, uint64_t rows = 1, int64_t block = 1,
+               std::string label = {}) {
+        regions.push_back({kind, unit_bytes, rows, block, std::move(label)});
         return regions.size() - 1;
     }
     /// Gets the bytes the state of `tokens` tokens takes (a session's allocation at its context, a packed image).

@@ -1,5 +1,6 @@
 // src/common/kernels/prefill/ggml_cuda_host.cu - prompt-speed plan step 2b: the host-side symbols of llama.cpp's ggml-cuda that its MMQ
 // and quantize code reference, for the MMQ kernels compiled into strata_mmq without the rest of ggml-cuda.cu.
+#include "strata/base/platform/memory_manager.hpp"
 #include "strata/base/gpu/emulate.hpp"
 #include "common.cuh"
 
@@ -124,7 +125,10 @@ struct CachingPool : ggml_cuda_pool {
         for (auto & b : bufs)
             if (!b.used && b.size >= size) { b.used = true; *actual_size = b.size; return b.p; }
         void * p = nullptr;
+        // GGML supplies its own CUDA/HIP aliases rather than Strata's runtime compatibility headers.
         CUDA_CHECK(cudaMalloc(&p, size));
+        strata::core::get_memory_manager().add(p, size, "gpu" + std::to_string(ggml_cuda_get_device()),
+                                                {"other", "Prompt GEMM", "GGML allocation pool"});
         bufs.push_back({p, size, true});
         *actual_size = size;
         return p;
@@ -135,7 +139,12 @@ struct CachingPool : ggml_cuda_pool {
             if (b.p == ptr) { b.used = false; return; }
     }
     ~CachingPool() override {
-        for (auto & b : bufs) cudaFree(b.p);
+        for (auto& b : bufs) {
+            auto& manager = strata::core::get_memory_manager();
+            const uint64_t id = manager.get_allocation_id(b.p);
+            if (cudaFree(b.p) == cudaSuccess)
+                manager.remove_if_current(b.p, id);
+        }
     }
 };
 }  // namespace

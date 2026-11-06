@@ -1,3 +1,4 @@
+#include "strata/base/gpu/managed_memory.hpp"
 // src/models/qwen38/options.cpp - the Qwen3.8 engines' command line: the help text, the option parser and the
 // per-device defaults applied before any engine code reads its switches (options.hpp).
 #include "strata/base/platform/env.hpp"
@@ -876,7 +877,8 @@ void prime_gpu_queues() {
     }
     if (dev != 0 && cudaSetDevice(dev) != cudaSuccess) { (void) cudaGetLastError(); return; }
     void* buf = nullptr;
-    if (cudaMalloc(&buf, 256) != cudaSuccess) { (void) cudaGetLastError(); return; }
+    if (strata::core::allocate_device(&buf, 256,
+        {"other", "Device allocations", "options buffers"}) != cudaSuccess) { (void) cudaGetLastError(); return; }
     int lo = 0, hi = 0;
     const bool have_prio = hipDeviceGetStreamPriorityRange(&lo, &hi) == hipSuccess;
     std::vector<cudaStream_t> ss;
@@ -890,7 +892,7 @@ void prime_gpu_queues() {
         ss.push_back(s);
     }
     for (cudaStream_t s : ss) cudaStreamDestroy(s);
-    cudaFree(buf);
+    strata::core::release_device(buf);
     (void) cudaGetLastError();
     std::fprintf(stderr, "strata generate: opened %zu GPU queues in a fixed order (STRATA_HIP_QUEUE_PRIME=0 turns it off)\n", ss.size());
 }

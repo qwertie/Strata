@@ -1,3 +1,4 @@
+#include "strata/base/gpu/managed_memory.hpp"
 // src/models/qwen38/paged_model.cpp - strata-q38: Qwen3.8 on the shared paged engine (paged_model.hpp): its start
 // and its side of the engine's model interface (strata/common/serve/paged_model.hpp).
 #include "strata/models/qwen38/paged_model.hpp"
@@ -71,7 +72,6 @@ struct ModelCard {
     strata::core::Verifier* ver = nullptr;
     strata::prefill::Prefill* sp = nullptr;
     int32_t* d_res = nullptr;                     ///< the residency table on its device
-    uint64_t sessions_bytes = 0;                  ///< the device memory of the sessions on it (`own`'s included)
     /// computes the experts of other cards' layers its pool holds (PagedCard::lent) that a verify window of their own
     /// card routes to
     strata::core::PeerExperts hop;
@@ -111,7 +111,7 @@ struct Part final : strata::serve::PagedPart {
         const strata::core::OnDevice on(dev);
         strata::core::gpu_free(image_table);
         strata::core::session_release(ss);
-        (void) cudaFree(mem);
+        (void) strata::core::release_device(mem);
     }
 
     bool is_ready() const override { return pages.is_ready(); }
@@ -187,15 +187,6 @@ public:
     bool can_run_layers(int64_t lb, int64_t le) const override;
     strata::core::RegionSpan get_gpu_span(const PagedCard& card) const override;
     strata::core::RegionSpan get_ram_span(int64_t lb, int64_t le) const override;
-    uint64_t get_weight_bytes(const PagedCard& card) const override;
-    uint64_t get_scratch_bytes(const PagedCard& card) const override {
-        uint64_t bytes = cards_[card.index].sessions_bytes + cards_[card.index].ver->get_pipeline_scratch_bytes();
-        if (card.index + 1 == cards_.size()) {
-            if (drafter_)
-                bytes += drafter_->get_snapshot_bytes();
-        }
-        return bytes;
-    }
     bool attach_hop(PagedCard& card, std::string& err) override;
     void set_hop_holders(const int32_t* holder) override { split_.holder = holder; }
     void report_hops() const override;
@@ -265,7 +256,7 @@ private:
         int device = 0;
         ~Group() {
             const strata::core::OnDevice on(device);
-            (void) cudaFreeHost(coordinates);
+            (void) strata::core::release_host(coordinates);
         }
     };
     std::vector<std::unique_ptr<Group>> groups_;
@@ -490,13 +481,13 @@ PagedParts PagedQwen::make_parts(PagedCard& card, size_t count, std::string& err
     const QsaState* rope = &mc.own->qsa_states[mc.own->qsa_primary()];
     // (carved for every layer, as the card's own session: a moved cut changes the layers they are for)
     const uint64_t bytes = session_bytes(m_.g, m_.o.max_context, m_.K, 0, -1, false);
-    mc.sessions_bytes = session_bytes(m_.g, m_.o.max_context, m_.K) + count * bytes;
     std::vector<SessionState*> sessions;
     std::vector<int32_t*> image_tables;
     PagedParts parts;
     for (size_t i = 0; i < count; ++i) {
         auto part = std::make_unique<Part>(m_, mc, card.dev);
-        if (cudaMalloc(&part->mem, bytes) != cudaSuccess ||
+        if (strata::core::allocate_device(&part->mem, bytes,
+            {"other", "Device allocations", "Conversation working buffers"}) != cudaSuccess ||
             session_init(m_.g, m_.o.max_context, m_.K, part->mem, part->ss, 0, -1, rope) == 0) {
             char text[160];
             std::snprintf(text, sizeof text, "no room for conversation %zu's session on %s (%.1f MiB)", i,
@@ -511,7 +502,6 @@ PagedParts PagedQwen::make_parts(PagedCard& card, size_t count, std::string& err
                 return {};
             }
             image_tables.push_back(part->image_table);
-            mc.sessions_bytes += m_.mrope_host.size() * sizeof(int32_t);
         }
         session_set_layers(part->ss, m_.g, card.lb, card.le);
         PleRun& ple = part->ss.ple;   // the engine's PLE weights and buffers, with this conversation's history
@@ -690,12 +680,6 @@ strata::core::RegionSpan PagedQwen::get_ram_span(int64_t lb, int64_t le) const {
     for (size_t r = 0; r < fixed; ++r)
         span.ranges.push_back({r, (uint64_t) (lb - q0) * layer, (uint64_t) (le - q1 - (lb - q0)) * layer});
     return span;
-}
-
-uint64_t PagedQwen::get_weight_bytes(const PagedCard& card) const {
-    const GpuStage* stage = cards_[card.index].stage;
-    return stage != nullptr ? stage->dense.allocated_bytes() + stage->head.weight_bytes()
-                            : m_.pool_bytes + m_.native_dense.allocated_bytes() + m_.native_head.weight_bytes();
 }
 
 bool PagedQwen::attach_hop(PagedCard& card, std::string& err) {
@@ -1199,8 +1183,9 @@ bool PagedQwen::prepare_group(int group, const std::vector<strata::spec::StepRow
             return false;
     }
     if (m_.o.vision) {
-        if (g.coordinates == nullptr && cudaHostAlloc((void**) &g.coordinates,
-            (size_t) strata::kernels::kVerifyMaxT * 3 * sizeof(int32_t), cudaHostAllocPortable) != cudaSuccess) {
+        if (g.coordinates == nullptr && strata::core::allocate_host((void**) &g.coordinates,
+            (size_t) strata::kernels::kVerifyMaxT * 3 * sizeof(int32_t), cudaHostAllocPortable, {"other",
+                "Device allocations", "Conversation working buffers"}) != cudaSuccess) {
             err = "the group's picture coordinates do not fit";
             return false;
         }

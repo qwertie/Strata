@@ -21,6 +21,7 @@
 // through these wrappers (the arena's, the verify window's, the session's, the KV copy's) fail once N MiB are
 // outstanding, which is what the WDDM ceiling does on Windows.  It lets Linux reproduce the exhaustion.
 #pragma once
+#include "strata/base/gpu/managed_memory.hpp"
 
 #include <cuda_runtime.h>
 
@@ -76,13 +77,14 @@ inline void sim_uncharge(State& s, const void* p) {
 
 inline cudaError_t alloc_locked(State& s, void** p, size_t bytes, unsigned flags) {
     if (s.sim_budget != 0 && s.sim_used + bytes > s.sim_budget) return cudaErrorMemoryAllocation;
-    const cudaError_t e = cudaHostAlloc(p, bytes, flags);
+    const cudaError_t e = strata::core::allocate_host(p, bytes, flags,
+        {"other", "Device allocations", "Transfer buffers"});
     if (e == cudaSuccess) sim_charge(s, *p, bytes);
     return e;
 }
 inline void free_locked(State& s, void* p) {
     if (p == nullptr) return;
-    (void) cudaFreeHost(p);
+    (void) strata::core::release_host(p);
     sim_uncharge(s, p);
 }
 

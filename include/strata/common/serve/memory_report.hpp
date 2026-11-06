@@ -6,11 +6,16 @@
 //     MEMORY <id> [total=<B>] [free=<B>] [unified=1] [<use>=<B> ...] [paused_count=<n>] [paused_budget=<B>]
 //            [pool_pages=<n> allocated_pages=<n> fragmented_pages=<n>] [setting=<B> smallest=<B> largest=<B>]
 //            [mapped=<B>] [name=<text>]                                                   one line per memory, then
+//     [MEMORY_BLOCK <memory-id> <bytes> <category> <pool> <label>]                arbitrary labelled allocations
 //     [CONVERSATION <id> <place> <state> <tokens> <capacity> <bytes> <used>]     with per_conversation: one per
 //                                                                                conversation (LIST_CONVERSATIONS')
 //     SETTINGS [context=<tokens>] [concurrent=<n>] [rows=<n>] [lookahead=<n>] [tokens_min=<tokens>]
 //     [SHORTFALL <text>]                                                         CHANGE_SETTINGS' answer only
 //     END_MEMORY
+//
+// MEMORY_BLOCK fields are percent-encoded UTF-8; ~ denotes an empty label. Its bytes are disjoint: a pool's
+// backing allocation is replaced by its labelled blocks and unused pages. A memory with MEMORY_BLOCK lines
+// derives its category totals from those lines; it does not also send <use>= values on its MEMORY line.
 //
 // id: `gpu<N>` (the runtime's device number), `ram` or `ssd`.  total, free: the memory's size and what is free in it
 // now (the GPUs'; the server adds the machine's RAM).  unified=1: a GPU whose memory is the system RAM (an integrated
@@ -39,6 +44,7 @@
 #pragma once
 
 #include "strata/common/state/token_listing.hpp"
+#include "strata/base/platform/memory_manager.hpp"
 
 #include <cstdint>
 #include <deque>
@@ -56,6 +62,7 @@ struct Memory {
     uint64_t free = 0;                                    ///< what is free in it now (said only with total)
     bool unified = false;                                 ///< a GPU whose memory is the system RAM
     std::vector<std::pair<std::string, uint64_t>> uses;   ///< bytes held per use, in the order first added
+    std::vector<core::MemoryBlock> blocks;   ///< disjoint allocation totals with pool and purpose labels
     uint64_t paused_budget = 0;                           ///< the most parked conversations may take; 0: no budget
     int paused_count = 0;                                 ///< parked conversations held here
     /// The pages of the page pool here (0: none; the old engines'), how many are allocated, and how many are free in
@@ -63,6 +70,7 @@ struct Memory {
     uint64_t pool_pages = 0, allocated_pages = 0, fragmented_pages = 0;
     /// The bytes the engine's pool here takes (0: no setting to change), and the least and most it may be set to now.
     uint64_t setting = 0, smallest = 0, largest = 0;
+    uint64_t pool_offset = 0;   ///< bytes drawn before the adjustable pool, independent of category names
     uint64_t mapped = 0;   ///< the bytes of it the GPUs map (page-locked); 0: none or not said
 
     /// Adds `bytes` to use `use`; a zero adds nothing.
@@ -74,6 +82,13 @@ struct Memory {
                 return;
             }
         uses.emplace_back(use, bytes);
+    }
+    /// Includes labelled blocks and derives the category totals from them.
+    void add_blocks(const std::vector<core::MemoryBlock>& entries) {
+        for (const core::MemoryBlock& b : entries) {
+            add(b.name.category, b.bytes);
+            core::add_memory_block(blocks, b.name, b.bytes);
+        }
     }
 };
 
@@ -97,6 +112,21 @@ struct MemoryReport {
     /// Gets GPU `device`'s memory (at("gpu<device>")).
     Memory& gpu(int device) { return at("gpu" + std::to_string(device)); }
 };
+/// Encodes a UTF-8 protocol field without limiting the category or label vocabulary.
+inline std::string encode_memory_label(const std::string& text) {
+    const char* hex = "0123456789ABCDEF";
+    std::string out;
+    for (const unsigned char c : text) {
+        if ((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_' || c == '-')
+            out += (char) c;
+        else {
+            out += '%';
+            out += hex[c >> 4];
+            out += hex[c & 15];
+        }
+    }
+    return out.empty() ? "~" : out;
+}
 
 /// Writes the answer to GET_MEMORY_USE: `report` plus the parked conversations of `held` (LIST_CONVERSATIONS' entries;
 /// a parked one in RAM counts on `ram`, one on disk on `ssd`).
@@ -104,7 +134,12 @@ inline std::string format_memory_report(MemoryReport report, const std::vector<c
     for (const core::HeldConversation& c : held) {
         if (std::string(c.state) != "parked") continue;
         Memory& m = report.at(std::string(c.place) == "disk" ? "ssd" : "ram");
-        m.add("paused", c.bytes);
+        if (!m.pool_pages || m.blocks.empty()) {
+            if (m.blocks.empty())
+                m.add("paused", c.bytes);
+            else
+                m.add_blocks({{{"paused", "Paused conversations", c.id}, c.bytes}});
+        }
         ++m.paused_count;
     }
     std::string s;
@@ -116,8 +151,9 @@ inline std::string format_memory_report(MemoryReport report, const std::vector<c
             put("free", m.free);
         }
         if (m.unified) put("unified", 1);
-        for (const auto& [use, bytes] : m.uses)
-            put(use, bytes);
+        if (m.blocks.empty())
+            for (const auto& [use, bytes] : m.uses)
+                put(use, bytes);
         if (m.paused_count > 0 || m.paused_budget > 0) put("paused_count", (uint64_t) m.paused_count);
         if (m.paused_budget > 0) put("paused_budget", m.paused_budget);
         if (m.pool_pages > 0) {
@@ -127,12 +163,18 @@ inline std::string format_memory_report(MemoryReport report, const std::vector<c
         }
         if (m.setting > 0) {
             put("setting", m.setting);
+            if (!m.blocks.empty())
+                put("pool_offset", m.pool_offset);
             put("smallest", m.smallest);
             put("largest", m.largest);
         }
         if (m.mapped > 0) put("mapped", m.mapped);
         if (!m.name.empty()) s += " name=" + m.name;
         s += '\n';
+        for (const core::MemoryBlock& b : m.blocks)
+            s += "MEMORY_BLOCK " + m.id + " " + std::to_string(b.bytes) + " " +
+                 encode_memory_label(b.name.category) + " " + encode_memory_label(b.name.pool) + " " +
+                 encode_memory_label(b.name.label) + '\n';
     }
     if (report.per_conversation)
         for (const core::HeldConversation& c : held)

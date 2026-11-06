@@ -4,6 +4,7 @@
 // (ggml/src/ggml-cuda/vecdotq.cuh, dequantize.cuh, quantize.cu at the commit in third_party/ggml/VERSION.txt;
 // MIT license, third_party/ggml/LICENSE).  The block structs and codebook grids come from its ggml-common.h,
 // included unchanged.
+#include "strata/base/gpu/managed_memory.hpp"
 #include "strata/common/kernels/iq_kernels.hpp"
 #include "strata/base/gpu/sm75_series.hpp"
 #include "strata/base/gpu/sm120_series.hpp"
@@ -4316,7 +4317,8 @@ const float* hadamard_device_signs(const float* host, int width) {
     std::lock_guard<std::mutex> lock(mu);
     float*& d = table[std::make_tuple(dev, host, width)];
     if (d == nullptr) {
-        if (cudaMalloc((void**) &d, (size_t) width * sizeof(float)) != cudaSuccess ||
+        if (strata::core::allocate_device((void**) &d, (size_t) width * sizeof(float),
+            {"other", "Quantization", "Dequantized vectors"}) != cudaSuccess ||
             cudaMemcpy(d, host, (size_t) width * sizeof(float), cudaMemcpyHostToDevice) != cudaSuccess) {
             std::fprintf(stderr, "hadamard_device_signs: %s\n", cudaGetErrorString(cudaGetLastError()));
             std::exit(1);

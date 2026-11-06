@@ -41,12 +41,6 @@ auto time_step_if(bool enabled, double& elapsed, F&& operation) -> decltype(oper
 /// Between two chunks of a prompt, the conversations that decode take steps for this share of the time the chunk
 /// took, so that a long prompt does not stop them (the old engine's STRATA_BATCH_DECODE_SHARE default).
 constexpr double kDecodeShare = 0.5;
-/// The share of Windows' commit limit (RAM and page file) that the pools' default sizes leave uncommitted, and the
-/// least they leave: the engine's other allocations and the other programs need it.  On the Strix Halo the GPU's
-/// memory counts in the commit charge too (8 GiB of hipMalloc raised it by 8.3 GiB), and pools sized to the commit
-/// left less 4 GiB took Windows to its limit.
-constexpr double kCommitMarginShare = 0.10;
-constexpr uint64_t kCommitMarginMin = 8ull << 30;
 
 /// Gets the milliseconds from `t0` to now.
 double get_ms_since(Clock::time_point t0) {
@@ -390,22 +384,10 @@ bool is_layer_cut(const std::vector<int64_t>& cut, int64_t n_layers) {
     return true;
 }
 
-/// Gets how much more may be committed while a tenth of Windows' commit limit, at least 8 GiB, stays uncommitted
-/// (kCommitMarginShare, kCommitMarginMin); UINT64_MAX where the commit charge is not reported (elsewhere than
-/// Windows). STRATA_COMMIT_RESERVE_MIB explicitly overrides the automatic reserve for controlled runs.
+/// Gets Windows' remaining allocation capacity, without an automatic reserve.
 uint64_t get_commit_room() {
     strata::core::detail::HostMemory hm;
-    if (!strata::core::detail::host_available_memory(hm) || hm.commit == ~uint64_t{0})
-        return UINT64_MAX;
-    const uint64_t share = hm.commit_limit == ~uint64_t{0} ? 0 : (uint64_t) (kCommitMarginShare * hm.commit_limit);
-    uint64_t margin = std::max(kCommitMarginMin, share);
-    if (const char* value = std::getenv("STRATA_COMMIT_RESERVE_MIB")) {
-        char* end = nullptr;
-        const uint64_t mib = std::strtoull(value, &end, 10);
-        if (end != value && *end == '\0' && *value != '-' && mib <= (UINT64_MAX >> 20))
-            margin = mib << 20;
-    }
-    return hm.commit > margin ? hm.commit - margin : 0;
+    return strata::core::detail::host_available_memory(hm) ? hm.commit : UINT64_MAX;
 }
 
 /// Gets `bytes` rounded to the nearest whole number of `pool`'s chunks (a size given in MiB is seldom one).
@@ -1205,6 +1187,7 @@ bool PagedEngine::pause(Held& h, std::string& err, bool ram_only) {
             break;
     const bool in_ram = get_paused_bytes(true) + p.bytes <= budget && ram.grow_conversation(p.serial, tokens).empty();
     if (in_ram) {
+        ram.set_conversation_label(p.serial, "Paused conversation " + std::to_string(p.serial));
         ram.set_paused(p.serial, true);
     } else if (ram_only) {
         err = "the RAM's pool has no room for a conversation of " + std::to_string(h.live.size()) + " tokens";
@@ -1515,15 +1498,8 @@ strata::serve::MemoryReport PagedEngine::describe_memory() const {
         const strata::core::PagePoolReport r = card.experts.pool().report();
         strata::serve::Memory& gpu = report.at(card.id);
         strata::core::read_gpu_memory(card.dev, gpu.name, gpu.total, gpu.free, gpu.unified);
-        const uint64_t draft_weights = settings_.drafter ? model_.get_drafter_weight_bytes(card) : 0;
-        gpu.add("weights", model_.get_weight_bytes(card) - draft_weights);
-        gpu.add("drafter", draft_weights);
-        const uint64_t draft_experts = model_.get_drafter_expert_bytes(card);
-        gpu.add("experts", r.experts.bytes - draft_experts);
-        gpu.add("drafter_experts", draft_experts);
-        gpu.add("conversations", r.active.bytes + r.fixed.bytes);
-        gpu.add("pool_free", r.free.bytes);
-        gpu.add("scratch", model_.get_scratch_bytes(card));
+        gpu.add_blocks(card.experts.pool().get_memory_blocks());
+        gpu.add_blocks(strata::core::get_memory_manager().get_blocks(card.id));
         gpu.pool_pages = r.total.pages;
         gpu.allocated_pages = r.allocated.pages;
         gpu.fragmented_pages = r.fragmented.pages;
@@ -1532,24 +1508,25 @@ strata::serve::MemoryReport PagedEngine::describe_memory() const {
         gpu.largest = get_largest_gpu(card);
     }
     strata::serve::Memory& ram = report.at("ram");
-    ram.add("experts", rr.experts.bytes);
-    ram.add("pool_free", rr.free.bytes);
-    ram.add("scratch", ram_.ring_bytes());
+    ram.add_blocks(ram_.pages().pool().get_memory_blocks());
+    ram.add_blocks(strata::core::get_memory_manager().get_blocks("ram"));
     ram.paused_budget = get_ram_pause_budget();
     ram.pool_pages = rr.total.pages;
     ram.allocated_pages = rr.allocated.pages;
     ram.fragmented_pages = rr.fragmented.pages;
     ram.setting = rr.total.bytes + ram_.ring_bytes();
-    ram.mapped = ram_.get_mapped_bytes();
+    ram.mapped = strata::core::get_memory_manager().get_mapped_bytes();
     ram.smallest = get_smallest_ram();
     ram.largest = get_largest_ram();
-    uint64_t on_ssd = 0;   // the experts neither pool holds
-    for (int64_t l = 0; l < facts_.n_layers; ++l)
+    strata::serve::Memory& ssd = report.at("ssd");
+    for (int64_t l = 0; l < facts_.n_layers; ++l) {
+        uint64_t on_ssd = 0;
         for (int64_t e = 0; e < facts_.n_expert; ++e)
             if (model_.get_residency()[(size_t) (l * facts_.n_expert + e)] < 0 && !is_lent(l, e) && !ram_.holds(l, e))
                 on_ssd += facts_.expert_bytes[(size_t) l];
-    strata::serve::Memory& ssd = report.at("ssd");
-    ssd.add("experts", on_ssd);
+        ssd.add_blocks({{{"experts", "Model files",
+            strata::core::get_expert_memory_label((int32_t) l, facts_.expert_bytes[(size_t) l])}, on_ssd}});
+    }
     ssd.paused_budget = (uint64_t) settings_.ssd_pause_mib << 20;
     const int64_t probe = std::max<int64_t>(facts_.context, 1);   // tokens whose pages give the average
     uint64_t fixed = 0, grown = 0;   // a conversation's pages on every card: at no token, at `probe` tokens
@@ -1648,7 +1625,7 @@ std::string PagedEngine::change_settings(const SettingValues& values, std::strin
             return card.id + " has room for " + gib(get_largest_gpu(card)) + " of pool, not " + gib(asked);
     }
     // (each range takes all of get_commit_room: on the Strix Halo, where the GPU's memory is commit too, one change
-    // that grows both pools to their largest can take the commit margin)
+    // that grows both pools must share the remaining commit capacity)
     if (ram_bytes && (*ram_bytes < get_smallest_ram() || *ram_bytes > get_largest_ram()))
         return "the RAM's pool may be " + gib(get_smallest_ram()) + " to " + gib(get_largest_ram()) + ", not " +
                gib(*ram_bytes);

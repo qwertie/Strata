@@ -101,6 +101,32 @@ std::vector<int> get_experts(const std::vector<ExpertKey>& keys) {
         out.push_back(key.expert);
     return out;
 }
+void test_labels() {
+    Fixture f;
+    f.pool.add_expert({3, 0}, 1);
+    f.pool.add_expert({3, 1}, 1);
+    check(f.pool.grow_conversation(7, 1).empty(), "labelled conversation fits");
+    f.pool.set_conversation_label(7, "Chat with spaces");
+    const auto blocks = f.pool.get_memory_blocks();
+    uint64_t bytes = 0, experts = 0;
+    bool conversation = false;
+    for (const MemoryBlock& b : blocks) {
+        bytes += b.bytes;
+        if (b.name.category == "experts") {
+            experts += b.bytes;
+            check(b.name.label.find("Layer 3 (") == 0, "expert labels retain their layer and size class");
+        }
+        conversation = conversation || b.name.label.find("Chat with spaces:") == 0;
+    }
+    check(experts == 2 * page && conversation && bytes == f.pool.report().total.bytes,
+          "labels partition the pool without counting backing or holes twice");
+    f.pool.set_paused(7, true);
+    uint64_t paused = 0;
+    for (const MemoryBlock& b : f.pool.get_memory_blocks())
+        if (b.name.category == "paused")
+            paused += b.bytes;
+    check(paused == f.pool.report().paused.bytes, "paused blocks follow their conversation's lifetime");
+}
 
 void test_allocation() {
     Fixture f;
@@ -628,6 +654,7 @@ void test_many_pages() {
 }  // namespace
 
 int main() {
+    test_labels();
     test_allocation();
     test_runs();
     test_experts_tile();

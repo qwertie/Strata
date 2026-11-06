@@ -65,13 +65,13 @@ bool describe_conversation(const Geometry& g, int lb, int le, bool drafter, Stat
             trunk += 2 * (uint64_t) sources[s].ratio * (uint64_t) g.hd * sizeof(float);
         }
     if (trunk > 0)
-        at.trunk = layout.add(RegionKind::fixed, trunk);
+        at.trunk = layout.add(RegionKind::fixed, trunk, 1, 1, "Attention state");
     if (drafter && g.n_mtp > 0) {
         for (int b = 0; b < g.n_mtp; ++b)
             at.ring[(size_t) (g.nl + b)] = (uint64_t) b * ring;
         at.taps = (uint64_t) g.n_mtp * ring;
         at.drafter = layout.add(RegionKind::fixed, at.taps +
-            (uint64_t) g.win * g.d_targets.size() * g.dim * sizeof(float));
+            (uint64_t) g.win * g.d_targets.size() * g.dim * sizeof(float), 1, 1, "Drafter state");
     }
 
     std::vector<bool> reads(sources.size()), scores(sources.size());
@@ -85,9 +85,11 @@ bool describe_conversation(const Geometry& g, int lb, int le, bool drafter, Stat
     }
     for (size_t s = 0; s < sources.size(); ++s) {
         if (reads[s])
-            at.ckv[s] = layout.add(RegionKind::per_block, kv_row_bytes(kKvFp4, g.hd), 1, sources[s].ratio);
+            at.ckv[s] = layout.add(RegionKind::per_block, kv_row_bytes(kKvFp4, g.hd), 1, sources[s].ratio,
+                "Compressed context source " + std::to_string(s));
         if (scores[s])
-            at.ik[s] = layout.add(RegionKind::per_block, kv_row_bytes(kKvFp4p, g.ix_hd), 1, sources[s].ratio);
+            at.ik[s] = layout.add(RegionKind::per_block, kv_row_bytes(kKvFp4p, g.ix_hd), 1, sources[s].ratio,
+                "Compressed context source " + std::to_string(s));
     }
     return true;
 }

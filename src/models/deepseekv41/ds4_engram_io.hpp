@@ -11,6 +11,7 @@
 #pragma once
 
 #include "strata/base/platform/os.hpp"
+#include "strata/base/platform/memory_manager.hpp"
 
 #include <algorithm>
 #include <atomic>
@@ -39,6 +40,10 @@ inline int64_t now_ns() {
 /// Not thread-safe (the caller locks).
 class EgRowCache {
 public:
+    ~EgRowCache() {
+        for (const auto& block : blocks_)
+            strata::core::get_memory_manager().remove(block.get());
+    }
     void init(size_t cap, size_t bytes) {
         cap_ = cap;
         bytes_ = bytes;
@@ -61,7 +66,11 @@ public:
         uint32_t s;
         if (keys_.size() < cap_) {
             s = (uint32_t) keys_.size();
-            if (s % kBlock == 0) blocks_.emplace_back(new uint8_t[(size_t) kBlock * bytes_]);
+            if (s % kBlock == 0) {
+                blocks_.emplace_back(new uint8_t[(size_t) kBlock * bytes_]);
+                strata::core::get_memory_manager().add(blocks_.back().get(), (size_t) kBlock * bytes_, "ram",
+                    {"engram", "Engram cache", "Word-pattern rows"});
+            }
             keys_.push_back(key);
             ref_.push_back(0);
         } else {

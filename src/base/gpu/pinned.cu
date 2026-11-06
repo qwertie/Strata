@@ -1,4 +1,5 @@
 // src/base/gpu/pinned.cu - P2.S1: the pinned host arena and the parallel expert load.
+#include "strata/base/gpu/managed_memory.hpp"
 #include "strata/base/gpu/pinned.hpp"
 #include "strata/base/platform/memory.hpp"
 #include "strata/base/gpu/pin_budget.hpp"
@@ -951,7 +952,8 @@ StreamStats stream_bandwidth(const uint8_t* src, uint64_t bytes, uint64_t chunk,
     st.chunk = chunk;
     uint8_t* dst = nullptr;
     cudaStream_t s{};
-    if (cudaMalloc(&dst, (size_t) chunk) != cudaSuccess) {
+    if (strata::core::allocate_device(&dst, (size_t) chunk,
+        {"other", "Expert transfers", "Copy staging"}) != cudaSuccess) {
         std::fprintf(stderr, "stream_bandwidth: cudaMalloc failed for %llu B\n", (unsigned long long) chunk);
         st.seconds = -1.0;
         return st;
@@ -974,7 +976,7 @@ StreamStats stream_bandwidth(const uint8_t* src, uint64_t bytes, uint64_t chunk,
     st.seconds = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
 
     cudaStreamDestroy(s);
-    cudaFree(dst);
+    strata::core::release_device(dst);
     return st;
 }
 

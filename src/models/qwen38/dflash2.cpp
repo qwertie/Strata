@@ -1,3 +1,4 @@
+#include "strata/base/gpu/managed_memory.hpp"
 // src/models/qwen38/dflash2.cpp - see include/strata/models/qwen38/dflash2.hpp.
 #include "strata/models/qwen38/dflash2.hpp"
 
@@ -27,7 +28,8 @@ using Clock = std::chrono::steady_clock;
 double ms_since(Clock::time_point t) { return std::chrono::duration<double, std::milli>(Clock::now() - t).count(); }
 
 bool mapped(size_t bytes, void** h, void** d) {
-    if (cudaHostAlloc(h, bytes, cudaHostAllocMapped) != cudaSuccess) return false;
+    if (strata::core::allocate_host(h, bytes, cudaHostAllocMapped,
+        {"other", "Device allocations", "Drafter"}) != cudaSuccess) return false;
     std::memset(*h, 0, bytes);
     return cudaHostGetDevicePointer(d, *h, 0) == cudaSuccess;
 }
@@ -44,14 +46,16 @@ Dflash2Drafter::~Dflash2Drafter() {
     if (cs_) cudaStreamSynchronize(cs_);
     for (cudaGraphExec_t& e : exec_)
         if (e) cudaGraphExecDestroy(e);
-    auto fr = [](void* p) { if (p) cudaFree(p); };
+    auto fr = [](void* p) { if (p) strata::core::release_device(p); };
     fr(blob_); fr(d_meta_); fr(xq_); fr(xqp_); fr(xdp_); fr(xqc_); fr(xdc_); fr(rt_ctx_); fr(rt_blk_);
     for (int l = 0; l < 8; ++l) { fr(kring_[l]); fr(vring_[l]); }
     fr(fcy_); fr(hctx_); fr(kc_); fr(vc_); fr(h_); fr(xn_); fr(xc_); fr(dyn_); fr(q_); fr(qn_); fr(k_); fr(v_); fr(kblk_); fr(ao_); fr(o_);
     fr(gate_); fr(up_); fr(mlp_); fr(part_); fr(fn_); fr(logits_); fr(topval_); fr(hsel_); fr(toptok_); fr(topscratch_);
     fr(dvocab_); fr(dhead_);
-    if (h_meta_) cudaFreeHost(h_meta_);
-    if (h_out_) cudaFreeHost(h_out_);
+    if (h_meta_)
+        strata::core::release_host(h_meta_);
+    if (h_out_)
+        strata::core::release_host(h_out_);
     if (cs_) cudaStreamDestroy(cs_);
     if (cs2_) cudaStreamDestroy(cs2_);
     if (ev_fork_) cudaEventDestroy(ev_fork_);
@@ -168,14 +172,17 @@ bool Dflash2Drafter::load(const std::string& path, int device, std::string& err)
         err = "dflash2: the pack's shape is not the Flash-Next drafter this engine was written for";
         return false;
     }
-    if (cudaMalloc((void**) &blob_, total) != cudaSuccess) { err = "dflash2: the pack does not fit in VRAM (" + std::to_string(total >> 20) + " MiB)"; return false; }
+    if (strata::core::allocate_device((void**) &blob_, total,
+        {"other", "Device allocations", "Drafter"}) != cudaSuccess) { err = "dflash2: the pack does not fit in VRAM ("
+            + std::to_string(total >> 20) + " MiB)"; return false; }
     vram_ += total;
     uint64_t max_bytes = 0;
     for (const Tensor& t : tensors_) max_bytes = std::max(max_bytes, t.bytes);
     std::vector<uint8_t> stage(max_bytes);
     uint8_t* tmp = nullptr;
-    if (cudaMalloc((void**) &tmp, max_bytes) != cudaSuccess) { err = "dflash2: upload scratch"; return false; }
-    struct TmpFree { uint8_t* p; ~TmpFree() { cudaFree(p); } } tmp_free{tmp};
+    if (strata::core::allocate_device((void**) &tmp, max_bytes,
+        {"other", "Device allocations", "Drafter"}) != cudaSuccess) { err = "dflash2: upload scratch"; return false; }
+    struct TmpFree { uint8_t* p; ~TmpFree() { strata::core::release_device(p); } } tmp_free{tmp};
     for (const Tensor& t : tensors_) {
 #if defined(_WIN32)
         _fseeki64(f, data_off + (long long) t.off, SEEK_SET);
@@ -227,7 +234,8 @@ bool Dflash2Drafter::load(const std::string& path, int device, std::string& err)
 bool Dflash2Drafter::alloc(std::string& err) {
     auto dev = [&](auto** p, size_t n) {
         using T = std::remove_pointer_t<std::remove_reference_t<decltype(*p)>>;
-        if (cudaMalloc((void**) p, n * sizeof(T)) != cudaSuccess) return false;
+        if (strata::core::allocate_device((void**) p, n * sizeof(T),
+            {"other", "Device allocations", "Drafter"}) != cudaSuccess) return false;
         vram_ += n * sizeof(T);
         return true;
     };
@@ -266,12 +274,16 @@ bool Dflash2Drafter::bind_raw(EmbedFn embed, const void* head_w, int head_type, 
     n_dvocab_ = head_rows;
     if (!vocab.empty()) {
         n_dvocab_ = (int64_t) vocab.size();
-        if (cudaMalloc((void**) &dvocab_, vocab.size() * 4) != cudaSuccess) { err = "dflash2: draft vocabulary"; return false; }
+        if (strata::core::allocate_device((void**) &dvocab_, vocab.size() * 4,
+            {"other", "Device allocations", "Drafter"}) != cudaSuccess) { err = "dflash2: draft vocabulary"; return
+                false; }
         vram_ += vocab.size() * 4;
         cudaMemcpy(dvocab_, vocab.data(), vocab.size() * 4, cudaMemcpyHostToDevice);
     }
     if ((n_dvocab_ + kernels::kDf2TopBlocks - 1) / kernels::kDf2TopBlocks > 4096) { err = "dflash2: the head has too many rows for the top-k"; return false; }
-    if (!logits_ && cudaMalloc((void**) &logits_, (size_t) kDrafts * (size_t) n_dvocab_ * 4) != cudaSuccess) { err = "dflash2: the draft logits do not fit"; return false; }
+    if (!logits_ && strata::core::allocate_device((void**) &logits_, (size_t) kDrafts * (size_t) n_dvocab_ * 4,
+        {"other", "Device allocations", "Drafter"}) != cudaSuccess) { err = "dflash2: the draft logits do not fit";
+            return false; }
     vram_ += (uint64_t) kDrafts * (uint64_t) n_dvocab_ * 4;
     bound_ = true;
     return true;
@@ -311,15 +323,19 @@ bool Dflash2Drafter::bind(const WeightTable& wt, const NativeHead* head, const s
     int64_t head_rows = row_bytes > 0 ? (int64_t) (head->weight_bytes() / (uint64_t) row_bytes) : 0;
     if (!vocab.empty()) {
         int32_t* dv = nullptr;
-        if (cudaMalloc((void**) &dv, vocab.size() * 4) != cudaSuccess || cudaMalloc((void**) &dhead_, (size_t) ((int64_t) vocab.size() * row_bytes)) != cudaSuccess) {
-            if (dv) cudaFree(dv);
+        if (strata::core::allocate_device((void**) &dv, vocab.size() * 4,
+            {"other", "Device allocations", "Drafter"}) != cudaSuccess || strata::core::allocate_device((void**)
+                &dhead_, (size_t) ((int64_t) vocab.size() * row_bytes), {"other", "Device allocations", "Drafter"}) !=
+                    cudaSuccess) {
+            if (dv)
+                strata::core::release_device(dv);
             err = "dflash2: the draft vocabulary's head rows do not fit";
             return false;
         }
         cudaMemcpy(dv, vocab.data(), vocab.size() * 4, cudaMemcpyHostToDevice);
         kernels::gather_rows((const uint8_t*) hw, row_bytes, dv, (int64_t) vocab.size(), dhead_, nullptr);
         cudaDeviceSynchronize();
-        cudaFree(dv);
+        strata::core::release_device(dv);
         vram_ += (uint64_t) ((int64_t) vocab.size() * row_bytes);
         hw = dhead_;
         head_rows = (int64_t) vocab.size();

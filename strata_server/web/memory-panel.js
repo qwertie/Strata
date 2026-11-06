@@ -15,7 +15,7 @@
 const USES = {weights: "Weights", experts: "Experts", conversations: "Conversations", pool_free: "Free in the pool",
               paused: "Paused conversations", drafter: "Drafter", drafter_experts: "Drafter experts",
               scratch: "Scratch", engram: "Engram",
-              borrowed: "GPU (borrowed from RAM)", other: "Other", free: "Free"};
+              borrowed: "GPU (borrowed from RAM)", other: "Other", other_apps: "Other apps", free: "Free"};
 /** What each use of a bar is, in plain words: the tooltip of its segment and its legend entry. */
 const USE_HELP = {
   weights: "The parts of the model that must always be loaded here (attention, the shared layers, the output head), " +
@@ -30,8 +30,8 @@ const USE_HELP = {
   scratch: "Working space the engine needs while it computes",
   engram: "DeepSeek's table of word patterns, read as it answers",
   borrowed: "Memory the graphics chip borrows from the system RAM beyond its own share",
-  other: "Memory in use here that the engine does not count as its own: other programs, the graphics runtime's own " +
-    "buffers and anything else Strata does not name",
+  other: "Strata allocations outside the expert and conversation pools",
+  other_apps: "Memory used outside Strata, including other programs and Windows",
   free: "Not in use by anything",
 };
 /** The uses that are the engine's page pool on a GPU or in RAM, whose end is the divider that sets the pool's size. */
@@ -106,9 +106,11 @@ export function drawMemoryPanel(element, view, onChange) {
  * `setting`: the size of the engine's page pool there now, which `memory_mib.<id>` changes; `smallest`, `largest`:
  * the sizes it accepts now.  Bytes.
  * @typedef {{id: string, name: string | null, total: number | null, free: number | null, unified: boolean,
- *   uses: Record<string, number>, paused_count: number | null, paused_budget: number | null, other?: number,
+ *   uses: Record<string, number>, paused_count: number | null, paused_budget: number | null,
+ *   other?: number, other_apps?: number,
+ *   blocks?: {category: string, pool: string, label: string, bytes: number}[],
  *   in_share?: number, borrowed?: number | null, gpu_borrowed?: number, allocated_pct?: number | null,
- *   fragmented_pct?: number | null, setting?: number | null, smallest?: number | null,
+ *   fragmented_pct?: number | null, setting?: number | null, pool_offset?: number | null, smallest?: number | null,
  *   largest?: number | null}} MemoryUse
  * @typedef {{id: string, place: string, state: string, count: number, capacity: number, bytes: number,
  *   used: number}} HeldConversation
@@ -333,10 +335,11 @@ function layOut(x) {
   const parts = Object.entries(x.uses).map(([use, bytes]) => ({use, bytes, drawn: bytes * scale}));
   if (x.gpu_borrowed)
     parts.push({use: "borrowed", bytes: x.gpu_borrowed});
-  if (x.other)
-    parts.push({use: "other", bytes: x.other});
   if (x.free != null)
     parts.push({use: "free", bytes: x.free});
+  const outside = x.other_apps ?? x.other;
+  if (outside)
+    parts.push({use: "other_apps", bytes: outside});
   // a memory of unknown size (the SSD) is drawn against what it holds plus the room left in its paused budget
   const used = parts.reduce((a, p) => a + (p.drawn ?? p.bytes), 0);
   const total = x.total || Math.max(used, used - (x.uses.paused || 0) + (x.paused_budget || 0));
@@ -351,9 +354,10 @@ function findDivider(x) {
   const {parts, scale, total} = layOut(x), ssd = x.id === "ssd";
   const from = ssd ? x.paused_budget : x.setting, first = parts.findIndex((p) => ssd ? p.use === "paused" :
     POOL_USES.includes(p.use));
-  if (from == null || !total || (first < 0 && !ssd))
+  if (from == null || !total || (first < 0 && !ssd && x.pool_offset == null))
     return null;
-  const start = (first < 0 ? parts : parts.slice(0, first)).reduce((a, p) => a + (p.drawn ?? p.bytes), 0);
+  const start = !ssd && x.pool_offset != null ? x.pool_offset * scale :
+    (first < 0 ? parts : parts.slice(0, first)).reduce((a, p) => a + (p.drawn ?? p.bytes), 0);
   return {key: ssd ? "ssd_pause_mib" : `memory_mib.${x.id}`, from, smallest: x.smallest ?? 0,
           largest: x.largest ?? Infinity, start, scale, total};
 }
@@ -381,9 +385,11 @@ function drawBar(x, divider, drag) {
     x.allocated_pct == null ? "" :
     `pool ${fmt(x.allocated_pct, 1)}% allocated, ${fmt(x.fragmented_pct, 2)}% fragmented`]
     .filter(Boolean).join(" · ");
-  const title = (/** @type {{use: string}} */ p) => esc(USES[p.use] || p.use);
+  const title = (/** @type {{use: string}} */ p) => esc(Object.hasOwn(USES, p.use) ? USES[p.use] : p.use);
   const tip = (/** @type {{use: string, bytes: number}} */ p) =>
-    `${title(p)}: ${size(p.bytes)}${p.use in USE_HELP ? `. ${esc(USE_HELP[p.use])}` : ""}`;
+    `${title(p)}: ${size(p.bytes)}${Object.hasOwn(USE_HELP, p.use) ? `. ${esc(USE_HELP[p.use])}` : ""}` +
+    (x.blocks || []).filter((b) => b.category === p.use)
+      .map((b) => `&#10;${esc(b.pool)} / ${esc(b.label)}: ${size(b.bytes)}`).join("");
   const seg = (/** @type {{use: string, bytes: number, drawn?: number}} */ p) =>
     `<span class="mem-seg" data-use="${esc(p.use)}" title="${tip(p)}" ` +
     `style="width:${total ? (100 * (p.drawn ?? p.bytes)) / total : 0}%"></span>`;

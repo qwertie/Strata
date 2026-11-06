@@ -1,3 +1,4 @@
+#include "strata/base/gpu/managed_memory.hpp"
 // src/models/qwen38/kernels/cuda/qsa.cu - P2.S2: the QSA cache, indexer and attention (see
 // include/strata/models/qwen38/kernels/qsa.hpp).
 //
@@ -542,7 +543,8 @@ namespace {
 int32_t* step_scratch() {
     static int32_t* d_step = nullptr;
     if (d_step == nullptr) {
-        if (cudaMalloc(&d_step, qsa_step_bytes()) != cudaSuccess) {
+        if (strata::core::allocate_device(&d_step, qsa_step_bytes(),
+            {"other", "Device allocations", "qsa buffers"}) != cudaSuccess) {
             std::fprintf(stderr, "qsa: step upload: cudaMalloc failed\n");
             std::exit(1);
         }

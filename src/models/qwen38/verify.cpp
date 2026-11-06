@@ -1,3 +1,4 @@
+#include "strata/base/gpu/managed_memory.hpp"
 // src/models/qwen38/verify.cpp - see include/strata/models/qwen38/verify.hpp.
 #include "strata/models/qwen38/batch_rows.hpp"
 #include "strata/base/gpu/sm75_series.hpp"
@@ -118,10 +119,12 @@ struct RouteResidentCfg {
         unsigned long long* p = nullptr;
         {
             const OnDevice on(dev);
-            if (cudaMalloc((void**) &p, 8 * sizeof(unsigned long long)) != cudaSuccess ||
+            if (strata::core::allocate_device((void**) &p, 8 * sizeof(unsigned long long),
+                {"other", "Device allocations", "Verifier"}) != cudaSuccess ||
                 cudaMemset(p, 0, 8 * sizeof(unsigned long long)) != cudaSuccess) {
                 (void) cudaGetLastError();
-                if (p != nullptr) cudaFree(p);
+                if (p != nullptr)
+                    strata::core::release_device(p);
                 p = nullptr;
                 std::fprintf(stderr, "route-resident: the counters could not be allocated on GPU %d; it runs without them\n", dev);
             }
@@ -604,7 +607,7 @@ Verifier::~Verifier() {
     {
         const OnDevice on_device(device_);
         for (auto& entry : group_scratch_)
-            (void) cudaFree(entry.second.data);
+            (void) strata::core::release_device(entry.second.data);
     }
 #if defined(STRATA_GPU_METAL)
     strata::metal_engine::window_destroy(metal_);
@@ -627,19 +630,27 @@ Verifier::~Verifier() {
         if (kv.second) cudaGraphExecDestroy(kv.second);
     for (auto& kv : commit_bm_)
         if (kv.second) cudaGraphExecDestroy(kv.second);
-    if (arena_b_) cudaFree(arena_b_);
+    if (arena_b_)
+        strata::core::release_device(arena_b_);
     if (batch_history_device_) {
         const OnDevice on_device(device_);
-        cudaFree(batch_history_device_);
+        strata::core::release_device(batch_history_device_);
     }
-    if (h_commitb_) cudaFreeHost(h_commitb_);
-    if (qcnt_) cudaFree(qcnt_);
-    if (d_spec_) cudaFree(d_spec_);
+    if (h_commitb_)
+        strata::core::release_host(h_commitb_);
+    if (qcnt_)
+        strata::core::release_device(qcnt_);
+    if (d_spec_)
+        strata::core::release_device(d_spec_);
     if (tap_file_) std::fclose(tap_file_);
-    if (tap_dev_) cudaFree(tap_dev_);
-    if (tap_scratch_) cudaFree(tap_scratch_);
-    if (h_tap_) cudaFreeHost(h_tap_);
-    if (logit_bias_device_) cudaFree(logit_bias_device_);
+    if (tap_dev_)
+        strata::core::release_device(tap_dev_);
+    if (tap_scratch_)
+        strata::core::release_device(tap_scratch_);
+    if (h_tap_)
+        strata::core::release_host(h_tap_);
+    if (logit_bias_device_)
+        strata::core::release_device(logit_bias_device_);
     if (cs_ && cs_ != ext_stream_) cudaStreamDestroy(cs_);   // set_stream: the stage's stream, shared, not ours
     if (sh_cs_) cudaStreamDestroy(sh_cs_);
     if (copy_) { cudaStreamSynchronize(copy_); cudaStreamDestroy(copy_); }
@@ -650,7 +661,8 @@ Verifier::~Verifier() {
     if (commit_done_) cudaEventDestroy(commit_done_);
     if (ev_done_) cudaEventDestroy(ev_done_);
     if (ev_commit_) cudaEventDestroy(ev_commit_);
-    if (prof_pin_) cudaFreeHost(prof_pin_);
+    if (prof_pin_)
+        strata::core::release_host(prof_pin_);
     if (ev_fork_) cudaEventDestroy(ev_fork_);
     if (ev_join_) cudaEventDestroy(ev_join_);
     for (cudaStream_t s : df_side_)
@@ -658,12 +670,15 @@ Verifier::~Verifier() {
     if (df_fork_) cudaEventDestroy(df_fork_);
     for (cudaEvent_t e : df_join_)
         if (e) cudaEventDestroy(e);
-    if (arena_) cudaFree(arena_);
-    if (hcount_d_) cudaFree(hcount_d_);
+    if (arena_)
+        strata::core::release_device(arena_);
+    if (hcount_d_)
+        strata::core::release_device(hcount_d_);
     void* hosts[] = {h_tok_, h_step_, h_pos_, h_commit_, h_ple_, h_out_, h_x_, h_ids_, h_w_, h_seq_, h_flag_, h_ymiss_,
                      h_flagA_, h_plan_, h_flagB_, h_plan_err_, h_nf_, herr_h_, hdrop_h_, h_bal_};
     for (void* h : hosts)
-        if (h) cudaFreeHost(h);
+        if (h)
+            strata::core::release_host(h);
 }
 
 // STRATA_TAP_FILE: one record per row of the window: int32 position, int32 input token, then n_taps x n_embd floats
@@ -687,7 +702,8 @@ bool Verifier::set_logit_bias(const std::vector<float>& bias, std::string& err) 
     }
     if (bias != logit_bias_host_ && !bias.empty()) {
         const size_t bytes = bias.size() * sizeof(float);
-        if ((!logit_bias_device_ && cudaMalloc((void**) &logit_bias_device_, bytes) != cudaSuccess) ||
+        if ((!logit_bias_device_ && strata::core::allocate_device((void**) &logit_bias_device_, bytes,
+            {"other", "Device allocations", "Verifier"}) != cudaSuccess) ||
             cudaMemcpy(logit_bias_device_, bias.data(), bytes, cudaMemcpyHostToDevice) != cudaSuccess) {
             err = "cannot upload logit_bias"; return false;
         }
@@ -810,8 +826,10 @@ bool Verifier::init(const WeightTable& wt, const ModelGeometry& g, SessionState&
         tap_slot_.assign((size_t) g.n_layers, -1);
         for (size_t i = 0; i < tap_layers_.size(); ++i) tap_slot_[(size_t) tap_layers_[i]] = (int) i;
         const size_t nt = tap_layers_.size();
-        if (nt == 0 || cudaMalloc((void**) &tap_dev_, (size_t) T * nt * N * 4) != cudaSuccess ||
-            (tap_path != nullptr && (cudaMalloc((void**) &tap_scratch_, (size_t) HC * N * 4) != cudaSuccess ||
+        if (nt == 0 || strata::core::allocate_device((void**) &tap_dev_, (size_t) T * nt * N * 4,
+            {"other", "Device allocations", "Verifier"}) != cudaSuccess ||
+            (tap_path != nullptr && (strata::core::allocate_device((void**) &tap_scratch_, (size_t) HC * N * 4,
+                {"other", "Device allocations", "Verifier"}) != cudaSuccess ||
                                      !mapped((size_t) T * nt * N * 4, (void**) &h_tap_, (void**) &m_tap_)))) {
             err = "verify: the DFlash2 tap buffers could not be allocated";
             return false;
@@ -910,13 +928,16 @@ bool Verifier::init(const WeightTable& wt, const ModelGeometry& g, SessionState&
     };
     Bump count;
     carve(count);
-    if (cudaMalloc(&arena_, count.used) != cudaSuccess) {
+    if (strata::core::allocate_device(&arena_, count.used,
+        {"other", "Device allocations", "Verifier"}) != cudaSuccess) {
         err = "verify: the device arena (" + std::to_string(count.used >> 20) + " MiB) does not fit";
         return false;
     }
     cudaMemset(arena_, 0, count.used);
     if (hflag_out_d_ != nullptr && hcount_d_ == nullptr) {   // the overlapped split's hand-off counter
-        if (cudaMalloc((void**) &hcount_d_, 64) != cudaSuccess) { err = "verify: hand-off counter allocation failed"; return false; }
+        if (strata::core::allocate_device((void**) &hcount_d_, 64,
+            {"other", "Device allocations", "Verifier"}) != cudaSuccess) { err =
+                "verify: hand-off counter allocation failed"; return false; }
         cudaMemset(hcount_d_, 0, 64);
         if (!mapped(64, (void**) &hdrop_h_, (void**) &hdrop_d_)) { err = "verify: hand-off test word allocation failed"; return false; }
     }
@@ -942,7 +963,8 @@ bool Verifier::init(const WeightTable& wt, const ModelGeometry& g, SessionState&
     prof_on_ = std::getenv("STRATA_VERIFY_PROFILE") != nullptr;
     if (const char* rs = std::getenv("STRATA_ROUTE_STATS"); rs != nullptr && rs[0] == '1') {
         const size_t nrs = (size_t) 9 * (size_t) g.n_layers * 8;
-        if (cudaMalloc((void**) &rs_dev_, nrs * 8) == cudaSuccess) {
+        if (strata::core::allocate_device((void**) &rs_dev_, nrs * 8,
+            {"other", "Device allocations", "Verifier"}) == cudaSuccess) {
             cudaMemset(rs_dev_, 0, nrs * 8);
             rs_on_ = true;
         } else {
@@ -952,7 +974,9 @@ bool Verifier::init(const WeightTable& wt, const ModelGeometry& g, SessionState&
     }
     if (prof_on_) {
         const size_t np = (size_t) g.n_layers * kProfPer + 4;
-        if (cudaMalloc((void**) &prof_, np * 8) != cudaSuccess) { prof_on_ = false; prof_ = nullptr; cudaGetLastError(); }
+        if (strata::core::allocate_device((void**) &prof_, np * 8,
+            {"other", "Device allocations", "Verifier"}) != cudaSuccess) { prof_on_ = false; prof_ = nullptr;
+                cudaGetLastError(); }
         else { cudaMemset(prof_, 0, np * 8); prof_h_.assign(np, 0); }
     }
     Bump real;
@@ -1072,19 +1096,24 @@ bool Verifier::init(const WeightTable& wt, const ModelGeometry& g, SessionState&
         device_plan_ = !ar_on() && !always_publish_ && (v != nullptr && std::atoi(v) != 0);
     }
     if (g_qfuse() || g_qfuse_hc()) {   // S26: the HC read's q8_1 group counters, zeroed once (each launch leaves them zero)
-        if (cudaMalloc((void**) &qcnt_, sizeof(unsigned) * (size_t) (g.n_embd / 32)) != cudaSuccess ||
+        if (strata::core::allocate_device((void**) &qcnt_, sizeof(unsigned) * (size_t) (g.n_embd / 32),
+            {"other", "Device allocations", "Verifier"}) != cudaSuccess ||
             cudaMemset(qcnt_, 0, sizeof(unsigned) * (size_t) (g.n_embd / 32)) != cudaSuccess) {
             cudaGetLastError();
-            if (qcnt_) cudaFree(qcnt_);
+            if (qcnt_)
+                strata::core::release_device(qcnt_);
             qcnt_ = nullptr;
         }
     }
     if (has_resident_graph_ || device_plan_) {
         bool ok2 = true;
         if (device_plan_)
-            ok2 = cudaMalloc((void**) &skip_, 64) == cudaSuccess && cudaMemset(skip_, 0, 64) == cudaSuccess;
+            ok2 = strata::core::allocate_device((void**) &skip_, 64,
+                {"other", "Device allocations", "Verifier"}) == cudaSuccess && cudaMemset(skip_, 0, 64) == cudaSuccess;
         if (ok2 && hits.slot_off != nullptr && hits.n_slots > 0) {
-            ok2 = cudaMalloc((void**) &slot_off_d_, (size_t) hits.n_slots * sizeof(unsigned long long)) == cudaSuccess &&
+            ok2 = strata::core::allocate_device((void**) &slot_off_d_, (size_t) hits.n_slots * sizeof(unsigned long
+                long),
+                {"other", "Device allocations", "Verifier"}) == cudaSuccess &&
                   cudaMemcpy(slot_off_d_, hits.slot_off, (size_t) hits.n_slots * sizeof(unsigned long long),
                              cudaMemcpyHostToDevice) == cudaSuccess;
         }
@@ -3160,7 +3189,9 @@ bool Verifier::run(int T, const int32_t* tokens, int64_t pos0, PoolMultiFn pool,
         bool judged = false;
         if (sampled && spec_q_ != nullptr && spec_nq_ > 0 && T > 1 && T <= kVerifyMaxT) {
             if (d_spec_ == nullptr &&
-                cudaMalloc((void**) &d_spec_, (size_t) kVerifyMaxT * (1 + strata::core::kSpecQStride) * sizeof(int32_t)) !=
+                strata::core::allocate_device((void**) &d_spec_, (size_t) kVerifyMaxT * (1 +
+                    strata::core::kSpecQStride) * sizeof(int32_t),
+                    {"other", "Device allocations", "Verifier"}) !=
                     cudaSuccess) {
                 (void) cudaGetLastError();
                 d_spec_ = nullptr;
@@ -3462,7 +3493,8 @@ bool Verifier::init_slots(const std::vector<SessionState*>& slots, std::string& 
     }
     const uint64_t a = ((uint64_t) S * CB * 4 + 255) & ~255ull;
     const uint64_t coordinates = a + (uint64_t) S * std::max<int64_t>(nQ, 1) * TS * 4;
-    if (cudaMalloc(&d, coordinates + strata::kernels::kVerifyMaxT * 3 * sizeof(int32_t)) != cudaSuccess) {
+    if (strata::core::allocate_device(&d, coordinates + strata::kernels::kVerifyMaxT * 3 * sizeof(int32_t),
+        {"other", "Device allocations", "Verifier"}) != cudaSuccess) {
         err = "verify: the batch buffers do not fit";
         return false;
     }
@@ -3961,10 +3993,11 @@ bool Verifier::reserve_batch_history(size_t tokens, std::string& err) {
     if (tokens <= batch_history_capacity_)
         return true;
     if (batch_history_device_)
-        (void) cudaFree(batch_history_device_);
+        (void) strata::core::release_device(batch_history_device_);
     batch_history_device_ = nullptr;
     batch_history_capacity_ = 0;
-    if (cudaMalloc(&batch_history_device_, tokens * sizeof(int32_t)) != cudaSuccess) {
+    if (strata::core::allocate_device(&batch_history_device_, tokens * sizeof(int32_t),
+        {"other", "Device allocations", "Verifier"}) != cudaSuccess) {
         err = "verify batch: the sampler's history does not fit";
         return false;
     }
@@ -4037,7 +4070,8 @@ bool Verifier::prepare_slot_rows(const int* rows, int S, int base, const int32_t
         size_t bytes = 0;
         for (const auto& buffer : get_group_buffers())
             bytes += buffer.second;
-        if (cudaMalloc((void**) &scratch.data, bytes) != cudaSuccess) {
+        if (strata::core::allocate_device((void**) &scratch.data, bytes,
+            {"other", "Device allocations", "Verifier"}) != cudaSuccess) {
             err = "the pipeline's deferred commit buffers do not fit";
             return false;
         }
@@ -4410,7 +4444,8 @@ bool Verifier::capture_all(std::string& err) {
         return false;
     }
     if (prof_on_ && prof_pin_ == nullptr &&
-        cudaHostAlloc((void**) &prof_pin_, prof_h_.size() * 8, cudaHostAllocDefault) != cudaSuccess) {
+        strata::core::allocate_host((void**) &prof_pin_, prof_h_.size() * 8, cudaHostAllocDefault,
+            {"other", "Device allocations", "Verifier"}) != cudaSuccess) {
         prof_pin_ = nullptr;   // the pipelined windows go unprofiled
         cudaGetLastError();
     }

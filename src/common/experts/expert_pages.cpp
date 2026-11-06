@@ -25,6 +25,7 @@ bool ExpertPages::open(ExpertCache& cache, ChunkMemory memory, uint64_t bytes, c
     config.chunk_bytes = pages * page;
     cache_ = &cache;
     arena_ = cache.device_slot(0);
+    get_memory_manager().set_label(arena_, {"", config.label, "Backing storage"});
     if (!open_pool(std::move(memory), std::max(bytes, config.chunk_bytes), layout, config, blob_bytes, n_expert,
                    max_experts, ranking, err))
         return false;
@@ -91,6 +92,7 @@ bool ExpertPages::open_pool(ChunkMemory memory, uint64_t bytes, const StateLayou
                             const std::vector<uint64_t>& blob_bytes, int64_t n_expert, int64_t max_experts,
                             const std::vector<ExpertKey>& ranking, std::string& err) {
     const uint64_t page = config.page_bytes;
+    config.expert_bytes = blob_bytes;
     memory_ = std::move(memory);
     n_expert_ = n_expert;
     max_experts_ = max_experts;

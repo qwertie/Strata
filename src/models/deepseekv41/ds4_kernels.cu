@@ -1,3 +1,4 @@
+#include "strata/base/gpu/managed_memory.hpp"
 // Copyright (c) 2026 Peasant Smith and the Project Maya contributors (MIT; https://github.com/mw00/project-maya, v1.1.17).
 // Ported into Strata (third_party/project-maya/NOTICE.md, LICENSE); changes are in the git history of this file.
 // src/ds4/ds4_kernels.cu - DeepSeek-V4.1's device kernels (see ds4_kernels.cuh).  No fast math here: the rotary
@@ -1850,10 +1851,13 @@ attnsplit::AttnSplitScratch split_scratch(cudaStream_t s, int heads) {
     sc.nsplit = kSplitCap;
     sc.max_t = kSplitMaxT;
     const size_t np = (size_t) kSplitMaxT * heads * kSplitCap;
-    if (cudaMalloc((void**) &sc.part, np * 512 * sizeof(float)) != cudaSuccess ||
-        cudaMalloc((void**) &sc.ml, np * 2 * sizeof(float)) != cudaSuccess) {
+    if (strata::core::allocate_device((void**) &sc.part, np * 512 * sizeof(float),
+        {"other", "Device allocations", "ds4 kernels buffers"}) != cudaSuccess ||
+        strata::core::allocate_device((void**) &sc.ml, np * 2 * sizeof(float),
+            {"other", "Device allocations", "ds4 kernels buffers"}) != cudaSuccess) {
         cudaGetLastError();
-        if (sc.part != nullptr) cudaFree(sc.part);
+        if (sc.part != nullptr)
+            strata::core::release_device(sc.part);
         sc = attnsplit::AttnSplitScratch{};
     }
     m[{dev, s}] = sc;

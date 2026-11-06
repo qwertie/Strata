@@ -52,7 +52,7 @@ const QsaState& owned(const SessionState& ss, size_t j) { return ss.qsa_states[(
 /// session has none), then per owned QSA layer the indexer tail, dead row and block position.
 StateLayout describe_running_state(const SessionState& ss, const ConversationStateSizes& z) {
     StateLayout layout;
-    layout.add(RegionKind::fixed, z.gdn);
+    layout.add(RegionKind::fixed, z.gdn, 1, 1, "Recurrent state");
     layout.add(RegionKind::fixed, ss.ple_hist ? z.ple : 0);
     for (size_t j = 0; j < owned_qsa(ss); ++j)
         for (size_t bytes : {z.tail, z.dead, z.block_pos})
@@ -218,9 +218,10 @@ bool describe_conversation(const ModelGeometry& g, uint64_t kv_cell_bytes, State
     const uint64_t n_qsa = (uint64_t) g.n_qsa_layers();
     layout = {};
     layout.add(RegionKind::fixed, z.ple + n_qsa * (z.tail + z.dead + z.block_pos));
-    layout.add(RegionKind::fixed, z.gdn);
+    layout.add(RegionKind::fixed, z.gdn, 1, 1, "Recurrent state");
     for (uint64_t j = 0; j < n_qsa; ++j)
-        layout.add(RegionKind::per_block, (uint64_t) g.idx_block * kv_cell_bytes + z.dead, 1, g.idx_block);
+        layout.add(RegionKind::per_block, (uint64_t) g.idx_block * kv_cell_bytes + z.dead, 1, g.idx_block,
+                   "Attention context");
     return true;
 }
 

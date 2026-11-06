@@ -215,7 +215,7 @@ test('every segment of a bar says in its tooltip what it is', () => {
   const tips = [...row.matchAll(/class="mem-seg"[^>]*title="([^"]*)"/g)].map(m => m[1]);
   assert.equal(tips.length, 6);
   assert.match(tips[0], /^Weights: 4.00 GiB\. The parts of the model that must always be loaded here \(attention/);
-  assert.match(tips[4], /^Other: 1.00 GiB\. Memory in use here that the engine does not count as its own: other progr/);
+  assert.match(tips[5], /^Other apps: 1.00 GiB\. Memory used outside Strata/);
   for (const t of tips)
     assert.match(t, /: [\d.,]+ (GiB|MiB)\. \S/);
 });
@@ -258,4 +258,42 @@ test('draft experts have their own segment and legend without changing the pool 
   assert.match(row, /Drafter experts 7.00 GiB/);
   assert.match(row, /Experts 4.00 GiB/);
   assert.ok(Math.abs(widths(row).reduce((sum, width) => sum + width, 0) - 100) < 1e-9);
+});
+
+
+test('arbitrary categories retain sublabels in both tooltips; other apps follow free space', () => {
+  const memory = {id: 'gpu0', total: 8 * GIB, free: GIB, other_apps: GIB,
+    uses: {experts: 3 * GIB, other: 2 * GIB, 'Custom <category>': GIB},
+    blocks: [{category: 'experts', pool: 'Pool', label: 'Layer 4 (2.00 MiB experts)', bytes: 3 * GIB},
+      {category: 'other', pool: 'Drafter', label: 'Expert weights', bytes: GIB},
+      {category: 'other', pool: 'Prompt', label: 'Working buffers', bytes: GIB},
+      {category: 'Custom <category>', pool: 'New pool', label: '<arbitrary> & labels', bytes: GIB}]};
+  const html = draw({available: true, settings: {}, memories: [memory]});
+  assert.match(html, /Layer 4 \(2.00 MiB experts\): 3.00 GiB/);
+  assert.match(html, /Drafter \/ Expert weights: 1.00 GiB/);
+  assert.match(html, /Prompt \/ Working buffers: 1.00 GiB/);
+  assert.match(html, /&lt;arbitrary&gt; &amp; labels: 1.00 GiB/);
+  const uses = [...html.matchAll(/class="mem-seg" data-use="([^"]*)"/g)].map(m => m[1]);
+  assert.deepEqual(uses.slice(-2), ['free', 'other_apps']);
+  assert.equal((html.match(/Drafter \/ Expert weights/g) || []).length, 2);
+});
+
+
+test('an adjustable pool does not require any built-in category names', () => {
+  const view = {available: true, can_change: true, settings: {}, memories: [{
+    id: 'gpu0', total: 4 * GIB, free: GIB, setting: 2 * GIB, pool_offset: GIB,
+    smallest: GIB, largest: 3 * GIB, uses: {'Custom category': 3 * GIB}}]};
+  const {element} = mount(view, async () => ({ok: true}));
+  assert.match(element.innerHTML, /data-divider="gpu0"/);
+  assert.match(element.innerHTML, /style="left:75%"/);
+});
+
+
+test('category names that match Object properties are rendered as labels', () => {
+  const html = draw({available: true, settings: {}, memories: [{id: 'gpu0', total: GIB,
+    uses: {constructor: GIB},
+    blocks: [{category: 'constructor', pool: 'Custom pool', label: 'Custom block', bytes: GIB}]}]});
+  assert.match(html, /constructor: 1.00 GiB/);
+  assert.match(html, /Custom pool \/ Custom block: 1.00 GiB/);
+  assert.doesNotMatch(html, /function Object/);
 });

@@ -114,6 +114,7 @@ struct Part final : strata::serve::PagedPart {
             err = "the page pool: " + why;
             return false;
         }
+        p.set_conversation_label(id, "Conversation " + std::to_string(id));
         pool = &p;
         cid = id;
         return alloc_tables(err) && write_tables(err);
@@ -303,16 +304,6 @@ public:
     uint64_t get_drafter_weight_bytes(const PagedCard& card) const override {
         return m_.get_drafter_weight_bytes((int) card.index);
     }
-    uint64_t get_drafter_expert_bytes(const PagedCard& card) const override {
-        uint64_t bytes = 0;
-        const auto& pool = card.experts.pool();
-        for (const auto& key : drafter_experts_)
-            if (residency_[(size_t) key.layer * facts.n_expert + key.expert] >= 0 &&
-                card.index + 1 == cards_.size())
-                bytes += (blobs_[(size_t) key.layer] + pool.page_bytes() - 1) /
-                         pool.page_bytes() * pool.page_bytes();
-        return bytes;
-    }
     uint64_t get_gpu_keep(const PagedCard&) const override { return (uint64_t) o_.reserve_mib << 20; }
     std::vector<strata::core::ExpertKey> get_card_ranking(int64_t lb, int64_t le, int64_t& max_experts) const override;
     bool load_expert(const PagedCard& card, strata::core::ExpertKey key, int32_t first, std::string& err) override;
@@ -333,8 +324,6 @@ public:
         return get_conversation_span(m_.geometry(), (int) lb, (int) le,
                                      facts.has_drafter && le == facts.n_layers, true);
     }
-    uint64_t get_weight_bytes(const PagedCard& card) const override { return m_.get_weight_bytes((int) card.index); }
-    uint64_t get_scratch_bytes(const PagedCard& card) const override { return m_.get_scratch_bytes((int) card.index); }
     bool attach_hop(PagedCard& card, std::string& err) override {
         if (facts.cpu_expert_ms == 0) {
             facts.cpu_expert_ms = m_.measure_cpu_expert_ms();
@@ -1376,6 +1365,11 @@ bool open_card_pool(const Model& m, const PagedSettings& s, const strata::core::
     config.page_bytes = page;
     config.chunk_bytes = strata::serve::get_chunk_bytes(bytes, page);
     config.tokens_min = std::clamp<int64_t>(s.tokens_min, 0, m.max_context());
+    config.label = "Expert and conversation pool";
+    config.label_expert = [layers = m.geometry().nl](strata::core::ExpertKey key, uint64_t bytes) {
+        return strata::core::MemoryLabel{"experts", "", (key.layer >= layers ? "Drafter / " : "") +
+            strata::core::get_expert_memory_label(key.layer, bytes)};
+    };
     const strata::core::OnDevice on(card.dev);
     if (!card.experts.open(strata::serve::get_gpu_chunk_memory(card.dev), bytes, layout, config, blobs,
                            m.geometry().n_exp, max_experts, ranking, err))

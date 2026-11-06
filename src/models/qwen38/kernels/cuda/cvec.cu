@@ -1,3 +1,4 @@
+#include "strata/base/gpu/managed_memory.hpp"
 // src/models/qwen38/kernels/cuda/cvec.cu - see include/strata/models/qwen38/kernels/cvec.hpp.
 #include "strata/models/qwen38/kernels/cvec.hpp"
 
@@ -27,8 +28,11 @@ bool upload_here(std::string& err) {
     DevTables& t = g_dev[cur_device()];
     if (t.dir != nullptr) return true;
     const int flag = g_on_host ? 1 : 0;
-    if (cudaMalloc(&t.dir, g_dir_host.size() * sizeof(float)) != cudaSuccess ||
-        cudaMalloc(&t.s, g_s_host.size() * sizeof(float)) != cudaSuccess || cudaMalloc(&t.on, sizeof(int)) != cudaSuccess ||
+    if (strata::core::allocate_device(&t.dir, g_dir_host.size() * sizeof(float),
+        {"other", "Device allocations", "Control vectors"}) != cudaSuccess ||
+        strata::core::allocate_device(&t.s, g_s_host.size() * sizeof(float),
+            {"other", "Device allocations", "Control vectors"}) != cudaSuccess || strata::core::allocate_device(&t.on,
+                sizeof(int), {"other", "Device allocations", "Control vectors"}) != cudaSuccess ||
         cudaMemcpy(t.dir, g_dir_host.data(), g_dir_host.size() * sizeof(float), cudaMemcpyHostToDevice) != cudaSuccess ||
         cudaMemcpy(t.s, g_s_host.data(), g_s_host.size() * sizeof(float), cudaMemcpyHostToDevice) != cudaSuccess ||
         cudaMemcpy(t.on, &flag, sizeof(int), cudaMemcpyHostToDevice) != cudaSuccess) {
@@ -108,9 +112,9 @@ bool cvec_upload(const std::vector<float>& dir, const std::vector<float>& s, int
         if (g_dev[d].dir == nullptr) continue;
         cudaSetDevice(d);
         cudaDeviceSynchronize();
-        cudaFree(g_dev[d].dir);
-        cudaFree(g_dev[d].s);
-        cudaFree(g_dev[d].on);
+        strata::core::release_device(g_dev[d].dir);
+        strata::core::release_device(g_dev[d].s);
+        strata::core::release_device(g_dev[d].on);
         g_dev[d] = DevTables{};
     }
     cudaSetDevice(prev);

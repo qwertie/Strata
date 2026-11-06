@@ -7,6 +7,8 @@ calibration and readiness checks (strata_control).
 """
 from __future__ import annotations
 
+from urllib.parse import unquote
+
 import json
 import math
 import os
@@ -1149,10 +1151,18 @@ class StrataEngine:
     def _ask_memory_report(self, command: str, refused: type[Exception] | None = None) -> dict:
         """Sends `command` and parses its GET_MEMORY_USE-style answer for memory() and change_settings()."""
         memories, settings, held, shortfall = [], {}, [], None
-        for f in self._ask(command, "MEMORY", end="END_MEMORY", also=("SETTINGS", "CONVERSATION", "SHORTFALL"),
-                           refused=refused):
+        for f in self._ask(command, "MEMORY", end="END_MEMORY",
+                           also=("SETTINGS", "CONVERSATION", "SHORTFALL", "MEMORY_BLOCK"), refused=refused):
             # MEMORY <id> [key=value ...] [name=<text to the end>]  /  CONVERSATION ...  /  SETTINGS [key=value ...]  /
             # SHORTFALL <text>
+            if f[0] == "MEMORY_BLOCK":
+                memory = next(m for m in memories if m["id"] == f[1])
+                category, pool, label = ("" if v == "~" else unquote(v) for v in f[3:6])
+                size = int(f[2])
+                memory["uses"][category] = memory["uses"].get(category, 0) + size
+                memory.setdefault("blocks", []).append({"category": category, "pool": pool,
+                                                         "label": label, "bytes": size})
+                continue
             if f[0] == "CONVERSATION":
                 held.append(parse_conversation_line(f))
                 continue
@@ -1172,7 +1182,8 @@ class StrataEngine:
                              "paused_count": keys.pop("paused_count", None),
                              "paused_budget": keys.pop("paused_budget", None),
                              "allocated_pct": share["allocated"], "fragmented_pct": share["fragmented"],
-                             **{k: keys.pop(k, None) for k in ("setting", "smallest", "largest", "mapped")},
+                             **{k: keys.pop(k, None) for k in
+                                ("setting", "smallest", "largest", "mapped", "pool_offset")},
                              "uses": keys})
         if "concurrent" in self.info and "concurrent" in settings:
             self.info["concurrent"] = settings["concurrent"]

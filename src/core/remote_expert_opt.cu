@@ -1,3 +1,4 @@
+#include "strata/base/gpu/managed_memory.hpp"
 #include "strata/core/remote_expert_opt.hpp"
 #include "strata/core/remote_experts.hpp"
 #include "strata/base/gpu/on_device.hpp"
@@ -55,15 +56,17 @@ void RemoteExpertOpt::attach(RemoteExperts& remote) {
 
 bool RemoteExpertOpt::init(std::string& err) {
     void* mapped = nullptr;
-    if (!check(cudaHostAlloc((void**) &h_sum_, MAXT * (H + K) * sizeof(float),
-                             cudaHostAllocPortable | cudaHostAllocMapped), err) ||
+    if (!check(strata::core::allocate_host((void**) &h_sum_, MAXT * (H + K) * sizeof(float),
+                             cudaHostAllocPortable | cudaHostAllocMapped, {"other", "Remote experts",
+                                 "Output accumulation"}), err) ||
         !check(cudaHostGetDevicePointer(&mapped, h_sum_, 0), err)) return false;
     m_sum_ = (float*) mapped;
     h_mask_ = reinterpret_cast<int32_t*>(h_sum_ + MAXT * H);
     m_mask_ = reinterpret_cast<int32_t*>(m_sum_ + MAXT * H);
     for (auto& p : peers_) {
         const OnDevice on(p.remote->device_);
-        if (!check(cudaMalloc((void**) &p.sum, MAXT * H * sizeof(float)), err)) return false;
+        if (!check(strata::core::allocate_device((void**) &p.sum, MAXT * H * sizeof(float),
+            {"other", "Remote experts", "Output accumulation"}), err)) return false;
     }
     return true;
 }
@@ -72,10 +75,10 @@ RemoteExpertOpt::~RemoteExpertOpt() {
     for (auto& p : peers_) {
         const OnDevice on(p.remote->device_);
         if (p.remote->stream_) cudaStreamSynchronize(p.remote->stream_);
-        if (p.sum) cudaFree(p.sum);
+        if (p.sum) strata::core::release_device(p.sum);
         p.remote->remote_opt_ = nullptr;
     }
-    if (h_sum_) cudaFreeHost(h_sum_);
+    if (h_sum_) strata::core::release_host(h_sum_);
 }
 
 size_t RemoteExpertOpt::metadata_bytes() { return sizeof(ReduceMeta); }

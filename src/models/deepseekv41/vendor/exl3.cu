@@ -1,3 +1,4 @@
+#include "strata/base/gpu/managed_memory.hpp"
 // Copyright (c) 2026 Peasant Smith and the Project Maya contributors (MIT; https://github.com/mw00/project-maya, v1.1.17).
 // Ported into Strata (third_party/project-maya/NOTICE.md, LICENSE); changes are in the git history of this file.
 // src/kernels/cuda/exl3.cu - the EXL3 device kernels (the format: include/strata/kernels/exl3.hpp).
@@ -1242,10 +1243,14 @@ Scratch* scratch(cudaStream_t s) {
         return nullptr;
     }
     Scratch sc;
-    if (cudaMalloc(&sc.part, kPartFloats * sizeof(float)) != cudaSuccess ||
-        cudaMalloc(&sc.cnt, kCounters * sizeof(unsigned)) != cudaSuccess ||
-        cudaMalloc(&sc.h, kHFloats * sizeof(float)) != cudaSuccess ||
-        cudaMalloc(&sc.u, kUFloats * sizeof(float)) != cudaSuccess ||
+    if (strata::core::allocate_device(&sc.part, kPartFloats * sizeof(float),
+        {"other", "Device allocations", "exl3 buffers"}) != cudaSuccess ||
+        strata::core::allocate_device(&sc.cnt, kCounters * sizeof(unsigned),
+            {"other", "Device allocations", "exl3 buffers"}) != cudaSuccess ||
+        strata::core::allocate_device(&sc.h, kHFloats * sizeof(float),
+            {"other", "Device allocations", "exl3 buffers"}) != cudaSuccess ||
+        strata::core::allocate_device(&sc.u, kUFloats * sizeof(float),
+            {"other", "Device allocations", "exl3 buffers"}) != cudaSuccess ||
         cudaMemsetAsync(sc.cnt, 0, kCounters * sizeof(unsigned), s) != cudaSuccess) {
         std::fprintf(stderr, "exl3: scratch did not allocate\n");
         return nullptr;

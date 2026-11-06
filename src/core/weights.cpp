@@ -1,4 +1,5 @@
 // src/core/weights.cpp - the dense-weight loader.  See the header for the engine-vs-pack distinction.
+#include "strata/base/gpu/managed_memory.hpp"
 #include "strata/core/weights.hpp"
 #include <vector>
 #include <cmath>
@@ -254,11 +255,13 @@ bool WeightTable::load(const std::string& pack_dir, void* arena_base, uint64_t a
     // one of the 90 widened tensors - a heap corruption that would have been blamed on whatever ran next.
     void* stage_in = nullptr;
     void* stage_out = nullptr;
-    if (cudaHostAlloc(&stage_in, CHUNK, cudaHostAllocDefault) != cudaSuccess ||
-        cudaHostAlloc(&stage_out, CHUNK * 2, cudaHostAllocDefault) != cudaSuccess) {
+    if (strata::core::allocate_host(&stage_in, CHUNK, cudaHostAllocDefault,
+        {"other", "Weight loading", "Staging buffers"}) != cudaSuccess ||
+        strata::core::allocate_host(&stage_out, CHUNK * 2, cudaHostAllocDefault,
+            {"other", "Weight loading", "Staging buffers"}) != cudaSuccess) {
         err = "cudaHostAlloc for the staging buffers failed";
-        if (stage_in) cudaFreeHost(stage_in);
-        if (stage_out) cudaFreeHost(stage_out);
+        if (stage_in) strata::core::release_host(stage_in);
+        if (stage_out) strata::core::release_host(stage_out);
         return false;
     }
 
@@ -302,7 +305,7 @@ bool WeightTable::load(const std::string& pack_dir, void* arena_base, uint64_t a
         if (r.code_bits != 0 && r.dst_bytes == 0) {
             // plan v0.3 P6: a native pack's row that carries a shape only - the GGUF form must serve it
             err = r.name + ": this pack holds the tensor only in its GGUF form (run with --native SHARD1)";
-            cudaFreeHost(stage_in); cudaFreeHost(stage_out);
+            strata::core::release_host(stage_in); strata::core::release_host(stage_out);
             return false;
         }
         if (r.file != cur_file) {
@@ -310,7 +313,8 @@ bool WeightTable::load(const std::string& pack_dir, void* arena_base, uint64_t a
             const char* fn = file_name(r.file);
             const std::string p = pack_dir + "/" + (fn ? fn : "?");
             cur = std::fopen(p.c_str(), "rb");
-            if (!cur) { err = "cannot open " + p; cudaFreeHost(stage_in); cudaFreeHost(stage_out); return false; }
+            if (!cur) { err = "cannot open " + p; strata::core::release_host(stage_in);
+                strata::core::release_host(stage_out); return false; }
             cur_file = r.file;
 #if !defined(_WIN32)
             // ask for this file's remaining rows up front so their reads overlap
@@ -379,14 +383,14 @@ bool WeightTable::load(const std::string& pack_dir, void* arena_base, uint64_t a
             err = buf;
             bad = true;
         }
-        if (bad) { cudaFreeHost(stage_in); cudaFreeHost(stage_out); return false; }
+        if (bad) { strata::core::release_host(stage_in); strata::core::release_host(stage_out); return false; }
 
         for (int si = 0; si < n_segs; ++si) {
             const Seg& s = segs[si];
             const bool widening = (s.conv == Conv::WidenF16);
             if (widening && (s.src_bytes & 1ull)) {
                 err = r.name + ": an fp16 plane with an odd source byte count";
-                cudaFreeHost(stage_in); cudaFreeHost(stage_out);
+                strata::core::release_host(stage_in); strata::core::release_host(stage_out);
                 return false;
             }
             uint64_t done = 0;
@@ -395,11 +399,12 @@ bool WeightTable::load(const std::string& pack_dir, void* arena_base, uint64_t a
                 // WIDENING NEVER SPLITS AN ELEMENT.  CHUNK is even, so a full chunk cannot, but the tail of a
                 // plane whose length is odd would - and half an fp16 is a plausible-looking scale.
                 if (widening && (n & 1ull)) {
-                    if (n == 1) { err = r.name + ": an fp16 plane ending on a half element"; cudaFreeHost(stage_in); cudaFreeHost(stage_out); return false; }
+                    if (n == 1) { err = r.name + ": an fp16 plane ending on a half element";
+                        strata::core::release_host(stage_in); strata::core::release_host(stage_out); return false; }
                     n -= 1;
                 }
                 if (!read_at(cur, r.src_off + s.src_off + done, stage_in, (size_t) n, err, r.name.c_str())) {
-                    cudaFreeHost(stage_in); cudaFreeHost(stage_out);
+                    strata::core::release_host(stage_in); strata::core::release_host(stage_out);
                     return false;
                 }
                 const uint8_t* src = (const uint8_t*) stage_in;
@@ -463,7 +468,7 @@ bool WeightTable::load(const std::string& pack_dir, void* arena_base, uint64_t a
                 if (cudaMemcpy(dst_base + r.dst_off + out_at, host_src, out_bytes, cudaMemcpyHostToDevice) !=
                     cudaSuccess) {
                     err = "cudaMemcpy failed for " + r.name;
-                    cudaFreeHost(stage_in); cudaFreeHost(stage_out);
+                    strata::core::release_host(stage_in); strata::core::release_host(stage_out);
                     return false;
                 }
                 upload_ms += now_ms() - u0;
@@ -500,8 +505,8 @@ bool WeightTable::load(const std::string& pack_dir, void* arena_base, uint64_t a
         }
     }
     if (cur) std::fclose(cur);
-    cudaFreeHost(stage_in);
-    cudaFreeHost(stage_out);
+    strata::core::release_host(stage_in);
+    strata::core::release_host(stage_out);
 
     report_.arena_bytes = pool;
     report_.read_ms = now_ms() - t_read0 - upload_ms;
@@ -542,7 +547,9 @@ bool WeightTable::load_hc_q8(const std::string& pack_dir, uint64_t& bytes, std::
     uint64_t total = 0;
     for (const WeightRef* w : todo) total += al((uint64_t) w->elements) + al((uint64_t) w->elements / 32 * 4);
     uint8_t* dev = nullptr;
-    if (cudaMalloc((void**) &dev, total) != cudaSuccess) { err = "STRATA_HC_REQ8: cudaMalloc failed"; return false; }
+    if (strata::core::allocate_device((void**) &dev, total,
+        {"other", "Weight loading", "Staging buffers"}) != cudaSuccess) { err = "STRATA_HC_REQ8: cudaMalloc failed";
+            return false; }
     std::vector<float> src;
     std::vector<int8_t> q;
     std::vector<float> sc;
